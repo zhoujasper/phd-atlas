@@ -101,6 +101,7 @@ function registerFonts(doc, language) {
   const windowsFonts = process.env.WINDIR ? path.join(process.env.WINDIR, 'Fonts') : 'C:\\Windows\\Fonts'
   const registerOptional = (name, candidates) => {
     for (const candidate of candidates) {
+      if (!candidate) continue
       const source = typeof candidate === 'string' ? { file: candidate } : candidate
       if (!source.file || !existsSync(source.file)) continue
       try {
