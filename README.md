@@ -1,11 +1,21 @@
 # PhD Atlas
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 > A self-hosted, privacy-first workspace for planning and managing the complete
 > PhD application journey.
 
 [![CI](https://github.com/zhoujasper/phd-atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/zhoujasper/phd-atlas/actions/workflows/ci.yml)
+[![Status: Beta](https://img.shields.io/badge/status-beta-f59e0b.svg)](TODO.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js 24 LTS](https://img.shields.io/badge/Node.js-24%20LTS-339933.svg)](https://nodejs.org/)
+
+> [!WARNING]
+> **PhD Atlas is currently Beta (`0.1.0-beta.1`).** Until the first stable
+> public release, database schemas, stored data, and update paths may change
+> without backward-compatibility guarantees. Use backups and test Beta updates
+> before applying them to important data. Formal data and database migration
+> compatibility begins with the stable public edition.
 
 PhD Atlas brings applications, prospective supervisors, documents, deadlines,
 correspondence, funding, reusable profile material, exports, and backups into a
@@ -227,10 +237,14 @@ main `.sqlite` file while WAL mode is active.
 
 ## Releases and in-app updates
 
-Every `vMAJOR.MINOR.PATCH` tag runs the public Release workflow. It validates
+Every `vMAJOR.MINOR.PATCH` or SemVer prerelease tag runs the public Release workflow. It validates
 the source, builds the production frontend, generates a manifest containing a
 SHA-256 hash for every managed runtime file, exercises both install and rollback
 paths, and attaches the `.tar.gz` package plus checksum to a GitHub Release.
+
+Beta release packages exercise the same runtime install and rollback checks, but
+they do not promise database-schema or stored-data compatibility between Beta
+versions. Back up the whole workspace before every Beta update.
 
 For native Windows or Linux deployments:
 

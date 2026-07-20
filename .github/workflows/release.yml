@@ -46,9 +46,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          prerelease=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            prerelease+=(--prerelease)
+          fi
           gh release create "$GITHUB_REF_NAME" \
             "$PACKAGE_PATH" \
             "${PACKAGE_PATH}.sha256" \
             --verify-tag \
             --generate-notes \
+            "${prerelease[@]}" \
             --title "PhD Atlas $GITHUB_REF_NAME"

@@ -1,8 +1,17 @@
 # Deploying PhD Atlas
 
+[English](DEPLOYMENT.md) | [简体中文](DEPLOYMENT.zh-CN.md)
+
 PhD Atlas is one Node.js process: Express serves both `/api` and the built React
 application. SQLite, uploads, backups, update packages, and generated push keys
 live under `storage/`. Preserve that directory across every upgrade.
+
+> [!WARNING]
+> The current release is Beta. Runtime update packages are integrity-checked and
+> rollback-tested, but database-schema and stored-data compatibility between
+> Beta versions is not guaranteed. Make and verify a whole-workspace backup
+> before every Beta deployment or update. Stable compatibility guarantees begin
+> with the first stable public release.
 
 ## Production requirements
 

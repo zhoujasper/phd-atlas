@@ -1,5 +1,7 @@
 # Publishing the Team edition later
 
+[English](TEAM_ENABLEMENT.md) | [简体中文](TEAM_ENABLEMENT.zh-CN.md)
+
 The public repository is deliberately shipped as a personal/self-hosted edition.
 The private source repository remains the source of truth for the Team and
 institution implementation while that surface is being prepared for public use.
@@ -73,8 +75,8 @@ files.
 For a release:
 
 ```bash
-git tag v1.1.0
-git push origin v1.1.0
+git tag v0.2.0-beta.1
+git push origin v0.2.0-beta.1
 ```
 
 The tag is mirrored to the public repository. Its release workflow builds the

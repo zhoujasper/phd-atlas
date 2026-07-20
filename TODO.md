@@ -1,7 +1,17 @@
 # PhD Atlas public roadmap
 
+[English](TODO.md) | [简体中文](TODO.zh-CN.md)
+
 The public edition prioritizes a dependable personal/self-hosted workspace.
 Planned work is tracked here in broad delivery order.
+
+## Beta exit criteria
+
+- [ ] Freeze the first stable public database schema and migration contract.
+- [ ] Add versioned, tested database migrations and documented compatibility
+      guarantees for upgrades between stable public releases.
+- [ ] Publish a stable-release data support policy. Beta versions intentionally
+      do not guarantee database or stored-data compatibility.
 
 ## Product
 
