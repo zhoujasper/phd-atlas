@@ -25,3 +25,7 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm test
       - run: npm run build
+      - name: Validate Docker Compose
+        run: docker compose config --quiet
+      - name: Build Docker image
+        run: docker build --tag phd-atlas-ci:${{ github.sha }} .
