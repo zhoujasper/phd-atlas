@@ -26,6 +26,8 @@ jobs:
       - run: npm test
       - run: npm run build
       - name: Validate Docker Compose
-        run: docker compose config --quiet
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
       - name: Build Docker image
         run: docker build --tag phd-atlas-ci:${{ github.sha }} .
