@@ -860,6 +860,43 @@ export function NotificationCenter({
     animation.timeout = window.setTimeout(settle, 360)
   }, [dialogRef, editing, filter, filteredNotifications.length, loading, mobileDetailOpen, open, selectedCount, unreadCount])
 
+  const runMarkAllRead = useCallback(() => {
+    if (clearingAllUnread) return
+
+    const unreadIds = notifications
+      .filter((item) => !item.readAt && !item.archivedAt)
+      .map((item) => item.id)
+    if (unreadIds.length === 0) return
+
+    if (prefersReducedMotion()) {
+      onMarkAllRead()
+      setSelectedIds(new Set())
+      return
+    }
+
+    // Finish the full cascade before the optimistic parent update. The local
+    // clearing state survives one painted frame after that update, so removing
+    // the unread dot and collapsing the toolbar cannot create a final snap.
+    setClearingAllUnread(true)
+    setClearingUnreadIds(new Set(unreadIds))
+    setSelectedIds(new Set())
+
+    const staggerTail = Math.min(Math.max(unreadIds.length - 1, 0), 8) * MARK_ALL_CLEAR_STAGGER_MS
+    const delay = MARK_ALL_CLEAR_ROW_MS + MARK_ALL_CLEAR_BUFFER_MS + staggerTail
+    if (markAllClearTimerRef.current !== null) window.clearTimeout(markAllClearTimerRef.current)
+    markAllClearTimerRef.current = window.setTimeout(() => {
+      markAllClearTimerRef.current = null
+      onMarkAllRead()
+      markAllSettleFrameRef.current = window.requestAnimationFrame(() => {
+        markAllSettleFrameRef.current = window.requestAnimationFrame(() => {
+          markAllSettleFrameRef.current = null
+          setClearingUnreadIds(new Set())
+          setClearingAllUnread(false)
+        })
+      })
+    }, delay)
+  }, [clearingAllUnread, notifications, onMarkAllRead])
+
   if (!open) return null
 
   const toggleSelection = (id: string) => {
@@ -904,43 +941,6 @@ export function NotificationCenter({
     if (action === 'archive') onArchive(ids)
     clearSelection()
   }
-
-  const runMarkAllRead = useCallback(() => {
-    if (clearingAllUnread) return
-
-    const unreadIds = notifications
-      .filter((item) => !item.readAt && !item.archivedAt)
-      .map((item) => item.id)
-    if (unreadIds.length === 0) return
-
-    if (prefersReducedMotion()) {
-      onMarkAllRead()
-      setSelectedIds(new Set())
-      return
-    }
-
-    // Finish the full cascade before the optimistic parent update. The local
-    // clearing state survives one painted frame after that update, so removing
-    // the unread dot and collapsing the toolbar cannot create a final snap.
-    setClearingAllUnread(true)
-    setClearingUnreadIds(new Set(unreadIds))
-    setSelectedIds(new Set())
-
-    const staggerTail = Math.min(Math.max(unreadIds.length - 1, 0), 8) * MARK_ALL_CLEAR_STAGGER_MS
-    const delay = MARK_ALL_CLEAR_ROW_MS + MARK_ALL_CLEAR_BUFFER_MS + staggerTail
-    if (markAllClearTimerRef.current !== null) window.clearTimeout(markAllClearTimerRef.current)
-    markAllClearTimerRef.current = window.setTimeout(() => {
-      markAllClearTimerRef.current = null
-      onMarkAllRead()
-      markAllSettleFrameRef.current = window.requestAnimationFrame(() => {
-        markAllSettleFrameRef.current = window.requestAnimationFrame(() => {
-          markAllSettleFrameRef.current = null
-          setClearingUnreadIds(new Set())
-          setClearingAllUnread(false)
-        })
-      })
-    }, delay)
-  }, [clearingAllUnread, notifications, onMarkAllRead])
 
   const openDetail = (item: NotificationRecord) => {
     setActiveId(item.id)
