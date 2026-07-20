@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "nativeName": "한국어",
+    "name": "Korean"
+  },
+  "appTitle": "PhD Atlas",
+  "appDesc": "지원서, 체크리스트, 이메일, 의사 결정을 위한 개인 작업 공간입니다.",
+  "languagePack": "modular",
+  "namespaces": [
+    "core",
+    "shared",
+    "dashboard",
+    "discover",
+    "workspace",
+    "dossier",
+    "profile",
+    "settings",
+    "team",
+    "share",
+    "shareViewer",
+    "assetUpload",
+    "upgrade",
+    "resetPassword",
+    "admin",
+    "tour",
+    "pdfExport"
+  ]
+}

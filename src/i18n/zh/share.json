@@ -1,0 +1,78 @@
+{
+  "share": {
+    "eyebrow": "只读预览",
+    "title": "分享“{name}”",
+    "activeLinks": "活跃分享",
+    "noLinks": "暂无分享链接。",
+    "createNew": "创建新的分享链接",
+    "create": "创建分享链接",
+    "previewHint": "可以共享完整项目包，也可以只开放对方需要看的页面。",
+    "linkLabel": "分享链接",
+    "revoke": "撤销分享链接",
+    "neverExpires": "永不过期",
+    "expiresAt": "过期时间 {date}",
+    "expired": "已过期",
+    "limitReached": "活跃分享链接上限为 {limit} 条。",
+    "table": {
+      "application": "申请",
+      "link": "链接",
+      "created": "创建时间",
+      "expires": "过期时间",
+      "duration": "有效期",
+      "permission": "权限",
+      "scope": "范围",
+      "actions": "操作"
+    },
+    "permission": {
+      "view": "查看",
+      "upload": "上传附件",
+      "edit": "编辑"
+    },
+    "expiry": {
+      "1h": "1 小时",
+      "1d": "1 天",
+      "7d": "7 天",
+      "30d": "30 天",
+      "never": "永不过期"
+    },
+    "packageMode": "分享包模式",
+    "completePackage": "完整项目",
+    "completePackageDesc": "把所有公开项目页面作为一份完整档案共享出去。",
+    "customPackage": "选择页面",
+    "customPackageDesc": "只让链接访问指定页面和流程。",
+    "completeIncludes": "完整项目包含",
+    "sectionsTitle": "共享页面",
+    "scope": {
+      "all": "全部页面",
+      "count": "{count} 个页面"
+    },
+    "sections": {
+      "overview": "项目概览",
+      "materials": "清单",
+      "tasks": "任务",
+      "communications": "往来消息",
+      "funding": "学费/奖学金",
+      "timeline": "时间线",
+      "versions": "版本历史"
+    },
+    "sectionDescriptions": {
+      "overview": "学校、项目、教授、日期、进度、标签和档案卡片。",
+      "materials": "材料状态、文件请求、推荐人和材料版本。",
+      "tasks": "任务清单、截止日期、详情和需要上传的附件。",
+      "communications": "教授邮件、消息、备注、日期和摘要。",
+      "funding": "奖学金、费用追踪、资金相关任务、材料和节点。",
+      "timeline": "申请时间线，以及共享页面中可见的自动节点。",
+      "versions": "上传文件历史和这份项目中可下载的版本。"
+    },
+    "revokeConfirmMessage": "确认撤销这个分享链接？拥有链接的人会立即失去访问权限。"
+  },
+  "pagination": {
+    "first": "首页",
+    "previous": "上一页",
+    "next": "下一页",
+    "last": "末页",
+    "page": "第 {page} / {pages} 页",
+    "showing": "显示 {from}-{to} / 共 {total}",
+    "allItems": "共 {total} 项"
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "share": {
+    "eyebrow": "読み取り専用プレビュー",
+    "title": "「{name}」をシェアする",
+    "activeLinks": "アクティブな株式",
+    "noLinks": "共有リンクはまだありません。",
+    "createNew": "新しい共有リンクを作成する",
+    "create": "共有リンクを作成する",
+    "previewHint": "完全なプロジェクト パッケージを選択するか、受信者に表示するページのみを選択します。",
+    "linkLabel": "リンクを共有する",
+    "revoke": "共有リンクを取り消す",
+    "neverExpires": "有効期限はありません",
+    "expiresAt": "期限切れ {date}",
+    "expired": "期限切れ",
+    "limitReached": "アクティブな共有リンクの上限は {limit} です。",
+    "table": {
+      "application": "出願",
+      "link": "リンク",
+      "created": "作成されました",
+      "expires": "有効期限が切れます",
+      "duration": "間隔",
+      "permission": "許可",
+      "scope": "範囲",
+      "actions": "アクション"
+    },
+    "permission": {
+      "view": "ビュー",
+      "upload": "ファイルをアップロードする",
+      "edit": "編集"
+    },
+    "expiry": {
+      "1h": "1時間",
+      "1d": "1日",
+      "7d": "7日間",
+      "30d": "30日",
+      "never": "一度もない"
+    },
+    "packageMode": "パッケージ共有モード",
+    "completePackage": "プロジェクトを完了する",
+    "completePackageDesc": "すべての公開プロジェクト ページを 1 つの洗練された資料として共有します。",
+    "customPackage": "ページを選択してください",
+    "customPackageDesc": "リンクを特定のページとワークフローに制限します。",
+    "completeIncludes": "完全なパッケージに含まれるもの",
+    "sectionsTitle": "共有ページ",
+    "scope": {
+      "all": "すべてのページ",
+      "count": "{count} ページ"
+    },
+    "sections": {
+      "overview": "概要",
+      "materials": "チェックリスト",
+      "tasks": "タスク",
+      "communications": "対応",
+      "funding": "資金",
+      "timeline": "タイムライン",
+      "versions": "バージョン"
+    },
+    "sectionDescriptions": {
+      "overview": "学校、プログラム、教授、日付、進捗状況、タグ、および関係書類カード。",
+      "materials": "マテリアル、ステータス、ファイル リクエスト、推奨者、およびマテリアルのバージョン。",
+      "tasks": "タスクのチェックリスト、期日、詳細、および要求された添付ファイル。",
+      "communications": "教授の電子メール、メッセージ、メモ、日付、概要。",
+      "funding": "奨学金、料金追跡、資金調達タスク、資料、マイルストーン。",
+      "timeline": "手動および共有ページのマイルストーンを含む出願のタイムライン。",
+      "versions": "このプロジェクトに含まれるアップロードされたファイル履歴とダウンロード可能なバージョン。"
+    },
+    "revokeConfirmMessage": "この共有リンクを取り消してもよろしいですか?リンクを知っている人はすぐにアクセスできなくなります。"
+  },
+  "pagination": {
+    "first": "初め",
+    "previous": "前の",
+    "next": "次",
+    "last": "最後",
+    "page": "{pages} の {page} ページ",
+    "showing": "{from}-{to}/{total} を表示中",
+    "allItems": "{total} アイテム"
+  }
+}

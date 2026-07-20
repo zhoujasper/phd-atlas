@@ -1,0 +1,367 @@
+/* Dossier collapsed-state polish.
+   Imported after the global stylesheet so these feature rules stay isolated and
+   can intentionally override the legacy right-aligned summary treatment. */
+
+.dossier-core-card {
+  overflow: hidden;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.dossier-core-card.expanded {
+  /* The collapse panel owns its own animation clip. Once open, allow controls
+     that finish exactly at the column edge to paint their complete right
+     border and focus ring. */
+  overflow: visible;
+}
+
+.dossier-core-card:hover {
+  border-color: var(--border-strong);
+}
+
+.dossier-core-card.collapsed {
+  min-height: 0;
+  padding: 0;
+  box-shadow: none;
+}
+
+.dossier-core-summary {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 28px;
+  gap: 10px;
+  align-items: center;
+  padding: 4px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    transform 80ms var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.dossier-core-card.collapsed .dossier-core-summary {
+  min-height: 66px;
+  padding: 11px 12px;
+  border-radius: 0;
+}
+
+.dossier-core-summary:hover {
+  background: var(--surface-secondary);
+}
+
+.dossier-core-summary:active {
+  transform: scale(0.995);
+}
+
+.dossier-core-summary:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 3px var(--accent-ring);
+}
+
+.dossier-core-summary-icon {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.dossier-core-summary-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.dossier-core-summary-copy > strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 630;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dossier-core-summary-preview {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  animation: dossier-core-summary-enter var(--duration) var(--ease-out);
+}
+
+.dossier-core-summary-primary,
+.dossier-core-summary-secondary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dossier-core-summary-primary {
+  flex: 1 1 auto;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 540;
+}
+
+.dossier-core-summary-secondary {
+  flex: 0 1 44%;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 480;
+}
+
+.dossier-core-summary-secondary::before {
+  content: "";
+  width: 3px;
+  height: 3px;
+  display: inline-block;
+  margin: 0 7px 2px 0;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+
+.dossier-core-summary-chevron {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  justify-self: end;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    transform var(--duration) var(--ease-out);
+}
+
+.dossier-core-summary:hover .dossier-core-summary-chevron {
+  background: var(--surface-tertiary);
+  color: var(--text);
+}
+
+.dossier-core-summary.open .dossier-core-summary-chevron {
+  transform: rotate(180deg);
+}
+
+@keyframes dossier-core-summary-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.resource-card-summary {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 52px;
+  padding: 12px 14px;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.resource-card:not(.expanded):not(.editing-settings) .resource-card-summary {
+  grid-template-columns: 32px minmax(150px, 0.72fr) minmax(0, 1.28fr) auto;
+  min-height: 60px;
+  padding: 10px 14px;
+  align-items: center;
+}
+
+.resource-card:not(.expanded):not(.editing-settings) .resource-card-summary:hover {
+  background: var(--surface-secondary);
+}
+
+.resource-card:not(.expanded):not(.editing-settings) .resource-card-icon {
+  width: 32px;
+  height: 32px;
+  margin-top: 0;
+  border-radius: var(--radius);
+  background: var(--resource-soft);
+}
+
+.resource-card:not(.expanded):not(.editing-settings) .resource-card-copy,
+.resource-card:not(.expanded):not(.editing-settings) .resource-card-actions {
+  align-self: center;
+}
+
+.resource-card-copy {
+  min-width: 0;
+  width: auto;
+  max-width: none;
+  display: grid;
+  justify-self: stretch;
+  justify-items: stretch;
+  gap: 4px;
+}
+
+.resource-card-title-line {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.resource-card-title-line strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  max-width: none;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 620;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-card-field-count {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-secondary);
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 620;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.resource-card-preview-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-items: center;
+}
+
+.resource-card-preview-item {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
+.resource-card-preview-label,
+.resource-card-preview-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-card-preview-label {
+  color: var(--text-tertiary);
+  font-size: 9.5px;
+  font-weight: 680;
+  letter-spacing: var(--tracking-wide);
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+html[lang^="zh"] .resource-card-preview-label,
+html[lang^="ja"] .resource-card-preview-label,
+html[lang^="ko"] .resource-card-preview-label {
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 650;
+}
+
+.resource-card-preview-value {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.resource-card:hover .resource-mini-btn,
+.resource-card:focus-within .resource-mini-btn,
+.resource-card-actions:hover .resource-mini-btn,
+.resource-card-actions:focus-within .resource-mini-btn,
+.resource-expand-btn.open {
+  opacity: 1;
+}
+
+.resource-card:hover .resource-mini-btn,
+.resource-card:focus-within .resource-mini-btn,
+.resource-card-actions:hover .resource-mini-btn,
+.resource-card-actions:focus-within .resource-mini-btn {
+  width: 30px;
+  margin-left: 2px;
+}
+
+@container (max-width: 560px) {
+  .resource-card:not(.expanded):not(.editing-settings) .resource-card-summary {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    min-height: 82px;
+    align-items: center;
+  }
+
+  .resource-card:not(.expanded):not(.editing-settings) .resource-card-icon {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .resource-card:not(.expanded):not(.editing-settings) .resource-card-copy {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .resource-card:not(.expanded):not(.editing-settings) .resource-card-actions {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .resource-card:not(.expanded):not(.editing-settings) .resource-card-preview-grid {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .resource-card:not(.expanded):not(.editing-settings) .resource-card-preview-item {
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .resource-card:not(.expanded):not(.editing-settings) .resource-card-preview-item:nth-child(n + 2) {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .dossier-core-summary-secondary {
+    display: none;
+  }
+
+  .resource-card-summary,
+  .resource-card:not(.expanded):not(.editing-settings) .resource-card-summary {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    padding: 12px;
+  }
+
+  .resource-card-actions,
+  .resource-card:not(.expanded):not(.editing-settings) .resource-card-actions {
+    grid-column: 3;
+    grid-row: 1;
+    justify-content: flex-end;
+  }
+}

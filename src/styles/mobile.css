@@ -1,0 +1,3206 @@
+/* Mobile product shell -----------------------------------------------------
+   The desktop workspace is intentionally dense. This layer turns the same
+   information into a touch-first, single-scroll Apple-style mobile product
+   without forking component behavior or adding a second routing system. */
+
+.mobile-workspace-view-toggle,
+.mobile-detail-back-fab,
+.kanban-mobile-new {
+  display: none;
+}
+
+@media (max-width: 820px) {
+  :root {
+    --mobile-tab-bar-height: 64px;
+    --mobile-page-gutter: 14px;
+    --mobile-touch-target: 44px;
+    --mobile-control-height: 34px;
+    --mobile-icon-control-size: 32px;
+    --mobile-tab-control-height: 38px;
+    --mobile-field-font-size: 13px;
+  }
+
+  html:has(.workspace-layout.mobile-detail-open),
+  body:has(.workspace-layout.mobile-detail-open),
+  #root:has(.workspace-layout.mobile-detail-open) {
+    /* `overflow-x: hidden` promotes the other axis from visible to auto,
+       turning #root into a non-scrolling sticky container. `clip` prevents
+       horizontal bleed without stealing document-level vertical stickiness. */
+    overflow-x: clip;
+    overflow-y: visible;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :where(button, a, input, textarea, [role='button'], [role='tab'], [role='switch']) {
+    touch-action: manipulation;
+  }
+
+  .atlas-shell {
+    padding-bottom: calc(var(--mobile-tab-bar-height) + 34px + env(safe-area-inset-bottom, 0px));
+    scroll-padding-bottom: calc(var(--mobile-tab-bar-height) + 34px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* iOS-style translucent tab bar with a real safe-area footprint. */
+  .atlas-rail {
+    height: calc(var(--mobile-tab-bar-height) + env(safe-area-inset-bottom, 0px));
+    min-height: calc(var(--mobile-tab-bar-height) + env(safe-area-inset-bottom, 0px));
+    padding: 7px 8px calc(7px + env(safe-area-inset-bottom, 0px));
+    background: color-mix(in srgb, var(--rail-bg) 94%, transparent);
+    box-shadow: 0 -1px 0 var(--border), 0 -10px 28px rgba(0, 0, 0, 0.045);
+  }
+
+  .atlas-rail nav {
+    align-items: center;
+  }
+
+  .rail-btn,
+  .rail-bottom-stack .rail-mode-toggle {
+    width: 50px;
+    min-width: 0;
+    min-height: 48px;
+    height: 48px;
+    grid-template-rows: 21px 13px;
+    gap: 2px;
+    border-radius: var(--radius-xl);
+  }
+
+  .rail-btn > svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .rail-btn > span:not(.rail-count-badge) {
+    max-width: 100%;
+    overflow: hidden;
+    font-size: 10px;
+    font-weight: 590;
+    letter-spacing: -0.01em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rail-active-indicator {
+    width: 50px;
+    height: 48px;
+    border-radius: var(--radius-xl);
+  }
+
+  .rail-bottom-stack {
+    margin-left: 2px;
+    padding-left: 4px;
+  }
+
+  /* Applications use one mobile surface at a time. This removes the previous
+     list + full Kanban + inspector mega-page while preserving both views. */
+  .workspace-layout.workspace-view-kanban:not(.mobile-detail-open) .application-pane,
+  .workspace-layout.workspace-view-list:not(.mobile-detail-open) .screen-stage,
+  .workspace-layout .inspector-pane {
+    display: none;
+  }
+
+  /* The desktop explorer width is supplied through an inline --pane-width
+     style. Once the list becomes the only mobile surface, it must fill the
+     viewport and join the document's single vertical scroll flow. Leaving the
+     nested list scroller active creates a touch scroll trap while the inline
+     desktop width leaves a blank strip at the viewport edge. */
+  .workspace-layout.workspace-view-list:not(.mobile-detail-open) .application-pane {
+    width: 100% !important;
+    max-width: 100%;
+    overflow: visible;
+    overscroll-behavior-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .workspace-layout.workspace-view-list:not(.mobile-detail-open) .application-list-shell,
+  .workspace-layout.workspace-view-list:not(.mobile-detail-open) .application-list {
+    flex: none;
+    overflow: visible;
+  }
+
+  .workspace-layout .workspace-layout-toolbar {
+    display: contents;
+  }
+
+  .workspace-layout .screen-stage {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  /* Mobile workspace surfaces are mutually exclusive. Native snapshots cannot
+     interpolate when the destination swaps from .screen-stage to
+     .application-pane via display:none, so animate the newly visible surface
+     on the compositor while the persistent shell and bottom rail stay still. */
+  html[data-atlas-fallback-scope="workspace-view"][data-atlas-fallback-phase="enter"] .workspace-layout {
+    overflow-x: clip;
+  }
+
+  html[data-atlas-fallback-scope="workspace-view"][data-atlas-fallback-phase="enter"][data-atlas-fallback-direction="forward"]
+    .workspace-layout.workspace-view-kanban:not(.mobile-detail-open) .screen-stage,
+  html[data-atlas-fallback-scope="workspace-view"][data-atlas-fallback-phase="enter"][data-atlas-fallback-direction="forward"]
+    .workspace-layout.mobile-detail-open .screen-stage {
+    backface-visibility: hidden;
+    will-change: transform, opacity;
+    animation: mobile-workspace-surface-enter-forward var(--duration-page) var(--ease-fluid) both;
+  }
+
+  html[data-atlas-fallback-scope="workspace-view"][data-atlas-fallback-phase="enter"][data-atlas-fallback-direction="backward"]
+    .workspace-layout.workspace-view-list:not(.mobile-detail-open) .application-pane,
+  html[data-atlas-fallback-scope="workspace-view"][data-atlas-fallback-phase="enter"][data-atlas-fallback-direction="backward"]
+    .workspace-layout.workspace-view-kanban:not(.mobile-detail-open) .screen-stage {
+    backface-visibility: hidden;
+    will-change: transform, opacity;
+    animation: mobile-workspace-surface-enter-backward var(--duration-page) var(--ease-fluid) both;
+  }
+
+  /* The focused dossier joins the document's single vertical scroll root.
+     An auto-overflow dossier with overscroll containment can trap touch panning
+     even when its own height has expanded to its content. */
+  .workspace-layout.mobile-detail-open .screen-stage,
+  .workspace-layout.mobile-detail-open .dossier-handoff,
+  .workspace-layout.mobile-detail-open .dossier-handoff-content,
+  .workspace-layout.mobile-detail-open .dossier-pane {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+    overscroll-behavior-y: auto;
+    scrollbar-gutter: auto;
+    touch-action: pan-y;
+  }
+
+  /* The global stage uses translateZ(0) as a desktop compositor hint. In
+     Chromium that transformed ancestor prevents a document-scrolling mobile
+     tab strip from becoming sticky, even after the handoff animation ends. */
+  .workspace-layout.mobile-detail-open .screen-stage {
+    transform: none;
+  }
+
+  .workspace-layout.mobile-detail-open .dossier-pane {
+    padding-bottom: calc(var(--mobile-tab-bar-height) + 54px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* A phone initially shows only the summary and first core card. Let Chromium
+     skip paint/layout for the remaining off-screen editor cards until they
+     approach the viewport, keeping the detail entrance frame uninterrupted. */
+  .workspace-layout.mobile-detail-open .dossier-summary .dossier-core-card,
+  .workspace-layout.mobile-detail-open .dossier-summary .resource-panel {
+    content-visibility: visible;
+    contain: none;
+    contain-intrinsic-size: auto;
+  }
+
+  .workspace-layout-toolbar-panel,
+  .workspace-layout-toolbar > .workspace-save-actions {
+    display: none;
+  }
+
+  .mobile-workspace-view-toggle {
+    position: fixed;
+    right: 14px;
+    bottom: calc(var(--mobile-tab-bar-height) + 10px + env(safe-area-inset-bottom, 0px));
+    z-index: 44;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 126px;
+    height: var(--mobile-tab-control-height);
+    gap: 0;
+    padding: 0 2px;
+    border-radius: var(--radius-pill);
+    pointer-events: auto;
+  }
+
+  /* Keep this floating switch compact; its fixed position and wide segments
+     already provide a generous, unambiguous touch target. */
+  .mobile-workspace-view-toggle::before {
+    content: '';
+    position: absolute;
+    inset: 4px 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    box-shadow: var(--shadow-sm);
+    backdrop-filter: blur(18px) saturate(135%);
+    -webkit-backdrop-filter: blur(18px) saturate(135%);
+    pointer-events: none;
+  }
+
+  .mobile-workspace-view-toggle::after {
+    content: '';
+    position: absolute;
+    top: 5px;
+    bottom: 5px;
+    left: 3px;
+    z-index: 1;
+    width: calc(50% - 3px);
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+    box-shadow: var(--shadow-xs);
+    pointer-events: none;
+    transform: translate3d(0, 0, 0);
+    transition:
+      transform var(--duration-slow) var(--ease-fluid),
+      box-shadow var(--duration-fast) var(--ease-out);
+    will-change: transform;
+  }
+
+  .mobile-workspace-view-toggle.is-board::after {
+    transform: translate3d(100%, 0, 0);
+  }
+
+  .mobile-detail-open .mobile-workspace-view-toggle {
+    display: none;
+  }
+
+  .mobile-workspace-view-toggle button {
+    position: relative;
+    z-index: 2;
+    isolation: isolate;
+    min-width: 0;
+    min-height: var(--mobile-tab-control-height);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 0 5px;
+    border: 0;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 590;
+    transition: color var(--duration-fast) var(--ease-out), transform var(--duration-press) var(--ease-out);
+  }
+
+  .mobile-workspace-view-toggle button::before {
+    content: '';
+    position: absolute;
+    inset: 5px 1px;
+    z-index: -1;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    transition: background var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+  }
+
+  .mobile-workspace-view-toggle button > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .mobile-workspace-view-toggle button svg {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+  }
+
+  .mobile-workspace-view-toggle button.active {
+    color: var(--text-inverse);
+  }
+
+  .mobile-workspace-view-toggle button.active::before {
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .mobile-workspace-view-toggle button:focus-visible {
+    outline: none;
+  }
+
+  .mobile-workspace-view-toggle button:focus-visible::before {
+    box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.32);
+  }
+
+  .mobile-workspace-view-toggle button:active {
+    transform: scale(0.97);
+  }
+
+  .mobile-detail-back-fab {
+    position: fixed;
+    right: var(--mobile-page-gutter);
+    bottom: calc(var(--mobile-tab-bar-height) + 12px + env(safe-area-inset-bottom, 0px));
+    z-index: 46;
+    min-width: 0;
+    min-height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 0 12px 0 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    background: color-mix(in srgb, var(--surface) 91%, transparent);
+    color: var(--text);
+    box-shadow: var(--shadow-sm);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 640;
+    letter-spacing: -0.01em;
+    cursor: pointer;
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    animation: mobile-detail-back-enter 340ms var(--ease-out) both;
+    transition:
+      border-color var(--duration-fast) var(--ease-out),
+      background var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out),
+      box-shadow var(--duration-fast) var(--ease-out),
+      transform var(--duration-press) var(--ease-out);
+  }
+
+  .mobile-detail-back-fab::after {
+    content: '';
+    position: absolute;
+    inset: -5px;
+    border-radius: inherit;
+  }
+
+  .mobile-detail-back-fab:hover {
+    border-color: var(--border-strong);
+    background: color-mix(in srgb, var(--surface) 96%, transparent);
+  }
+
+  .mobile-detail-back-fab:active {
+    transform: scale(0.97);
+  }
+
+  .mobile-detail-back-fab:focus-visible {
+    outline: none;
+    box-shadow: var(--shadow-sm), 0 0 0 3px var(--accent-ring);
+  }
+
+  .mobile-detail-back-fab svg {
+    flex: 0 0 auto;
+    color: var(--accent);
+  }
+
+  .dossier-close-application {
+    display: none !important;
+  }
+
+  /* Horizontal Kanban stages become swipeable paged columns instead of five
+     viewport-height stacks. The document remains the only vertical scroller. */
+  .kanban-workspace {
+    height: auto;
+    overflow: visible;
+    padding: 18px var(--mobile-page-gutter) 32px;
+  }
+
+  .kanban-hero {
+    position: relative;
+    padding-right: 50px;
+  }
+
+  .kanban-mobile-new {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: var(--mobile-control-height);
+    min-width: var(--mobile-control-height);
+    min-height: var(--mobile-control-height);
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border-radius: var(--radius-xl);
+  }
+
+  .kanban-mobile-new span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .kanban-board {
+    padding: 0;
+    gap: 22px;
+  }
+
+  .kanban-column-grid {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(min(292px, calc(100vw - 46px)), calc(100vw - 46px));
+    grid-template-columns: none;
+    gap: 10px;
+    margin-inline: calc(var(--mobile-page-gutter) * -1);
+    padding: 0 var(--mobile-page-gutter) 8px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scroll-padding-inline: var(--mobile-page-gutter);
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+  }
+
+  .kanban-column-grid::-webkit-scrollbar {
+    display: none;
+  }
+
+  .kanban-column {
+    min-width: 0;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+  }
+
+  .kanban-column-body {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .kanban-card {
+    /* Mobile columns use the document scroll root. Keeping cards paint-skipped
+       can leave a fully measured card with blank text after a horizontal swipe
+       in Chromium, so phones render their modest board dataset normally. */
+    content-visibility: visible;
+    contain: none;
+    contain-intrinsic-size: auto;
+  }
+
+  /* A readable, sticky swipe strip keeps all dossier tabs reachable without
+     shrinking labels or relying on hover. */
+  .dossier-pane .tab-strip {
+    position: sticky;
+    top: env(safe-area-inset-top, 0px);
+    z-index: 22;
+    min-height: var(--mobile-touch-target);
+    display: flex;
+    gap: 2px;
+    margin: 0 0 12px;
+    padding: 3px 4px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scroll-padding-inline: var(--mobile-page-gutter);
+    scroll-snap-type: x proximity;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
+    backdrop-filter: blur(20px) saturate(135%);
+    -webkit-backdrop-filter: blur(20px) saturate(135%);
+    scrollbar-width: none;
+    box-shadow: 0 8px 18px -18px color-mix(in srgb, var(--text) 28%, transparent);
+  }
+
+  .dossier-pane .tab-strip::-webkit-scrollbar {
+    display: none;
+  }
+
+  .dossier-pane .tab-strip button {
+    flex: 0 0 auto;
+    min-height: 36px !important;
+    padding-inline: 12px;
+    border-radius: var(--radius-pill);
+    scroll-snap-align: center;
+  }
+
+  .dossier-pane .tab-strip button.active {
+    background: var(--surface);
+    box-shadow: var(--shadow-xs);
+  }
+
+  /* Materials/tasks stay dense enough to scan on a phone. Inputs elsewhere
+     retain the shared touch sizing; this local search is a compact utility. */
+  .checklist-page {
+    gap: 14px;
+  }
+
+  .checklist-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "eyebrow eyebrow"
+      "title actions";
+    column-gap: 8px;
+    row-gap: 2px;
+    align-items: center;
+    padding-bottom: 12px;
+  }
+
+  .checklist-hero-info {
+    display: contents;
+  }
+
+  .checklist-hero-info > .eyebrow {
+    grid-area: eyebrow;
+  }
+
+  .checklist-hero-title-row {
+    grid-area: title;
+    min-width: 0;
+    gap: 1px;
+  }
+
+  .checklist-hero-info h3 {
+    margin: 1px 0 0;
+  }
+
+  .checklist-hero-help {
+    display: inline-flex;
+  }
+
+  .checklist-hero-help .info-tooltip-trigger {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    min-height: 28px !important;
+  }
+
+  .checklist-hero-info > p {
+    display: none;
+  }
+
+  .checklist-hero-actions {
+    grid-area: actions;
+    min-height: 38px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 0;
+    align-self: center;
+  }
+
+  .checklist-progress-ring {
+    width: auto;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    padding-right: 10px;
+  }
+
+  .checklist-progress-ring::before {
+    content: '';
+    width: clamp(30px, 9vw, 44px);
+    height: 3px;
+    flex: 0 0 auto;
+    border-radius: var(--radius-pill);
+    background:
+      linear-gradient(
+        90deg,
+        var(--accent) 0 var(--checklist-progress, 0%),
+        var(--border-strong) var(--checklist-progress, 0%) 100%
+      );
+    transition: background var(--duration) var(--ease-out);
+  }
+
+  .checklist-progress-ring svg {
+    display: none;
+  }
+
+  .checklist-progress-ring span {
+    position: static;
+    color: var(--text);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  body .checklist-hero button.checklist-reminder-filter-btn,
+  body .checklist-hero .checklist-hero-add-btn {
+    min-width: 0;
+    min-height: 38px !important;
+    margin: 0;
+    padding: 0 10px;
+    border: 0;
+    border-left: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    font-size: 11px;
+  }
+
+  body .checklist-hero button.checklist-reminder-filter-btn:hover,
+  body .checklist-hero button.checklist-reminder-filter-btn.active,
+  body .checklist-hero button.checklist-reminder-filter-btn.active:hover,
+  body .checklist-hero .checklist-hero-add-btn:hover {
+    border-color: var(--border);
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body .checklist-hero button.checklist-reminder-filter-btn:hover,
+  body .checklist-hero button.checklist-reminder-filter-btn.active,
+  body .checklist-hero button.checklist-reminder-filter-btn.active:hover {
+    color: var(--warning-text);
+  }
+
+  body .checklist-hero button.checklist-reminder-filter-btn:focus-visible,
+  body .checklist-hero .checklist-hero-add-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    box-shadow: none;
+  }
+
+  body .checklist-hero .checklist-hero-add-btn {
+    padding-right: 0;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+
+  button.checklist-reminder-filter-btn .checklist-reminder-filter-label {
+    display: none;
+  }
+
+  body .checklist-hero button.checklist-hero-add-btn {
+    min-height: 38px !important;
+    padding: 0 0 0 10px;
+    border-radius: 0;
+    font-size: 11px;
+  }
+
+  .checklist-hero-add-btn svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  .checklist-manage-bar {
+    gap: 8px;
+    padding: 0 0 8px;
+  }
+
+  .checklist-manage-search {
+    min-height: 38px;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    gap: 6px;
+    padding-inline: 9px;
+  }
+
+  body .checklist-manage-search input {
+    height: 36px;
+    min-height: 36px !important;
+    font-size: 15px;
+  }
+
+  .checklist-tool-grid {
+    gap: 8px;
+  }
+
+  .checklist-tool-group {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+  }
+
+  .checklist-tool-label,
+  .checklist-tool-group > :last-child:nth-child(4) {
+    grid-column: 1 / -1;
+  }
+
+  .checklist-tool-group .custom-select-root {
+    width: 100% !important;
+    min-width: 0;
+  }
+
+  .checklist-tool-group .custom-select-trigger {
+    width: 100%;
+    min-height: 34px !important;
+    padding-inline: 10px;
+    font-size: 12px;
+  }
+
+  /* Shared mobile control rhythm. Icon actions are 32px, ordinary controls and
+     fields are 36px, prominent/auth controls are 40px, and 44px is reserved
+     for navigation or semantic rows that include more than one line. */
+  body :is(
+    .custom-select-trigger,
+    .date-picker-trigger,
+    .time-picker-trigger,
+    .application-board-button,
+    .pagination-button,
+    .dashboard-panel-toggle,
+    .stat-task-jump,
+    .stat-application-scroll-btn,
+    .icon-action,
+    .checklist-icon-control,
+    .copy-button,
+    .checklist-expand-btn,
+    .task-row-delete,
+    .date-picker-nav,
+    .checklist-mini-btn,
+    .checklist-count-stepper button,
+    .checklist-reminder-btn,
+    .fee-item-actions button,
+    .backup-item-actions button,
+    .info-tooltip-trigger,
+    .inspector-edit-btn,
+    .team-mini-btn,
+    .team-member-expand,
+    .discover-icon-btn,
+    .discover-filter-button,
+    .discover-inline-action,
+    .notification-center-mini-btn,
+    .mail-action-button,
+    .snippet-card-actions button,
+    .checklist-check-btn,
+    .checklist-drag-handle,
+    .checklist-hero-stat,
+    .correspondence-delete-btn,
+    .correspondence-edit-btn,
+    .correspondence-ai-reply-btn,
+    .funding-mini-btn,
+    .funding-expand-btn,
+    .timeline-event-action-btn,
+    .timeline-jump-today,
+    .markdown-mode-toggle,
+    .dossier-core-summary,
+    .date-picker-icon,
+    .country-select-clear,
+    .resource-drag-handle,
+    .resource-expand-btn,
+    .settings-install-details-toggle,
+    .settings-hero-avatar-button,
+    .ai-key-delete-button,
+    .calendar-provider-link,
+    .calendar-regenerate-action,
+    .auth-shell .text-action,
+    .auth-shell .password-toggle,
+    .auth-shell .primary-action,
+    .auth-shell .quiet-action,
+    .upgrade-back-button,
+    .upgrade-plan-action,
+    .upgrade-primary-action
+  ) {
+    min-width: var(--mobile-icon-control-size);
+    min-height: var(--mobile-icon-control-size) !important;
+  }
+
+  /* Text actions get more breathing room than icon controls without turning
+     every mobile button into a tall 44px block. */
+  body button:is(.primary-action, .secondary-action, .quiet-action, .danger-action),
+  body button.custom-select-trigger,
+  body a.calendar-provider-link,
+  body .export-grid button,
+  body button.pro-locked-line,
+  body button.inspector-past-deadlines-toggle,
+  body button.snippet-stack-toggle {
+    min-height: var(--mobile-control-height) !important;
+  }
+
+  /* The two dashboard entry points are peers on phones: one row, two equal
+     columns. This also overrides the tablet rule that stretches only the
+     primary action across the full row. */
+  .dashboard-header-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    gap: 8px;
+  }
+
+  .dashboard-header-actions > :is(.dashboard-discover-header-btn, .primary-action) {
+    width: 100%;
+    min-width: 0;
+    padding-inline: 12px;
+    border-radius: var(--radius);
+    font-size: 12px;
+    font-weight: 590;
+  }
+
+  .dashboard-header-actions > .primary-action {
+    margin-left: 0;
+  }
+
+  .dashboard-header-actions > :is(.dashboard-discover-header-btn, .primary-action) svg {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+  }
+
+  .mobile-workspace-view-toggle button {
+    min-height: var(--mobile-tab-control-height) !important;
+  }
+
+  .switch-control {
+    position: relative;
+  }
+
+  .switch-control::before {
+    content: '';
+    position: absolute;
+    inset: -10px -2px;
+  }
+
+  .status-view-toggle {
+    grid-auto-columns: var(--mobile-icon-control-size);
+  }
+
+  .status-view-toggle-thumb {
+    width: var(--mobile-icon-control-size);
+  }
+
+  .status-view-toggle button {
+    width: var(--mobile-icon-control-size);
+    min-width: var(--mobile-icon-control-size);
+    height: 26px;
+    min-height: 26px !important;
+  }
+
+  /* Keep the segmented track visually compact without making the three view
+     modes fiddly to tap. The transparent pseudo-element extends only the
+     vertical hit area, so adjacent segments never overlap each other. */
+  .status-view-toggle button::before {
+    content: '';
+    position: absolute;
+    inset: -9px 0;
+  }
+
+  /* On phones, copy is a peer action beside the field instead of appearing
+     as a second framed control inside the input. */
+  .input-with-copy {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--mobile-control-height);
+    align-items: center;
+    gap: 8px;
+  }
+
+  .input-with-copy input {
+    min-width: 0;
+    width: 100%;
+    padding-right: 12px;
+  }
+
+  .input-with-copy .copy-inside {
+    position: relative;
+    inset: auto;
+    width: var(--mobile-control-height);
+    min-width: var(--mobile-control-height);
+    height: var(--mobile-control-height);
+    min-height: var(--mobile-control-height) !important;
+    margin: 0;
+    opacity: 1;
+    z-index: auto;
+  }
+
+  .input-with-copy .copy-inside::before {
+    content: '';
+    position: absolute;
+    inset: -4px;
+  }
+
+  button.snippet-stack-toggle {
+    min-width: var(--mobile-control-height) !important;
+  }
+
+  body input:not([type='checkbox']):not([type='radio']):not([type='range']) {
+    height: var(--mobile-control-height);
+    min-height: var(--mobile-control-height);
+    padding-inline: 10px;
+    font-size: var(--mobile-field-font-size);
+  }
+
+  body textarea {
+    font-size: var(--mobile-field-font-size);
+  }
+
+  body [contenteditable='true'] {
+    font-size: 14px;
+  }
+
+  .sort-list {
+    gap: 6px;
+    margin-inline: calc(var(--mobile-page-gutter) * -1);
+    padding-inline: var(--mobile-page-gutter);
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+  }
+
+  .sort-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  .sort-chip {
+    flex: 0 0 auto;
+    min-height: var(--mobile-control-height);
+    scroll-snap-align: start;
+  }
+
+  .application-line {
+    min-height: 72px;
+  }
+
+  .application-line:active,
+  .stat-task-row:active,
+  .deadline-item:active,
+  .team-member-card:active {
+    transform: scale(0.992);
+  }
+
+  .stat-application-grid {
+    scroll-padding-inline: 10px;
+    scroll-snap-type: x mandatory;
+  }
+
+  .stat-application-card {
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+  }
+
+  /* Mobile dialogs are bottom sheets: easier thumb reach, less wasted canvas,
+     and one coherent entrance/exit language across creation and editing flows. */
+  .dialog-layer {
+    place-items: end center;
+    padding: 10px 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .dialog-layer.composer-exit-layer {
+    place-items: center;
+    padding:
+      calc(16px + env(safe-area-inset-top, 0px))
+      16px
+      calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .new-dialog,
+  .confirm-dialog {
+    width: 100%;
+    max-height: min(92dvh, calc(100dvh - 20px));
+    border-radius: var(--radius-2xl);
+    padding: 20px 16px;
+    animation-name: mobile-sheet-enter;
+    animation-timing-function: var(--ease-out);
+  }
+
+  .new-dialog form {
+    gap: 12px;
+    margin-top: 16px;
+  }
+
+  .confirm-actions {
+    width: 100%;
+  }
+
+  .confirm-actions button {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: var(--mobile-tab-control-height);
+  }
+
+  .command-palette-layer {
+    align-items: flex-end;
+    padding: 10px 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .command-palette {
+    width: 100%;
+    border-radius: var(--radius-2xl);
+    animation-name: mobile-sheet-enter;
+    animation-timing-function: var(--ease-out);
+  }
+
+  .notification-center-layer {
+    padding: 10px 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .notification-center {
+    width: 100%;
+    max-height: min(92dvh, calc(100dvh - 20px));
+    border-radius: var(--radius-2xl);
+  }
+
+  /* The notification center is a native-feeling mobile surface, not a desktop
+     dialog squeezed into the viewport. The list remains underneath while the
+     detail page slides over it, which preserves context and gives Back a true
+     reverse transition. */
+  .notification-center-layer {
+    align-items: stretch;
+    padding: 0;
+    background: var(--surface);
+  }
+
+  .notification-center {
+    position: relative;
+    width: 100vw;
+    height: 100dvh;
+    max-height: none;
+    padding: 0;
+    gap: 0;
+    border: 0;
+    border-radius: 0;
+    background: var(--surface);
+    box-shadow: none;
+    overflow: hidden;
+  }
+
+  .notification-center-head {
+    min-height: 0;
+    padding: calc(16px + env(safe-area-inset-top, 0px)) 16px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .notification-center-head h2 {
+    margin-top: 2px;
+    font-size: 21px;
+  }
+
+  .notification-center-head p {
+    max-width: min(100%, 320px);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .notification-center-head-actions {
+    align-self: flex-start;
+  }
+
+  .notification-center-head .icon-action {
+    width: 36px;
+    height: 36px;
+    border: 0;
+    background: transparent;
+  }
+
+  .notification-center-controls {
+    padding: 10px 12px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .notification-center-toolbar {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: stretch;
+    justify-content: stretch;
+    column-gap: 8px;
+    row-gap: 0;
+  }
+
+  .notification-center-toolbar-leading,
+  .notification-center-toolbar-actions {
+    display: contents;
+  }
+
+  .notification-center-filter {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .notification-center-filter button {
+    min-width: 0;
+    padding-inline: 9px;
+  }
+
+  .notification-center-toolbar-actions {
+    width: auto;
+  }
+
+  .notification-center-read-all,
+  .notification-center-manage {
+    width: auto;
+    min-width: 36px;
+    min-height: 36px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .notification-center-read-all-presence {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .notification-center-manage {
+    grid-column: 3;
+    grid-row: 1;
+    align-self: center;
+    justify-self: end;
+    min-width: max-content;
+    overflow: visible;
+    white-space: nowrap;
+  }
+
+  .notification-center-read-all {
+    width: 36px;
+    padding: 0;
+    overflow: hidden;
+    font-size: 0;
+  }
+
+  .notification-center-read-all svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .notification-center-select-all-slot {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    margin: 0;
+  }
+
+  .notification-center-select-all-slot[aria-hidden='true'] {
+    height: 0;
+    min-height: 0;
+  }
+
+  .notification-center-toolbar-leading.is-editing .notification-center-select-all-slot {
+    max-width: none;
+    margin-left: 0;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+
+  .notification-center-selection-presence {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    width: 100%;
+    max-width: 100%;
+    transform-origin: top center;
+  }
+
+  .notification-center-selection-presence[data-present='false'] {
+    block-size: 0;
+    min-block-size: 0;
+  }
+
+  .notification-center-selection-presence[data-present='true'] {
+    inline-size: 100% !important;
+    max-inline-size: 100% !important;
+  }
+
+  .notification-center-selection-presence > .inline-presence-inner {
+    width: 100%;
+    min-width: 0;
+    inline-size: 100%;
+    min-inline-size: 0;
+  }
+
+  .notification-center-selection-actions {
+    width: 100%;
+    max-width: none;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+    gap: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    overflow: visible;
+  }
+
+  .notification-center-selection-label {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+
+  .notification-center-selection-actions button {
+    min-width: 0;
+    min-height: 32px;
+    justify-content: center;
+    padding-inline: 8px;
+  }
+
+  .notification-center-selection-actions button.icon-only {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+  }
+
+  .notification-center-shell {
+    position: static;
+    display: block;
+    min-height: 0;
+    overflow: hidden;
+    transform: none;
+    transition: none;
+    will-change: auto;
+  }
+
+  .notification-center.mobile-detail-open .notification-center-shell {
+    transform: none;
+  }
+
+  .notification-center-list-pane {
+    height: 100%;
+    min-height: 0;
+    padding: 0;
+    overflow: hidden;
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+    transition:
+      opacity 260ms var(--ease-out),
+      transform 380ms var(--ease-out);
+    will-change: opacity, transform;
+  }
+
+  .notification-center.mobile-detail-open .notification-center-list-pane {
+    opacity: 0;
+    transform: translate3d(-18%, 0, 0);
+    pointer-events: none;
+  }
+
+  .notification-center-list {
+    height: 100%;
+    max-height: none;
+    padding: 0 12px calc(20px + env(safe-area-inset-bottom, 0px));
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .notification-center-item {
+    min-height: 72px;
+    padding: 11px 4px;
+    border-radius: 0;
+  }
+
+  .notification-center-item:hover,
+  .notification-center-item.active,
+  .notification-center-item.selected {
+    background: transparent;
+  }
+
+  .notification-center-item.active .notification-center-copy strong,
+  .notification-center-item.selected .notification-center-copy strong {
+    color: var(--accent);
+  }
+
+  .notification-center-detail-pane {
+    position: fixed;
+    inset: 0;
+    z-index: 4;
+    min-width: 0;
+    min-height: 0;
+    padding: calc(8px + env(safe-area-inset-top, 0px)) 16px calc(14px + env(safe-area-inset-bottom, 0px));
+    border: 0;
+    background: var(--surface);
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+    transform: translate3d(100%, 0, 0);
+    transition:
+      opacity 220ms var(--ease-out),
+      transform 420ms var(--ease-out);
+    will-change: opacity, transform;
+  }
+
+  .notification-center.mobile-detail-open .notification-center-detail-pane {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate3d(0, 0, 0);
+  }
+
+  .notification-center-detail {
+    height: 100%;
+    min-height: 0;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    gap: 14px;
+    padding: 0;
+    overflow: hidden;
+    animation: none;
+  }
+
+  .notification-detail-back {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    margin-left: -8px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--accent);
+    font-size: 14px;
+    font-weight: 620;
+  }
+
+  .notification-detail-back:hover {
+    background: transparent;
+    color: var(--accent-hover);
+  }
+
+  .notification-detail-topline {
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+    padding-bottom: 12px;
+  }
+
+  .notification-detail-topline time {
+    grid-column: auto;
+  }
+
+  .notification-email-reader,
+  .notification-team-reader,
+  .notification-generic-reader,
+  .notification-announcement-reader {
+    min-height: 0;
+    padding: 0 2px 12px 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .notification-detail-footer {
+    align-items: center;
+    flex-direction: row;
+    padding-top: 12px;
+    background: var(--surface);
+  }
+
+  .notification-detail-jump {
+    width: auto;
+    min-height: 40px;
+    flex: 0 0 auto;
+  }
+
+  .discover-screen {
+    height: calc(100dvh - var(--mobile-tab-bar-height) - env(safe-area-inset-bottom, 0px));
+  }
+
+  .atlas-shell:has(.discover-screen) {
+    padding-bottom: calc(var(--mobile-tab-bar-height) + env(safe-area-inset-bottom, 0px));
+    scroll-padding-bottom: calc(var(--mobile-tab-bar-height) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .discover-inspector,
+  .discover-side-sheet {
+    bottom: calc(var(--mobile-tab-bar-height) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .discover-mobile-overlay .discover-filter-rail.is-mobile {
+    margin-bottom: calc(var(--mobile-tab-bar-height) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .discover-mode-tabs button {
+    min-height: var(--mobile-control-height);
+  }
+
+  .discover-toolbar-actions .primary-action,
+  .discover-filter-button,
+  .discover-row-actions .discover-icon-btn {
+    min-height: var(--mobile-icon-control-size);
+  }
+
+  .discover-toolbar-actions .primary-action,
+  .discover-filter-button {
+    width: var(--mobile-icon-control-size);
+    min-width: var(--mobile-icon-control-size);
+  }
+
+  .discover-program-identity,
+  .discover-pi-identity {
+    min-height: var(--mobile-touch-target);
+    align-content: center;
+  }
+
+  .discover-check-row {
+    min-height: var(--mobile-touch-target);
+  }
+
+  .discover-checkbox-input {
+    pointer-events: none;
+  }
+
+  .dashboard-view-toggle button,
+  .dashboard-chart-toggle button,
+  .dashboard-density-toggle button {
+    min-width: var(--mobile-icon-control-size);
+    min-height: var(--mobile-icon-control-size) !important;
+  }
+
+  .settings-index-nav {
+    scroll-padding-inline: 6px;
+    scroll-snap-type: x proximity;
+  }
+
+  .settings-index-nav button {
+    min-height: var(--mobile-tab-control-height);
+    scroll-snap-align: center;
+  }
+
+  .inspector-link-text {
+    min-height: var(--mobile-control-height);
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .dossier-actions > button,
+  .correspondence-page button,
+  .funding-page button,
+  .timeline-page button,
+  .fee-item-main,
+  .date-picker-display {
+    min-height: var(--mobile-control-height) !important;
+  }
+
+  .tag-chip {
+    min-height: 26px;
+    gap: 3px;
+    padding: 1px 3px 1px 8px;
+    font-size: 11px;
+  }
+
+  .tag-chip > button {
+    position: relative;
+    width: 24px;
+    height: 24px;
+  }
+
+  .tag-chip > button::before {
+    content: '';
+    position: absolute;
+    inset: -9px;
+  }
+
+  .tag-chip .tag-chip-name {
+    font-size: 11px;
+  }
+
+  body :is(.custom-select-trigger, .date-picker-display, .time-picker-trigger) {
+    height: var(--mobile-control-height);
+    min-height: var(--mobile-control-height) !important;
+    padding-inline: 10px;
+    font-size: var(--mobile-field-font-size) !important;
+  }
+
+  .priority-picker {
+    height: 32px;
+  }
+
+  .priority-picker-option {
+    min-width: 0;
+    min-height: 0 !important;
+    height: 100%;
+    padding-block: 0;
+    font-size: 10.5px;
+    line-height: 1;
+  }
+
+  .dossier-core-collapse-inner > .field-stack {
+    gap: 10px;
+  }
+
+  .dossier-link-field {
+    grid-auto-columns: var(--mobile-control-height);
+  }
+
+  .dossier-link-field > :is(.icon-action, .copy-button) {
+    width: var(--mobile-control-height);
+    min-width: var(--mobile-control-height);
+    height: var(--mobile-control-height);
+    min-height: var(--mobile-control-height) !important;
+  }
+
+  .accent-card,
+  .calendar-url-input {
+    min-height: var(--mobile-touch-target) !important;
+  }
+
+  .settings-screen .settings-prefs-visual .accent-card {
+    min-height: var(--mobile-touch-target) !important;
+  }
+
+  /* Settings owns the mobile utility hierarchy: notifications are a compact
+     top-right action, Appearance contains only theme, and sign-out closes the
+     page as a deliberate final row. */
+  .settings-screen > .settings-hero {
+    position: relative;
+    padding-right: 50px;
+  }
+
+  .settings-mobile-notification-action {
+    position: absolute;
+    top: 1px;
+    right: 0;
+    width: 38px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    color: var(--text-secondary);
+    box-shadow: var(--shadow-xs);
+    backdrop-filter: blur(18px) saturate(135%);
+    -webkit-backdrop-filter: blur(18px) saturate(135%);
+    cursor: pointer;
+    transition: border-color var(--duration-fast) var(--ease-out),
+                background var(--duration-fast) var(--ease-out),
+                color var(--duration-fast) var(--ease-out),
+                transform var(--duration-press) var(--ease-out),
+                box-shadow var(--duration-fast) var(--ease-out);
+  }
+
+  .settings-mobile-notification-action:hover {
+    border-color: var(--border-strong);
+    background: var(--surface);
+    color: var(--accent);
+  }
+
+  .settings-mobile-notification-action:active {
+    transform: scale(var(--press-scale));
+  }
+
+  .settings-mobile-notification-action:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring), var(--shadow-xs);
+  }
+
+  .settings-mobile-utility-actions .settings-mobile-theme-row {
+    border-bottom: 0;
+  }
+
+  .settings-mobile-signout {
+    display: block;
+    margin-top: 2px;
+    padding-top: 14px;
+  }
+
+  .settings-mobile-signout-action {
+    width: 100%;
+    min-height: 50px;
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr) 20px;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--danger);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 610;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color var(--duration-fast) var(--ease-out),
+                background var(--duration-fast) var(--ease-out),
+                transform var(--duration-press) var(--ease-out),
+                box-shadow var(--duration-fast) var(--ease-out);
+  }
+
+  .settings-mobile-signout-icon {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--radius-sm);
+    background: var(--danger-bg);
+  }
+
+  .settings-mobile-signout-chevron {
+    justify-self: end;
+    color: var(--text-tertiary);
+    transition: transform var(--duration-fast) var(--ease-out);
+  }
+
+  .settings-mobile-signout-action:hover {
+    border-color: color-mix(in srgb, var(--danger) 22%, var(--border));
+    background: color-mix(in srgb, var(--danger-bg) 56%, var(--surface));
+  }
+
+  .settings-mobile-signout-action:hover .settings-mobile-signout-chevron {
+    transform: translateX(2px);
+  }
+
+  .settings-mobile-signout-action:active {
+    transform: scale(0.985);
+  }
+
+  .settings-mobile-signout-action:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  /* The private feed URL is one compact field with trailing actions. Provider
+     targets stay in a single three-column row at phone widths. */
+  .settings-screen .calendar-feed-card {
+    gap: 14px;
+    padding: 12px;
+    content-visibility: visible;
+    contain-intrinsic-size: auto;
+  }
+
+  .settings-screen .calendar-feed-link-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 6px;
+    padding: 8px;
+    border-radius: var(--radius-xl);
+    background: var(--surface-secondary);
+  }
+
+  .settings-screen .calendar-url-field > span {
+    font-size: 9px;
+    line-height: 1.2;
+    letter-spacing: 0.04em;
+  }
+
+  .settings-screen .calendar-url-input {
+    height: 32px;
+    min-height: 32px !important;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-secondary);
+    font-size: 10px !important;
+    line-height: 32px;
+    letter-spacing: -0.015em;
+    text-overflow: ellipsis;
+  }
+
+  .settings-screen .calendar-url-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+
+  .settings-screen .calendar-feed-actions {
+    align-self: end;
+    justify-content: flex-end;
+    gap: 3px;
+  }
+
+  .settings-screen .calendar-copy-button {
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .settings-screen .calendar-copy-button svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  .settings-screen .calendar-regenerate-action {
+    min-height: 32px !important;
+    padding-inline: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    font-size: 10px !important;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .settings-screen .calendar-regenerate-action svg {
+    width: 12px;
+    height: 12px;
+  }
+
+  .settings-screen .calendar-provider-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .settings-screen .calendar-provider-link {
+    min-width: 0;
+    min-height: 66px !important;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    padding: 7px 4px;
+    border-radius: var(--radius-xl);
+    font-size: 10px;
+    line-height: 1.2;
+    text-align: center;
+  }
+
+  .settings-screen .calendar-provider-logo {
+    width: 24px;
+    height: 24px;
+  }
+
+  .settings-screen .calendar-provider-label {
+    width: 100%;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .settings-screen .ai-key-delete-inline {
+    --inline-confirm-idle-width: var(--mobile-icon-control-size);
+    min-height: var(--mobile-icon-control-size);
+  }
+
+  .settings-screen .ai-key-delete-inline button.ai-key-delete-button {
+    width: var(--mobile-icon-control-size) !important;
+    min-width: var(--mobile-icon-control-size) !important;
+    min-height: var(--mobile-icon-control-size) !important;
+  }
+
+  /* Keep the Passkey creation affordance compact on phones. Earlier shared
+     breakpoints stacked these controls and hid the leading icon, which made
+     the form unnecessarily tall and left less room for saved credentials. */
+  .settings-screen .passkey-add-bar {
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    gap: 6px;
+  }
+
+  .settings-screen .passkey-add-bar > svg {
+    display: block;
+  }
+
+  .settings-screen .passkey-add-bar button.passkey-add-submit {
+    width: auto;
+    min-width: 0;
+    padding-inline: 8px;
+    justify-content: center;
+  }
+
+  /* Saved credentials use two compact rows: identity and delete action on
+     top, device metadata below. Removing the desktop max-height avoids
+     clipping the creation/last-used line after the mobile reflow. */
+  .settings-screen .passkey-row {
+    grid-template-columns: 28px minmax(0, 1fr) 28px;
+    grid-template-areas:
+      "icon copy delete"
+      ". chip .";
+    gap: 4px 8px;
+    align-items: center;
+    padding: 10px;
+  }
+
+  .settings-screen .passkey-row:not(.is-removing) {
+    max-height: none;
+  }
+
+  .settings-screen .passkey-row-icon {
+    grid-area: icon;
+    display: grid;
+  }
+
+  .settings-screen .passkey-row-copy {
+    grid-area: copy;
+  }
+
+  .settings-screen .passkey-device-chip {
+    grid-area: chip;
+    width: max-content;
+    max-width: 100%;
+    justify-self: start;
+  }
+
+  .settings-screen .passkey-row .passkey-delete-btn {
+    grid-area: delete;
+    width: 28px;
+    min-width: 28px;
+    justify-self: end;
+    opacity: 1;
+  }
+
+  /* The inline restore confirmation grows wider than its idle trigger. Give
+     that state a full row so neither the description nor action is obscured. */
+  .settings-screen .settings-profile-preset-reset {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding-block: 8px;
+  }
+
+  .settings-screen .settings-profile-preset-reset > span {
+    grid-column: 1 / -1;
+  }
+
+  .settings-screen .settings-inline-restore {
+    grid-column: 1 / -1;
+    width: 100% !important;
+    min-width: 0;
+    max-width: 100%;
+    justify-self: stretch;
+    contain: layout;
+  }
+
+  .settings-screen .settings-inline-restore.is-open {
+    width: 100% !important;
+  }
+
+  .settings-screen .settings-inline-restore .inline-confirm-idle {
+    justify-self: end;
+  }
+
+  .settings-screen .settings-inline-restore .inline-confirm-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    will-change: opacity, transform;
+  }
+
+  .settings-screen .settings-inline-restore.is-open .inline-confirm-actions button {
+    width: 100%;
+  }
+
+  body .settings-lines button:is(
+    .settings-inline-restore-idle,
+    .ai-key-add-button,
+    .ai-key-delete-button,
+    .inline-test-email-trigger,
+    .mailbox-primary-action
+  ) {
+    min-height: var(--mobile-control-height) !important;
+  }
+
+  /* This header action is intentionally compact on every viewport; the
+     surrounding title row supplies the touch spacing on phones. */
+  body .settings-lines button.ai-key-add-button {
+    min-height: 30px !important;
+    height: 30px !important;
+    padding-inline: 10px !important;
+    font-size: 11.5px !important;
+  }
+
+  body .settings-lines button.ai-key-delete-button {
+    min-width: var(--mobile-icon-control-size) !important;
+  }
+
+  /* Keep disclosure controls anchored to the trailing edge on phone cards.
+     The compact summary uses a second row for status chips; explicit areas
+     prevent the chevron from being auto-placed below the leading icon. */
+  .settings-lines button.mail-config-summary {
+    grid-template-areas:
+      "icon copy chevron"
+      ". chips chevron";
+  }
+
+  .settings-lines button.mail-config-summary > .mail-config-icon {
+    grid-area: icon;
+  }
+
+  .settings-lines button.mail-config-summary > .mail-config-copy {
+    grid-area: copy;
+  }
+
+  .settings-lines button.mail-config-summary > .mail-config-chips {
+    grid-area: chips;
+  }
+
+  .settings-lines button.mail-config-summary > .mail-config-chevron {
+    grid-area: chevron;
+    align-self: center;
+    justify-self: end;
+  }
+
+  .timeline-jump-date .date-picker-input-wrap,
+  .timeline-jump-date input.date-picker-display {
+    height: var(--mobile-control-height) !important;
+    min-height: var(--mobile-control-height) !important;
+  }
+
+  .admin-auth-canvas .primary-action,
+  .admin-auth-canvas .text-action,
+  .admin-auth-canvas .custom-select-trigger {
+    min-height: var(--mobile-tab-control-height) !important;
+  }
+
+  .auth-shell input,
+  .admin-auth-canvas input,
+  .auth-language-control .custom-select-trigger,
+  .admin-language-control .custom-select-trigger {
+    min-height: var(--mobile-tab-control-height) !important;
+  }
+
+  .auth-shell button {
+    min-height: var(--mobile-tab-control-height) !important;
+  }
+
+  /* Compact mobile density -------------------------------------------------
+     A touch target is not the same thing as a visibly oversized control.
+     Keep the painted controls small and use grouping/spacing to preserve
+     reliable touch interaction. These rules deliberately undo the older
+     "stack every action at 100% width" phone fallback in index.css. */
+  body button:is(.primary-action, .secondary-action, .quiet-action, .danger-action) {
+    width: auto;
+    min-width: 0;
+    min-height: 32px !important;
+    padding-inline: 10px;
+    gap: 5px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+  }
+
+  body button:is(.primary-action, .secondary-action, .quiet-action, .danger-action) svg {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 auto;
+  }
+
+  .dossier-actions,
+  .resource-settings-actions,
+  .scholarship-form-actions,
+  .composer-actions,
+  .correspondence-edit-actions,
+  .fee-add-actions,
+  .fee-item-actions {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .dossier-actions > *,
+  .resource-settings-actions > *,
+  .scholarship-form-actions > *,
+  .composer-actions > *,
+  .correspondence-edit-actions > *,
+  .fee-add-actions > *,
+  .fee-item-actions > * {
+    width: auto !important;
+    min-width: 0;
+    flex: 0 0 auto !important;
+  }
+
+  .funding-hero,
+  .scholarship-subsection-head,
+  .stat-panel-header {
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .funding-add-btn,
+  .scholarship-subsection-head button,
+  .checklist-manage-bar .compact-action {
+    width: auto !important;
+    align-self: auto;
+    justify-content: center;
+  }
+
+  /* Scholarship facts are easier to scan as two compact rows on phones.
+     This intentionally overrides the older one-column fallback in index.css. */
+  .funding-card-meta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 12px;
+    row-gap: 10px;
+  }
+
+  /* Checklist summaries stay scan-dense. Inline editable chips were being
+     caught by the global 36px input rule, which visually inflated a 20px tag
+     into the large block seen in the reported screenshots. */
+  .checklist-list,
+  .checklist-task-list {
+    gap: 6px;
+  }
+
+  .checklist-item-main {
+    grid-template-columns: 16px 24px minmax(0, 1fr) auto;
+    min-height: 0;
+    gap: 5px;
+    padding: 8px;
+    transition: background-color var(--duration-fast) var(--ease-out);
+  }
+
+  .checklist-item-main:active {
+    background: var(--surface-secondary);
+  }
+
+  .checklist-drag-handle {
+    width: 16px;
+    min-width: 16px;
+    height: 26px;
+    min-height: 26px !important;
+  }
+
+  .checklist-check-btn {
+    width: 24px;
+    min-width: 24px;
+    height: 26px;
+    min-height: 26px !important;
+  }
+
+  .checklist-item-body {
+    gap: 2px;
+  }
+
+  body .checklist-item-title,
+  .checklist-item-title-visual {
+    height: 20px;
+    font-size: 12px;
+    line-height: 20px;
+  }
+
+  body .checklist-item-title {
+    height: 20px !important;
+    min-height: 20px !important;
+    padding: 0 !important;
+    font-size: 12px !important;
+    line-height: 20px !important;
+  }
+
+  .checklist-item.dragging {
+    transition: none;
+  }
+
+  body .checklist-type-chip,
+  body .checklist-type-chip.editable {
+    min-height: 18px;
+    padding: 0 6px;
+    font-size: 9.5px;
+    letter-spacing: 0.025em;
+  }
+
+  body .checklist-type-chip.editable input {
+    width: auto;
+    min-width: 3ch;
+    max-width: 14ch;
+    height: 16px !important;
+    min-height: 16px !important;
+    padding: 0 !important;
+    font-size: 9.5px !important;
+    line-height: 16px !important;
+  }
+
+  .checklist-item-chips {
+    gap: 3px 5px;
+  }
+
+  body .checklist-item-chips .material-pill {
+    min-height: 18px;
+    gap: 4px;
+    padding: 0 6px 0 5px;
+    font-size: 10px;
+    line-height: 1;
+  }
+
+  .checklist-item-chips .status-pill-dot {
+    width: 6px;
+    height: 6px;
+  }
+
+  .checklist-group-chip,
+  .checklist-file-chip {
+    font-size: 10px;
+  }
+
+  .checklist-item:not(.expanded) .checklist-item-right .checklist-mini-btn {
+    display: none;
+  }
+
+  .checklist-item-right {
+    gap: 0;
+  }
+
+  .checklist-item-right :is(.checklist-mini-btn, .checklist-expand-btn) {
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    min-height: 28px !important;
+  }
+
+  .checklist-item-right :is(.checklist-mini-btn, .checklist-expand-btn):active {
+    transform: scale(0.92);
+  }
+
+  .checklist-item-detail {
+    --collapsible-open-duration: 260ms;
+    --collapsible-close-duration: 190ms;
+    --collapsible-close-visibility-delay: 80ms;
+  }
+
+  .checklist-item-detail:not(:empty) {
+    will-change: opacity, transform;
+  }
+
+  .checklist-item-detail-inner {
+    gap: 8px;
+    margin: 0 8px;
+    padding: 9px 0 10px;
+  }
+
+  .checklist-detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 8px;
+  }
+
+  .checklist-detail-grid label,
+  .checklist-details-field {
+    min-width: 0;
+    gap: 4px;
+  }
+
+  .checklist-detail-grid label > span,
+  .checklist-details-field > span {
+    font-size: 9.5px;
+    line-height: 1.3;
+    letter-spacing: 0.025em;
+  }
+
+  .checklist-detail-grid :is(input, .custom-select-trigger) {
+    width: 100%;
+    min-width: 0;
+    min-height: 32px !important;
+    height: 32px !important;
+    padding-inline: 8px !important;
+    font-size: 12px !important;
+    line-height: 1.25;
+  }
+
+  .checklist-detail-grid .custom-select-chevron {
+    width: 13px;
+    height: 13px;
+  }
+
+  .checklist-config-row {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .checklist-config-row .checklist-popover-anchor,
+  .checklist-config-row .checklist-pill-control {
+    width: auto;
+    min-width: 0;
+  }
+
+  .checklist-config-row .checklist-popover-anchor {
+    max-width: 100%;
+  }
+
+  .checklist-config-row .checklist-pill-control {
+    max-width: min(100%, 242px);
+    min-height: 30px;
+    padding-inline: 7px;
+    font-size: 10.5px;
+  }
+
+  .checklist-config-row .checklist-pill-control > span {
+    display: none;
+  }
+
+  .checklist-config-row .checklist-pill-control > strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .checklist-attachment-panel {
+    gap: 8px;
+    padding: 10px 0 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .checklist-attachment-head {
+    align-items: center;
+    flex-direction: row;
+    gap: 8px;
+  }
+
+  .checklist-attachment-head > div:first-child {
+    flex: 1 1 auto;
+  }
+
+  .checklist-attachment-head span {
+    font-size: 9.5px;
+  }
+
+  .checklist-attachment-head strong {
+    font-size: 12px;
+  }
+
+  .checklist-attachment-actions {
+    width: auto;
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    gap: 4px;
+  }
+
+  .checklist-attachment-actions .quiet-action {
+    min-height: 30px !important;
+    padding-inline: 8px;
+    font-size: 10.5px;
+  }
+
+  .checklist-attachment-reserved {
+    min-height: 0;
+    padding: 2px 0;
+    border: 0;
+    background: transparent;
+    font-size: 10.5px;
+    line-height: 1.35;
+  }
+
+  .checklist-attachment-table-wrap {
+    overflow: hidden;
+    border-radius: var(--radius-sm);
+  }
+
+  .checklist-attachment-table,
+  .checklist-attachment-table tbody {
+    width: 100%;
+    min-width: 0 !important;
+    max-width: 100%;
+    display: block;
+  }
+
+  .checklist-attachment-table colgroup,
+  .checklist-attachment-table thead,
+  .checklist-attachment-table td:nth-child(3),
+  .checklist-attachment-table td:nth-child(4) {
+    display: none;
+  }
+
+  .checklist-attachment-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 6px 5px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .checklist-attachment-table tr:last-child {
+    border-bottom: 0;
+  }
+
+  .checklist-attachment-table td {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    padding: 0;
+    border: 0;
+    font-size: 10.5px;
+  }
+
+  .checklist-attachment-table td:nth-child(1),
+  .checklist-attachment-table td:nth-child(2),
+  .checklist-attachment-table td:nth-child(5) {
+    display: contents !important;
+  }
+
+  .checklist-attachment-name,
+  .checklist-attachment-name-wrap,
+  .checklist-attachment-filename {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .checklist-attachment-row-actions {
+    gap: 0;
+  }
+
+  .checklist-attachment-row-actions .checklist-icon-control {
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    min-height: 28px !important;
+  }
+
+  .checklist-details-field :is(
+    textarea,
+    .markdown-textarea,
+    .markdown-editor-stage,
+    .markdown-lexical-layer,
+    .markdown-visual-editor,
+    .markdown-source-input
+  ) {
+    min-height: 64px;
+    font-size: 12px !important;
+    line-height: 1.5;
+  }
+
+  .checklist-details-field :is(textarea, .markdown-source-input, .markdown-visual-editor) {
+    padding: 7px 9px;
+  }
+
+  /* Four high-frequency correspondence modes should read as a compact tool
+     grid, never four full-width bars. The moving indicator keeps its existing
+     measured geometry and continues to animate between the two columns. */
+  .correspondence-mode-bar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .correspondence-mode-bar button {
+    width: 100%;
+    min-width: 0;
+    min-height: 32px !important;
+    justify-content: center;
+    gap: 5px;
+    padding: 0 8px;
+    border-radius: var(--radius);
+    font-size: 11px;
+  }
+
+  .correspondence-mode-bar button svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  .correspondence-composer {
+    gap: 10px;
+    padding: 11px;
+  }
+
+  .composer-status-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  .composer-status-chip {
+    width: auto;
+    min-height: 24px;
+    padding-inline: 7px;
+    font-size: 10px;
+  }
+
+  /* Timeline hero and jump controls use utility-button proportions. */
+  .timeline-page {
+    gap: 16px;
+  }
+
+  .timeline-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 8px;
+    padding-bottom: 12px;
+  }
+
+  .timeline-hero-info h3 {
+    margin-block: 2px 3px;
+    font-size: 20px;
+  }
+
+  .timeline-hero-info p {
+    font-size: 11.5px;
+    line-height: 1.4;
+  }
+
+  body .timeline-hero-add-btn {
+    min-height: 32px !important;
+    align-self: end;
+    padding-inline: 10px;
+    font-size: 11px;
+  }
+
+  .timeline-add-panel {
+    gap: 10px;
+    padding: 11px;
+  }
+
+  .timeline-add-panel-fields {
+    grid-template-columns: minmax(0, 1fr) minmax(112px, 0.72fr);
+    gap: 7px;
+  }
+
+  .timeline-jump-bar {
+    max-width: min(calc(100% - 116px), 214px);
+    min-height: 32px;
+    padding: 2px;
+    transform: translateY(-6px);
+  }
+
+  .timeline-jump-date {
+    max-width: 148px;
+  }
+
+  .timeline-jump-date .date-picker-input-wrap,
+  .timeline-jump-date input.date-picker-display {
+    height: 28px !important;
+    min-height: 28px !important;
+  }
+
+  .timeline-jump-today {
+    width: 28px;
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 28px !important;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .timeline-jump-today span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* Fee tracking is a dense finance strip plus row actions. Keep all four
+     totals legible without turning each one into a large dashboard card. */
+  .fee-tracker {
+    gap: 10px;
+  }
+
+  .fee-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .fee-stat {
+    padding: 8px 3px;
+    border-radius: var(--radius-sm);
+  }
+
+  .fee-stat-value {
+    font-size: clamp(12px, 3.5vw, 15px);
+    letter-spacing: -0.02em;
+  }
+
+  .fee-stat-label {
+    margin-top: 3px;
+    overflow: hidden;
+    font-size: 9px;
+    letter-spacing: 0.02em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .fee-item {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px;
+    min-height: 42px;
+    padding: 7px 8px 7px 10px;
+  }
+
+  .fee-item-actions {
+    grid-column: 2;
+    justify-self: end;
+    align-self: center;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+    gap: 3px;
+    margin-left: auto;
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
+  }
+
+  body .fee-item-actions > .quiet-action,
+  body .fee-delete-confirm .inline-confirm-idle {
+    width: 28px !important;
+    height: 28px !important;
+    min-width: 28px !important;
+    min-height: 28px !important;
+    padding: 0 !important;
+    border-radius: var(--radius-sm);
+    font-size: 0;
+  }
+
+  .fee-delete-confirm {
+    flex: 0 0 auto;
+  }
+
+  .fee-delete-confirm.is-open {
+    width: var(--inline-confirm-open-width, auto);
+  }
+
+  .fee-item:has(.fee-delete-confirm.is-open) .fee-item-actions {
+    grid-column: 1 / -1;
+    justify-self: end;
+  }
+
+  .fee-action-label {
+    gap: 0;
+    font-size: 0;
+  }
+
+  .fee-item-actions > .quiet-action svg,
+  .fee-action-label svg,
+  .fee-delete-confirm .inline-confirm-idle svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  .fee-add-trigger {
+    width: auto;
+    align-self: flex-start;
+    justify-content: center;
+  }
+
+  /* The add form remains a compact two-column control group instead of
+     inheriting the old full-width, one-control-per-row mobile fallback. */
+  .fee-add-form {
+    grid-template-columns: minmax(0, 1fr) 96px;
+    gap: 6px;
+    padding: 7px;
+  }
+
+  .fee-add-form > input[type='number'] {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .fee-add-form > .custom-select-root {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .fee-add-form > input[type='text'] {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .fee-add-form > .fee-waived-label {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .fee-add-form > input.settings-input,
+  body .fee-add-form .custom-select-trigger {
+    height: 32px !important;
+    min-height: 32px !important;
+    font-size: 12px;
+  }
+
+  body .fee-add-form .custom-select-trigger {
+    padding-inline: 9px;
+  }
+
+  .fee-waived-label {
+    min-height: 32px;
+    gap: 5px;
+    padding-inline: 2px;
+    font-size: 12px;
+  }
+
+  .fee-waived-label input {
+    width: 14px;
+    height: 14px !important;
+  }
+
+  .fee-add-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    gap: 6px;
+    padding-top: 0;
+  }
+
+  body .fee-add-actions > button {
+    min-height: 30px !important;
+    padding-inline: 10px;
+    font-size: 11.5px;
+  }
+
+  .fee-edit-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding-top: 10px;
+  }
+
+  .fee-edit-date,
+  .fee-edit-notes,
+  .fee-edit-form:not(.has-paid-date) .fee-edit-notes,
+  .fee-edit-actions {
+    grid-column: auto;
+  }
+
+  .fee-edit-notes,
+  .fee-edit-form:not(.has-paid-date) .fee-edit-notes,
+  .fee-edit-actions {
+    grid-column: 1 / -1;
+  }
+
+  .fee-edit-toggle {
+    min-height: 34px;
+  }
+
+  /* Device experience rows remain one calm grouped list. The action is a
+     small trailing control; descriptions no longer force the CTA below. */
+  .settings-screen .settings-device-grid > .settings-install-card,
+  .settings-screen .settings-device-grid > .settings-tutorial-card {
+    min-height: 0;
+    grid-template-columns: 30px minmax(0, 1fr) auto !important;
+    grid-template-rows: auto !important;
+    align-items: center;
+    gap: 9px;
+    padding: 10px;
+  }
+
+  .settings-screen .settings-device-grid :is(.settings-install-icon, .settings-tutorial-icon) {
+    width: 30px;
+    height: 30px;
+    border-radius: var(--radius-sm);
+  }
+
+  .settings-screen .settings-device-grid :is(.settings-install-copy, .settings-tutorial-copy) {
+    gap: 2px;
+  }
+
+  .settings-screen .settings-device-grid :is(.settings-install-eyebrow, .settings-tutorial-eyebrow) {
+    font-size: 9px;
+  }
+
+  .settings-screen .settings-device-grid :is(.settings-install-copy, .settings-tutorial-copy) strong {
+    font-size: 12.5px;
+  }
+
+  .settings-screen .settings-device-grid :is(.settings-install-copy, .settings-tutorial-copy) p {
+    display: -webkit-box;
+    overflow: hidden;
+    font-size: 10.5px;
+    line-height: 1.35;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+  }
+
+  .settings-screen .settings-device-grid :is(.settings-install-benefits, .settings-tutorial-tags) {
+    display: none;
+  }
+
+  .settings-screen .settings-device-grid .settings-install-side,
+  .settings-screen .settings-device-grid .settings-tutorial-action {
+    width: auto;
+    min-width: 0;
+    grid-column: 3 !important;
+    grid-row: 1 !important;
+    align-self: center;
+    justify-items: end;
+    padding: 0 !important;
+    border: 0 !important;
+  }
+
+  body .settings-screen .settings-device-grid :is(.settings-install-action, .settings-tutorial-action) {
+    width: auto;
+    min-width: 0;
+    min-height: 30px !important;
+    padding-inline: 8px;
+    font-size: 10.5px;
+  }
+
+  .settings-screen .settings-device-grid .settings-install-status {
+    min-height: 18px;
+    padding-inline: 5px;
+    font-size: 8.5px;
+  }
+
+  /* Tutorial cards behave like a compact bottom coach, not a large modal. */
+  .onboarding-tooltip,
+  .onboarding-tooltip.centered {
+    top: auto !important;
+    right: 10px !important;
+    bottom: calc(var(--mobile-tab-bar-height) + 10px + env(safe-area-inset-bottom, 0px)) !important;
+    left: 10px !important;
+    width: auto !important;
+    max-height: min(56dvh, 430px);
+    gap: 8px;
+    padding: 12px;
+    border-radius: var(--radius-xl);
+    transform: none !important;
+    animation: mobile-tour-enter 260ms var(--ease-out) both;
+  }
+
+  .onboarding-topline {
+    gap: 8px;
+    font-size: 9.5px;
+  }
+
+  .onboarding-skip {
+    min-height: 24px;
+    padding-inline: 6px;
+    font-size: 10px;
+  }
+
+  .onboarding-progress {
+    height: 3px;
+  }
+
+  .onboarding-stage-label {
+    gap: 5px;
+  }
+
+  .onboarding-stage-label :is(span, em) {
+    min-height: 18px;
+    padding-inline: 6px;
+    font-size: 9px;
+  }
+
+  .onboarding-tooltip h3 {
+    font-size: 15px;
+  }
+
+  .onboarding-tooltip p,
+  .onboarding-tooltip li {
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .onboarding-tooltip ul {
+    gap: 4px;
+  }
+
+  .onboarding-action-hint {
+    min-height: 30px;
+    padding: 6px 8px;
+    font-size: 10.5px;
+  }
+
+  .onboarding-actions {
+    width: auto;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+
+  .onboarding-actions button {
+    min-height: 30px !important;
+    flex: 0 0 auto;
+    padding-inline: 9px;
+    font-size: 11px;
+  }
+
+  /* Current guided tour implementation. Keep the existing spotlight morph and
+     directional chapter transitions, but make the coach card phone-dense. */
+  .atlas-guide-card {
+    right: 10px;
+    bottom: calc(var(--mobile-tab-bar-height) + 10px + env(safe-area-inset-bottom, 0px));
+    left: 10px;
+    max-height: min(54dvh, 286px);
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .atlas-guide-header > span,
+  .atlas-guide-skip {
+    font-size: 9.5px;
+  }
+
+  .atlas-guide-progress {
+    height: 3px;
+  }
+
+  .atlas-guide-step {
+    gap: 6px;
+  }
+
+  .atlas-guide-step h2 {
+    font-size: 16px;
+    line-height: 1.22;
+  }
+
+  .atlas-guide-step > p {
+    font-size: 11.5px;
+    line-height: 1.42;
+  }
+
+  .atlas-guide-practice-list li {
+    min-height: 30px;
+    padding-inline: 8px;
+    font-size: 10.5px;
+  }
+
+  .atlas-guide-practice-list li > span {
+    width: 20px;
+    height: 20px;
+    font-size: 9px;
+  }
+
+  .atlas-guide-action-hint {
+    min-height: 30px;
+    grid-template-columns: 22px minmax(0, 1fr);
+    padding: 5px 7px;
+    font-size: 10.5px;
+  }
+
+  .atlas-guide-action-icon {
+    width: 22px;
+    height: 22px;
+  }
+
+  .atlas-guide-actions {
+    min-height: 30px;
+    gap: 6px;
+  }
+
+  body .atlas-guide-actions :is(.quiet-action, .primary-action) {
+    min-height: 30px !important;
+    padding-inline: 9px;
+    font-size: 11px;
+  }
+
+  /* Team and publisher toolbars are action clusters, not form fields. Keep
+     peer actions beside each other and reserve full-width rows for semantic
+     summaries such as member cards and audit entries. */
+  .notification-publisher-head-actions,
+  .notification-publisher-csv-actions,
+  .notification-dialog-footer {
+    width: auto;
+    align-items: center;
+    flex-direction: row;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .notification-publisher-head-actions :is(.quiet-action, .primary-action),
+  .notification-publisher-csv-actions .quiet-action,
+  .notification-dialog-footer :is(.quiet-action, .primary-action) {
+    width: auto;
+    min-width: 0;
+    flex: 0 0 auto;
+  }
+
+  .team-member-ops-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .team-member-ops-grid button {
+    min-height: 52px;
+    padding: 8px 9px;
+  }
+
+  .team-member-ops-grid strong {
+    font-size: 15px;
+  }
+
+  .team-hero-actions,
+  .team-empty-actions {
+    width: auto;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .team-hero-actions .danger-action,
+  .team-empty-actions :is(.primary-action, .quiet-action) {
+    width: auto;
+    flex: 0 0 auto;
+  }
+
+  @keyframes mobile-tour-enter {
+    from {
+      opacity: 0;
+      translate: 0 14px;
+    }
+    to {
+      opacity: 1;
+      translate: 0 0;
+    }
+  }
+
+  @keyframes mobile-sheet-enter {
+    from {
+      opacity: 0;
+      transform: translate3d(0, 26px, 0) scale(0.99);
+    }
+    to {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+  }
+
+  @keyframes mobile-detail-back-enter {
+    from {
+      opacity: 0;
+      transform: translate3d(0, 12px, 0) scale(0.94);
+    }
+    to {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+  }
+
+  @keyframes mobile-workspace-surface-enter-forward {
+    from {
+      opacity: 0.56;
+      transform: translate3d(18px, 0, 0) scale(0.995);
+    }
+    to {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+  }
+
+  @keyframes mobile-workspace-surface-enter-backward {
+    from {
+      opacity: 0.56;
+      transform: translate3d(-18px, 0, 0) scale(0.995);
+    }
+    to {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+  }
+}
+
+/* Portrait profile library: keep the two primary actions compact, then use the
+   available phone width as a calm two-column shelf instead of a left-heavy
+   desktop card flow. Expanded stacks still take the full row. */
+@media (max-width: 560px) {
+  .profile-toolbar {
+    width: 100%;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+
+  .profile-toolbar .search-field {
+    width: auto;
+    min-width: 0;
+    flex: 1 1 auto;
+    min-height: 36px;
+    padding-inline: 10px;
+  }
+
+  .profile-toolbar .search-field input {
+    min-width: 0;
+    height: 34px;
+    min-height: 34px !important;
+    padding-block: 0;
+    font-size: 14px;
+  }
+
+  .profile-toolbar > .primary-action {
+    width: auto;
+    min-width: 0;
+    min-height: var(--mobile-control-height) !important;
+    flex: 0 0 auto;
+    gap: 5px;
+    padding-inline: 11px;
+    border-radius: var(--radius);
+    font-size: 12px;
+    font-weight: 620;
+    white-space: nowrap;
+  }
+
+  .profile-toolbar > .primary-action svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  .snippet-grid.snippet-stack-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-content: center;
+    justify-items: stretch;
+    gap: 16px 12px;
+  }
+
+  .snippet-stack-grid > .snippet-stack {
+    --snippet-stack-card-width: 100%;
+    --snippet-stack-gap: 12px;
+    --snippet-stack-depth-1-transform: translate3d(4px, 5px, -5px) scale(0.98);
+    --snippet-stack-depth-1-opacity: 0.82;
+    --snippet-stack-depth-2-transform: translate3d(7px, 8px, -10px) scale(0.96);
+    --snippet-stack-depth-2-opacity: 0.64;
+    --snippet-stack-depth-3-transform: translate3d(10px, 11px, -15px) scale(0.94);
+    --snippet-stack-depth-3-opacity: 0.46;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    flex-basis: auto;
+    grid-template-rows: 224px minmax(0, 0fr);
+  }
+
+  .snippet-stack-grid > .snippet-stack:last-child:nth-child(odd):not(.is-expanded) {
+    grid-column: 1 / -1;
+    width: calc((100% - 12px) / 2);
+    justify-self: center;
+  }
+
+  .snippet-stack-grid > .snippet-stack.is-expanded {
+    grid-column: auto;
+    width: 100%;
+    max-width: none;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 224px;
+    column-gap: 0;
+    row-gap: 0;
+  }
+
+  .snippet-stack .snippet-stack-layers,
+  .snippet-stack .snippet-stack-front,
+  .snippet-stack .snippet-stack-deck-card,
+  .snippet-stack .snippet-stack-incoming,
+  .snippet-stack .snippet-stack-outgoing,
+  .snippet-stack .snippet-stack-version {
+    height: 224px;
+  }
+
+  .snippet-stack .snippet-stack-deck-card:not(.snippet-stack-front) {
+    height: 224px;
+    min-height: 224px;
+    max-height: 224px;
+  }
+
+  .snippet-stack .snippet-stack-deck-card {
+    height: 224px;
+    min-height: 224px;
+    max-height: 224px;
+  }
+
+  .snippet-stack-flow-version {
+    --snippet-stack-card-width: 100%;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    height: 224px;
+    min-height: 224px;
+    max-height: 224px;
+  }
+
+  .snippet-stack .snippet-stack-expand,
+  .snippet-stack .snippet-stack-expand-inner {
+    height: auto;
+    overflow: hidden;
+  }
+
+  .snippet-stack-grid > .snippet-stack.is-expanded .snippet-stack-toggle {
+    right: 12px;
+    left: auto;
+  }
+
+  .snippet-stack-grid > .snippet-stack.is-expanded .snippet-stack-expand {
+    grid-column: 1 / -1;
+  }
+
+  .snippet-stack-grid > .snippet-stack.is-expanded .snippet-stack-expand.open,
+  .snippet-stack-grid > .snippet-stack.is-expanded .snippet-stack-expand.open .snippet-stack-expand-inner,
+  .snippet-stack-grid > .snippet-stack.is-expanded .snippet-stack-expand.open .snippet-stack-versions {
+    display: contents;
+  }
+
+  .snippet-stack-grid > .snippet-stack .snippet-stack-versions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-flow: row;
+    grid-auto-columns: unset;
+    gap: 16px 12px;
+  }
+
+  .snippet-stack .snippet-stack-version,
+  .snippet-stack-flow-version {
+    min-height: 224px;
+    max-height: 224px;
+  }
+
+  .snippet-stack .snippet-stack-front,
+  .snippet-stack .snippet-stack-deck-card,
+  .snippet-stack .snippet-stack-version,
+  .snippet-stack-flow-version {
+    gap: 6px;
+    padding: 10px;
+  }
+
+  .snippet-stack .snippet-stack-deck-card:not(.snippet-stack-front) {
+    gap: 6px;
+    padding: 10px;
+  }
+
+  .snippet-stack .snippet-card-main {
+    min-height: 164px;
+  }
+
+  .snippet-stack .snippet-card-info {
+    gap: 5px;
+    padding-top: 12px;
+  }
+
+  .snippet-stack .snippet-card-info strong {
+    font-size: 13px;
+  }
+
+  .snippet-stack .snippet-card-title-row {
+    gap: 5px;
+  }
+
+  .snippet-stack .snippet-card-title-row span {
+    padding-inline: 5px;
+    font-size: 10px;
+    letter-spacing: 0;
+  }
+
+  .snippet-stack .snippet-card-detail-list span {
+    font-size: 10px;
+  }
+
+  .snippet-stack.has-stack:not(.is-expanded) .snippet-stack-layer.layer-1 {
+    transform: translate3d(4px, 5px, 0) scale(0.99);
+  }
+
+  .snippet-stack.has-stack:not(.is-expanded) .snippet-stack-layer.layer-2 {
+    transform: translate3d(7px, 8px, 0) scale(0.98);
+  }
+
+  .snippet-stack.has-stack:not(.is-expanded) .snippet-stack-layer.layer-3 {
+    transform: translate3d(10px, 11px, 0) scale(0.97);
+  }
+
+  .snippet-stack-expand:not(.open) .snippet-stack-version {
+    transform: translate3d(
+      var(--snippet-version-mobile-origin-x, 0),
+      var(--snippet-version-mobile-origin-y, -232px),
+      0
+    ) rotateX(7deg) scale(0.965);
+    transform-origin: center top;
+  }
+
+  .profile-preset-editor-title-row {
+    display: flex;
+    width: 100%;
+    margin-top: 4px;
+  }
+
+  .profile-preset-editor-section-head .eyebrow {
+    display: block;
+  }
+}
+
+@media (max-width: 480px) {
+  .resource-card-actions {
+    justify-content: flex-end;
+  }
+
+  .dossier-pane,
+  .simple-screen,
+  .dashboard,
+  .application-pane,
+  .inspector-pane {
+    padding-inline: 12px;
+  }
+
+  .mobile-workspace-view-toggle {
+    right: 12px;
+  }
+
+  .kanban-column-grid {
+    grid-auto-columns: calc(100vw - 38px);
+  }
+
+  .dossier-header h2,
+  .dashboard-header h1,
+  .simple-screen > .screen-heading h2 {
+    font-size: 24px;
+    letter-spacing: -0.025em;
+  }
+}
+
+@media (max-width: 360px) {
+  .atlas-rail {
+    padding-inline: 4px;
+  }
+
+  .atlas-rail .rail-bottom-stack {
+    margin-left: 0;
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .atlas-rail .rail-bottom-stack .rail-mode-toggle {
+    width: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mobile-workspace-view-toggle,
+  .mobile-detail-back-fab,
+  .kanban-column-grid,
+  .dossier-pane .tab-strip {
+    scroll-behavior: auto;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "nativeName": "Français",
+    "name": "French"
+  },
+  "appTitle": "PhD Atlas",
+  "appDesc": "Un espace de travail privé pour les candidatures, les listes de contrôle, les e-mails et les décisions.",
+  "languagePack": "modular",
+  "namespaces": [
+    "core",
+    "shared",
+    "dashboard",
+    "discover",
+    "workspace",
+    "dossier",
+    "profile",
+    "settings",
+    "team",
+    "share",
+    "shareViewer",
+    "assetUpload",
+    "upgrade",
+    "resetPassword",
+    "admin",
+    "tour",
+    "pdfExport"
+  ]
+}

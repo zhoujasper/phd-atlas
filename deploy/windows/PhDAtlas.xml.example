@@ -1,0 +1,20 @@
+<service>
+  <id>PhDAtlas</id>
+  <name>PhD Atlas</name>
+  <description>PhD Atlas application server</description>
+  <executable>C:\Program Files\nodejs\node.exe</executable>
+  <arguments>tools\start-server.mjs</arguments>
+  <workingdirectory>%BASE%</workingdirectory>
+  <env name="NODE_ENV" value="production" />
+  <env name="PORT" value="4317" />
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <onfailure action="restart" delay="10 sec" />
+  <onfailure action="restart" delay="30 sec" />
+  <stoptimeout>35 sec</stoptimeout>
+  <logpath>%BASE%\logs\service</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+</service>

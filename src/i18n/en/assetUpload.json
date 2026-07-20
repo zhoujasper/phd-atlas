@@ -1,0 +1,27 @@
+{
+  "assetUpload": {
+    "loading": "Loading…",
+    "loadFailed": "This upload link could not be loaded.",
+    "accessDenied": "Link not available",
+    "expired": "This upload link has expired.",
+    "uploadFailed": "Upload failed.",
+    "note": "Note from the requester",
+    "chooseFile": "Choose file",
+    "upload": "Upload",
+    "uploading": "Uploading…",
+    "success": "Uploaded — thank you!",
+    "existingCountOne": "1 file already received.",
+    "existingCountMany": "{count} files already received.",
+    "successCountOne": "1 file uploaded — thank you!",
+    "successCountMany": "{count} files uploaded — thank you!",
+    "existingCount": "{count} file(s) already received.",
+    "title": "Upload files",
+    "dropTitle": "Drop files here",
+    "chooseFiles": "Choose files",
+    "dropHint": "Drag files into this area or choose several at once.",
+    "subtitle": "Use this secure link to send one or more files directly to the requester.",
+    "uploadAnother": "You can add another batch whenever you are ready.",
+    "successCount": "{count} file(s) uploaded — thank you!",
+    "destination": "Destination"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "nativeName": "中文",
+    "name": "Chinese"
+  },
+  "appTitle": "PhD Atlas",
+  "appDesc": "管理博士申请、清单、邮件和结果的私人工作区。",
+  "languagePack": "modular",
+  "namespaces": [
+    "core",
+    "shared",
+    "dashboard",
+    "workspace",
+    "dossier",
+    "pdfExport",
+    "profile",
+    "settings",
+    "team",
+    "share",
+    "shareViewer",
+    "assetUpload",
+    "upgrade",
+    "resetPassword",
+    "admin",
+    "tour",
+    "discover"
+  ]
+}

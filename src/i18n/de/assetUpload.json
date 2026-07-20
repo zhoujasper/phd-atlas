@@ -1,0 +1,27 @@
+{
+  "assetUpload": {
+    "loading": "Laden…",
+    "loadFailed": "Dieser Upload-Link konnte nicht geladen werden.",
+    "accessDenied": "Link nicht verfügbar",
+    "expired": "Dieser Upload-Link ist abgelaufen.",
+    "uploadFailed": "Der Upload ist fehlgeschlagen.",
+    "note": "Hinweis des Antragstellers",
+    "chooseFile": "Datei auswählen",
+    "upload": "Hochladen",
+    "uploading": "Hochladen…",
+    "success": "Hochgeladen – Danke!",
+    "existingCountOne": "1 Datei bereits erhalten.",
+    "existingCountMany": "{count} Dateien bereits empfangen.",
+    "successCountOne": "1 Datei hochgeladen – vielen Dank!",
+    "successCountMany": "{count} Dateien hochgeladen – vielen Dank!",
+    "existingCount": "{count} Datei(en) bereits empfangen.",
+    "title": "Dateien hochladen",
+    "dropTitle": "Legen Sie die Dateien hier ab",
+    "chooseFiles": "Wählen Sie Dateien aus",
+    "dropHint": "Ziehen Sie Dateien in diesen Bereich oder wählen Sie mehrere gleichzeitig aus.",
+    "subtitle": "Über diesen sicheren Link können Sie eine oder mehrere Dateien direkt an den Anforderer senden.",
+    "uploadAnother": "Sie können jederzeit eine weitere Charge hinzufügen.",
+    "successCount": "{count} Datei(en) hochgeladen – vielen Dank!",
+    "destination": "Ziel"
+  }
+}

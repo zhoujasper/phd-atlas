@@ -1,0 +1,78 @@
+{
+  "share": {
+    "eyebrow": "Anteprima di sola lettura",
+    "title": "Condividi \"{name}\"",
+    "activeLinks": "Azioni attive",
+    "noLinks": "Nessun link di condivisione ancora.",
+    "createNew": "Crea un nuovo collegamento di condivisione",
+    "create": "Crea collegamento di condivisione",
+    "previewHint": "Scegli un pacchetto di progetti completo o seleziona solo le pagine che il destinatario dovrà vedere.",
+    "linkLabel": "condividi il link",
+    "revoke": "Revoca collegamento di condivisione",
+    "neverExpires": "Non scade mai",
+    "expiresAt": "Scade {date}",
+    "expired": "Scaduto",
+    "limitReached": "I link di condivisione attivi sono limitati a {limit}.",
+    "table": {
+      "application": "Candidatura",
+      "link": "Collegamento",
+      "created": "Creato",
+      "expires": "Scade",
+      "duration": "Durata",
+      "permission": "Autorizzazione",
+      "scope": "Ambito",
+      "actions": "Azioni"
+    },
+    "permission": {
+      "view": "Visualizza",
+      "upload": "Carica file",
+      "edit": "Modifica"
+    },
+    "expiry": {
+      "1h": "1 ora",
+      "1d": "1 giorno",
+      "7d": "7 giorni",
+      "30d": "30 giorni",
+      "never": "Mai"
+    },
+    "packageMode": "Modalità condivisione pacchetto",
+    "completePackage": "Progetto completo",
+    "completePackageDesc": "Condividi ogni pagina di progetto pubblico come un unico dossier raffinato.",
+    "customPackage": "Scegli le pagine",
+    "customPackageDesc": "Limita il collegamento a pagine e flussi di lavoro specifici.",
+    "completeIncludes": "Il pacchetto completo include",
+    "sectionsTitle": "Pagine condivise",
+    "scope": {
+      "all": "Tutte le pagine",
+      "count": "{count} pagine"
+    },
+    "sections": {
+      "overview": "Panoramica",
+      "materials": "Lista di controllo",
+      "tasks": "Attività",
+      "communications": "Corrispondenza",
+      "funding": "Finanziamento",
+      "timeline": "Cronologia",
+      "versions": "Versioni"
+    },
+    "sectionDescriptions": {
+      "overview": "Scuola, programma, professore, date, progressi, tag e schede dossier.",
+      "materials": "Materiali, stati, richieste di file, consiglieri e versioni dei materiali.",
+      "tasks": "Elenco di controllo delle attività, date di scadenza, dettagli e allegati richiesti.",
+      "communications": "E-mail, messaggi, note, date e riepiloghi del professore.",
+      "funding": "Borse di studio, monitoraggio delle tariffe, attività di finanziamento, materiali e traguardi.",
+      "timeline": "Cronologia delle candidature universitarie con tappe manuali e pagine condivise.",
+      "versions": "Cronologia dei file caricati e versioni scaricabili incluse in questo progetto."
+    },
+    "revokeConfirmMessage": "Sei sicuro di voler revocare questo collegamento di condivisione? Chiunque abbia il collegamento perderà immediatamente l'accesso."
+  },
+  "pagination": {
+    "first": "Primo",
+    "previous": "Precedente",
+    "next": "Avanti",
+    "last": "Ultimo",
+    "page": "Pagina {page} di {pages}",
+    "showing": "Mostra {from}-{to} di {total}",
+    "allItems": "{total} elementi"
+  }
+}

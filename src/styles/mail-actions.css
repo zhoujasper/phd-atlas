@@ -1,0 +1,224 @@
+.async-action-button {
+  display: inline-grid;
+  grid-template-areas: "state";
+  align-items: center;
+  justify-items: center;
+  overflow: hidden;
+}
+
+/* Settings' compact-action rule uses inline-flex. Keep async state layers
+   stacked instead of laying every hidden label out side by side. */
+.settings-lines .async-action-button {
+  display: inline-grid;
+  grid-template-areas: "state";
+}
+
+.async-action-layer {
+  grid-area: state;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transform: translate3d(0, 6px, 0) scale(.98);
+  transition:
+    opacity var(--duration) var(--ease-out),
+    transform var(--duration) var(--ease-out),
+    visibility 0s linear var(--duration);
+}
+
+.async-action-button.is-idle .async-action-idle,
+.async-action-button.is-pending .async-action-pending,
+.async-action-button.is-success .async-action-success,
+.async-action-button.is-error .async-action-error {
+  opacity: 1;
+  visibility: visible;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition-delay: 0s;
+}
+
+.async-action-button.is-pending,
+.async-action-button.is-pending:disabled {
+  cursor: wait;
+  filter: none;
+  opacity: 1;
+  border-color: var(--border-strong);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+}
+
+.async-action-button.is-success {
+  color: var(--success-text);
+}
+
+.async-action-button.is-error {
+  color: var(--danger);
+}
+
+.inline-test-email {
+  --inline-test-idle-width: 126px;
+  --inline-test-form-width: 316px;
+  position: relative;
+  display: grid;
+  grid-template-areas: "control";
+  width: var(--inline-test-idle-width);
+  max-width: 100%;
+  min-width: 0;
+  min-height: 32px;
+}
+
+.inline-test-email-trigger,
+.inline-test-email-form {
+  grid-area: control;
+  transition:
+    opacity var(--duration) var(--ease-out),
+    visibility 0s linear var(--duration);
+}
+
+.inline-test-email-trigger {
+  width: 100%;
+  justify-content: center;
+  opacity: 1;
+  visibility: visible;
+}
+
+.inline-test-email.is-editing .inline-test-email-trigger {
+  opacity: 0;
+  visibility: hidden;
+  transition-delay: 0s, var(--duration-fast);
+}
+
+.inline-test-email-form {
+  position: absolute;
+  right: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 30px;
+  gap: 6px;
+  align-items: center;
+  width: var(--inline-test-form-width);
+  max-width: calc(100vw - 32px);
+  min-width: 0;
+  min-height: 32px;
+  padding-left: 4px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.inline-test-email.is-editing .inline-test-email-form {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s, 0s;
+}
+
+.inline-test-email-form input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.inline-test-email-form input:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0, 113, 227, .16);
+}
+
+.inline-test-email-send {
+  min-width: 88px;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.inline-test-email-cancel {
+  width: 30px;
+  height: 30px;
+}
+
+.settings-lines .verification-resend-action {
+  display: grid;
+  grid-template-areas: "state";
+  min-width: 112px;
+  overflow: hidden;
+  transition:
+    min-width 380ms var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.settings-lines .verification-resend-action.is-cooldown {
+  min-width: 128px;
+}
+
+.settings-lines .verification-resend-action:disabled {
+  cursor: default;
+  filter: none;
+  opacity: 1;
+}
+
+.verification-resend-layer {
+  grid-area: state;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateY(7px);
+  transition: opacity var(--duration) var(--ease-out), transform var(--duration) var(--ease-out);
+}
+
+.settings-lines .verification-resend-action.is-ready .verification-resend-ready,
+.settings-lines .verification-resend-action.is-sending .verification-resend-sending,
+.settings-lines .verification-resend-action.is-cooldown .verification-resend-cooldown {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.settings-lines .verification-resend-action.is-cooldown {
+  color: var(--text-tertiary);
+  background: var(--surface-secondary);
+}
+
+@media (max-width: 620px) {
+  .inline-test-email {
+    margin-left: auto;
+  }
+
+  .inline-test-email-form {
+    width: min(var(--inline-test-form-width), calc(100vw - 32px));
+  }
+
+  /* The anchored form intentionally occupies the action row on narrow cards.
+     Keep the saved layout slot, but fade the covered save action completely so
+     no button edge peeks out beneath the form. */
+  .mail-config-button-row:has(.inline-test-email.is-editing) .mail-save-btn {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .async-action-layer,
+  .inline-test-email-trigger,
+  .inline-test-email-form,
+  .verification-resend-action,
+  .verification-resend-layer {
+    transition-duration: .01ms !important;
+    transition-delay: 0s !important;
+  }
+}

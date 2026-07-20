@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "nativeName": "Русский",
+    "name": "Russian"
+  },
+  "appTitle": "PhD Atlas",
+  "appDesc": "Частное рабочее пространство для приложений, контрольных списков, электронных писем и решений.",
+  "languagePack": "modular",
+  "namespaces": [
+    "core",
+    "shared",
+    "dashboard",
+    "discover",
+    "workspace",
+    "dossier",
+    "profile",
+    "settings",
+    "team",
+    "share",
+    "shareViewer",
+    "assetUpload",
+    "upgrade",
+    "resetPassword",
+    "admin",
+    "tour",
+    "pdfExport"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "assetUpload": {
+    "loading": "Caricamento in corso...",
+    "loadFailed": "Impossibile caricare questo collegamento di caricamento.",
+    "accessDenied": "Collegamento non disponibile",
+    "expired": "Questo collegamento di caricamento è scaduto.",
+    "uploadFailed": "Caricamento non riuscito.",
+    "note": "Nota del richiedente",
+    "chooseFile": "Scegli il file",
+    "upload": "Carica",
+    "uploading": "Caricamento in corso...",
+    "success": "Caricato: grazie!",
+    "existingCountOne": "1 file già ricevuto.",
+    "existingCountMany": "{count} file già ricevuti.",
+    "successCountOne": "1 file caricato: grazie!",
+    "successCountMany": "{count} file caricati: grazie!",
+    "existingCount": "{count} file già ricevuti.",
+    "title": "Carica file",
+    "dropTitle": "Trascina i file qui",
+    "chooseFiles": "Scegli i file",
+    "dropHint": "Trascina i file in quest'area o scegline più contemporaneamente.",
+    "subtitle": "Utilizza questo collegamento sicuro per inviare uno o più file direttamente al richiedente.",
+    "uploadAnother": "Puoi aggiungere un altro lotto quando sei pronto.",
+    "successCount": "{count} file caricati: grazie!",
+    "destination": "Destinazione"
+  }
+}

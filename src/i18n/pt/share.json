@@ -1,0 +1,78 @@
+{
+  "share": {
+    "eyebrow": "Visualização somente leitura",
+    "title": "Compartilhar \"{name}\"",
+    "activeLinks": "Ações ativas",
+    "noLinks": "Ainda não há links de compartilhamento.",
+    "createNew": "Criar novo link de compartilhamento",
+    "create": "Criar link de compartilhamento",
+    "previewHint": "Escolha um pacote de projeto completo ou selecione apenas as páginas que o destinatário deverá ver.",
+    "linkLabel": "compartilhar link",
+    "revoke": "Revogar link de compartilhamento",
+    "neverExpires": "Nunca expira",
+    "expiresAt": "Expira em {date}",
+    "expired": "Expirado",
+    "limitReached": "Os links de compartilhamento ativos são limitados a {limit}.",
+    "table": {
+      "application": "Candidatura",
+      "link": "Link",
+      "created": "Criado",
+      "expires": "Expira",
+      "duration": "Duração",
+      "permission": "Permissão",
+      "scope": "Escopo",
+      "actions": "Ações"
+    },
+    "permission": {
+      "view": "Visualizar",
+      "upload": "Carregar arquivos",
+      "edit": "Editar"
+    },
+    "expiry": {
+      "1h": "1 hora",
+      "1d": "1 dia",
+      "7d": "7 dias",
+      "30d": "30 dias",
+      "never": "Nunca"
+    },
+    "packageMode": "Compartilhar modo de pacote",
+    "completePackage": "Projeto concluído",
+    "completePackageDesc": "Compartilhe cada página pública do projeto como um dossiê sofisticado.",
+    "customPackage": "Escolher páginas",
+    "customPackageDesc": "Limite o link a páginas e fluxos de trabalho específicos.",
+    "completeIncludes": "O pacote completo inclui",
+    "sectionsTitle": "Páginas compartilhadas",
+    "scope": {
+      "all": "Todas as páginas",
+      "count": "{count} páginas"
+    },
+    "sections": {
+      "overview": "Visão geral",
+      "materials": "Lista de verificação",
+      "tasks": "Tarefas",
+      "communications": "Correspondência",
+      "funding": "Financiamento",
+      "timeline": "Linha do tempo",
+      "versions": "Versões"
+    },
+    "sectionDescriptions": {
+      "overview": "Escola, programa, professor, datas, progresso, etiquetas e cartões de dossiê.",
+      "materials": "Materiais, status, solicitações de arquivos, recomendações e versões de materiais.",
+      "tasks": "Lista de verificação de tarefas, datas de vencimento, detalhes e anexos solicitados.",
+      "communications": "E-mails, mensagens, notas, datas e resumos do professor.",
+      "funding": "Bolsas de estudo, rastreador de taxas, tarefas de financiamento, materiais e marcos.",
+      "timeline": "cronograma de candidatura à universidade com marcos manuais e de página compartilhada.",
+      "versions": "Histórico de arquivos enviados e versões para download incluídas neste projeto."
+    },
+    "revokeConfirmMessage": "Tem certeza de que deseja revogar este link de compartilhamento? Qualquer pessoa com o link perderá o acesso imediatamente."
+  },
+  "pagination": {
+    "first": "Primeiro",
+    "previous": "Anterior",
+    "next": "Próximo",
+    "last": "Último",
+    "page": "Página {page} de {pages}",
+    "showing": "Mostrando {from}-{to} de {total}",
+    "allItems": "{total} itens"
+  }
+}

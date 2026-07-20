@@ -1,0 +1,78 @@
+{
+  "share": {
+    "eyebrow": "Bản xem trước chỉ đọc",
+    "title": "Chia sẻ \"{name}\"",
+    "activeLinks": "Lượt chia sẻ tích cực",
+    "noLinks": "Chưa có link chia sẻ.",
+    "createNew": "Tạo link chia sẻ mới",
+    "create": "Tạo link chia sẻ",
+    "previewHint": "Chọn gói dự án hoàn chỉnh hoặc chỉ chọn những trang mà người nhận sẽ xem.",
+    "linkLabel": "chia sẻ liên kết",
+    "revoke": "Thu hồi link chia sẻ",
+    "neverExpires": "Không bao giờ hết hạn",
+    "expiresAt": "Hết Hạn {date}",
+    "expired": "Đã hết hạn",
+    "limitReached": "Liên kết chia sẻ đang hoạt động được giới hạn ở mức {limit}.",
+    "table": {
+      "application": "Hồ sơ",
+      "link": "Liên kết",
+      "created": "Đã tạo",
+      "expires": "Hết Hạn",
+      "duration": "Thời lượng",
+      "permission": "Giấy phép",
+      "scope": "Phạm vi",
+      "actions": "Hành động"
+    },
+    "permission": {
+      "view": "Xem",
+      "upload": "Tải tập tin lên",
+      "edit": "Chỉnh sửa"
+    },
+    "expiry": {
+      "1h": "1 giờ",
+      "1d": "1 ngày",
+      "7d": "7 ngày",
+      "30d": "30 ngày",
+      "never": "Không bao giờ"
+    },
+    "packageMode": "Chế độ chia sẻ gói",
+    "completePackage": "Hoàn thành dự án",
+    "completePackageDesc": "Chia sẻ mọi trang dự án công cộng dưới dạng một hồ sơ bóng bẩy.",
+    "customPackage": "Chọn trang",
+    "customPackageDesc": "Giới hạn liên kết đến các trang và quy trình làm việc cụ thể.",
+    "completeIncludes": "Trọn gói bao gồm",
+    "sectionsTitle": "Trang được chia sẻ",
+    "scope": {
+      "all": "Tất cả các trang",
+      "count": "{count} trang"
+    },
+    "sections": {
+      "overview": "Tổng quan",
+      "materials": "Danh sách kiểm tra",
+      "tasks": "Nhiệm vụ",
+      "communications": "Thư từ",
+      "funding": "Tài trợ",
+      "timeline": "Dòng thời gian",
+      "versions": "Phiên bản"
+    },
+    "sectionDescriptions": {
+      "overview": "Trường học, chương trình, giáo sư, ngày tháng, tiến độ, thẻ và thẻ hồ sơ.",
+      "materials": "Tài liệu, trạng thái, yêu cầu tệp, đề xuất và phiên bản tài liệu.",
+      "tasks": "Danh sách kiểm tra nhiệm vụ, ngày đến hạn, chi tiết và tệp đính kèm được yêu cầu.",
+      "communications": "Email, tin nhắn, ghi chú, ngày tháng và tóm tắt của giáo sư.",
+      "funding": "Học bổng, theo dõi học phí, nhiệm vụ tài trợ, tài liệu và các cột mốc quan trọng.",
+      "timeline": "dòng thời gian hồ sơ đăng ký tuyển sinh với các mốc quan trọng trên trang thủ công và trang chia sẻ.",
+      "versions": "Lịch sử tệp đã tải lên và các phiên bản có thể tải xuống có trong dự án này."
+    },
+    "revokeConfirmMessage": "Bạn có chắc chắn muốn thu hồi liên kết chia sẻ này không? Bất cứ ai có liên kết sẽ mất quyền truy cập ngay lập tức."
+  },
+  "pagination": {
+    "first": "Đầu tiên",
+    "previous": "Trước",
+    "next": "Tiếp theo",
+    "last": "Cuối cùng",
+    "page": "Trang {page} trong tổng số {pages}",
+    "showing": "Đang hiển thị {from}-{to} trong tổng số {total}",
+    "allItems": "{total} mục"
+  }
+}

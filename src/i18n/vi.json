@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "nativeName": "Tiếng Việt",
+    "name": "Vietnamese"
+  },
+  "appTitle": "PhD Atlas",
+  "appDesc": "Một không gian làm việc riêng dành cho các ứng dụng, danh sách kiểm tra, email và quyết định.",
+  "languagePack": "modular",
+  "namespaces": [
+    "core",
+    "shared",
+    "dashboard",
+    "discover",
+    "workspace",
+    "dossier",
+    "profile",
+    "settings",
+    "team",
+    "share",
+    "shareViewer",
+    "assetUpload",
+    "upgrade",
+    "resetPassword",
+    "admin",
+    "tour",
+    "pdfExport"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "nativeName": "日本語",
+    "name": "Japanese"
+  },
+  "appTitle": "PhD Atlas",
+  "appDesc": "アプリケーション、チェックリスト、電子メール、意思決定のためのプライベート ワークスペース。",
+  "languagePack": "modular",
+  "namespaces": [
+    "core",
+    "shared",
+    "dashboard",
+    "discover",
+    "workspace",
+    "dossier",
+    "profile",
+    "settings",
+    "team",
+    "share",
+    "shareViewer",
+    "assetUpload",
+    "upgrade",
+    "resetPassword",
+    "admin",
+    "tour",
+    "pdfExport"
+  ]
+}

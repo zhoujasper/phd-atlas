@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "nativeName": "Deutsch",
+    "name": "German"
+  },
+  "appTitle": "PhD Atlas",
+  "appDesc": "Ein privater Arbeitsbereich für Anträge, Checklisten, E-Mails und Entscheidungen.",
+  "languagePack": "modular",
+  "namespaces": [
+    "core",
+    "shared",
+    "dashboard",
+    "discover",
+    "workspace",
+    "dossier",
+    "profile",
+    "settings",
+    "team",
+    "share",
+    "shareViewer",
+    "assetUpload",
+    "upgrade",
+    "resetPassword",
+    "admin",
+    "tour",
+    "pdfExport"
+  ]
+}

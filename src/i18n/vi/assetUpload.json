@@ -1,0 +1,27 @@
+{
+  "assetUpload": {
+    "loading": "Đang tải…",
+    "loadFailed": "Không thể tải liên kết tải lên này.",
+    "accessDenied": "Liên kết không có",
+    "expired": "Liên kết tải lên này đã hết hạn.",
+    "uploadFailed": "Tải lên không thành công.",
+    "note": "Lưu ý từ người yêu cầu",
+    "chooseFile": "Chọn tập tin",
+    "upload": "Tải lên",
+    "uploading": "Đang tải lên…",
+    "success": "Đã tải lên — cảm ơn bạn!",
+    "existingCountOne": "1 tệp đã được nhận.",
+    "existingCountMany": "{count} tệp đã được nhận.",
+    "successCountOne": "1 tệp đã được tải lên — cảm ơn bạn!",
+    "successCountMany": "{count} tệp đã được tải lên — cảm ơn bạn!",
+    "existingCount": "{count} tệp đã được nhận.",
+    "title": "Tải tập tin lên",
+    "dropTitle": "Thả file vào đây",
+    "chooseFiles": "Chọn tập tin",
+    "dropHint": "Kéo tệp vào khu vực này hoặc chọn nhiều tệp cùng một lúc.",
+    "subtitle": "Sử dụng liên kết an toàn này để gửi một hoặc nhiều tệp trực tiếp đến người yêu cầu.",
+    "uploadAnother": "Bạn có thể thêm đợt khác bất cứ khi nào bạn sẵn sàng.",
+    "successCount": "{count} tệp đã được tải lên — cảm ơn bạn!",
+    "destination": "Điểm đến"
+  }
+}

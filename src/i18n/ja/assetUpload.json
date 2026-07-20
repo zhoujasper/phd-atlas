@@ -1,0 +1,27 @@
+{
+  "assetUpload": {
+    "loading": "読み込み中…",
+    "loadFailed": "このアップロード リンクを読み込めませんでした。",
+    "accessDenied": "リンクが利用できません",
+    "expired": "このアップロード リンクの有効期限が切れています。",
+    "uploadFailed": "アップロードに失敗しました。",
+    "note": "依頼者からのメモ",
+    "chooseFile": "ファイルを選択してください",
+    "upload": "アップロード",
+    "uploading": "アップロード中…",
+    "success": "アップロードしました — ありがとうございます!",
+    "existingCountOne": "すでに 1 ファイルを受信しました。",
+    "existingCountMany": "{count} ファイルはすでに受信されています。",
+    "successCountOne": "1 ファイルがアップロードされました — ありがとうございます!",
+    "successCountMany": "{count} ファイルがアップロードされました — ありがとうございます!",
+    "existingCount": "{count} ファイルはすでに受信されています。",
+    "title": "ファイルをアップロードする",
+    "dropTitle": "ここにファイルをドロップします",
+    "chooseFiles": "ファイルの選択",
+    "dropHint": "ファイルをこの領域にドラッグするか、一度に複数のファイルを選択します。",
+    "subtitle": "この安全なリンクを使用して、1 つ以上のファイルを要求者に直接送信します。",
+    "uploadAnother": "準備ができたら、いつでも別のバッチを追加できます。",
+    "successCount": "{count} ファイルがアップロードされました — ありがとうございます!",
+    "destination": "行き先"
+  }
+}

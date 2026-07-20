@@ -1,0 +1,78 @@
+{
+  "share": {
+    "eyebrow": "Aperçu en lecture seule",
+    "title": "Partager \"{name}\"",
+    "activeLinks": "Actions actives",
+    "noLinks": "Aucun lien de partage pour l'instant.",
+    "createNew": "Créer un nouveau lien de partage",
+    "create": "Créer un lien de partage",
+    "previewHint": "Choisissez un package de projet complet ou sélectionnez uniquement les pages que le destinataire doit voir.",
+    "linkLabel": "partager le lien",
+    "revoke": "Révoquer le lien de partage",
+    "neverExpires": "N'expire jamais",
+    "expiresAt": "Expire {date}",
+    "expired": "Expiré",
+    "limitReached": "Les liens de partage actifs sont plafonnés à {limit}.",
+    "table": {
+      "application": "Candidature",
+      "link": "Lien",
+      "created": "Créé",
+      "expires": "Expire",
+      "duration": "Durée",
+      "permission": "Autorisation",
+      "scope": "Portée",
+      "actions": "Actes"
+    },
+    "permission": {
+      "view": "Voir",
+      "upload": "Télécharger des fichiers",
+      "edit": "Modifier"
+    },
+    "expiry": {
+      "1h": "1 heure",
+      "1d": "1 jour",
+      "7d": "7 jours",
+      "30d": "30 jours",
+      "never": "Jamais"
+    },
+    "packageMode": "Partager le mode package",
+    "completePackage": "Projet complet",
+    "completePackageDesc": "Partagez chaque page publique du projet sous la forme d'un seul dossier soigné.",
+    "customPackage": "Choisir des pages",
+    "customPackageDesc": "Limitez le lien à des pages et des flux de travail spécifiques.",
+    "completeIncludes": "Le forfait complet comprend",
+    "sectionsTitle": "Pages partagées",
+    "scope": {
+      "all": "Toutes les pages",
+      "count": "Pages {count}"
+    },
+    "sections": {
+      "overview": "Aperçu",
+      "materials": "Liste de contrôle",
+      "tasks": "Tâches",
+      "communications": "Correspondance",
+      "funding": "Financement",
+      "timeline": "Chronologie",
+      "versions": "Versions"
+    },
+    "sectionDescriptions": {
+      "overview": "École, programme, professeur, dates, progrès, étiquettes et fiches de dossier.",
+      "materials": "Matériaux, statuts, demandes de fichiers, recommandations et versions de matériaux.",
+      "tasks": "Liste de contrôle des tâches, dates d'échéance, détails et pièces jointes demandées.",
+      "communications": "E-mails, messages, notes, dates et résumés des professeurs.",
+      "funding": "Bourses, suivi des frais, tâches de financement, matériel et jalons.",
+      "timeline": "Chronologie de l'candidature avec jalons manuels et pages partagées.",
+      "versions": "Historique des fichiers téléchargés et versions téléchargeables incluses dans ce projet."
+    },
+    "revokeConfirmMessage": "Êtes-vous sûr de vouloir révoquer ce lien de partage ? Toute personne disposant du lien perdra immédiatement l’accès."
+  },
+  "pagination": {
+    "first": "D'abord",
+    "previous": "Précédent",
+    "next": "Suivant",
+    "last": "Dernier",
+    "page": "Page {page} de {pages}",
+    "showing": "Affichage de {from}-{to} de {total}",
+    "allItems": "Articles {total}"
+  }
+}

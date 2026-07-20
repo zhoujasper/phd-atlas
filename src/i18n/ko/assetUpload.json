@@ -1,0 +1,27 @@
+{
+  "assetUpload": {
+    "loading": "로드 중…",
+    "loadFailed": "이 업로드 링크를 로드할 수 없습니다.",
+    "accessDenied": "링크를 사용할 수 없습니다.",
+    "expired": "이 업로드 링크는 만료되었습니다.",
+    "uploadFailed": "업로드에 실패했습니다.",
+    "note": "요청자의 메모",
+    "chooseFile": "파일 선택",
+    "upload": "업로드",
+    "uploading": "업로드 중…",
+    "success": "업로드했습니다 - 감사합니다!",
+    "existingCountOne": "이미 파일 1개를 받았습니다.",
+    "existingCountMany": "{count} 파일이 이미 수신되었습니다.",
+    "successCountOne": "파일 1개 업로드됨 — 감사합니다!",
+    "successCountMany": "{count} 파일이 업로드되었습니다. 감사합니다!",
+    "existingCount": "{count} 파일이 이미 수신되었습니다.",
+    "title": "파일 업로드",
+    "dropTitle": "여기에 파일을 드롭하세요.",
+    "chooseFiles": "파일 선택",
+    "dropHint": "파일을 이 영역으로 드래그하거나 한 번에 여러 개를 선택하세요.",
+    "subtitle": "이 보안 링크를 사용하여 하나 이상의 파일을 요청자에게 직접 보내십시오.",
+    "uploadAnother": "준비가 되면 언제든지 다른 배치를 추가할 수 있습니다.",
+    "successCount": "{count} 파일이 업로드되었습니다. — 감사합니다!",
+    "destination": "목적지"
+  }
+}

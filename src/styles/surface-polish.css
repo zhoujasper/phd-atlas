@@ -1,0 +1,707 @@
+/**
+ * Surface polish — reduce nested frames, tighten interaction motion, and keep
+ * multi-language labels from blowing out common chrome.
+ * Loaded after index.css from main.tsx.
+ */
+
+/* ── Continuous list surfaces (less box-in-box) ─────────────────────────── */
+
+.dashboard-panel .dashboard-panel-body > .priority-grid,
+.dashboard-panel .dashboard-panel-body > .deadline-list,
+.dashboard-panel .dashboard-panel-body > .by-student-list {
+  gap: 0;
+}
+
+.priority-card,
+.deadline-item,
+.by-student-item {
+  border-radius: 0;
+  border-left: 0;
+  border-right: 0;
+  box-shadow: none;
+}
+
+.priority-card {
+  padding-inline: 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+}
+
+.priority-card:hover {
+  border-color: var(--border);
+  background: var(--surface-secondary);
+  box-shadow: none;
+}
+
+.priority-card + .priority-card,
+.deadline-item + .deadline-item,
+.by-student-item + .by-student-item {
+  border-top-color: var(--border);
+}
+
+/* ── Funding cards: quieter shells while editing ────────────────────────── */
+
+.funding-card.editing {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-xs);
+}
+
+.funding-card.editing .funding-card-summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.funding-card.saving {
+  pointer-events: none;
+}
+
+.funding-card.saving .funding-card-summary {
+  opacity: 0.72;
+}
+
+.scholarship-form-actions {
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.scholarship-form-actions .primary-action.loading {
+  gap: 8px;
+}
+
+/* ── Global interaction snappiness ──────────────────────────────────────── */
+
+.quiet-action,
+.ghost-action,
+.compact-action,
+.primary-action,
+.funding-mini-btn,
+.funding-expand-btn,
+.checklist-mini-btn,
+.mode-toggle button,
+.status-view-toggle button {
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out),
+    transform 80ms var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+
+.quiet-action:active:not(:disabled),
+.ghost-action:active:not(:disabled),
+.compact-action:active:not(:disabled),
+.primary-action:active:not(:disabled),
+.mode-toggle button:active:not(:disabled),
+.status-view-toggle button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* ── Multi-language label safety ────────────────────────────────────────── */
+
+.stat-body,
+.dashboard-header h1,
+.dashboard-panel-title,
+.dossier-tab,
+.rail-item span,
+.auth-language-control,
+.settings-lines label > span:first-child,
+.settings-lines .setting-row > span:first-child,
+.eyebrow {
+  min-width: 0;
+}
+
+.dashboard-header h1,
+.dashboard-panel-title,
+.dossier-tab,
+.rail-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dossier-tab {
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.auth-language-control .custom-select-trigger,
+.auth-language-control .custom-select-value {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settings-lines label,
+.settings-lines .setting-row {
+  min-width: 0;
+}
+
+/* Compact chrome for longer translated button labels */
+.primary-action,
+.quiet-action,
+.ghost-action {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Dark mode: keep flattened lists legible ────────────────────────────── */
+
+[data-theme="dark"] .checklist-task-list {
+  background: var(--surface);
+}
+
+[data-theme="dark"] .scholarship-mini-list {
+  background: color-mix(in srgb, var(--surface-secondary) 88%, transparent);
+}
+
+[data-theme="dark"] .stat-card.interactive.active {
+  border-color: transparent;
+}
+
+/* ── Locale typography: product copy density, not raw machine strings ───── */
+
+html[lang^="zh"],
+html[lang^="ja"],
+html[lang^="ko"] {
+  /* CJK reads denser; keep natural breaks (not mid-glyph UI chrome). */
+  letter-spacing: 0;
+  word-break: normal;
+  overflow-wrap: break-word;
+  line-break: strict;
+}
+
+html[lang^="th"] {
+  /* Thai has no spaces between many words; permit browser dictionary breaks
+     and retain an emergency wrap for narrow productivity surfaces. */
+  word-break: normal;
+  overflow-wrap: anywhere;
+  line-break: auto;
+}
+
+/* Field / form labels: English uses microcaps; CJK must not inherit
+   letter-spacing or uppercase — it made 电话 / 社交媒体 look gappy. */
+html[lang^="zh"] .auth-sheet label > span,
+html[lang^="ja"] .auth-sheet label > span,
+html[lang^="ko"] .auth-sheet label > span,
+html[lang^="zh"] .field-grid label > span,
+html[lang^="ja"] .field-grid label > span,
+html[lang^="ko"] .field-grid label > span,
+html[lang^="zh"] .field-stack label > span,
+html[lang^="ja"] .field-stack label > span,
+html[lang^="ko"] .field-stack label > span,
+html[lang^="zh"] .textarea-field > span,
+html[lang^="ja"] .textarea-field > span,
+html[lang^="ko"] .textarea-field > span,
+html[lang^="zh"] .new-dialog label > span,
+html[lang^="ja"] .new-dialog label > span,
+html[lang^="ko"] .new-dialog label > span,
+html[lang^="zh"] .settings-lines > label > span,
+html[lang^="ja"] .settings-lines > label > span,
+html[lang^="ko"] .settings-lines > label > span,
+html[lang^="zh"] .checklist-detail-grid label > span,
+html[lang^="ja"] .checklist-detail-grid label > span,
+html[lang^="ko"] .checklist-detail-grid label > span,
+html[lang^="zh"] .checklist-details-field > span,
+html[lang^="ja"] .checklist-details-field > span,
+html[lang^="ko"] .checklist-details-field > span,
+html[lang^="zh"] .scholarship-form-grid label > span,
+html[lang^="ja"] .scholarship-form-grid label > span,
+html[lang^="ko"] .scholarship-form-grid label > span,
+html[lang^="zh"] .scholarship-notes-field > span,
+html[lang^="ja"] .scholarship-notes-field > span,
+html[lang^="ko"] .scholarship-notes-field > span,
+html[lang^="zh"] .resource-card-preview-label,
+html[lang^="ja"] .resource-card-preview-label,
+html[lang^="ko"] .resource-card-preview-label {
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 600;
+}
+
+html[lang^="zh"] .stat-body span,
+html[lang^="ja"] .stat-body span,
+html[lang^="ko"] .stat-body span,
+html[lang^="zh"] .rail-item span,
+html[lang^="ja"] .rail-item span,
+html[lang^="ko"] .rail-item span,
+html[lang^="zh"] .dossier-tab,
+html[lang^="ja"] .dossier-tab,
+html[lang^="ko"] .dossier-tab,
+html[lang^="zh"] .settings-lines > label > span:first-child,
+html[lang^="ja"] .settings-lines > label > span:first-child,
+html[lang^="ko"] .settings-lines > label > span:first-child,
+html[lang^="zh"] .settings-lines .settings-group-card > label > span:first-child,
+html[lang^="ja"] .settings-lines .settings-group-card > label > span:first-child,
+html[lang^="ko"] .settings-lines .settings-group-card > label > span:first-child,
+html[lang^="zh"] .settings-lines .setting-row > span:first-child,
+html[lang^="ja"] .settings-lines .setting-row > span:first-child,
+html[lang^="ko"] .settings-lines .setting-row > span:first-child,
+html[lang^="zh"] .eyebrow,
+html[lang^="ja"] .eyebrow,
+html[lang^="ko"] .eyebrow {
+  letter-spacing: 0;
+}
+
+html[lang^="de"] .primary-action,
+html[lang^="de"] .quiet-action,
+html[lang^="de"] .ghost-action,
+html[lang^="es"] .primary-action,
+html[lang^="es"] .quiet-action,
+html[lang^="fr"] .primary-action,
+html[lang^="fr"] .quiet-action,
+html[lang^="pt"] .primary-action,
+html[lang^="pt"] .quiet-action,
+html[lang^="pt"] .ghost-action,
+html[lang^="it"] .primary-action,
+html[lang^="it"] .quiet-action,
+html[lang^="it"] .ghost-action,
+html[lang^="ru"] .primary-action,
+html[lang^="ru"] .quiet-action,
+html[lang^="ru"] .ghost-action,
+html[lang^="vi"] .primary-action,
+html[lang^="vi"] .quiet-action,
+html[lang^="vi"] .ghost-action,
+html[lang^="th"] .primary-action,
+html[lang^="th"] .quiet-action,
+html[lang^="th"] .ghost-action {
+  /* Longer European labels need flexible chrome without clipping mid-word. */
+  white-space: normal;
+  text-overflow: unset;
+  line-height: 1.25;
+  min-height: 36px;
+  height: auto;
+  padding-block: 8px;
+}
+
+/* ── Dual content languages (Settings) — flat, no nested cards ─────────── */
+
+.content-language-row {
+  align-items: stretch !important;
+  gap: 10px !important;
+  padding: 10px 0 12px !important;
+}
+
+.content-language-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.content-language-row .settings-inline-title {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+}
+
+.content-language-row .settings-inline-hint {
+  display: block;
+  margin: 0;
+  font-size: 12.5px;
+  font-style: normal;
+  font-weight: 400;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+}
+
+.content-language-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.content-language-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.content-language-field .content-language-label,
+.content-language-field > span {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: unset;
+  line-height: 1.25;
+}
+
+.content-language-field .custom-select,
+.content-language-field .custom-select-root {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+}
+
+.content-language-field .custom-select-trigger {
+  width: 100%;
+  max-width: none;
+  min-height: 34px;
+  height: 34px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.content-language-field .custom-select-trigger > span,
+.content-language-field .custom-select-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.25;
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.settings-lines .content-language-row label > span:first-child,
+.settings-lines .content-language-field > span {
+  flex: none;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+@media (max-width: 560px) {
+  .content-language-pair {
+    grid-template-columns: 1fr;
+    max-width: none;
+  }
+}
+
+/* ── Focus / hover / selected rings: intentional, not universal ───────────
+   Default chrome does NOT wear a light-blue outer glow on click, hover, or
+   selection. Keep rings for:
+   - text entry fields (keyboard + mouse focus)
+   - keyboard focus-visible on actionable controls (thin, brief)
+   - true multi-select explorer selection (calm inset wash, not a fat glow)
+   Remove outer accent glows from ordinary selected rows, open pickers that
+   already change border-color, and editing shells that already re-layout. */
+
+/* Global: non-field controls get a thin keyboard ring only — no fat 3px halo */
+:focus-visible:not(input):not(textarea):not(select):not([contenteditable="true"]) {
+  box-shadow: none;
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Text fields keep a calm focus treatment (border + soft ring) */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[contenteditable="true"]:focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* Buttons / chrome: keyboard outline only — no blue outer glow */
+.primary-action:focus-visible,
+.secondary-action:focus-visible,
+.quiet-action:focus-visible,
+.ghost-action:focus-visible,
+.compact-action:focus-visible,
+.icon-action:focus-visible,
+.rail-btn:focus-visible,
+.mode-toggle button:focus-visible,
+.sort-chip:focus-visible,
+.tab-strip button:focus-visible,
+.status-filter button:focus-visible,
+.owner-filter button:focus-visible,
+.dossier-tab:focus-visible,
+.funding-mini-btn:focus-visible,
+.funding-expand-btn:focus-visible,
+.checklist-mini-btn:focus-visible,
+.backup-item-actions button:focus-visible,
+.resource-mini-btn:focus-visible,
+.admin-team-inline-action:focus-visible,
+.admin-team-manage-link:focus-visible {
+  box-shadow: none;
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
+/* Status chart icons: no blue halo on hover/focus */
+.status-view-toggle button:focus-visible {
+  box-shadow: none !important;
+  outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: 1px;
+}
+
+/* Selected / open states: border or wash only — drop outer accent glows */
+.correspondence-event-card.explorer-selected,
+.funding-card.explorer-selected,
+.timeline-event-card.explorer-selected {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-xs);
+  background: color-mix(in srgb, var(--accent-soft) 42%, var(--surface));
+}
+
+.application-line.selected .line-status {
+  box-shadow: none;
+}
+
+.accent-card.active,
+.settings-lines .accent-card.active {
+  border-color: var(--accent);
+  box-shadow: none;
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface));
+}
+
+.profile-preset-picker-trigger.open,
+.resource-appearance-trigger.open {
+  border-color: var(--accent);
+  box-shadow: none;
+}
+
+/* Open selects keep a light field-style ring (they behave like inputs) */
+.custom-select-trigger.open {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.10);
+}
+
+/* Editing scholarship shell: calm elevation, not a permanent blue halo */
+.funding-card.editing {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-xs);
+}
+
+/* Priority / icon grid selected chips: fill, not outer ring */
+.priority-picker-option.active,
+.resource-icon-grid button.active,
+.resource-color-grid button.active,
+.resource-segmented button.active,
+.resource-field-layout-toggle button.active {
+  box-shadow: none;
+}
+
+/* ── Surface hierarchy: one frame per information level ──────────────── */
+
+/* Dashboard sections sit directly on the canvas. Their rows and charts
+   already provide the local grouping, so another card shell adds noise. */
+.dashboard-card.dashboard-application-snapshot,
+.dashboard-panel {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.dashboard-panel {
+  padding-inline: 0;
+}
+
+.dashboard-card.dashboard-application-snapshot:hover,
+.dashboard-panel:hover,
+.dashboard-panel.expanded {
+  border-color: transparent;
+  box-shadow: none;
+  transform: none;
+}
+
+.dashboard-panel-header {
+  padding-inline: 2px;
+}
+
+/* Kanban columns become a single continuous list surface instead of a
+   bordered column containing a second set of bordered cards. */
+.kanban-column {
+  gap: 0;
+  padding: 0 10px 10px;
+  border: 0;
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: none;
+}
+
+.kanban-column-header {
+  min-height: 44px;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.kanban-column-body {
+  gap: 0;
+}
+
+.kanban-card {
+  padding: 12px 4px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.kanban-column-body > .kanban-card:last-of-type {
+  border-bottom-color: transparent;
+}
+
+.kanban-card:hover {
+  border-color: var(--border);
+  background: var(--surface-secondary);
+  box-shadow: none;
+  filter: none;
+  transform: translateX(2px);
+}
+
+.kanban-card:active {
+  transform: scale(var(--press-scale));
+}
+
+.kanban-column.drag-over {
+  border-color: transparent;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* The dossier is one report surface with internally divided chapters.
+   Form controls keep their own affordance, but chapter shells disappear. */
+.dossier-summary .summary-stat-bar {
+  border: 0;
+  box-shadow: none;
+}
+
+.dossier-cards {
+  columns: initial;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 28px;
+  padding: 0 16px;
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+}
+
+.dossier-cards .section-card,
+.dossier-cards .section-card.wide {
+  width: auto;
+  display: block;
+  margin: 0;
+  padding: 16px 0 18px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  column-span: none;
+  break-inside: auto;
+}
+
+.dossier-cards .section-card.wide {
+  grid-column: 1 / -1;
+}
+
+/* The inspector is already a pane. Continuous sections with hairline
+   dividers are calmer and scan faster than a tower of small cards. */
+.inspector-pane {
+  gap: 0;
+  background: var(--surface);
+}
+
+.inspector-pane .inspector-card {
+  padding: 16px 2px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.inspector-pane .inspector-card:last-child {
+  border-bottom-color: transparent;
+}
+
+/* Settings groups remain useful white surfaces, but the outline and shadow
+   are removed. Rows and section spacing carry the hierarchy. */
+.settings-index {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.settings-group-card {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+@media (max-width: 980px) {
+  .settings-index {
+    border-color: var(--border);
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
+    box-shadow: var(--shadow-xs);
+    backdrop-filter: blur(18px) saturate(1.15);
+  }
+}
+
+@media (max-width: 820px) {
+  .dossier-cards {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    padding-inline: 14px;
+  }
+
+  .dossier-cards .section-card.wide {
+    grid-column: auto;
+  }
+}
+
+/* Hold every shared overlay on its entrance keyframe before the first paint.
+   Without this, the final modal frame can flash for one frame before the
+   opacity/scale animation starts, especially on large or scrollable dialogs. */
+.dialog-layer:not(.exiting),
+.dialog-layer:not(.exiting) > * {
+  animation-fill-mode: both;
+}
+
+.dialog-layer:not(.exiting) > * {
+  transform-origin: center;
+  backface-visibility: hidden;
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .stat-card.interactive::after {
+    transition-duration: 0.01ms !important;
+  }
+
+  .scholarship-edit-panel,
+  .funding-detail-readonly,
+  .funding-card.saving .scholarship-edit-panel {
+    animation-duration: 0.01ms !important;
+  }
+
+  .quiet-action:active:not(:disabled),
+  .ghost-action:active:not(:disabled),
+  .compact-action:active:not(:disabled),
+  .primary-action:active:not(:disabled) {
+    transform: none;
+  }
+
+  :focus-visible:not(input):not(textarea):not(select):not([contenteditable="true"]) {
+    outline-offset: 1px;
+  }
+}

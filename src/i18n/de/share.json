@@ -1,0 +1,78 @@
+{
+  "share": {
+    "eyebrow": "Schreibgeschützte Vorschau",
+    "title": "Teilen Sie „{name}“",
+    "activeLinks": "Aktive Aktien",
+    "noLinks": "Noch keine Links zum Teilen.",
+    "createNew": "Erstellen Sie einen neuen Freigabelink",
+    "create": "Teilen-Link erstellen",
+    "previewHint": "Wählen Sie ein komplettes Projektpaket oder wählen Sie nur die Seiten aus, die der Empfänger sehen soll.",
+    "linkLabel": "Link teilen",
+    "revoke": "Freigabelink widerrufen",
+    "neverExpires": "Läuft nie ab",
+    "expiresAt": "Läuft ab {date}",
+    "expired": "Abgelaufen",
+    "limitReached": "Aktive Freigabelinks sind auf {limit} begrenzt.",
+    "table": {
+      "application": "Bewerbung",
+      "link": "Link",
+      "created": "Erstellt",
+      "expires": "Läuft ab",
+      "duration": "Dauer",
+      "permission": "Erlaubnis",
+      "scope": "Umfang",
+      "actions": "Aktionen"
+    },
+    "permission": {
+      "view": "Sicht",
+      "upload": "Dateien hochladen",
+      "edit": "Bearbeiten"
+    },
+    "expiry": {
+      "1h": "1 Stunde",
+      "1d": "1 Tag",
+      "7d": "7 Tage",
+      "30d": "30 Tage",
+      "never": "Niemals"
+    },
+    "packageMode": "Modus „Paket teilen“.",
+    "completePackage": "Komplettes Projekt",
+    "completePackageDesc": "Teilen Sie jede öffentliche Projektseite als ein ausgefeiltes Dossier.",
+    "customPackage": "Wählen Sie Seiten aus",
+    "customPackageDesc": "Beschränken Sie den Link auf bestimmte Seiten und Arbeitsabläufe.",
+    "completeIncludes": "Das Komplettpaket beinhaltet",
+    "sectionsTitle": "Geteilte Seiten",
+    "scope": {
+      "all": "Alle Seiten",
+      "count": "{count} Seiten"
+    },
+    "sections": {
+      "overview": "Überblick",
+      "materials": "Checkliste",
+      "tasks": "Aufgaben",
+      "communications": "Korrespondenz",
+      "funding": "Finanzierung",
+      "timeline": "Zeitleiste",
+      "versions": "Versionen"
+    },
+    "sectionDescriptions": {
+      "overview": "Schule, Programm, Professor, Daten, Fortschritt, Tags und Dossierkarten.",
+      "materials": "Materialien, Status, Dateianfragen, Empfehlungsgeber und Materialversionen.",
+      "tasks": "Aufgabencheckliste, Fälligkeitstermine, Details und angeforderte Anhänge.",
+      "communications": "E-Mails, Nachrichten, Notizen, Termine und Zusammenfassungen von Professoren.",
+      "funding": "Stipendien, Gebührenverfolgung, Finanzierungsaufgaben, Materialien und Meilensteine.",
+      "timeline": "Bewerbungszeitleiste mit manuellen und gemeinsam genutzten Seitenmeilensteinen.",
+      "versions": "Hochgeladener Dateiverlauf und herunterladbare Versionen in diesem Projekt enthalten."
+    },
+    "revokeConfirmMessage": "Sind Sie sicher, dass Sie diesen Freigabelink widerrufen möchten? Jeder, der über den Link verfügt, verliert sofort den Zugriff."
+  },
+  "pagination": {
+    "first": "Erste",
+    "previous": "Vorherige",
+    "next": "Nächste",
+    "last": "Zuletzt",
+    "page": "Seite {page} von {pages}",
+    "showing": "Zeigt {from}-{to} von {total}",
+    "allItems": "{total} Artikel"
+  }
+}

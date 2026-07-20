@@ -1,0 +1,78 @@
+{
+  "share": {
+    "eyebrow": "읽기 전용 미리보기",
+    "title": "\"{name}\" 공유",
+    "activeLinks": "활성 공유",
+    "noLinks": "아직 공유 링크가 없습니다.",
+    "createNew": "새 공유 링크 만들기",
+    "create": "공유 링크 만들기",
+    "previewHint": "전체 프로젝트 패키지를 선택하거나 수신자에게 표시되는 페이지만 선택하세요.",
+    "linkLabel": "링크 공유",
+    "revoke": "공유 링크 취소",
+    "neverExpires": "만료되지 않음",
+    "expiresAt": "만료 {date}",
+    "expired": "만료됨",
+    "limitReached": "활성 공유 링크는 {limit}로 제한됩니다.",
+    "table": {
+      "application": "지원서",
+      "link": "링크",
+      "created": "생성됨",
+      "expires": "만료",
+      "duration": "지속",
+      "permission": "허가",
+      "scope": "범위",
+      "actions": "행위"
+    },
+    "permission": {
+      "view": "보다",
+      "upload": "파일 업로드",
+      "edit": "편집하다"
+    },
+    "expiry": {
+      "1h": "1시간",
+      "1d": "1일",
+      "7d": "7일",
+      "30d": "30일",
+      "never": "절대"
+    },
+    "packageMode": "패키지 모드 공유",
+    "completePackage": "프로젝트 완료",
+    "completePackageDesc": "모든 공개 프로젝트 페이지를 하나의 세련된 서류로 공유하세요.",
+    "customPackage": "페이지 선택",
+    "customPackageDesc": "특정 페이지 및 작업 흐름으로의 링크를 제한합니다.",
+    "completeIncludes": "완전한 패키지에는 다음이 포함됩니다.",
+    "sectionsTitle": "공유 페이지",
+    "scope": {
+      "all": "모든 페이지",
+      "count": "{count} 페이지"
+    },
+    "sections": {
+      "overview": "개요",
+      "materials": "체크리스트",
+      "tasks": "작업",
+      "communications": "일치",
+      "funding": "재정 지원",
+      "timeline": "타임라인",
+      "versions": "버전"
+    },
+    "sectionDescriptions": {
+      "overview": "학교, 프로그램, 교수, 날짜, 진행 상황, 태그 및 서류 카드.",
+      "materials": "자료, 상태, 파일 요청, 추천자 및 자료 버전.",
+      "tasks": "작업 체크리스트, 마감일, 세부정보 및 요청된 첨부 파일입니다.",
+      "communications": "교수 이메일, 메시지, 메모, 날짜 및 요약.",
+      "funding": "장학금, 수수료 추적기, 자금 조달 작업, 자료 및 이정표.",
+      "timeline": "수동 및 공유 페이지 마일스톤이 포함된 애플리케이션 타임라인.",
+      "versions": "이 프로젝트에는 업로드된 파일 기록과 다운로드 가능한 버전이 포함되어 있습니다."
+    },
+    "revokeConfirmMessage": "이 공유 링크를 취소하시겠습니까? 링크가 있는 사람은 누구나 즉시 액세스할 수 없게 됩니다."
+  },
+  "pagination": {
+    "first": "첫 번째",
+    "previous": "이전의",
+    "next": "다음",
+    "last": "마지막",
+    "page": "{pages} 페이지 중 {page}페이지",
+    "showing": "{total} 중 {from}-{to} 표시 중",
+    "allItems": "{total} 항목"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "assetUpload": {
+    "loading": "Chargement…",
+    "loadFailed": "Ce lien de téléchargement n'a pas pu être chargé.",
+    "accessDenied": "Lien non disponible",
+    "expired": "Ce lien de téléchargement a expiré.",
+    "uploadFailed": "Le téléchargement a échoué.",
+    "note": "Note du demandeur",
+    "chooseFile": "Choisir un fichier",
+    "upload": "Télécharger",
+    "uploading": "Téléchargement…",
+    "success": "Téléchargé — merci !",
+    "existingCountOne": "1 fichier déjà reçu.",
+    "existingCountMany": "Fichiers {count} déjà reçus.",
+    "successCountOne": "1 fichier téléchargé — merci !",
+    "successCountMany": "Fichiers {count} téléchargés — merci !",
+    "existingCount": "{count} fichier(s) déjà reçu(s).",
+    "title": "Télécharger des fichiers",
+    "dropTitle": "Déposez les fichiers ici",
+    "chooseFiles": "Choisir des fichiers",
+    "dropHint": "Faites glisser les fichiers dans cette zone ou choisissez-en plusieurs à la fois.",
+    "subtitle": "Utilisez ce lien sécurisé pour envoyer un ou plusieurs fichiers directement au demandeur.",
+    "uploadAnother": "Vous pouvez ajouter un autre lot chaque fois que vous êtes prêt.",
+    "successCount": "{count} fichier(s) téléchargé(s) — merci !",
+    "destination": "Destination"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "nativeName": "Español",
+    "name": "Spanish"
+  },
+  "appTitle": "PhD Atlas",
+  "appDesc": "Un espacio de trabajo privado para solicitudes, listas de verificación, correos electrónicos y decisiones.",
+  "languagePack": "modular",
+  "namespaces": [
+    "core",
+    "shared",
+    "dashboard",
+    "discover",
+    "workspace",
+    "dossier",
+    "profile",
+    "settings",
+    "team",
+    "share",
+    "shareViewer",
+    "assetUpload",
+    "upgrade",
+    "resetPassword",
+    "admin",
+    "tour",
+    "pdfExport"
+  ]
+}

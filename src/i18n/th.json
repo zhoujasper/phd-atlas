@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "nativeName": "ไทย",
+    "name": "Thai"
+  },
+  "appTitle": "PhD Atlas",
+  "appDesc": "พื้นที่ทำงานส่วนตัวสำหรับแอปพลิเคชัน รายการตรวจสอบ อีเมล และการตัดสินใจ",
+  "languagePack": "modular",
+  "namespaces": [
+    "core",
+    "shared",
+    "dashboard",
+    "discover",
+    "workspace",
+    "dossier",
+    "profile",
+    "settings",
+    "team",
+    "share",
+    "shareViewer",
+    "assetUpload",
+    "upgrade",
+    "resetPassword",
+    "admin",
+    "tour",
+    "pdfExport"
+  ]
+}

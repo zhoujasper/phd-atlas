@@ -1,0 +1,54 @@
+name: Release update package
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Set release version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must use vMAJOR.MINOR.PATCH." >&2
+            exit 1
+          fi
+          npm version "$version" --no-git-tag-version --allow-same-version
+      - name: Verify source
+        run: |
+          npm ci
+          npm run i18n:check
+          npx tsc --noEmit
+          npm test
+      - name: Build and exercise update package
+        shell: bash
+        run: |
+          npm run build:update-package
+          package_path="$(find storage/update-packages -maxdepth 1 -type f -name '*.tar.gz' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          node tools/verify-update-package.mjs "$package_path"
+          sha256sum "$package_path" > "${package_path}.sha256"
+          echo "PACKAGE_PATH=$package_path" >> "$GITHUB_ENV"
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "$PACKAGE_PATH" \
+            "${PACKAGE_PATH}.sha256" \
+            --verify-tag \
+            --generate-notes \
+            --title "PhD Atlas $GITHUB_REF_NAME"

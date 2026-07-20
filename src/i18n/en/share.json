@@ -1,0 +1,78 @@
+{
+  "share": {
+    "eyebrow": "Read-only preview",
+    "title": "Share \"{name}\"",
+    "activeLinks": "Active shares",
+    "noLinks": "No share links yet.",
+    "createNew": "Create new share link",
+    "create": "Create share link",
+    "previewHint": "Choose a complete project package or select only the pages the recipient should see.",
+    "linkLabel": "share link",
+    "revoke": "Revoke share link",
+    "neverExpires": "Never expires",
+    "expiresAt": "Expires {date}",
+    "expired": "Expired",
+    "limitReached": "Active share links are capped at {limit}.",
+    "table": {
+      "application": "Application",
+      "link": "Link",
+      "created": "Created",
+      "expires": "Expires",
+      "duration": "Duration",
+      "permission": "Permission",
+      "scope": "Scope",
+      "actions": "Actions"
+    },
+    "permission": {
+      "view": "View",
+      "upload": "Upload files",
+      "edit": "Edit"
+    },
+    "expiry": {
+      "1h": "1 hour",
+      "1d": "1 day",
+      "7d": "7 days",
+      "30d": "30 days",
+      "never": "Never"
+    },
+    "packageMode": "Share package mode",
+    "completePackage": "Complete project",
+    "completePackageDesc": "Share every public project page as one polished dossier.",
+    "customPackage": "Choose pages",
+    "customPackageDesc": "Limit the link to specific pages and workflows.",
+    "completeIncludes": "Complete package includes",
+    "sectionsTitle": "Shared pages",
+    "scope": {
+      "all": "All pages",
+      "count": "{count} pages"
+    },
+    "sections": {
+      "overview": "Overview",
+      "materials": "Checklist",
+      "tasks": "Tasks",
+      "communications": "Correspondence",
+      "funding": "Funding",
+      "timeline": "Timeline",
+      "versions": "Versions"
+    },
+    "sectionDescriptions": {
+      "overview": "School, program, professor, dates, progress, tags, and dossier cards.",
+      "materials": "Materials, statuses, file requests, recommenders, and material versions.",
+      "tasks": "Task checklist, due dates, details, and requested attachments.",
+      "communications": "Professor emails, messages, notes, dates, and summaries.",
+      "funding": "Scholarships, fee tracker, funding tasks, materials, and milestones.",
+      "timeline": "Application timeline with manual and shared-page milestones.",
+      "versions": "Uploaded file history and downloadable versions included in this project."
+    },
+    "revokeConfirmMessage": "Are you sure you want to revoke this share link? Anyone with the link will lose access immediately."
+  },
+  "pagination": {
+    "first": "First",
+    "previous": "Previous",
+    "next": "Next",
+    "last": "Last",
+    "page": "Page {page} of {pages}",
+    "showing": "Showing {from}-{to} of {total}",
+    "allItems": "{total} items"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "assetUpload": {
+    "loading": "加载中…",
+    "loadFailed": "无法加载此上传链接。",
+    "accessDenied": "链接不可用",
+    "expired": "此上传链接已过期。",
+    "uploadFailed": "上传失败。",
+    "note": "发起者备注",
+    "chooseFile": "选择文件",
+    "upload": "上传",
+    "uploading": "上传中…",
+    "success": "上传成功，谢谢！",
+    "existingCountOne": "已收到 1 个文件。",
+    "existingCountMany": "已收到 {count} 个文件。",
+    "successCountOne": "已成功上传 1 个文件，谢谢！",
+    "successCountMany": "已成功上传 {count} 个文件，谢谢！",
+    "existingCount": "已收到 {count} 个文件。",
+    "title": "上传文件",
+    "dropTitle": "拖动文件到这里",
+    "chooseFiles": "选择多个文件",
+    "dropHint": "把文件拖入此区域，或一次选择多个文件。",
+    "subtitle": "通过这个安全链接，可一次向发起者发送一个或多个文件。",
+    "uploadAnother": "如有需要，你可以继续上传下一批文件。",
+    "successCount": "已成功上传 {count} 个文件，谢谢！",
+    "destination": "上传到"
+  }
+}
