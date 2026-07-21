@@ -38,28 +38,48 @@ node -e "console.log(require('node:crypto').randomBytes(48).toString('base64url'
 
 ## Docker（推荐）
 
+每次成功推送到 `main` 后，GitHub Actions 会把多架构（`linux/amd64` 和
+`linux/arm64`）镜像发布到
+[`ghcr.io/zhoujasper/phd-atlas-source`](https://github.com/zhoujasper/phd-atlas-source/pkgs/container/phd-atlas-source)。
 安装带 Compose 的 Docker Engine 或 Docker Desktop，然后运行：
 
 ```bash
 cp .env.example .env
 # 继续前先编辑 .env。
-docker compose up -d --build --wait
+docker compose pull
+docker compose up -d --wait
 docker compose ps
 docker compose logs -f phd-atlas
+```
+
+如果镜像包仍是私有的，首次拉取前请使用有包读取权限的 GitHub 账户登录：
+
+```bash
+docker login ghcr.io
+```
+
+`compose.yaml` 默认使用 `ghcr.io/zhoujasper/phd-atlas-source:beta`；这明确是
+Beta 通道，不代表稳定版。可通过
+`PHD_ATLAS_IMAGE=ghcr.io/zhoujasper/phd-atlas-source:1.2.3-beta.1` 固定到经过
+测试的 Beta 版本，或使用包页面展示的不可变 `sha-...` 标签。若要测试本地源码构建的镜像：
+
+```bash
+docker build -t phd-atlas:local .
+PHD_ATLAS_IMAGE=phd-atlas:local docker compose up -d --wait
 ```
 
 Compose 只把程序绑定到 `127.0.0.1:4317`；请在前面使用 Nginx、Caddy、IIS、
 Traefik 或带 HTTPS 的隧道。修改宿主机端口：
 
 ```bash
-APP_PORT=8080 docker compose up -d --build --wait
+APP_PORT=8080 docker compose up -d --wait
 ```
 
 命名卷 `phd-atlas-data` 会在容器重建时保留 SQLite 和上传文件。升级时不要删除卷：
 
 ```bash
-git pull --ff-only
-docker compose up -d --build --wait
+docker compose pull
+docker compose up -d --wait
 ```
 
 备份卷：

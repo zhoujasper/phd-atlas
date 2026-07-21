@@ -44,29 +44,51 @@ in `.env.example`; the public edition ignores them.
 
 ## Docker (recommended)
 
+Every successful push to `main` publishes a multi-architecture (`linux/amd64`
+and `linux/arm64`) image to
+[`ghcr.io/zhoujasper/phd-atlas-source`](https://github.com/zhoujasper/phd-atlas-source/pkgs/container/phd-atlas-source).
 Install Docker Engine/Desktop with Compose, then:
 
 ```bash
 cp .env.example .env
 # Edit .env before continuing.
-docker compose up -d --build --wait
+docker compose pull
+docker compose up -d --wait
 docker compose ps
 docker compose logs -f phd-atlas
+```
+
+If the package is private, authenticate once with a GitHub account that can
+read the package before pulling:
+
+```bash
+docker login ghcr.io
+```
+
+`compose.yaml` defaults to `ghcr.io/zhoujasper/phd-atlas-source:beta`; this is
+a Beta channel, not a stable-release claim. Pin a tested release with
+`PHD_ATLAS_IMAGE=ghcr.io/zhoujasper/phd-atlas-source:1.2.3-beta.1`, or use the
+immutable `sha-...` tag shown on the package page. To test a local source build
+instead:
+
+```bash
+docker build -t phd-atlas:local .
+PHD_ATLAS_IMAGE=phd-atlas:local docker compose up -d --wait
 ```
 
 Compose binds the app only to `127.0.0.1:4317`; put Nginx, Caddy, IIS, Traefik,
 or a tunnel with HTTPS in front of it. To use a different host port:
 
 ```bash
-APP_PORT=8080 docker compose up -d --build --wait
+APP_PORT=8080 docker compose up -d --wait
 ```
 
 The named volume `phd-atlas-data` keeps SQLite and uploads when the container is
 recreated. Upgrade without deleting the volume:
 
 ```bash
-git pull --ff-only
-docker compose up -d --build --wait
+docker compose pull
+docker compose up -d --wait
 ```
 
 Back up the volume:
