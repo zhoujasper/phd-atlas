@@ -1,6 +1,6 @@
 services:
   phd-atlas:
-    image: ${PHD_ATLAS_IMAGE:-ghcr.io/zhoujasper/phd-atlas-source:beta}
+    image: ${PHD_ATLAS_IMAGE:-ghcr.io/zhoujasper/phd-atlas:beta}
     init: true
     restart: unless-stopped
     env_file:

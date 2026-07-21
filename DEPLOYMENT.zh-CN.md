@@ -38,8 +38,8 @@ node -e "console.log(require('node:crypto').randomBytes(48).toString('base64url'
 
 ## Docker（推荐）
 
-每次成功推送到 `main` 后，GitHub Actions 会把 `linux/amd64` 镜像发布到
-[`ghcr.io/zhoujasper/phd-atlas-source`](https://github.com/zhoujasper/phd-atlas-source/pkgs/container/phd-atlas-source)。
+每次公共版成功更新到 `main` 后，GitHub Actions 会把 `linux/amd64` 镜像发布到
+[`ghcr.io/zhoujasper/phd-atlas`](https://github.com/zhoujasper/phd-atlas/pkgs/container/phd-atlas)。
 安装带 Compose 的 Docker Engine 或 Docker Desktop，然后运行：
 
 ```bash
@@ -51,15 +51,10 @@ docker compose ps
 docker compose logs -f phd-atlas
 ```
 
-如果镜像包仍是私有的，首次拉取前请使用有包读取权限的 GitHub 账户登录：
-
-```bash
-docker login ghcr.io
-```
-
-`compose.yaml` 默认使用 `ghcr.io/zhoujasper/phd-atlas-source:beta`；这明确是
+镜像包是公开的，其他用户无需 GitHub 登录即可拉取。`compose.yaml` 默认使用
+`ghcr.io/zhoujasper/phd-atlas:beta`；这明确是
 Beta 通道，不代表稳定版。可通过
-`PHD_ATLAS_IMAGE=ghcr.io/zhoujasper/phd-atlas-source:1.2.3-beta.1` 固定到经过
+`PHD_ATLAS_IMAGE=ghcr.io/zhoujasper/phd-atlas:1.2.3-beta.1` 固定到经过
 测试的 Beta 版本，或使用包页面展示的不可变 `sha-...` 标签。若要测试本地源码构建的镜像：
 
 ```bash

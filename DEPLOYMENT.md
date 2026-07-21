@@ -44,8 +44,8 @@ in `.env.example`; the public edition ignores them.
 
 ## Docker (recommended)
 
-Every successful push to `main` publishes a `linux/amd64` image to
-[`ghcr.io/zhoujasper/phd-atlas-source`](https://github.com/zhoujasper/phd-atlas-source/pkgs/container/phd-atlas-source).
+Every successful public-edition update to `main` publishes a `linux/amd64`
+image to [`ghcr.io/zhoujasper/phd-atlas`](https://github.com/zhoujasper/phd-atlas/pkgs/container/phd-atlas).
 Install Docker Engine/Desktop with Compose, then:
 
 ```bash
@@ -57,16 +57,10 @@ docker compose ps
 docker compose logs -f phd-atlas
 ```
 
-If the package is private, authenticate once with a GitHub account that can
-read the package before pulling:
-
-```bash
-docker login ghcr.io
-```
-
-`compose.yaml` defaults to `ghcr.io/zhoujasper/phd-atlas-source:beta`; this is
+The package is public, so other users can pull it without a GitHub login.
+`compose.yaml` defaults to `ghcr.io/zhoujasper/phd-atlas:beta`; this is
 a Beta channel, not a stable-release claim. Pin a tested release with
-`PHD_ATLAS_IMAGE=ghcr.io/zhoujasper/phd-atlas-source:1.2.3-beta.1`, or use the
+`PHD_ATLAS_IMAGE=ghcr.io/zhoujasper/phd-atlas:1.2.3-beta.1`, or use the
 immutable `sha-...` tag shown on the package page. To test a local source build
 instead:
 
