@@ -44,8 +44,7 @@ in `.env.example`; the public edition ignores them.
 
 ## Docker (recommended)
 
-Every successful push to `main` publishes a multi-architecture (`linux/amd64`
-and `linux/arm64`) image to
+Every successful push to `main` publishes a `linux/amd64` image to
 [`ghcr.io/zhoujasper/phd-atlas-source`](https://github.com/zhoujasper/phd-atlas-source/pkgs/container/phd-atlas-source).
 Install Docker Engine/Desktop with Compose, then:
 

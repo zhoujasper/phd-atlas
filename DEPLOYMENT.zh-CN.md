@@ -38,8 +38,7 @@ node -e "console.log(require('node:crypto').randomBytes(48).toString('base64url'
 
 ## Docker（推荐）
 
-每次成功推送到 `main` 后，GitHub Actions 会把多架构（`linux/amd64` 和
-`linux/arm64`）镜像发布到
+每次成功推送到 `main` 后，GitHub Actions 会把 `linux/amd64` 镜像发布到
 [`ghcr.io/zhoujasper/phd-atlas-source`](https://github.com/zhoujasper/phd-atlas-source/pkgs/container/phd-atlas-source)。
 安装带 Compose 的 Docker Engine 或 Docker Desktop，然后运行：
 
