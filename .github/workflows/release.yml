@@ -119,10 +119,15 @@ jobs:
             echo "::error title=Missing source timestamp::Could not derive SOURCE_DATE_EPOCH from the tagged commit."
             exit 1
           fi
+          release_notes_path="$RUNNER_TEMP/phd-atlas-${package_version}-release-notes.md"
+          node tools/extract-release-notes.mjs \
+            --version "$package_version" \
+            --output "$release_notes_path"
           {
             echo "PACKAGE_VERSION=$package_version"
             echo "SOURCE_DATE_EPOCH=$source_date_epoch"
             echo "CANDIDATE_TAG=candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "RELEASE_NOTES_PATH=$release_notes_path"
           } >> "$GITHUB_ENV"
 
       - name: Verify source
@@ -130,6 +135,7 @@ jobs:
           npm ci
           npm run lint
           npm run i18n:check
+          npm run release:notes:check
           npx tsc --noEmit
           npm test
 
@@ -179,7 +185,7 @@ jobs:
               "${PACKAGE_PATH}.sha256" \
               --draft \
               --verify-tag \
-              --generate-notes \
+              --notes-file "$RELEASE_NOTES_PATH" \
               "${channel_args[@]}" \
               --title "PhD Atlas $GITHUB_REF_NAME"
           fi
@@ -192,6 +198,11 @@ jobs:
           if [[ "$actual_tag" != "$GITHUB_REF_NAME" || "$actual_prerelease" != "$expected_prerelease" ]]; then
             echo "::error title=Release metadata mismatch::Existing Release tag or prerelease channel differs from the canonical package version."
             exit 1
+          fi
+          if [[ "$is_draft" == true ]]; then
+            gh release edit "$GITHUB_REF_NAME" \
+              --notes-file "$RELEASE_NOTES_PATH" \
+              --title "PhD Atlas $GITHUB_REF_NAME"
           fi
 
           unexpected_assets="$(jq -r \
@@ -543,13 +554,22 @@ jobs:
             gh release edit "$GITHUB_REF_NAME" \
               "${publish_args[@]}" \
               --draft=false \
+              --notes-file "$RELEASE_NOTES_PATH" \
               --title "PhD Atlas $GITHUB_REF_NAME"
           fi
 
           published_json="$RUNNER_TEMP/phd-atlas-release-published.json"
-          gh release view "$GITHUB_REF_NAME" --json assets,isDraft,isPrerelease,tagName > "$published_json"
+          gh release view "$GITHUB_REF_NAME" --json assets,body,isDraft,isPrerelease,tagName > "$published_json"
           if [[ "$(jq -r '.isDraft' "$published_json")" != false ]]; then
             echo "::error title=Release publication failed::The verified Release is still a draft."
             exit 1
           fi
+          PUBLISHED_JSON="$published_json" RELEASE_NOTES_PATH="$RELEASE_NOTES_PATH" node <<'NODE'
+          const fs = require('node:fs')
+          const payload = JSON.parse(fs.readFileSync(process.env.PUBLISHED_JSON, 'utf8'))
+          const expected = fs.readFileSync(process.env.RELEASE_NOTES_PATH, 'utf8').trim()
+          if (String(payload.body || '').trim() !== expected) {
+            throw new Error('Published Release notes differ from the versioned RELEASE_NOTES.md section.')
+          }
+          NODE
           echo "Published $GITHUB_REF_NAME only after its update package and public multi-architecture container passed all gates."

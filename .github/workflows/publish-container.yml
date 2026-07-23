@@ -40,6 +40,7 @@ jobs:
           npm ci
           npm run lint
           npm run i18n:check
+          npm run release:notes:check
           npx tsc --noEmit
           npm test
       - name: Set up QEMU
@@ -81,6 +82,7 @@ jobs:
           npm ci
           npm run lint
           npm run i18n:check
+          npm run release:notes:check
           npx tsc --noEmit
           npm test
 

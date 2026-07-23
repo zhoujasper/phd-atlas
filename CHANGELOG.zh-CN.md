@@ -6,6 +6,16 @@ PhD Atlas 公开版的所有重要变化都记录在此文件中。格式遵循
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循
 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 变更
+
+- 源码到公开版的交付现在由版本号驱动：`package.json` 版本未变化时，普通源码
+  推送不会修改公开仓库；版本升高时，会自动完成公开版导出与验证、主分支门禁、
+  源码/公开标签、更新包 Release 和 Docker 通道发布。
+- GitHub Release 的人工编写说明现在自动取自 `RELEASE_NOTES.md` 中匹配的
+  `## v<版本号>` 小节。
+
 ## [0.1.0-beta.2] - 2026-07-23
 
 **预发布版本 — Beta。** 在首个稳定版发布前，数据库结构、已存数据和升级路径
@@ -67,4 +77,18 @@ PhD Atlas 公开版的所有重要变化都记录在此文件中。格式遵循
 - 更新公开版 README，补充受支持数据库矩阵、公开 GHCR 镜像与标签策略、手动
   与自动 Release 更新路径，以及现有 `0.1.0-beta.1` 安装的一次性升级说明。
 
+## [0.1.0-beta.1] - 2026-07-20
+
+### 新增
+
+- 发布首个可自托管、隐私优先、单工作空间的公开 Beta。
+- 新增申请增删改查、仪表盘分析、列表/Kanban 导航、完整档案、材料清单、
+  推荐信、奖学金、任务、费用、进度和统一时间线。
+- 新增项目与导师发现、个人资料复用、通信记录、限定范围的 IMAP/SMTP、
+  附件、受控分享链接、多格式导出、日历与通知。
+- 新增完整工作空间备份、后台管理、集成密钥加密、PWA/离线支持、响应式布局、
+  无障碍偏好、亮暗主题与 12 种语言。
+- 发布首个 GitHub Release 更新包及 SHA-256 校验文件。
+
 [0.1.0-beta.2]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.2
+[0.1.0-beta.1]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.1

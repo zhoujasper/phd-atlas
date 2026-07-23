@@ -16,6 +16,7 @@
     "preview": "vite preview",
     "start": "node tools/start-server.mjs",
     "build:update-package": "node tools/build-update-package.mjs",
+    "release:notes:check": "node tools/extract-release-notes.mjs --check",
     "verify:discover-adapters": "node tools/verify-discover-school-adapters.mjs",
     "verify:discover-adapters:live": "node tools/verify-discover-school-adapters.mjs --live",
     "seed:stress": "node tools/seed-stress-applications.mjs",

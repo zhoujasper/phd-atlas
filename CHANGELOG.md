@@ -6,6 +6,17 @@ All notable changes to the public edition of PhD Atlas are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Source-to-public delivery is now version-driven: ordinary source pushes leave
+  the public repository untouched while `package.json` remains unchanged; a
+  higher version triggers public export, validation, main-branch gates,
+  matching source/public tags, the update-package Release, and Docker channels.
+- Human-written GitHub Release descriptions now come from the matching
+  `## v<version>` section in `RELEASE_NOTES.md`.
+
 ## [0.1.0-beta.2] - 2026-07-23
 
 **Prerelease — Beta.** Database schemas, stored data, and update paths may
@@ -81,4 +92,21 @@ the selected external database when applicable.
   image and tag policy, manual and automatic Release-update paths, and the
   one-time upgrade instructions for existing `0.1.0-beta.1` installations.
 
+## [0.1.0-beta.1] - 2026-07-20
+
+### Added
+
+- Published the first self-hosted, privacy-first, single-workspace public Beta.
+- Added application CRUD, dashboard analytics, list/Kanban navigation,
+  dossiers, materials, recommendation letters, scholarships, tasks, fees,
+  progress, and a unified application timeline.
+- Added program and supervisor discovery, profile material reuse,
+  correspondence history, scoped IMAP/SMTP support, attachments, controlled
+  share links, multi-format exports, calendars, and notifications.
+- Added whole-workspace backups, administration, encrypted integration
+  settings, PWA/offline support, responsive layouts, accessibility preferences,
+  light/dark themes, and twelve language packs.
+- Published the first GitHub Release update archive and SHA-256 sidecar.
+
 [0.1.0-beta.2]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.2
+[0.1.0-beta.1]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.1
