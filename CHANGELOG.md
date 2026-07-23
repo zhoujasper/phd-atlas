@@ -52,6 +52,8 @@ the selected external database when applicable.
 - Multi-architecture container smoke tests now clear Docker's local
   manifest-list cache between `linux/amd64` and `linux/arm64`, so both variants
   are independently pulled and exercised before any public tag is promoted.
+  Anonymous GHCR digest checks also use a bounded retry window after promotion
+  so registry propagation cannot create a false-negative release failure.
 
 ### Security
 

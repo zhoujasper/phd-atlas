@@ -136,6 +136,9 @@ jobs:
             echo "::error title=Missing candidate digest::Buildx did not return a canonical manifest digest."
             exit 1
           fi
+          bash tools/wait-for-container-digest.sh \
+            "${REGISTRY}/${IMAGE_NAME}@${CANDIDATE_DIGEST}" \
+            "$CANDIDATE_DIGEST"
           manifest_path="$RUNNER_TEMP/phd-atlas-main-candidate-manifest.json"
           docker buildx imagetools inspect \
             --raw "${REGISTRY}/${IMAGE_NAME}@${CANDIDATE_DIGEST}" > "$manifest_path"
@@ -199,14 +202,7 @@ jobs:
           for ref in \
             "${REGISTRY}/${IMAGE_NAME}:main" \
             "${REGISTRY}/${IMAGE_NAME}:sha-${SHORT_SHA}"; do
-            resolved_digest="$(
-              docker buildx imagetools inspect "$ref" \
-                | awk '$1 == "Digest:" { print $2; exit }'
-            )"
-            if [[ "$resolved_digest" != "$CANDIDATE_DIGEST" ]]; then
-              echo "::error title=Promoted tag digest mismatch::$ref does not resolve to the validated candidate."
-              exit 1
-            fi
+            bash tools/wait-for-container-digest.sh "$ref" "$CANDIDATE_DIGEST"
           done
 
       - name: Smoke test promoted main on amd64 and arm64

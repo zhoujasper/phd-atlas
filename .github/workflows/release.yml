@@ -3,7 +3,7 @@ name: Release update package and container
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: read
@@ -335,6 +335,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          bash tools/wait-for-container-digest.sh \
+            "${REGISTRY}/${IMAGE_NAME}@${RELEASE_IMAGE_DIGEST}" \
+            "$RELEASE_IMAGE_DIGEST"
           manifest_path="$RUNNER_TEMP/phd-atlas-candidate-manifest.json"
           docker buildx imagetools inspect \
             --raw "${REGISTRY}/${IMAGE_NAME}@${RELEASE_IMAGE_DIGEST}" > "$manifest_path"
@@ -395,21 +398,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          inspect_digest() {
-            local output digest
-            output="$(docker buildx imagetools inspect "$1")"
-            digest="$(printf '%s\n' "$output" | awk '$1 == "Digest:" { print $2; exit }')"
-            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
-            printf '%s' "$digest"
-          }
           for ref in \
             "${REGISTRY}/${IMAGE_NAME}:v${PACKAGE_VERSION}" \
             "${REGISTRY}/${IMAGE_NAME}:${PACKAGE_VERSION}"; do
-            resolved_digest="$(inspect_digest "$ref")"
-            if [[ "$resolved_digest" != "$RELEASE_IMAGE_DIGEST" ]]; then
-              echo "::error title=Canonical image digest mismatch::$ref resolves to $resolved_digest instead of $RELEASE_IMAGE_DIGEST."
-              exit 1
-            fi
+            bash tools/wait-for-container-digest.sh "$ref" "$RELEASE_IMAGE_DIGEST"
           done
           manifest_path="$RUNNER_TEMP/phd-atlas-official-manifest.json"
           docker buildx imagetools inspect \
@@ -489,14 +481,9 @@ jobs:
             --tag "${REGISTRY}/${IMAGE_NAME}:beta" \
             "${REGISTRY}/${IMAGE_NAME}@${RELEASE_IMAGE_DIGEST}"
           docker logout "$REGISTRY"
-          resolved_digest="$(
-            docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:beta" \
-              | awk '$1 == "Digest:" { print $2; exit }'
-          )"
-          if [[ "$resolved_digest" != "$RELEASE_IMAGE_DIGEST" ]]; then
-            echo "::error title=Beta channel digest mismatch::Anonymous :beta does not resolve to the validated release digest."
-            exit 1
-          fi
+          bash tools/wait-for-container-digest.sh \
+            "${REGISTRY}/${IMAGE_NAME}:beta" \
+            "$RELEASE_IMAGE_DIGEST"
 
       - name: Revalidate assets and publish the Release
         env:
