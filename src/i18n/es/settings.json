@@ -386,7 +386,11 @@
     "mailSyncBackgroundActive": "El servidor se está sincronizando en segundo plano. Puede actualizar o abandonar esta página de forma segura.",
     "passkeyRenameCancel": "Cancelar cambio de nombre",
     "testingIncomingMail": "Probando conexión…",
-    "passkeyRenamed": "Se cambió el nombre de la clave de acceso."
+    "passkeyRenamed": "Se cambió el nombre de la clave de acceso.",
+    "emailNotifications": "Notificaciones por correo electrónico",
+    "emailNotificationsDesc": "Reciba un correo electrónico combinado para actualizaciones recientes en lugar de un correo electrónico separado para cada notificación.",
+    "shareProjectLinkType": "Vista previa del proyecto",
+    "shareUploadLinkType": "Carga de adjuntos"
   },
   "calendar": {
     "title": "Feed de calendario",
@@ -400,6 +404,8 @@
     "regenerateHint": "La regeneración crea una nueva URL privada y desactiva el enlace de suscripción anterior.",
     "regeneratedToast": "Se regeneró el enlace de suscripción al calendario.",
     "enable": "Habilitar feed de calendario",
+    "enabling": "Activando el feed del calendario…",
+    "statusEnabling": "Activando",
     "enabledToast": "Feed de calendario habilitado.",
     "notEnabled": "El feed del calendario está desactivado. Habilítelo para crear una URL privada de iCal para sus fechas límite y recordatorios.",
     "providerLinks": "Enlaces de la aplicación Calendario",

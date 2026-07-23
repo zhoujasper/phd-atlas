@@ -17,11 +17,15 @@ import {
   ListFilter,
   LockKeyhole,
   LogIn,
+  KeyRound,
   Mail,
   MemoryStick,
+  MoreHorizontal,
   Monitor,
+  Network,
   Package,
   Pencil,
+  Plus,
   RefreshCw,
   Save,
   Search,
@@ -37,14 +41,23 @@ import {
   X,
   XCircle,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from 'react'
 import { AsyncActionButton } from '../shared/AsyncActionButton'
-import { phdApi, type AdminSettings, type AdminUser, type BackupRecord, type EncryptionAlgorithm, type MembershipPlan, type NotificationGroup, type SystemEvent, type SystemInfo, type TeamRole, type TeamSummary, type UserRole } from '../../api/phdApi'
+import { phdApi, type AdminSettings, type AdminTeamRecord, type AdminUser, type BackupRecord, type DatabaseConfiguration, type DatabaseConnectionInput, type DatabaseEngine, type EncryptionAlgorithm, type NotificationGroup, type ReleaseUpdateCheck, type SystemEvent, type SystemInfo, type TeamMember, type TeamRole, type TeamSummary } from '../../api/phdApi'
 import type { BackupFrequency } from '../../data/applications'
 import { normalizeErrorMessage } from '../../errorMessages'
 import { PUBLIC_EDITION } from '../../edition'
 import { MAX_SYSTEM_UPDATE_FILE_SIZE, filesRejectedForReason, formatFileSize, validateUploadFiles } from '../../fileUploads'
-import { localeForLanguage, registerLanguage, type LangDict } from '../../i18n'
+import { registerLanguage, type LangDict } from '../../i18n'
 import englishAdmin from '../../i18n/en/admin.json'
 import englishSettings from '../../i18n/en/settings.json'
 import englishTeam from '../../i18n/en/team.json'
@@ -53,21 +66,55 @@ import chineseSettings from '../../i18n/zh/settings.json'
 import chineseTeam from '../../i18n/zh/team.json'
 import { useI18n } from '../hooks/useI18n'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
+import { useModalA11y } from '../hooks/useModalA11y'
 import { CollapsiblePanel } from '../shared/CollapsiblePanel'
+import { AnchoredPopover } from '../shared/AnchoredPopover'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
+import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/ExplorerContextMenu'
 import { InlineTestEmailAction } from '../shared/InlineTestEmailAction'
 import { ModalPortal } from '../shared/ModalPortal'
 import { NotificationPublisherPanel, type NotificationPublisherAudience, type NotificationPublisherRecipient } from '../shared/NotificationPublisherPanel'
 import { Select } from '../shared/Select'
 import { SwitchControl } from '../shared/SwitchControl'
 import { Skeleton } from '../shared/Skeleton'
+import { TeamJoinCodeGenerator } from '../shared/TeamJoinCodeGenerator'
+import { copyToClipboard as writeToClipboard } from '../shared/clipboard'
+import { isTeacherAssignedToStudent, teamMemberTeacherIds } from '../../teamRelationships'
 import {
   TableCell,
   TableColGroup,
   TableHeaderCell,
-  useTableColumnMenu,
 } from '../shared/TableColumnChrome'
+import { useTableColumnMenu } from '../shared/useTableColumnMenu'
 import type { TableColumnDef } from '../shared/useTableColumns'
+import {
+  accountTypeForUser,
+  backupFrequencyOptions,
+  backupLimitOptions,
+  compareAdminUsers,
+  compareLogEvents,
+  databaseDraftFromConfiguration,
+  databaseEngineOptions,
+  defaultDatabasePort,
+  formatAdminDateTime,
+  formatBytes,
+  formatLogTime,
+  formatQuotaLimit,
+  formatUptime,
+  isUnlimitedQuota,
+  localizeEventMessage,
+  localizeScope,
+  normalizeBackupFrequency,
+  normalizeBackupLimitOption,
+  normalizeLogSearchValue,
+  patchForAccountType,
+  quotaProgressClass,
+  type AccountType,
+  type LogSortField,
+  type SortDirection,
+  type UserSortField,
+  type UserUpdatePatch,
+} from './adminScreenModel'
 
 registerLanguage('en', englishAdmin as LangDict, 'admin')
 registerLanguage('zh', chineseAdmin as LangDict, 'admin')
@@ -80,20 +127,6 @@ const USER_PAGE_SIZE = 8
 const LOG_PAGE_SIZE = 10
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const accountTypes = ['free', 'pro', 'admin'] as const
-type AccountType = typeof accountTypes[number]
-type UserUpdatePatch = {
-  role?: UserRole
-  disabled?: boolean
-  membershipPlan?: MembershipPlan
-  storageQuotaMb?: number
-  applicationQuota?: number
-  applicationCreateQuota?: number
-  shareQuota?: number
-  shareCreateQuota?: number
-  seatLimit?: number
-}
-type UserSortField = 'email' | 'role' | 'status' | 'applicationCount' | 'storageUsedBytes' | 'storageQuotaMb' | 'lastLoginAt'
-type SortDirection = 'asc' | 'desc'
 
 /**
  * Controlled per-row quota editor. A plain `defaultValue` input here would silently
@@ -201,7 +234,6 @@ function QuotaEditor({
   )
 }
 
-type LogSortField = 'time' | 'scope' | 'message' | 'actorId'
 type LogActorFilter = 'all' | 'admin' | 'system'
 
 const adminSessionDurationOptions = [
@@ -220,12 +252,14 @@ const encryptionAlgorithmOptions: Array<{ value: EncryptionAlgorithm; labelKey: 
 
 function EncryptionSettingsPanel({
   settings,
+  databaseType,
   busy,
   onApply,
   onLocalError,
   tx,
 }: {
   settings: AdminSettings
+  databaseType: DatabaseEngine | null
   busy: boolean
   onApply: (patch: Partial<AdminSettings>) => Promise<void>
   onLocalError?: (message: string) => void
@@ -252,6 +286,7 @@ function EncryptionSettingsPanel({
   ])
 
   const passwordAlreadySet = Boolean(settings.encryptionPasswordSet)
+  const sqliteAvailable = databaseType === 'sqlite'
   const needsCurrentPassword = Boolean(settings.encryptionPasswordEnabled) && (
     algorithm !== (settings.encryptionAlgorithm ?? 'aes-256-gcm')
     || passwordEnabled !== Boolean(settings.encryptionPasswordEnabled)
@@ -279,7 +314,7 @@ function EncryptionSettingsPanel({
       encryptionAtRest: enabled,
       encryptionAlgorithm: algorithm,
       encryptionPasswordEnabled: enabled ? passwordEnabled : false,
-      sqliteEncryption: enabled ? sqliteEncryption : false,
+      sqliteEncryption: enabled && sqliteAvailable ? sqliteEncryption : false,
     }
     if (enabled && passwordEnabled && password.length >= 8) {
       patch.encryptionPassword = password
@@ -377,14 +412,17 @@ function EncryptionSettingsPanel({
           <label className="admin-toggle-row admin-setting-line">
             <span>{tx('admin.sqliteEncryption')}</span>
             <SwitchControl
-              checked={sqliteEncryption}
+              checked={sqliteAvailable && sqliteEncryption}
+              disabled={!sqliteAvailable}
               label={tx('admin.sqliteEncryption')}
               variant="accent"
               onChange={setSqliteEncryption}
             />
           </label>
-          <p className="admin-encryption-hint">{tx('admin.sqliteEncryptionDesc')}</p>
-          <p className="admin-encryption-hint muted">{tx('admin.sqliteEncryptionHint')}</p>
+          <p className="admin-encryption-hint">
+            {sqliteAvailable ? tx('admin.sqliteEncryptionDesc') : tx('admin.externalDatabaseEncryptionDesc')}
+          </p>
+          {sqliteAvailable ? <p className="admin-encryption-hint muted">{tx('admin.sqliteEncryptionHint')}</p> : null}
         </div>
       ) : null}
 
@@ -421,110 +459,6 @@ function EncryptionSettingsPanel({
     </div>
   )
 }
-const backupFrequencyOptions: Array<{ value: BackupFrequency; labelKey: string; fallback: string }> = [
-  { value: '12h', labelKey: 'settings.backupEvery12h', fallback: 'Every 12 hours' },
-  { value: 'daily', labelKey: 'settings.backupEvery1d', fallback: 'Daily' },
-  { value: '3d', labelKey: 'settings.backupEvery3d', fallback: 'Every 3 days' },
-  { value: '7d', labelKey: 'settings.backupEvery7d', fallback: 'Every 7 days' },
-]
-const backupLimitOptions = ['1', '2', '5', '10', '20'] as const
-
-function normalizeBackupFrequency(value: string | undefined): BackupFrequency {
-  if (value === 'weekly') return '7d'
-  return backupFrequencyOptions.some((option) => option.value === value)
-    ? (value as BackupFrequency)
-    : 'daily'
-}
-
-function normalizeBackupLimitOption(value: string | number | undefined): string {
-  const n = Number(value ?? 20)
-  if (backupLimitOptions.includes(String(n) as (typeof backupLimitOptions)[number])) return String(n)
-  const allowed = backupLimitOptions.map(Number)
-  const floor = allowed.filter((option) => option <= n).pop()
-  return String(floor ?? allowed[0])
-}
-
-function localizeScope(scope: string, tx: (k: string, f?: string) => string): string {
-  return tx(`admin.scopes.${scope}`, scope)
-}
-
-function localizeEventMessage(message: string, tx: (k: string, f?: string) => string): string {
-  const direct = tx(`admin.eventMessages.${message}`, '')
-  if (direct) return direct
-
-  // Try pattern-based translation for common dynamic messages
-  const patterns: Array<{ regex: RegExp; key: string; replacer: (m: RegExpMatchArray) => string }> = [
-    { regex: /^Updated user (.+)$/, key: 'UpdatedUser', replacer: (m) => tx('admin.eventMessages.UpdatedUser', 'Updated user').replace('{email}', m[1] ?? '') },
-    { regex: /^Deleted user (.+)$/, key: 'DeletedUser', replacer: (m) => tx('admin.eventMessages.DeletedUser', 'Deleted user').replace('{email}', m[1] ?? '') },
-    { regex: /^Password reset link queued for (.+)$/, key: 'PasswordResetQueued', replacer: (m) => tx('admin.eventMessages.PasswordResetQueued', 'Password reset link queued for').replace('{email}', m[1] ?? '') },
-    { regex: /^Created application for (.+)$/, key: 'CreatedApp', replacer: (m) => tx('admin.eventMessages.CreatedApp', 'Created application for').replace('{name}', m[1] ?? '') },
-    { regex: /^Updated application for (.+)$/, key: 'UpdatedApp', replacer: (m) => tx('admin.eventMessages.UpdatedApp', 'Updated application for').replace('{name}', m[1] ?? '') },
-    { regex: /^Deleted application for (.+)$/, key: 'DeletedApp', replacer: (m) => tx('admin.eventMessages.DeletedApp', 'Deleted application for').replace('{name}', m[1] ?? '') },
-    { regex: /^Added material (.+)$/, key: 'AddedMaterial', replacer: (m) => tx('admin.eventMessages.AddedMaterial', 'Added material').replace('{name}', m[1] ?? '') },
-    { regex: /^(Updated|Added|Deleted) profile asset (.+)$/, key: 'ProfileAsset', replacer: (m) => `${tx(`admin.eventMessages.${m[1]}ProfileAsset`, m[1] + ' profile asset').replace('{name}', m[2] ?? '')}` },
-    { regex: /^Created backup checkpoint for (.+)$/, key: 'CreatedBackup', replacer: (m) => tx('admin.eventMessages.CreatedBackup', 'Created backup checkpoint for').replace('{name}', m[1] ?? '') },
-    { regex: /^Deleted backup (.+)$/, key: 'DeletedBackup', replacer: (m) => tx('admin.eventMessages.DeletedBackup', 'Deleted backup').replace('{name}', m[1] ?? '') },
-    { regex: /^Restored backup (.+)$/, key: 'RestoredBackup', replacer: (m) => tx('admin.eventMessages.RestoredBackup', 'Restored backup').replace('{name}', m[1] ?? '') },
-    { regex: /^Updated share link expiration for (.+)$/, key: 'UpdatedShare', replacer: (m) => tx('admin.eventMessages.UpdatedShare', 'Updated share link expiration for').replace('{name}', m[1] ?? '') },
-    { regex: /^Revoked share link for (.+)$/, key: 'RevokedShare', replacer: (m) => tx('admin.eventMessages.RevokedShare', 'Revoked share link for').replace('{name}', m[1] ?? '') },
-    { regex: /^System update package uploaded: (.+)$/, key: 'UpdateUploaded', replacer: (m) => tx('admin.eventMessages.UpdateUploaded', 'System update package uploaded:').replace('{name}', m[1] ?? '') },
-    { regex: /^System update package removed: (.+)$/, key: 'UpdateRemoved', replacer: (m) => tx('admin.eventMessages.UpdateRemoved', 'System update package removed:').replace('{name}', m[1] ?? '') },
-    { regex: /^Seeded SQLite workspace\.(?: Default login:| Bootstrap user:)\s*(.+)$/, key: 'SeededWorkspace', replacer: (m) => tx('admin.eventMessages.SeededWorkspace', 'Seeded SQLite workspace.').replace('{info}', m[1] ?? '') },
-    { regex: /^Seeded default admin (?:login|account):\s*(.+)$/, key: 'SeededAdmin', replacer: (m) => tx('admin.eventMessages.SeededAdmin', 'Seeded default admin login:').replace('{info}', m[1] ?? '') },
-  ]
-
-  for (const { regex, replacer } of patterns) {
-    const match = message.match(regex)
-    if (match) return replacer(match)
-  }
-
-  return message
-}
-
-function formatBytes(bytes: number) {
-  if (!bytes || bytes < 0) return '0 KB'
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
-}
-
-function formatUptime(seconds: number, t: (k: string, f?: string) => string) {
-  if (seconds < 60) return t('admin.uptimeSeconds', 'uptimeSeconds').replace('{count}', String(seconds))
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  if (m < 60) return t('admin.uptimeMinutes', 'uptimeMinutes').replace('{count}', String(m)).replace('{sec}', String(s))
-  const h = Math.floor(m / 60)
-  const rm = m % 60
-  if (h < 24) return t('admin.uptimeHours', 'uptimeHours').replace('{count}', String(h)).replace('{min}', String(rm))
-  const d = Math.floor(h / 24)
-  const rh = h % 24
-  return t('admin.uptimeDays', 'uptimeDays').replace('{count}', String(d)).replace('{hr}', String(rh))
-}
-
-function logTimeValue(event: SystemEvent) {
-  const value = Date.parse(event.time)
-  return Number.isFinite(value) ? value : 0
-}
-
-function formatLogTime(value: string, lang: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat(localeForLanguage(lang), {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date)
-}
-
-function formatAdminDateTime(value: string | null | undefined, lang: string, emptyLabel: string) {
-  if (!value) return emptyLabel
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat(localeForLanguage(lang), {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date)
-}
-
 function downloadBlob(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
@@ -534,84 +468,6 @@ function downloadBlob(blob: Blob, fileName: string) {
   link.click()
   link.remove()
   URL.revokeObjectURL(url)
-}
-
-function accountTypeForUser(user: Pick<AdminUser, 'role' | 'settings'>): AccountType {
-  if (user.role === 'admin') return 'admin'
-  // A team is a separate account container. Its owner still has an independent
-  // personal account, which legacy `membershipPlan: team` rows treat as Free.
-  return (user.settings.personalMembershipPlan ?? user.settings.membershipPlan) === 'pro' ? 'pro' : 'free'
-}
-
-function patchForAccountType(accountType: AccountType): UserUpdatePatch {
-  if (accountType === 'admin') return { role: 'admin', membershipPlan: 'pro' }
-  return { role: 'user', membershipPlan: accountType }
-}
-
-function isUnlimitedQuota(value: number) {
-  return value >= Number.MAX_SAFE_INTEGER
-}
-
-function formatQuotaLimit(value: number) {
-  return isUnlimitedQuota(value) ? '∞' : String(value)
-}
-
-function quotaProgressClass(percent: number) {
-  return percent >= 100
-    ? 'admin-mini-progress-fill-limit'
-    : percent >= 80
-      ? 'admin-mini-progress-fill-warning'
-      : ''
-}
-
-function userStatusKey(user: AdminUser) {
-  return user.disabledAt ? 'disabled' : 'active'
-}
-
-function compareAdminUsers(
-  a: AdminUser,
-  b: AdminUser,
-  field: UserSortField,
-  direction: SortDirection,
-) {
-  const sign = direction === 'asc' ? 1 : -1
-  if (field === 'applicationCount' || field === 'storageUsedBytes' || field === 'storageQuotaMb') {
-    return (Number(a[field] ?? 0) - Number(b[field] ?? 0)) * sign
-  }
-  if (field === 'lastLoginAt') {
-    return ((Date.parse(a.lastLoginAt ?? '') || 0) - (Date.parse(b.lastLoginAt ?? '') || 0)) * sign
-  }
-  const left = field === 'status' ? userStatusKey(a) : field === 'role' ? accountTypeForUser(a) : String(a[field] ?? '')
-  const right = field === 'status' ? userStatusKey(b) : field === 'role' ? accountTypeForUser(b) : String(b[field] ?? '')
-  return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' }) * sign
-}
-
-function normalizeLogSearchValue(value: unknown) {
-  if (value === null || value === undefined) return ''
-  if (typeof value === 'string') return value.toLowerCase()
-  try {
-    return JSON.stringify(value).toLowerCase()
-  } catch {
-    return String(value).toLowerCase()
-  }
-}
-
-function compareLogEvents(
-  a: SystemEvent,
-  b: SystemEvent,
-  field: LogSortField,
-  direction: SortDirection,
-) {
-  const sign = direction === 'asc' ? 1 : -1
-  if (field === 'time') {
-    return (logTimeValue(a) - logTimeValue(b)) * sign
-  }
-  const left = field === 'actorId' ? (a.actorId ?? '') : a[field]
-  const right = field === 'actorId' ? (b.actorId ?? '') : b[field]
-  return String(left ?? '').localeCompare(String(right ?? ''), undefined, {
-    numeric: true,
-    sensitivity: 'base',
-  }) * sign
 }
 
 export function AdminScreen({
@@ -665,6 +521,10 @@ export function AdminScreen({
   const [updatingUserIds, setUpdatingUserIds] = useState<Set<string>>(() => new Set())
   const [pendingAccountTypes, setPendingAccountTypes] = useState<Record<string, AccountType>>({})
   const [viewingTeam, setViewingTeam] = useState<{ teamId: string; ownerEmail: string } | null>(null)
+  const [adminTeams, setAdminTeams] = useState<AdminTeamRecord[]>([])
+  const [adminTeamsLoading, setAdminTeamsLoading] = useState(false)
+  const [newTeamName, setNewTeamName] = useState('')
+  const [creatingTeam, setCreatingTeam] = useState(false)
   const [logPage, setLogPage] = useState(0)
 
   const userTableColumns = useMemo<TableColumnDef[]>(() => [
@@ -727,6 +587,14 @@ export function AdminScreen({
   const [systemMailOpen, setSystemMailOpen] = useState(false)
   const [mailTesting, setMailTesting] = useState(false)
   const [mailSaving, setMailSaving] = useState(false)
+  const [databaseConfigOpen, setDatabaseConfigOpen] = useState(false)
+  const [databaseConfiguration, setDatabaseConfiguration] = useState<DatabaseConfiguration | null>(null)
+  const [databaseDraft, setDatabaseDraft] = useState<DatabaseConnectionInput>({ type: 'sqlite', sqlitePath: '' })
+  const [databaseConfigurationLoaded, setDatabaseConfigurationLoaded] = useState(false)
+  const [databasePassword, setDatabasePassword] = useState('')
+  const [databaseLoading, setDatabaseLoading] = useState(false)
+  const [databaseTesting, setDatabaseTesting] = useState(false)
+  const [databaseSaving, setDatabaseSaving] = useState(false)
   const [backupConfigOpen, setBackupConfigOpen] = useState(false)
   const [backupFrequency, setBackupFrequency] = useState(normalizeBackupFrequency(settings.backupFrequency))
   const [maxBackupsLimit, setMaxBackupsLimit] = useState(normalizeBackupLimitOption(settings.maxBackupsPerAppLimit))
@@ -749,6 +617,10 @@ export function AdminScreen({
   const [uploading, setUploading] = useState(false)
   const [updateFile, setUpdateFile] = useState<File | null>(null)
   const [updateDragActive, setUpdateDragActive] = useState(false)
+  const [releaseUpdate, setReleaseUpdate] = useState<ReleaseUpdateCheck | null>(null)
+  const [checkingReleaseUpdate, setCheckingReleaseUpdate] = useState(false)
+  const [installingReleaseUpdate, setInstallingReleaseUpdate] = useState(false)
+  const [manualUpdateOpen, setManualUpdateOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Live uptime counter
@@ -809,10 +681,30 @@ export function AdminScreen({
     }
   }, [lang, onNotify, token])
 
+  const loadDatabaseConfiguration = useCallback(async () => {
+    setDatabaseLoading(true)
+    try {
+      const configuration = await phdApi.adminDatabaseConfiguration(token)
+      setDatabaseConfiguration(configuration)
+      setDatabaseDraft(databaseDraftFromConfiguration(configuration))
+      setDatabasePassword('')
+    } catch (error) {
+      onNotify?.(normalizeErrorMessage(error, lang), 'error')
+    } finally {
+      setDatabaseLoading(false)
+      setDatabaseConfigurationLoaded(true)
+    }
+  }, [lang, onNotify, token])
+
   useEffect(() => {
     if (activeTab !== 'systemConfig' || !backupConfigOpen || workspaceBackupsLoaded || workspaceBackupsLoading) return
     void loadWorkspaceBackups()
   }, [activeTab, backupConfigOpen, loadWorkspaceBackups, workspaceBackupsLoaded, workspaceBackupsLoading])
+
+  useEffect(() => {
+    if (activeTab !== 'systemConfig' || (!databaseConfigOpen && !encryptionOpen) || databaseConfigurationLoaded || databaseLoading) return
+    void loadDatabaseConfiguration()
+  }, [activeTab, databaseConfigOpen, databaseConfigurationLoaded, databaseLoading, encryptionOpen, loadDatabaseConfiguration])
 
   const loadNotificationGroups = useCallback(async () => {
     const groups = await phdApi.adminNotificationGroups(token)
@@ -824,6 +716,41 @@ export function AdminScreen({
     if (activeTab !== 'userManagement' || notificationGroupsLoaded) return
     void loadNotificationGroups().catch(() => setNotificationGroupsLoaded(true))
   }, [activeTab, loadNotificationGroups, notificationGroupsLoaded])
+
+  const loadAdminTeams = useCallback(async () => {
+    if (PUBLIC_EDITION) return
+    setAdminTeamsLoading(true)
+    try {
+      setAdminTeams(await phdApi.adminTeams(token))
+    } catch (error) {
+      onNotify?.(normalizeErrorMessage(error, lang), 'error')
+    } finally {
+      setAdminTeamsLoading(false)
+    }
+  }, [lang, onNotify, token])
+
+  useEffect(() => {
+    if (activeTab !== 'userManagement' || accountView !== 'teams' || PUBLIC_EDITION) return
+    void loadAdminTeams()
+  }, [accountView, activeTab, loadAdminTeams])
+
+  async function handleCreateTeam(event: FormEvent) {
+    event.preventDefault()
+    const name = newTeamName.trim()
+    if (!name) return
+    setCreatingTeam(true)
+    try {
+      const record = await phdApi.createAdminTeam(token, name)
+      setAdminTeams((current) => [record, ...current.filter((item) => item.team.id !== record.team.id)])
+      setNewTeamName('')
+      onNotify?.(tx('admin.teamCreated'), 'success')
+      setViewingTeam({ teamId: record.team.id, ownerEmail: '' })
+    } catch (error) {
+      onNotify?.(normalizeErrorMessage(error, lang), 'error')
+    } finally {
+      setCreatingTeam(false)
+    }
+  }
 
   useEffect(() => {
     setPendingAccountTypes((current) => {
@@ -863,14 +790,39 @@ export function AdminScreen({
 
   const totalUsed = useMemo(() => users.reduce((sum, user) => sum + Number(user.storageUsedBytes ?? 0), 0), [users])
   const adminListUsers = useMemo(() => users, [users])
+  const userDerivedTeamAccounts = useMemo<AdminTeamRecord[]>(() => users
+    .filter((owner) => Boolean(owner.teamId))
+    .map((owner) => {
+      const teamId = owner.teamId as string
+      const members = users.filter((candidate) => candidate.teamMemberOf?.teamId === teamId)
+      return {
+        team: {
+          id: teamId,
+          name: owner.teamName || teamId,
+          ownerId: owner.id,
+          seatLimit: owner.seatLimit ?? 105,
+          createdAt: owner.createdAt,
+          updatedAt: owner.createdAt,
+        },
+        owner,
+        memberCount: Math.max(owner.activeMemberCount ?? 0, members.length + 1),
+        teacherCount: members.filter((member) => member.teamMemberOf?.role === 'admin').length,
+        studentCount: members.filter((member) => member.teamMemberOf?.role === 'member').length,
+      }
+    }), [users])
   const teamAccounts = useMemo(
-    () => PUBLIC_EDITION ? [] : users.filter((user) => Boolean(user.teamId)),
-    [users],
+    () => PUBLIC_EDITION ? [] : (adminTeams.length > 0 ? adminTeams : userDerivedTeamAccounts),
+    [adminTeams, userDerivedTeamAccounts],
   )
   const filteredTeamAccounts = useMemo(() => {
     const query = userSearch.trim().toLowerCase()
     if (!query) return teamAccounts
-    return teamAccounts.filter((user) => [user.teamName, user.name, user.email, user.teamId]
+    return teamAccounts.filter((record) => [
+      record.team.name,
+      record.team.id,
+      record.owner?.name,
+      record.owner?.email,
+    ]
       .filter(Boolean)
       .join(' ')
       .toLowerCase()
@@ -1136,11 +1088,78 @@ export function AdminScreen({
     try {
       await onTestSystemMail(patch, delivery)
       notify(tx('admin.testEmailQueued'), 'success')
-    } catch (error) {
-      // Parent already toasts the error; rethrow so the inline editor stays open for retry.
-      throw error
     } finally {
       setMailTesting(false)
+    }
+  }
+
+  const buildDatabaseInput = (): DatabaseConnectionInput | null => {
+    if (databaseDraft.type === 'sqlite') {
+      return { type: 'sqlite', sqlitePath: databaseDraft.sqlitePath?.trim() || undefined }
+    }
+    const port = Number(databaseDraft.port)
+    const hasSavedPassword = databaseConfiguration?.type === databaseDraft.type
+      && Boolean(databaseConfiguration.passwordSet)
+    if (
+      !databaseDraft.host?.trim()
+      || !Number.isInteger(port)
+      || port < 1
+      || port > 65535
+      || !databaseDraft.database?.trim()
+      || !databaseDraft.username?.trim()
+      || (!databasePassword && !hasSavedPassword)
+    ) return null
+    return {
+      type: databaseDraft.type,
+      host: databaseDraft.host.trim(),
+      port,
+      database: databaseDraft.database.trim(),
+      username: databaseDraft.username.trim(),
+      ...(databasePassword ? { password: databasePassword } : {}),
+      ssl: Boolean(databaseDraft.ssl),
+      mysql57Compatibility: databaseDraft.type === 'mysql' && Boolean(databaseDraft.mysql57Compatibility),
+      schema: databaseDraft.schema?.trim() || undefined,
+    }
+  }
+
+  const testDatabase = async () => {
+    const input = buildDatabaseInput()
+    if (!input) {
+      notify(tx('admin.database.connectionRequired'), 'error')
+      return
+    }
+    setDatabaseTesting(true)
+    try {
+      await phdApi.testAdminDatabaseConfiguration(token, input)
+      notify(tx('admin.database.testPassed'), 'success')
+    } catch (error) {
+      notify(normalizeErrorMessage(error, lang), 'error')
+    } finally {
+      setDatabaseTesting(false)
+    }
+  }
+
+  const saveDatabase = async () => {
+    const input = buildDatabaseInput()
+    if (!input) {
+      notify(tx('admin.database.connectionRequired'), 'error')
+      return
+    }
+    setDatabaseSaving(true)
+    try {
+      const configuration = await phdApi.updateAdminDatabaseConfiguration(token, input)
+      setDatabaseConfiguration(configuration)
+      setDatabaseDraft(databaseDraftFromConfiguration(configuration))
+      setDatabasePassword('')
+      setDatabaseConfigurationLoaded(true)
+      setWorkspaceBackups([])
+      setWorkspaceBackupsLoaded(false)
+      onRefreshSystemInfo()
+      notify(tx('admin.database.saved'), 'success')
+    } catch (error) {
+      notify(normalizeErrorMessage(error, lang), 'error')
+    } finally {
+      setDatabaseSaving(false)
     }
   }
 
@@ -1225,6 +1244,38 @@ export function AdminScreen({
       notify(normalizeErrorMessage(err, lang), 'error')
     } finally {
       setPasswordBusy(false)
+    }
+  }
+
+  const handleCheckReleaseUpdate = async () => {
+    setCheckingReleaseUpdate(true)
+    try {
+      const result = await phdApi.checkSystemUpdate(token)
+      setReleaseUpdate(result)
+      if (!result.updateAvailable) notify(tx('admin.updateUpToDate'), 'success')
+    } catch (err) {
+      notify(normalizeErrorMessage(err, lang), 'error')
+    } finally {
+      setCheckingReleaseUpdate(false)
+    }
+  }
+
+  const handleInstallReleaseUpdate = async () => {
+    const release = releaseUpdate?.release
+    if (!release || !releaseUpdate.updateAvailable) return
+    setInstallingReleaseUpdate(true)
+    try {
+      const result = await phdApi.installReleaseUpdate(token, release.tagName)
+      notify(
+        result.restartScheduled
+          ? tx('admin.updateRestarting')
+          : tx('admin.updateStoredNoRestart'),
+        result.restartScheduled ? 'success' : 'warning',
+      )
+      if (!result.restartScheduled) setInstallingReleaseUpdate(false)
+    } catch (err) {
+      setInstallingReleaseUpdate(false)
+      notify(normalizeErrorMessage(err, lang), 'error')
     }
   }
 
@@ -1410,6 +1461,7 @@ export function AdminScreen({
             <CollapsiblePanel open={encryptionOpen} className="mail-config-detail" innerClassName="mail-config-detail-inner">
               <EncryptionSettingsPanel
                 settings={settings}
+                databaseType={databaseConfiguration?.type ?? null}
                 busy={encryptionBusy}
                 onApply={async (patch) => {
                   setEncryptionBusy(true)
@@ -1685,6 +1737,141 @@ export function AdminScreen({
                     ) : null}
                   </div>
                 </div>
+            </CollapsiblePanel>
+          </section>
+
+          {/* Database Configuration */}
+          <section className={`admin-card admin-card-wide mail-collapsible ${databaseConfigOpen ? 'expanded' : ''}`}>
+            <button
+              type="button"
+              className="mail-config-summary admin-mail-summary"
+              aria-expanded={databaseConfigOpen}
+              onClick={() => {
+                setDatabaseConfigOpen((open) => {
+                  const next = !open
+                  if (next) {
+                    setDatabaseConfigurationLoaded(false)
+                    void loadDatabaseConfiguration()
+                  }
+                  return next
+                })
+              }}
+            >
+              <span className="mail-config-icon backup" aria-hidden="true">
+                <Database size={15} />
+              </span>
+              <span className="mail-config-copy">
+                <span className="eyebrow">{tx('admin.database.config')}</span>
+                <strong>{tx('admin.database.active')}</strong>
+                <small>{databaseConfiguration?.type === 'sqlite'
+                  ? databaseConfiguration.sqlitePath
+                  : databaseConfiguration ? `${databaseConfiguration.host}:${databaseConfiguration.port} / ${databaseConfiguration.database}` : tx('working')}</small>
+              </span>
+              <span className="mail-config-chips" aria-hidden="true">
+                <span className="mail-summary-chip">{tx(`admin.database.${databaseConfiguration?.type ?? 'sqlite'}`)}</span>
+                {databaseConfiguration?.type === 'mysql' && databaseConfiguration.mysql57Compatibility ? <span className="mail-summary-chip">5.7.44</span> : null}
+                {databaseConfiguration && databaseConfiguration.type !== 'sqlite' ? <span className="mail-summary-chip ok">{databaseConfiguration.ssl ? 'TLS' : tx('settings.tlsOff')}</span> : null}
+              </span>
+              <ChevronDown className="mail-config-chevron" size={15} aria-hidden="true" />
+            </button>
+            <CollapsiblePanel open={databaseConfigOpen} className="mail-config-detail" innerClassName="mail-config-detail-inner">
+              <p className="mail-config-desc">{tx('admin.database.configDesc')}</p>
+              {databaseLoading ? (
+                <div className="admin-mail-grid" aria-busy="true">
+                  <Skeleton height={36} radius={8} />
+                  <Skeleton height={36} radius={8} />
+                </div>
+              ) : (
+                <>
+                  <div className="admin-mail-grid admin-database-grid">
+                    <label className="admin-database-wide">
+                      <span>{tx('admin.database.engine')}</span>
+                      <Select
+                        size="small"
+                        value={databaseDraft.type}
+                        ariaLabel={tx('admin.database.engine')}
+                        options={databaseEngineOptions.map((engine) => ({ value: engine, label: tx(`admin.database.${engine}`) }))}
+                        onChange={(value) => {
+                          const type = value as DatabaseEngine
+                          setDatabaseDraft((current) => ({
+                            type,
+                            sqlitePath: type === 'sqlite' ? current.sqlitePath ?? '' : undefined,
+                            host: type === 'sqlite' ? undefined : current.host ?? '',
+                            port: type === 'sqlite' ? undefined : defaultDatabasePort(type),
+                            database: type === 'sqlite' ? undefined : current.database ?? '',
+                            username: type === 'sqlite' ? undefined : current.username ?? '',
+                            ssl: type === 'sqlite' ? undefined : current.ssl ?? false,
+                            mysql57Compatibility: type === 'mysql' ? (current.type === 'mysql' ? Boolean(current.mysql57Compatibility) : false) : undefined,
+                            schema: type === 'sqlite' ? undefined : current.schema ?? '',
+                          }))
+                          setDatabasePassword('')
+                        }}
+                      />
+                    </label>
+                    {databaseDraft.type === 'sqlite' ? (
+                      <label className="admin-database-wide">
+                        <span>{tx('admin.database.sqlitePath')}</span>
+                        <input
+                          value={databaseDraft.sqlitePath ?? ''}
+                          onChange={(event) => setDatabaseDraft((current) => ({ ...current, sqlitePath: event.target.value }))}
+                          placeholder={tx('admin.database.sqlitePathPlaceholder')}
+                        />
+                        <small>{tx('admin.database.sqlitePathHint')}</small>
+                      </label>
+                    ) : (
+                      <>
+                        <label className="admin-database-wide">
+                          <span>{tx('admin.database.host')}</span>
+                          <input value={databaseDraft.host ?? ''} onChange={(event) => setDatabaseDraft((current) => ({ ...current, host: event.target.value }))} placeholder="db.example.com" />
+                        </label>
+                        <label>
+                          <span>{tx('admin.database.port')}</span>
+                          <input type="number" min={1} max={65535} value={databaseDraft.port ?? ''} onChange={(event) => setDatabaseDraft((current) => ({ ...current, port: Number(event.target.value) }))} inputMode="numeric" />
+                        </label>
+                        <label>
+                          <span>{tx('admin.database.name')}</span>
+                          <input value={databaseDraft.database ?? ''} onChange={(event) => setDatabaseDraft((current) => ({ ...current, database: event.target.value }))} />
+                        </label>
+                        <label>
+                          <span>{tx('admin.database.username')}</span>
+                          <input value={databaseDraft.username ?? ''} onChange={(event) => setDatabaseDraft((current) => ({ ...current, username: event.target.value }))} autoComplete="username" />
+                        </label>
+                        <label>
+                          <span>{tx('admin.database.password')}</span>
+                          <input type="password" value={databasePassword} onChange={(event) => setDatabasePassword(event.target.value)} placeholder={databaseConfiguration?.passwordSet ? tx('admin.database.passwordSaved') : ''} autoComplete="new-password" />
+                        </label>
+                        <label className="admin-database-wide">
+                          <span>{tx('admin.database.schema')}</span>
+                          <input value={databaseDraft.schema ?? ''} onChange={(event) => setDatabaseDraft((current) => ({ ...current, schema: event.target.value }))} placeholder={databaseDraft.type === 'postgresql' ? 'public' : 'dbo'} />
+                        </label>
+                        {databaseDraft.type === 'mysql' ? (
+                          <label className="admin-inline-check admin-database-wide">
+                            <SwitchControl checked={Boolean(databaseDraft.mysql57Compatibility)} label={tx('admin.database.mysql57Compatibility')} variant="accent" onChange={(mysql57Compatibility) => setDatabaseDraft((current) => ({ ...current, mysql57Compatibility }))} />
+                            <span>{tx('admin.database.mysql57Compatibility')}</span>
+                            <small>{tx('admin.database.mysql57CompatibilityHint')}</small>
+                          </label>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                  {databaseDraft.type !== 'sqlite' ? (
+                    <label className="admin-inline-check">
+                      <SwitchControl checked={Boolean(databaseDraft.ssl)} label={tx('admin.database.ssl')} variant="accent" onChange={(ssl) => setDatabaseDraft((current) => ({ ...current, ssl }))} />
+                      <span>{tx('admin.database.ssl')}</span>
+                      <small>{tx('admin.database.sslHint')}</small>
+                    </label>
+                  ) : null}
+                  <p className="settings-inline-note">{databaseDraft.type === 'sqlite' ? tx('admin.database.sqlitePathHint') : tx('admin.database.externalHint')}</p>
+                  <div className="admin-card-actions mail-admin-actions">
+                    <button type="button" className="quiet-action compact-action" onClick={() => void testDatabase()} disabled={databaseTesting || databaseSaving}>
+                      {databaseTesting ? <><RefreshCw size={12} aria-hidden="true" className="spin-icon" /> {tx('admin.database.testing')}</> : <><Server size={12} aria-hidden="true" /> {tx('admin.database.test')}</>}
+                    </button>
+                    <button type="button" className="quiet-action compact-action save-action" onClick={() => void saveDatabase()} disabled={databaseTesting || databaseSaving}>
+                      {databaseSaving ? <><RefreshCw size={12} aria-hidden="true" className="spin-icon" /> {tx('admin.database.saving')}</> : <><Save size={12} aria-hidden="true" /> {tx('admin.database.save')}</>}
+                    </button>
+                  </div>
+                </>
+              )}
             </CollapsiblePanel>
           </section>
 
@@ -2241,7 +2428,21 @@ export function AdminScreen({
                   <h3>{format(tx('admin.teamAccountCount'), { count: teamAccounts.length })}</h3>
                   <p>{tx('admin.teamAccountsDescription')}</p>
                 </div>
-                <Users size={17} aria-hidden="true" />
+                <form className="admin-team-create-form" onSubmit={handleCreateTeam}>
+                  <label>
+                    <span className="sr-only">{tx('admin.createTeamName')}</span>
+                    <input
+                      value={newTeamName}
+                      onChange={(event) => setNewTeamName(event.target.value)}
+                      placeholder={tx('admin.createTeamNamePlaceholder')}
+                      maxLength={120}
+                    />
+                  </label>
+                  <button type="submit" className="primary-action" disabled={creatingTeam || !newTeamName.trim()}>
+                    {creatingTeam ? <RefreshCw size={13} className="spin-icon" aria-hidden="true" /> : <Plus size={13} aria-hidden="true" />}
+                    {creatingTeam ? tx('admin.creatingTeam') : tx('admin.createTeam')}
+                  </button>
+                </form>
               </div>
               <div className="admin-user-toolbar">
                 <label className="admin-user-search">
@@ -2258,7 +2459,13 @@ export function AdminScreen({
                   {format(tx('admin.teamAccountResults'), { count: filteredTeamAccounts.length })}
                 </div>
               </div>
-              {filteredTeamAccounts.length === 0 ? (
+              {adminTeamsLoading && teamAccounts.length === 0 ? (
+                <div className="admin-team-account-list" aria-busy="true" aria-label={tx('working')}>
+                  {Array.from({ length: 3 }).map((_, index) => (
+                    <Skeleton key={index} width="100%" height={76} radius={8} />
+                  ))}
+                </div>
+              ) : filteredTeamAccounts.length === 0 ? (
                 <div className="admin-user-empty">
                   <div className="empty-state-icon"><Users size={22} aria-hidden="true" /></div>
                   <h3>{tx('admin.noTeamAccounts')}</h3>
@@ -2266,24 +2473,31 @@ export function AdminScreen({
                 </div>
               ) : (
                 <div className="admin-team-account-list">
-                  {filteredTeamAccounts.map((owner) => (
-                    <article key={owner.teamId} className="admin-team-account-row">
+                  {filteredTeamAccounts.map((record) => (
+                    <article key={record.team.id} className="admin-team-account-row">
                       <span className="admin-team-account-mark" aria-hidden="true"><Users size={16} /></span>
                       <div className="admin-team-account-copy">
-                        <span><strong>{owner.teamName || owner.name}</strong><em>{tx('teamLabel')}</em></span>
-                        <small>{format(tx('admin.teamOwnerLabel'), { name: owner.name, email: owner.email })}</small>
+                        <span>
+                          <strong>{record.team.name}</strong>
+                          <em>{record.team.provisioning ? tx('admin.teamAwaitingOwner') : tx('teamLabel')}</em>
+                        </span>
+                        <small>
+                          {record.owner
+                            ? format(tx('admin.teamOwnerLabel'), { name: record.owner.name, email: record.owner.email })
+                            : tx('admin.teamAwaitingOwnerDescription')}
+                        </small>
                       </div>
                       <div className="admin-team-account-capacity" aria-label={tx('admin.teamCapacityLabel')}>
                         <span><strong>1 GB</strong><em>{tx('team.capacityStorage')}</em></span>
-                        <span><strong>5</strong><em>{tx('team.capacityTeachers')}</em></span>
-                        <span><strong>100</strong><em>{tx('team.capacityStudents')}</em></span>
+                        <span><strong>{record.teacherCount}/5</strong><em>{tx('team.capacityTeachers')}</em></span>
+                        <span><strong>{record.studentCount}/100</strong><em>{tx('team.capacityStudents')}</em></span>
                         <span><strong>10,000</strong><em>{tx('team.capacityActiveLinks')}</em></span>
                         <span><strong>∞</strong><em>{tx('team.capacityCreatedLinks')}</em></span>
                       </div>
                       <button
                         type="button"
                         className="quiet-action"
-                        onClick={() => setViewingTeam({ teamId: owner.teamId as string, ownerEmail: owner.email })}
+                        onClick={() => setViewingTeam({ teamId: record.team.id, ownerEmail: record.owner?.email ?? '' })}
                       >
                         {tx('team.manageTeam')} <ArrowRight size={12} aria-hidden="true" />
                       </button>
@@ -2783,67 +2997,155 @@ export function AdminScreen({
               <div>
                 <span className="eyebrow">{tx('admin.updateEyebrow')}</span>
                 <h3>{tx('admin.systemUpdate')}</h3>
-                <p>{tx('admin.systemUpdateDesc')}</p>
+                <p>{tx(PUBLIC_EDITION ? 'admin.systemUpdateDesc' : 'admin.manualUpdateDesc')}</p>
               </div>
-              <Upload size={17} aria-hidden="true" />
+              <Package size={17} aria-hidden="true" />
             </div>
             <div className="admin-update-panel">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".tar.gz,.tgz"
-                className="hidden-input"
-                onChange={(event) => handleUpdateFileSelection(event.currentTarget.files)}
-              />
+              {PUBLIC_EDITION ? (
+                <div className="admin-release-update">
+                  <div className="admin-release-update-summary">
+                    <span className="admin-release-update-icon">
+                      {releaseUpdate?.updateAvailable ? <Download size={18} aria-hidden="true" /> : <Package size={18} aria-hidden="true" />}
+                    </span>
+                    <span className="admin-release-update-copy">
+                      <em>{tx('admin.currentVersion')}</em>
+                      <strong>PhD Atlas v{releaseUpdate?.currentVersion ?? systemInfo?.version ?? '…'}</strong>
+                      <small role="status">
+                        {releaseUpdate?.updateAvailable && releaseUpdate.release
+                          ? format(tx('admin.updateAvailable'), { version: releaseUpdate.release.version })
+                          : releaseUpdate
+                            ? tx('admin.updateUpToDate')
+                            : tx('admin.autoUpdateDesc')}
+                      </small>
+                    </span>
+                    <button
+                      type="button"
+                      className="quiet-action"
+                      onClick={() => void handleCheckReleaseUpdate()}
+                      disabled={checkingReleaseUpdate || installingReleaseUpdate}
+                    >
+                      <RefreshCw size={13} aria-hidden="true" className={checkingReleaseUpdate ? 'spin-icon' : undefined} />
+                      {checkingReleaseUpdate ? tx('admin.checkingForUpdates') : tx('admin.checkForUpdates')}
+                    </button>
+                  </div>
+                  {releaseUpdate?.updateAvailable && releaseUpdate.release ? (
+                    <div className="admin-release-update-detail">
+                      <span>
+                        <em>{tx('admin.latestRelease')}</em>
+                        <strong>v{releaseUpdate.release.version}</strong>
+                        <small>
+                          {formatAdminDateTime(releaseUpdate.release.publishedAt, lang, '—')}
+                          {' · '}
+                          {formatFileSize(releaseUpdate.release.package.size)}
+                        </small>
+                      </span>
+                      <div className="admin-release-update-actions">
+                        <a
+                          className="quiet-action"
+                          href={releaseUpdate.release.htmlUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {tx('admin.viewRelease')} <ArrowRight size={13} aria-hidden="true" />
+                        </a>
+                        <button
+                          type="button"
+                          className="primary-action"
+                          onClick={() => void handleInstallReleaseUpdate()}
+                          disabled={installingReleaseUpdate}
+                        >
+                          {installingReleaseUpdate ? (
+                            <><RefreshCw size={13} aria-hidden="true" className="spin-icon" /> {tx('admin.installingUpdate')}</>
+                          ) : (
+                            <><Download size={13} aria-hidden="true" /> {format(tx('admin.installRelease'), { version: releaseUpdate.release.version })}</>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
               <button
                 type="button"
-                className={`admin-update-dropzone ${updateDragActive ? 'dragging' : ''}`}
-                onClick={() => fileInputRef.current?.click()}
-                onDragEnter={(event) => {
-                  event.preventDefault()
-                  setUpdateDragActive(true)
-                }}
-                onDragOver={(event) => event.preventDefault()}
-                onDragLeave={(event) => {
-                  event.preventDefault()
-                  setUpdateDragActive(false)
-                }}
-                onDrop={(event) => {
-                  event.preventDefault()
-                  setUpdateDragActive(false)
-                  handleUpdateFileSelection(event.dataTransfer.files)
-                }}
+                className="admin-update-manual-toggle"
+                aria-expanded={manualUpdateOpen}
+                aria-controls="admin-manual-update-panel"
+                onClick={() => setManualUpdateOpen((open) => !open)}
               >
-                <span className="admin-update-dropzone-icon"><UploadCloud size={20} aria-hidden="true" /></span>
                 <span>
-                  <strong>{updateFile ? tx('admin.packageSelected') : tx('admin.dropPackageTitle')}</strong>
-                  <em>{updateFile ? `${updateFile.name} · ${formatFileSize(updateFile.size)}` : tx('admin.dropPackageHint')}</em>
+                  <UploadCloud size={16} aria-hidden="true" />
+                  <span>
+                    <strong>{tx('admin.manualUpdate')}</strong>
+                    <small>{tx('admin.manualUpdateDesc')}</small>
+                  </span>
                 </span>
+                <ChevronDown size={15} aria-hidden="true" className={manualUpdateOpen ? 'open' : undefined} />
               </button>
-              <p className="settings-inline-note">{tx('admin.buildUpdatePackageHint')}</p>
-              <div className="admin-update-actions">
-                {updateFile ? (
+              <div
+                id="admin-manual-update-panel"
+                className={`admin-update-manual-detail ${manualUpdateOpen ? 'open' : ''}`}
+              >
+                <div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".tar.gz,.tgz"
+                    className="hidden-input"
+                    onChange={(event) => handleUpdateFileSelection(event.currentTarget.files)}
+                  />
                   <button
                     type="button"
-                    className="quiet-action"
-                    onClick={() => setUpdateFile(null)}
-                    disabled={uploading}
+                    className={`admin-update-dropzone ${updateDragActive ? 'dragging' : ''}`}
+                    onClick={() => fileInputRef.current?.click()}
+                    onDragEnter={(event) => {
+                      event.preventDefault()
+                      setUpdateDragActive(true)
+                    }}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDragLeave={(event) => {
+                      event.preventDefault()
+                      setUpdateDragActive(false)
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault()
+                      setUpdateDragActive(false)
+                      handleUpdateFileSelection(event.dataTransfer.files)
+                    }}
                   >
-                    <X size={13} aria-hidden="true" /> {tx('admin.deletePackage')}
+                    <span className="admin-update-dropzone-icon"><UploadCloud size={20} aria-hidden="true" /></span>
+                    <span>
+                      <strong>{updateFile ? tx('admin.packageSelected') : tx('admin.dropPackageTitle')}</strong>
+                      <em>{updateFile ? `${updateFile.name} · ${formatFileSize(updateFile.size)}` : tx('admin.dropPackageHint')}</em>
+                    </span>
                   </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="quiet-action"
-                  onClick={() => void handleUploadPackage()}
-                  disabled={uploading || !updateFile}
-                >
-                  {uploading ? (
-                    <><RefreshCw size={13} aria-hidden="true" className="spin-icon" /> {tx('admin.uploading')}</>
-                  ) : (
-                    <><Upload size={13} aria-hidden="true" /> {tx('admin.uploadPackage')}</>
-                  )}
-                </button>
+                  <p className="settings-inline-note">{tx('admin.buildUpdatePackageHint')}</p>
+                  <div className="admin-update-actions">
+                    {updateFile ? (
+                      <button
+                        type="button"
+                        className="quiet-action"
+                        onClick={() => setUpdateFile(null)}
+                        disabled={uploading}
+                      >
+                        <X size={13} aria-hidden="true" /> {tx('admin.deletePackage')}
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="quiet-action"
+                      onClick={() => void handleUploadPackage()}
+                      disabled={uploading || !updateFile}
+                    >
+                      {uploading ? (
+                        <><RefreshCw size={13} aria-hidden="true" className="spin-icon" /> {tx('admin.uploading')}</>
+                      ) : (
+                        <><Upload size={13} aria-hidden="true" /> {tx('admin.uploadPackage')}</>
+                      )}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </section>
@@ -2856,8 +3158,11 @@ export function AdminScreen({
           teamId={viewingTeam.teamId}
           ownerEmail={viewingTeam.ownerEmail}
           users={users}
-          onUserUpdate={onUserUpdate}
-          onClose={() => setViewingTeam(null)}
+          onNotify={onNotify}
+          onClose={() => {
+            setViewingTeam(null)
+            void loadAdminTeams()
+          }}
         />
       ) : null}
     </section>
@@ -2880,14 +3185,14 @@ function AdminTeamPanel({
   teamId,
   ownerEmail,
   users,
-  onUserUpdate,
+  onNotify,
   onClose,
 }: {
   token: string
   teamId: string
   ownerEmail: string
   users: AdminUser[]
-  onUserUpdate: (userId: string, patch: UserUpdatePatch) => Promise<void> | void
+  onNotify?: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
   onClose: () => void
 }) {
   const { tx, format, lang } = useI18n()
@@ -2897,54 +3202,84 @@ function AdminTeamPanel({
   const [error, setError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null)
+  const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null)
+  const [memberQuery, setMemberQuery] = useState('')
+  const [memberRoleFilter, setMemberRoleFilter] = useState<'all' | TeamRole>('all')
+  const [memberStatusFilter, setMemberStatusFilter] = useState<'all' | 'active' | 'pending'>('all')
+  const [memberView, setMemberView] = useState<'list' | 'map'>('list')
+  const [overviewOpen, setOverviewOpen] = useState(false)
+  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false)
+  const [contextMenu, setContextMenu] = useState<ExplorerContextMenuState | null>(null)
+  const [pendingRemoveMemberId, setPendingRemoveMemberId] = useState<string | null>(null)
+  const memberSearchRef = useRef<HTMLInputElement>(null)
+  const dialogRef = useModalA11y<HTMLDivElement>({
+    open: !panelClose.exiting && !pendingRemoveMemberId,
+    onClose: () => panelClose.requestClose(),
+    initialFocusRef: memberSearchRef,
+  })
   const usersById = useMemo(() => new Map(users.map((user) => [user.id, user])), [users])
   const activeTeachers = useMemo(() => (
     (summary?.members ?? []).filter((member) => (
       member.status === 'active' &&
-      (member.role === 'owner' || member.role === 'admin') &&
+      member.role === 'admin' &&
       member.userId
     ))
   ), [summary?.members])
   const students = useMemo(() => (
     (summary?.members ?? []).filter((member) => member.role === 'member')
   ), [summary?.members])
-  const activeMembers = useMemo(() => (
-    (summary?.members ?? []).filter((member) => member.status === 'active')
-  ), [summary?.members])
-  const pendingMembers = useMemo(() => (
-    (summary?.members ?? []).filter((member) => member.status === 'pending')
-  ), [summary?.members])
+  const filteredMembers = useMemo(() => {
+    const query = memberQuery.trim().toLocaleLowerCase()
+    return (summary?.members ?? []).filter((member) => {
+      if (memberRoleFilter !== 'all' && member.role !== memberRoleFilter) return false
+      if (memberStatusFilter !== 'all' && member.status !== memberStatusFilter) return false
+      if (!query) return true
+      const assignedTeachers = member.role === 'member'
+        ? activeTeachers
+          .filter((teacher) => Boolean(teacher.userId && isTeacherAssignedToStudent(member, teacher.userId)))
+          .map((teacher) => teacher.displayName ?? teacher.invitedEmail)
+        : []
+      return [
+        member.displayName,
+        member.invitedEmail,
+        tx(ADMIN_TEAM_ROLE_LABEL_KEYS[member.role]),
+        tx(member.status === 'active' ? 'team.statusActive' : 'team.statusPending'),
+        ...assignedTeachers,
+      ].filter(Boolean).join(' ').toLocaleLowerCase().includes(query)
+    })
+  }, [activeTeachers, memberQuery, memberRoleFilter, memberStatusFilter, summary?.members, tx])
   const selectedMember = useMemo(() => {
-    const members = summary?.members ?? []
-    return members.find((member) => member.id === selectedMemberId)
-      ?? members.find((member) => member.role === 'owner')
-      ?? members[0]
-      ?? null
+    if (!selectedMemberId) return null
+    return (summary?.members ?? []).find((member) => member.id === selectedMemberId) ?? null
   }, [selectedMemberId, summary?.members])
+  const pendingRemoveMember = useMemo(
+    () => (summary?.members ?? []).find((member) => member.id === pendingRemoveMemberId) ?? null,
+    [pendingRemoveMemberId, summary?.members],
+  )
   const selectedLinkedUser = selectedMember?.userId ? usersById.get(selectedMember.userId) ?? null : null
   const selectedStats = selectedMember ? summary?.memberStats?.[selectedMember.id] : null
-  const selectedAdvisor = selectedMember?.role === 'member'
-    ? activeTeachers.find((teacher) => teacher.userId === selectedMember.invitedBy) ?? null
-    : null
-  const selectedAccountType = selectedLinkedUser ? accountTypeForUser(selectedLinkedUser) : 'free'
-  const selectedAccountOptions = selectedMember
-    ? accountTypes.map((type) => ({ value: type, label: tx(`admin.accountType.${type}`) }))
-    : []
-  const selectedStorageQuotaMb = selectedLinkedUser
-    ? Number(selectedLinkedUser.storageQuotaMb || selectedLinkedUser.settings.storageQuotaMb || (selectedAccountType === 'free' ? 5 : 100))
-    : 0
-  const selectedStorageLimit = selectedStats?.storageQuotaBytes === null || selectedAccountType === 'admin'
-    ? '∞'
-    : formatBytes(selectedStats?.storageQuotaBytes ?? selectedStorageQuotaMb * 1024 * 1024)
   const ownerCount = summary?.roleCounts?.owner ?? (summary?.members ?? []).filter((member) => member.role === 'owner').length
   const teacherCount = summary?.roleCounts?.admin ?? activeTeachers.filter((member) => member.role === 'admin').length
   const studentCount = summary?.roleCounts?.member ?? students.length
   const teamUsage = summary?.usage
   const teamCapacity = summary?.capacity
-  const linkedPersonalAccounts = users.filter((user) => user.teamMemberOf?.teamId === teamId).length
+  const linkedPersonalAccounts = (summary?.members ?? []).filter((member) => Boolean(member.userId)).length
   const teamStorageLimit = formatBytes(teamCapacity?.storageQuotaBytes ?? 1024 * 1024 * 1024)
   const remainingActiveLinks = teamCapacity ? Math.max(0, teamCapacity.activeShareLimit - teamCapacity.activeShareCount) : 0
   const remainingCreatedLinks = '∞'
+  const activeFilterCount = Number(memberRoleFilter !== 'all') + Number(memberStatusFilter !== 'all')
+  const memberShortcutHints = [
+    { keys: 'Ctrl/⌘ K', label: tx('shortcuts.focusSearch') },
+    { keys: '↑ ↓', label: tx('team.adminTeamShortcutNavigate') },
+    { keys: 'Enter', label: tx('shortcuts.openSelected') },
+    {
+      keys: 'Space',
+      label: selectedMember
+        ? format(tx('team.toggleMemberDetails'), { name: selectedMember.displayName ?? selectedMember.invitedEmail })
+        : tx('team.adminTeamControls'),
+    },
+    { keys: 'Shift F10', label: tx('table.actions') },
+  ]
 
   async function reload() {
     setLoading(true)
@@ -2965,17 +3300,20 @@ function AdminTeamPanel({
   }, [teamId])
 
   useEffect(() => {
-    const members = summary?.members ?? []
-    if (members.length === 0) {
+    if (filteredMembers.length === 0) {
       setSelectedMemberId(null)
+      setExpandedMemberId(null)
       return
     }
     setSelectedMemberId((current) => (
-      current && members.some((member) => member.id === current)
+      current && filteredMembers.some((member) => member.id === current)
         ? current
-        : members.find((member) => member.role === 'owner')?.id ?? members[0]?.id ?? null
+        : filteredMembers.find((member) => member.role === 'owner')?.id ?? filteredMembers[0]?.id ?? null
     ))
-  }, [summary?.members])
+    setExpandedMemberId((current) => (
+      current && filteredMembers.some((member) => member.id === current) ? current : null
+    ))
+  }, [filteredMembers])
 
   async function handleRoleChange(memberId: string, role: Exclude<TeamRole, 'owner'>) {
     setBusyId(memberId)
@@ -2989,22 +3327,25 @@ function AdminTeamPanel({
     }
   }
 
-  async function handleAdvisorChange(memberId: string, advisorMemberId: string) {
+  async function handleTeacherAssignmentToggle(memberId: string, teacherMemberId: string) {
+    const member = summary?.members.find((candidate) => candidate.id === memberId)
+    const teacher = activeTeachers.find((candidate) => candidate.id === teacherMemberId)
+    if (!member || !teacher?.userId) return
+    const currentTeacherUserIds = teamMemberTeacherIds(member)
+    const nextTeacherUserIds = currentTeacherUserIds.includes(teacher.userId)
+      ? currentTeacherUserIds.filter((id) => id !== teacher.userId)
+      : [...currentTeacherUserIds, teacher.userId]
+    if (nextTeacherUserIds.length === 0) {
+      setError(tx('team.inviteTeacherRequired'))
+      return
+    }
+    const teacherMemberIds = activeTeachers
+      .filter((candidate) => candidate.userId && nextTeacherUserIds.includes(candidate.userId))
+      .map((candidate) => candidate.id)
     setBusyId(memberId)
     try {
-      await phdApi.updateTeamMemberAccess(token, teamId, memberId, { invitedBy: advisorMemberId })
+      await phdApi.updateTeamMemberAccess(token, teamId, memberId, { teacherIds: teacherMemberIds })
       await reload()
-    } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
-    } finally {
-      setBusyId(null)
-    }
-  }
-
-  async function handleLinkedUserUpdate(userId: string, patch: UserUpdatePatch) {
-    setBusyId(`user:${userId}`)
-    try {
-      await onUserUpdate(userId, patch)
     } catch (err) {
       setError(normalizeErrorMessage(err, lang))
     } finally {
@@ -3028,6 +3369,8 @@ function AdminTeamPanel({
     setBusyId(memberId)
     try {
       await phdApi.removeTeamMember(token, teamId, memberId)
+      setPendingRemoveMemberId(null)
+      setContextMenu(null)
       await reload()
     } catch (err) {
       setError(normalizeErrorMessage(err, lang))
@@ -3036,311 +3379,708 @@ function AdminTeamPanel({
     }
   }
 
+  function assignedTeachersFor(member: TeamMember) {
+    if (member.role !== 'member') return []
+    return activeTeachers.filter((teacher) => (
+      Boolean(teacher.userId && isTeacherAssignedToStudent(member, teacher.userId))
+    ))
+  }
+
+  function supervisedStudentsFor(member: TeamMember) {
+    if (member.role !== 'admin' || !member.userId) return []
+    return students.filter((student) => isTeacherAssignedToStudent(student, member.userId!))
+  }
+
+  function relationshipLabelFor(member: TeamMember) {
+    if (member.role === 'owner') return tx('team.ownerBadge')
+    if (member.role === 'admin') {
+      return format(tx('team.relationshipTeacherMeta'), { count: supervisedStudentsFor(member).length })
+    }
+    const teacherNames = assignedTeachersFor(member).map((teacher) => teacher.displayName ?? teacher.invitedEmail)
+    return teacherNames.length > 0 ? teacherNames.join(', ') : tx('team.relationshipNoAdvisor')
+  }
+
+  function selectMember(memberId: string, options?: { expand?: boolean; inspector?: boolean }) {
+    setSelectedMemberId(memberId)
+    if (options?.expand) {
+      setExpandedMemberId((current) => current === memberId ? null : memberId)
+    }
+    if (options?.inspector) setMobileInspectorOpen(true)
+  }
+
+  function clearMemberFilters() {
+    setMemberQuery('')
+    setMemberRoleFilter('all')
+    setMemberStatusFilter('all')
+  }
+
+  async function copyMemberEmail(member: TeamMember) {
+    const copied = await writeToClipboard(member.invitedEmail)
+    onNotify?.(tx(copied ? 'copiedBang' : 'copyFailed'), copied ? 'success' : 'error')
+  }
+
+  function showMemberContextMenu(member: TeamMember, x: number, y: number) {
+    const linkedUser = member.userId ? usersById.get(member.userId) ?? null : null
+    setSelectedMemberId(member.id)
+    setContextMenu({
+      x,
+      y,
+      title: member.displayName ?? member.invitedEmail,
+      subtitle: `${tx(ADMIN_TEAM_ROLE_LABEL_KEYS[member.role])} · ${tx(member.status === 'active' ? 'team.statusActive' : 'team.statusPending')}`,
+      items: [
+        {
+          id: 'details',
+          label: tx('team.adminTeamAccountDetail'),
+          icon: <UserRound size={14} aria-hidden="true" />,
+          shortcut: 'Enter',
+          accessKey: 'Enter',
+          onSelect: () => selectMember(member.id, { inspector: true }),
+        },
+        {
+          id: 'enter-view',
+          label: tx(member.role === 'member' ? 'team.enterStudentView' : 'team.enterMemberView'),
+          icon: <LogIn size={14} aria-hidden="true" />,
+          disabled: !linkedUser || member.status !== 'active',
+          onSelect: () => linkedUser && void handleEnterLinkedUser(linkedUser),
+        },
+        {
+          id: 'copy-email',
+          label: format(tx('copy'), { label: tx('team.copyMemberEmailLabel') }),
+          icon: <Mail size={14} aria-hidden="true" />,
+          shortcut: 'C',
+          accessKey: 'c',
+          onSelect: () => void copyMemberEmail(member),
+        },
+        {
+          id: 'role',
+          label: tx('team.columnRole'),
+          icon: <ShieldCheck size={14} aria-hidden="true" />,
+          disabled: member.role === 'owner',
+          submenu: member.role === 'owner' ? undefined : {
+            title: tx('team.columnRole'),
+            subtitle: member.displayName ?? member.invitedEmail,
+            backLabel: tx('back'),
+            items: (['admin', 'member'] as const).map((role) => ({
+              id: `role:${role}`,
+              label: tx(ADMIN_TEAM_ROLE_LABEL_KEYS[role]),
+              radio: true,
+              selected: member.role === role,
+              onSelect: () => void handleRoleChange(member.id, role),
+            })),
+          },
+        },
+        {
+          id: 'remove',
+          label: tx('team.removeMemberTitle'),
+          icon: <Trash2 size={14} aria-hidden="true" />,
+          disabled: member.role === 'owner',
+          tone: 'danger',
+          onSelect: () => setPendingRemoveMemberId(member.id),
+        },
+      ],
+    })
+  }
+
+  function openMemberContextMenu(event: ReactMouseEvent<HTMLElement>, member: TeamMember) {
+    event.preventDefault()
+    event.stopPropagation()
+    showMemberContextMenu(member, event.clientX, event.clientY)
+  }
+
+  function openMemberContextMenuFromButton(event: ReactMouseEvent<HTMLButtonElement>, member: TeamMember) {
+    event.stopPropagation()
+    const rect = event.currentTarget.getBoundingClientRect()
+    showMemberContextMenu(member, rect.right - 8, rect.bottom + 4)
+  }
+
+  function handleMemberRowKeyDown(event: ReactKeyboardEvent<HTMLElement>, member: TeamMember) {
+    if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+      event.preventDefault()
+      const rect = event.currentTarget.getBoundingClientRect()
+      showMemberContextMenu(member, rect.left + 24, rect.top + 28)
+      return
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      selectMember(member.id, { inspector: true })
+      return
+    }
+    if (event.key === ' ') {
+      event.preventDefault()
+      selectMember(member.id, { expand: true })
+    }
+  }
+
+  useEffect(() => {
+    function handlePanelShortcut(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null
+      const isEditable = Boolean(target?.matches('input, textarea, select, [contenteditable="true"]'))
+      const focusSearch = (event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'k'
+      if (focusSearch || (event.key === '/' && !isEditable)) {
+        event.preventDefault()
+        memberSearchRef.current?.focus()
+        memberSearchRef.current?.select()
+        return
+      }
+      if (isEditable || target?.closest('button, a, [role="combobox"], [role="menu"]')) return
+      if (!['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(event.key) || filteredMembers.length === 0) return
+      const currentIndex = filteredMembers.findIndex((member) => member.id === selectedMemberId)
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        const direction = event.key === 'ArrowDown' ? 1 : -1
+        const nextIndex = currentIndex < 0
+          ? 0
+          : (currentIndex + direction + filteredMembers.length) % filteredMembers.length
+        setSelectedMemberId(filteredMembers[nextIndex]?.id ?? null)
+        return
+      }
+      if (!selectedMemberId) return
+      event.preventDefault()
+      if (event.key === 'Enter') setMobileInspectorOpen(true)
+      if (event.key === ' ') {
+        setExpandedMemberId((current) => current === selectedMemberId ? null : selectedMemberId)
+      }
+    }
+
+    window.addEventListener('keydown', handlePanelShortcut)
+    return () => window.removeEventListener('keydown', handlePanelShortcut)
+  }, [filteredMembers, selectedMemberId])
+
   return (
     <ModalPortal>
       <div
         className={`dialog-layer${panelClose.exiting ? ' exiting' : ''}`}
         onClick={(event) => { if (event.target === event.currentTarget) panelClose.requestClose() }}
       >
-      <div className="admin-card admin-team-panel" role="dialog" aria-modal="true" aria-label={tx('team.adminOverrideBanner')}>
-        <div className="admin-card-head">
-          <div>
-            <span className="eyebrow">{tx('team.adminOverrideBanner')}</span>
-            <h3>{summary?.team.name ?? ownerEmail}</h3>
+      <div
+        ref={dialogRef}
+        className="admin-card admin-team-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label={tx('team.adminOverrideBanner')}
+      >
+        <header className="admin-team-panel-header">
+          <div className="admin-team-panel-identity">
+            <span className="admin-team-panel-mark" aria-hidden="true">
+              <Users size={17} />
+            </span>
+            <div>
+              <h3>{summary?.team.name ?? ownerEmail}</h3>
+              <p>{tx('team.adminOverrideBanner')} · {ownerEmail}</p>
+            </div>
           </div>
-          <button type="button" className="icon-action" onClick={() => panelClose.requestClose()} aria-label={tx('close')}>
-            <XCircle size={16} aria-hidden="true" />
-          </button>
-        </div>
+
+          <div className="admin-team-commandbar">
+            <label className="admin-team-search">
+              <Search size={14} aria-hidden="true" />
+              <span className="sr-only">{tx('search')}</span>
+              <input
+                ref={memberSearchRef}
+                type="search"
+                value={memberQuery}
+                onChange={(event) => setMemberQuery(event.target.value)}
+                placeholder={tx('team.memberSearchPlaceholder')}
+              />
+              <kbd aria-hidden="true">/</kbd>
+            </label>
+
+            <AnchoredPopover
+              triggerAriaLabel={tx('team.memberFilterLabel')}
+              popoverAriaLabel={tx('team.memberFilterLabel')}
+              triggerClassName="admin-team-filter-trigger"
+              popoverClassName="admin-team-filter-popover"
+              width={286}
+              estimatedHeight={246}
+              align="end"
+              trigger={(
+                <>
+                  <ListFilter size={14} aria-hidden="true" />
+                  <span>{tx('team.memberFilterLabel')}</span>
+                  {activeFilterCount > 0 ? <b>{activeFilterCount}</b> : null}
+                </>
+              )}
+            >
+              {(close) => (
+                <div className="admin-team-filter-fields">
+                  <label>
+                    <span>{tx('team.memberRoleFilterLabel')}</span>
+                    <Select
+                      size="small"
+                      value={memberRoleFilter}
+                      options={[
+                        { value: 'all', label: tx('team.memberRoleAll') },
+                        ...(['owner', 'admin', 'member'] as const).map((role) => ({
+                          value: role,
+                          label: tx(ADMIN_TEAM_ROLE_LABEL_KEYS[role]),
+                        })),
+                      ]}
+                      onChange={(value) => setMemberRoleFilter(value as 'all' | TeamRole)}
+                    />
+                  </label>
+                  <label>
+                    <span>{tx('team.memberStatusFilterLabel')}</span>
+                    <Select
+                      size="small"
+                      value={memberStatusFilter}
+                      options={[
+                        { value: 'all', label: tx('team.memberStatusAll') },
+                        { value: 'active', label: tx('team.statusActive') },
+                        { value: 'pending', label: tx('team.statusPending') },
+                      ]}
+                      onChange={(value) => setMemberStatusFilter(value as 'all' | 'active' | 'pending')}
+                    />
+                  </label>
+                  <div className="admin-team-filter-actions">
+                    <button
+                      type="button"
+                      className="quiet-action"
+                      disabled={activeFilterCount === 0 && !memberQuery}
+                      onClick={() => {
+                        clearMemberFilters()
+                        close()
+                      }}
+                    >
+                      {tx('team.studentProfileClearFilters')}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </AnchoredPopover>
+
+            {summary ? (
+              <AnchoredPopover
+                triggerAriaLabel={tx('team.joinCodeTitle')}
+                popoverAriaLabel={tx('team.joinCodeTitle')}
+                triggerClassName="primary-action admin-team-invite-trigger"
+                popoverClassName="team-invite-popover-shell"
+                width={410}
+                estimatedHeight={560}
+                align="end"
+                trigger={<><KeyRound size={13} aria-hidden="true" /><span>{tx('team.joinCodeButton')}</span></>}
+              >
+                {() => (
+                  <TeamJoinCodeGenerator
+                    roles={summary.team.provisioning ? ['owner', 'admin', 'member'] : ['admin', 'member']}
+                    teachers={activeTeachers}
+                    defaultRole={summary.team.provisioning ? 'owner' : 'member'}
+                    onGenerate={(input) => phdApi.createTeamJoinCode(token, teamId, input)}
+                  />
+                )}
+              </AnchoredPopover>
+            ) : null}
+            <button type="button" className="icon-action" onClick={() => panelClose.requestClose()} aria-label={tx('close')}>
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+        </header>
 
         {error ? <div className="admin-error" role="alert">{error}</div> : null}
 
         {loading ? (
           <div className="admin-team-panel-loading" aria-label={tx('working')} aria-busy="true">
-            <div className="admin-team-summary-grid">
-              {Array.from({ length: 4 }).map((_, index) => (
-                <div key={index} className="admin-team-summary-card">
-                  <Skeleton width={28} height={28} radius={8} />
-                  <Skeleton width="48%" height={10} />
-                  <Skeleton width="68%" height={16} />
-                  <Skeleton width="82%" height={10} />
-                </div>
-              ))}
+            <Skeleton width="100%" height={82} radius={8} />
+            <div className="admin-team-loading-columns">
+              <Skeleton width="100%" height={420} radius={8} />
+              <Skeleton width="100%" height={420} radius={8} />
             </div>
-            <Skeleton width="100%" height={160} radius={10} />
           </div>
         ) : summary ? (
           <div className="admin-team-panel-body">
-            <div className="admin-team-summary-grid" aria-label={tx('team.adminTeamSummary')}>
-              <div className="admin-team-summary-card">
-                <Users size={15} aria-hidden="true" />
-                <span>{tx('team.adminTeamMetricSeats')}</span>
-                <strong>{teamCapacity ? `${teamCapacity.teacherSeatsUsed}/${teamCapacity.teacherSeatLimit} · ${teamCapacity.studentSeatsUsed}/${teamCapacity.studentSeatLimit}` : '-'}</strong>
-                <em>{format(tx('team.adminTeamMetricSeatsDesc'), { pending: pendingMembers.length })}</em>
+            <section className={`admin-team-overview${overviewOpen ? ' open' : ''}`}>
+              <div className="admin-team-overview-line">
+                <button
+                  type="button"
+                  className="admin-team-overview-toggle"
+                  aria-expanded={overviewOpen}
+                  aria-controls="admin-team-policy-details"
+                  onClick={() => setOverviewOpen((current) => !current)}
+                >
+                  {overviewOpen ? <ChevronUp size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
+                  <span>
+                    <strong>{tx('team.adminTeamSummary')}</strong>
+                    <em>{tx('team.adminTeamPolicyDesc')}</em>
+                  </span>
+                </button>
+                <div className="admin-team-overview-metrics" aria-label={tx('team.adminTeamSummary')}>
+                  <span>
+                    <em>{tx('team.adminTeamMetricPeople')}</em>
+                    <strong>{format(tx('team.adminTeamPeopleCount'), { owners: ownerCount, teachers: teacherCount, students: studentCount })}</strong>
+                  </span>
+                  <span>
+                    <em>{tx('team.adminTeamMetricSeats')}</em>
+                    <strong>{teamCapacity ? `${teamCapacity.teacherSeatsUsed}/${teamCapacity.teacherSeatLimit} · ${teamCapacity.studentSeatsUsed}/${teamCapacity.studentSeatLimit}` : '-'}</strong>
+                  </span>
+                  <span>
+                    <em>{tx('team.adminTeamMetricApplications')}</em>
+                    <strong>{teamUsage?.applicationCount ?? 0}</strong>
+                  </span>
+                  <span>
+                    <em>{tx('team.adminTeamMetricStorage')}</em>
+                    <strong>{formatBytes(teamCapacity?.storageUsedBytes ?? 0)} / {teamStorageLimit}</strong>
+                  </span>
+                  <span>
+                    <em>{tx('team.adminTeamMetricLinks')}</em>
+                    <strong>{teamCapacity?.activeShareCount ?? 0}</strong>
+                  </span>
+                </div>
               </div>
-              <div className="admin-team-summary-card">
-                <ShieldCheck size={15} aria-hidden="true" />
-                <span>{tx('team.adminTeamMetricPeople')}</span>
-                <strong>{format(tx('team.adminTeamPeopleCount'), { owners: ownerCount, teachers: teacherCount, students: studentCount })}</strong>
-                <em>{format(tx('team.adminTeamMetricPeopleDesc'), { active: activeMembers.length })}</em>
-              </div>
-              <div className="admin-team-summary-card">
-                <FileText size={15} aria-hidden="true" />
-                <span>{tx('team.adminTeamMetricApplications')}</span>
-                <strong>{format(tx('team.applicationCount'), { count: teamUsage?.applicationCount ?? 0 })}</strong>
-                <em>{tx('team.adminTeamMetricApplicationsDesc')}</em>
-              </div>
-              <div className="admin-team-summary-card">
-                <HardDrive size={15} aria-hidden="true" />
-                <span>{tx('team.adminTeamMetricStorage')}</span>
-                <strong>{formatBytes(teamCapacity?.storageUsedBytes ?? 0)}</strong>
-                <em>{format(tx('team.adminTeamStorageLimit'), { limit: teamStorageLimit })}</em>
-              </div>
-              <div className="admin-team-summary-card">
-                <Copy size={15} aria-hidden="true" />
-                <span>{tx('team.adminTeamMetricLinks')}</span>
-                <strong>{teamCapacity ? format(tx('team.adminTeamLinksUsage'), { active: teamCapacity.activeShareCount, created: tx('team.capacityUnlimited') }) : '-'}</strong>
-                <em>{teamCapacity ? format(tx('team.adminTeamLinksQuota'), { active: teamCapacity.activeShareLimit, created: tx('team.capacityUnlimited') }) : tx('team.adminTeamMetricLinksDesc')}</em>
-              </div>
-            </div>
 
-            <section className="admin-team-policy-panel">
-              <div className="admin-team-section-head">
-                <span>{tx('team.adminTeamPolicyTitle')}</span>
-                <em>{tx('team.adminTeamPolicyDesc')}</em>
-              </div>
-              <div className="admin-team-policy-grid">
-                <article className="admin-team-policy-card admin-team-policy-card-primary">
-                  <div>
-                    <Users size={15} aria-hidden="true" />
-                    <span>
-                      <strong>{tx('team.adminTeamFixedSeatsTitle')}</strong>
-                      <em>{teamCapacity ? format(tx('team.adminTeamFixedSeatsDesc'), {
-                        teachers: teamCapacity.teacherSeatsUsed,
-                        teacherLimit: teamCapacity.teacherSeatLimit,
-                        students: teamCapacity.studentSeatsUsed,
-                        studentLimit: teamCapacity.studentSeatLimit,
-                      }) : '-'}</em>
-                    </span>
-                  </div>
-                </article>
-                <article className="admin-team-policy-card">
+              <CollapsiblePanel
+                id="admin-team-policy-details"
+                open={overviewOpen}
+                className="admin-team-policy-disclosure"
+                innerClassName="admin-team-policy-details"
+                keepMounted
+                collapseMs={300}
+              >
+                <div className="admin-team-policy-row">
+                  <Users size={15} aria-hidden="true" />
+                  <span>
+                    <strong>{tx('team.adminTeamFixedSeatsTitle')}</strong>
+                    <em>{teamCapacity ? format(tx('team.adminTeamFixedSeatsDesc'), {
+                      teachers: teamCapacity.teacherSeatsUsed,
+                      teacherLimit: teamCapacity.teacherSeatLimit,
+                      students: teamCapacity.studentSeatsUsed,
+                      studentLimit: teamCapacity.studentSeatLimit,
+                    }) : '-'}</em>
+                  </span>
+                </div>
+                <div className="admin-team-policy-row">
                   <LockKeyhole size={15} aria-hidden="true" />
                   <span>
                     <strong>{format(tx('team.adminTeamLinkedAccountsTitle'), { count: linkedPersonalAccounts })}</strong>
                     <em>{tx('team.adminTeamLinkedAccountsDesc')}</em>
                   </span>
-                </article>
-                <article className="admin-team-policy-card">
+                </div>
+                <div className="admin-team-policy-row">
                   <HardDrive size={15} aria-hidden="true" />
                   <span>
                     <strong>{format(tx('team.adminTeamStoragePolicyTitle'), { used: formatBytes(teamCapacity?.storageUsedBytes ?? 0), limit: teamStorageLimit })}</strong>
                     <em>{tx('team.adminTeamStoragePolicyDesc')}</em>
                   </span>
-                </article>
-                <article className="admin-team-policy-card">
+                </div>
+                <div className="admin-team-policy-row">
                   <Copy size={15} aria-hidden="true" />
                   <span>
                     <strong>{format(tx('team.adminTeamLinkPolicyTitle'), { active: remainingActiveLinks, created: remainingCreatedLinks })}</strong>
                     <em>{tx('team.adminTeamLinkPolicyDesc')}</em>
                   </span>
-                </article>
-              </div>
+                </div>
+              </CollapsiblePanel>
             </section>
 
             <div className="admin-team-drilldown">
-              <div className="admin-team-main-column">
-                <div className="admin-team-relationship">
-                  <div className="admin-team-section-head">
-                    <span>{tx('team.relationshipMapTitle')}</span>
-                    <em>{format(tx('team.relationshipMapStats'), { teachers: activeTeachers.length, students: students.length })}</em>
+              <section className="admin-team-directory" aria-label={tx('team.membersEyebrow')}>
+                <div className="admin-team-directory-head">
+                  <div>
+                    <strong>{format(tx('team.membersTitle'), { count: summary.members.length })}</strong>
+                    <span>{format(tx('team.memberFilteredCount'), { visible: filteredMembers.length, total: summary.members.length })}</span>
                   </div>
-                  <div className="admin-team-graph">
-                    {activeTeachers.map((teacher) => {
-                      const teacherStudents = students.filter((student) => student.invitedBy === teacher.userId)
-                      return (
-                        <section className="admin-team-graph-lane" key={teacher.id}>
-                          <button
-                            type="button"
-                            className={`admin-team-graph-node teacher ${selectedMember?.id === teacher.id ? 'selected' : ''}`}
-                            onClick={() => setSelectedMemberId(teacher.id)}
-                          >
-                            <span className="team-member-avatar">{(teacher.displayName ?? teacher.invitedEmail).charAt(0).toUpperCase()}</span>
-                            <span>
-                              <strong>{teacher.displayName ?? teacher.invitedEmail}</strong>
-                              <em>{tx(ADMIN_TEAM_ROLE_LABEL_KEYS[teacher.role])}</em>
-                            </span>
-                            <b>{teacherStudents.length}</b>
-                          </button>
-                          <div className="admin-team-graph-spine" aria-hidden="true" />
-                          <div className="admin-team-graph-children">
-                            {teacherStudents.length === 0 ? (
-                              <div className="admin-team-graph-empty">{tx('team.relationshipNoAssignedStudents')}</div>
-                            ) : teacherStudents.map((student) => (
+                  <div
+                    className={`admin-team-view-switch is-${memberView}`}
+                    role="group"
+                    aria-label={tx('team.relationshipViewLabel')}
+                  >
+                    <i aria-hidden="true" />
+                    <button
+                      type="button"
+                      className={memberView === 'list' ? 'selected' : ''}
+                      aria-pressed={memberView === 'list'}
+                      onClick={() => setMemberView('list')}
+                    >
+                      <Users size={13} aria-hidden="true" />
+                      {tx('team.relationshipViewTable')}
+                    </button>
+                    <button
+                      type="button"
+                      className={memberView === 'map' ? 'selected' : ''}
+                      aria-pressed={memberView === 'map'}
+                      onClick={() => setMemberView('map')}
+                    >
+                      <Network size={13} aria-hidden="true" />
+                      {tx('team.relationshipViewMap')}
+                    </button>
+                  </div>
+                </div>
+
+                {memberView === 'map' ? (
+                  <div className="admin-team-relationship-view">
+                    <div className="admin-team-section-head">
+                      <span>{tx('team.relationshipMapTitle')}</span>
+                      <em>{format(tx('team.relationshipMapStats'), { teachers: activeTeachers.length, students: students.length })}</em>
+                    </div>
+                    {activeTeachers.length > 0 ? (
+                      <div className="admin-team-graph">
+                        {activeTeachers.map((teacher) => {
+                          const teacherStudents = supervisedStudentsFor(teacher)
+                          return (
+                            <section className="admin-team-graph-lane" key={teacher.id}>
                               <button
                                 type="button"
-                                className={`admin-team-graph-node student ${selectedMember?.id === student.id ? 'selected' : ''}`}
-                                key={student.id}
-                                onClick={() => setSelectedMemberId(student.id)}
+                                className={`admin-team-graph-node teacher ${selectedMember?.id === teacher.id ? 'selected' : ''}`}
+                                onClick={() => selectMember(teacher.id, { inspector: true })}
+                                onContextMenu={(event) => openMemberContextMenu(event, teacher)}
                               >
-                                <span className="team-member-avatar">{(student.displayName ?? student.invitedEmail).charAt(0).toUpperCase()}</span>
+                                <span className="team-member-avatar">{(teacher.displayName ?? teacher.invitedEmail).charAt(0).toUpperCase()}</span>
                                 <span>
-                                  <strong>{student.displayName ?? student.invitedEmail}</strong>
-                                  <em>{student.invitedEmail}</em>
+                                  <strong>{teacher.displayName ?? teacher.invitedEmail}</strong>
+                                  <em>{format(tx('team.relationshipTeacherMeta'), { count: teacherStudents.length })}</em>
                                 </span>
                               </button>
-                            ))}
+                              <div className="admin-team-graph-spine" aria-hidden="true" />
+                              <div className="admin-team-graph-children">
+                                {teacherStudents.length === 0 ? (
+                                  <div className="admin-team-graph-empty">{tx('team.relationshipNoAssignedStudents')}</div>
+                                ) : teacherStudents.map((student) => (
+                                  <button
+                                    type="button"
+                                    className={`admin-team-graph-node student ${selectedMember?.id === student.id ? 'selected' : ''}`}
+                                    key={student.id}
+                                    onClick={() => selectMember(student.id, { inspector: true })}
+                                    onContextMenu={(event) => openMemberContextMenu(event, student)}
+                                  >
+                                    <span className="team-member-avatar">{(student.displayName ?? student.invitedEmail).charAt(0).toUpperCase()}</span>
+                                    <span>
+                                      <strong>{student.displayName ?? student.invitedEmail}</strong>
+                                      <em>{student.invitedEmail}</em>
+                                    </span>
+                                  </button>
+                                ))}
+                              </div>
+                            </section>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <div className="admin-team-empty">
+                        <span><Network size={17} aria-hidden="true" /></span>
+                        <strong>{tx('team.relationshipNoStudents')}</strong>
+                        <p>{tx('team.joinCodeNoTeachers')}</p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="admin-team-member-list">
+                    <div className="admin-team-member-columns" aria-hidden="true">
+                      <span>{tx('team.columnMember')}</span>
+                      <span>{tx('team.columnRole')} · {tx('team.columnStatus')}</span>
+                      <span>{tx('team.relationshipAdvisorLabel')}</span>
+                      <span>{tx('team.adminTeamUsage')}</span>
+                      <span />
+                    </div>
+
+                    {filteredMembers.length === 0 ? (
+                      <div className="admin-team-empty">
+                        <span><UserRound size={17} aria-hidden="true" /></span>
+                        <strong>{tx('team.memberNoMatchesTitle')}</strong>
+                        <p>{tx('team.memberNoMatchesDesc')}</p>
+                        <button type="button" className="quiet-action" onClick={clearMemberFilters}>
+                          {tx('team.studentProfileClearFilters')}
+                        </button>
+                      </div>
+                    ) : filteredMembers.map((member) => {
+                      const linkedUser = member.userId ? usersById.get(member.userId) ?? null : null
+                      const memberStats = summary.memberStats?.[member.id]
+                      const memberBusy = busyId === member.id
+                      const expanded = expandedMemberId === member.id
+                      return (
+                        <article
+                          key={member.id}
+                          className={`admin-team-member-row${selectedMember?.id === member.id ? ' selected' : ''}${expanded ? ' expanded' : ''}`}
+                          aria-current={selectedMember?.id === member.id ? 'true' : undefined}
+                          tabIndex={0}
+                          onFocus={() => setSelectedMemberId(member.id)}
+                          onKeyDown={(event) => handleMemberRowKeyDown(event, member)}
+                          onContextMenu={(event) => openMemberContextMenu(event, member)}
+                        >
+                          <div className="admin-team-member-summary">
+                            <button
+                              type="button"
+                              className="admin-team-member-primary"
+                              aria-expanded={expanded}
+                              aria-controls={`admin-team-member-detail-${member.id}`}
+                              onClick={() => selectMember(member.id, { expand: true })}
+                            >
+                              <span className="team-member-avatar">{(member.displayName ?? member.invitedEmail).charAt(0).toUpperCase()}</span>
+                              <span>
+                                <strong>{member.displayName ?? member.invitedEmail}</strong>
+                                <em>{member.invitedEmail}</em>
+                              </span>
+                            </button>
+
+                            <div className="admin-team-member-role">
+                              <strong>{tx(ADMIN_TEAM_ROLE_LABEL_KEYS[member.role])}</strong>
+                              <span className={`admin-user-status ${member.status === 'active' ? 'admin-user-status-active' : 'admin-user-status-disabled'}`}>
+                                {tx(member.status === 'active' ? 'team.statusActive' : 'team.statusPending')}
+                              </span>
+                            </div>
+
+                            <div className="admin-team-member-relationship">
+                              <span>{relationshipLabelFor(member)}</span>
+                            </div>
+
+                            <div className="admin-team-member-usage">
+                              <strong>{formatBytes(memberStats?.storageUsedBytes ?? 0)}</strong>
+                              <em>{format(tx('team.memberActiveLinks'), { count: memberStats?.activeShareCount ?? 0 })}</em>
+                            </div>
+
+                            <div className="admin-team-row-actions">
+                              <button
+                                type="button"
+                                className="admin-team-row-menu"
+                                aria-label={tx('table.actions')}
+                                onClick={(event) => openMemberContextMenuFromButton(event, member)}
+                              >
+                                <MoreHorizontal size={15} aria-hidden="true" />
+                              </button>
+                              <button
+                                type="button"
+                                className="admin-team-row-disclosure"
+                                aria-label={tx('team.adminTeamControls')}
+                                aria-expanded={expanded}
+                                aria-controls={`admin-team-member-detail-${member.id}`}
+                                onClick={() => selectMember(member.id, { expand: true })}
+                              >
+                                {expanded ? <ChevronUp size={15} aria-hidden="true" /> : <ChevronDown size={15} aria-hidden="true" />}
+                              </button>
+                            </div>
                           </div>
-                        </section>
+
+                          <CollapsiblePanel
+                            id={`admin-team-member-detail-${member.id}`}
+                            open={expanded}
+                            className="admin-team-member-disclosure"
+                            innerClassName="admin-team-member-disclosure-inner"
+                            collapseMs={340}
+                          >
+                            <div className="admin-team-member-fields">
+                              <div className="admin-team-member-field">
+                                <span>{tx('team.columnRole')}</span>
+                                {member.role === 'owner' ? (
+                                  <strong>{tx(ADMIN_TEAM_ROLE_LABEL_KEYS.owner)}</strong>
+                                ) : (
+                                  <Select
+                                    size="small"
+                                    value={member.role}
+                                    disabled={memberBusy}
+                                    options={(['admin', 'member'] as const).map((role) => ({
+                                      value: role,
+                                      label: tx(ADMIN_TEAM_ROLE_LABEL_KEYS[role]),
+                                    }))}
+                                    onChange={(role) => void handleRoleChange(member.id, role)}
+                                  />
+                                )}
+                              </div>
+
+                              {member.role === 'member' ? (
+                                <div className="admin-team-member-field teachers">
+                                  <span>{tx('team.relationshipAdvisorLabel')}</span>
+                                  <div className="admin-team-teacher-multi">
+                                    {activeTeachers.map((teacher) => {
+                                      const teacherSelected = Boolean(teacher.userId && isTeacherAssignedToStudent(member, teacher.userId))
+                                      return (
+                                        <button
+                                          key={teacher.id}
+                                          type="button"
+                                          className={teacherSelected ? 'selected' : ''}
+                                          aria-pressed={teacherSelected}
+                                          disabled={memberBusy}
+                                          onClick={() => void handleTeacherAssignmentToggle(member.id, teacher.id)}
+                                        >
+                                          {teacher.displayName ?? teacher.invitedEmail}
+                                          {teacherSelected ? <Check size={11} aria-hidden="true" /> : null}
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                </div>
+                              ) : null}
+                            </div>
+
+                            <div className="admin-team-member-detail-footer">
+                              <span>
+                                <strong>{memberStats?.applicationCount ?? 0}</strong>
+                                {tx('team.adminTeamApplicationsMetric')}
+                              </span>
+                              <span>
+                                <strong>{memberStats?.activeShareCount ?? 0}</strong>
+                                {tx('team.adminTeamSharesMetric')}
+                              </span>
+                              <div>
+                                {linkedUser && member.status === 'active' ? (
+                                  <button
+                                    type="button"
+                                    className="quiet-action"
+                                    disabled={busyId === `enter:${linkedUser.id}`}
+                                    onClick={() => void handleEnterLinkedUser(linkedUser)}
+                                  >
+                                    <LogIn size={12} aria-hidden="true" />
+                                    {tx(member.role === 'member' ? 'team.enterStudentView' : 'team.enterMemberView')}
+                                  </button>
+                                ) : null}
+                                {member.role !== 'owner' ? (
+                                  <button
+                                    type="button"
+                                    className="danger-action"
+                                    disabled={memberBusy}
+                                    onClick={() => setPendingRemoveMemberId(member.id)}
+                                  >
+                                    <Trash2 size={12} aria-hidden="true" />
+                                    {tx('team.removeMemberTitle')}
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+                            {!linkedUser ? <p className="admin-team-detail-note">{tx('team.adminTeamPendingAccountHint')}</p> : null}
+                          </CollapsiblePanel>
+                        </article>
                       )
                     })}
                   </div>
-                </div>
+                )}
 
-                <div className="admin-team-member-workbench">
-                  <div className="admin-team-section-head">
-                    <span>{tx('team.adminTeamControls')}</span>
-                    <em>{tx('team.adminTeamControlsDesc')}</em>
-                  </div>
-                  <div className="admin-team-member-list">
-                    {summary.members.map((member) => {
-                    const linkedUser = member.userId ? usersById.get(member.userId) : null
-                    const linkedAccountType = linkedUser ? accountTypeForUser(linkedUser) : 'free'
-                    const memberBusy = busyId === member.id
-                    const storageQuotaMb = linkedUser
-                      ? Number(linkedUser.storageQuotaMb || linkedUser.settings.storageQuotaMb || (linkedAccountType === 'free' ? 5 : 100))
-                      : 0
-                    return (
-                      <article
-                        key={member.id}
-                        className={`admin-team-member-row ${selectedMember?.id === member.id ? 'selected' : ''}`}
-                        aria-current={selectedMember?.id === member.id ? 'true' : undefined}
-                      >
-                        <button
-                          type="button"
-                          className="admin-team-member-select"
-                          onClick={() => setSelectedMemberId(member.id)}
-                        >
-                          <div className="admin-team-member-cell">
-                            <span className="team-member-avatar">{(member.displayName ?? member.invitedEmail).charAt(0).toUpperCase()}</span>
-                            <span>
-                              <strong>{member.displayName ?? member.invitedEmail}</strong>
-                              <em>{member.invitedEmail}</em>
-                            </span>
-                          </div>
-                          <span className={`admin-user-status ${member.status === 'active' ? 'admin-user-status-active' : 'admin-user-status-disabled'}`}>
-                            {tx(member.status === 'active' ? 'team.statusActive' : 'team.statusPending')}
-                          </span>
-                        </button>
+                <footer className="admin-team-shortcuts" aria-label={tx('shortcuts.title')}>
+                  {memberShortcutHints.map((shortcut) => (
+                    <span key={shortcut.keys}><kbd>{shortcut.keys}</kbd>{shortcut.label}</span>
+                  ))}
+                </footer>
+              </section>
 
-                        <div className="admin-team-member-control">
-                          <span>{tx('team.columnRole')}</span>
-                          {member.role === 'owner' ? (
-                            <b>{tx(ADMIN_TEAM_ROLE_LABEL_KEYS.owner)}</b>
-                          ) : (
-                            <Select
-                              size="small"
-                              value={member.role}
-                              disabled={memberBusy}
-                              options={(['admin', 'member'] as const).map((role) => ({ value: role, label: tx(ADMIN_TEAM_ROLE_LABEL_KEYS[role]) }))}
-                              onChange={(role) => handleRoleChange(member.id, role)}
-                            />
-                          )}
-                        </div>
-
-                        <div className="admin-team-member-control">
-                          <span>{tx('team.relationshipAdvisorLabel')}</span>
-                          {member.role === 'member' ? (
-                            <Select
-                              size="small"
-                              searchable
-                              value={activeTeachers.find((teacher) => teacher.userId === member.invitedBy)?.id ?? ''}
-                              disabled={memberBusy || activeTeachers.length === 0}
-                              options={activeTeachers.map((teacher) => ({
-                                value: teacher.id,
-                                label: teacher.displayName ?? teacher.invitedEmail,
-                                description: tx(ADMIN_TEAM_ROLE_LABEL_KEYS[teacher.role]),
-                              }))}
-                              onChange={(advisorMemberId) => handleAdvisorChange(member.id, advisorMemberId)}
-                            />
-                          ) : (
-                            <span className="admin-muted-cell">-</span>
-                          )}
-                        </div>
-
-                        <div className="admin-team-member-control quota">
-                          <span>{tx('admin.userColumnQuota')}</span>
-                          {linkedUser ? (
-                            <div className="admin-team-quota-line">
-                              <span>{`${storageQuotaMb} MB`}</span>
-                              <QuotaEditor
-                                key={`${linkedUser.id}-team-storage`}
-                                quota={storageQuotaMb}
-                                label={tx('admin.quotaMb')}
-                                editLabel={tx('admin.editStorageQuota')}
-                                suffix="MB"
-                                max={102400}
-                                variant="compact"
-                                showValue={false}
-                                onCommit={(next) => void handleLinkedUserUpdate(linkedUser.id, { storageQuotaMb: next })}
-                              />
-                            </div>
-                          ) : (
-                            <span className="admin-muted-cell">{tx('team.statusPending')}</span>
-                          )}
-                        </div>
-
-                        <div className="admin-team-row-actions">
-                          {linkedUser && member.status === 'active' ? (
-                            <button
-                              type="button"
-                              className="quiet-action"
-                              disabled={busyId === `enter:${linkedUser.id}`}
-                              title={tx(member.role === 'member' ? 'team.enterStudentView' : 'team.enterMemberView')}
-                              aria-label={tx(member.role === 'member' ? 'team.enterStudentView' : 'team.enterMemberView')}
-                              onClick={() => void handleEnterLinkedUser(linkedUser)}
-                            >
-                              <LogIn size={12} aria-hidden="true" />
-                              {tx(member.role === 'member' ? 'team.enterStudentView' : 'team.enterMemberView')}
-                            </button>
-                          ) : null}
-                          {member.role !== 'owner' ? (
-                            <button
-                              type="button"
-                              className="danger-action"
-                              disabled={memberBusy}
-                              title={tx('team.removeMemberTitle')}
-                              aria-label={tx('team.removeMemberTitle')}
-                              onClick={() => handleRemove(member.id)}
-                            >
-                              <Trash2 size={12} aria-hidden="true" />
-                              {tx('team.removeMemberTitle')}
-                            </button>
-                          ) : null}
-                        </div>
-                      </article>
-                    )
-                  })}
-                  </div>
-                </div>
-              </div>
-
-              <aside className="admin-team-detail-panel" aria-label={tx('team.adminTeamAccountDetail')}>
+              <aside
+                className={`admin-team-detail-panel${mobileInspectorOpen ? ' mobile-open' : ''}`}
+                aria-label={tx('team.adminTeamAccountDetail')}
+              >
                 {selectedMember ? (
                   <>
+                    <button
+                      type="button"
+                      className="admin-team-detail-sheet-handle"
+                      aria-expanded={mobileInspectorOpen}
+                      onClick={() => setMobileInspectorOpen((current) => !current)}
+                    >
+                      <span aria-hidden="true" />
+                      <em className="sr-only">{tx('team.adminTeamAccountDetail')}</em>
+                    </button>
                     <div className="admin-team-detail-head">
                       <span className="team-member-avatar">{(selectedMember.displayName ?? selectedMember.invitedEmail).charAt(0).toUpperCase()}</span>
                       <div>
-                        <span className="eyebrow">{tx('team.adminTeamAccountDetail')}</span>
                         <strong>{selectedMember.displayName ?? selectedMember.invitedEmail}</strong>
                         <em>{selectedMember.invitedEmail}</em>
                       </div>
+                      <button
+                        type="button"
+                        className="admin-team-detail-mobile-close"
+                        onClick={() => setMobileInspectorOpen(false)}
+                        aria-label={tx('close')}
+                      >
+                        <X size={15} aria-hidden="true" />
+                      </button>
                     </div>
 
                     <div className="admin-team-detail-chips">
                       <span>{tx(ADMIN_TEAM_ROLE_LABEL_KEYS[selectedMember.role])}</span>
                       <span>{tx(selectedMember.status === 'active' ? 'team.statusActive' : 'team.statusPending')}</span>
-                      <span>{selectedLinkedUser ? tx(`admin.accountType.${selectedAccountType}`) : tx('team.adminTeamNoLinkedAccount')}</span>
+                      <span>{selectedLinkedUser ? tx('team.adminTeamLinkedAccount') : tx('team.adminTeamNoLinkedAccount')}</span>
                     </div>
 
                     <div className="admin-team-detail-section">
@@ -3368,71 +4108,21 @@ function AdminTeamPanel({
                         <span>{tx('team.adminTeamControls')}</span>
                         <em>{tx('team.adminTeamControlsDesc')}</em>
                       </div>
-                      <div className="admin-team-detail-controls">
-                        <label>
-                          <span>{tx('team.columnRole')}</span>
-                          {selectedMember.role === 'owner' ? (
-                            <b>{tx(ADMIN_TEAM_ROLE_LABEL_KEYS.owner)}</b>
-                          ) : (
-                            <Select
-                              size="small"
-                              value={selectedMember.role}
-                              disabled={busyId === selectedMember.id}
-                              options={(['admin', 'member'] as const).map((role) => ({ value: role, label: tx(ADMIN_TEAM_ROLE_LABEL_KEYS[role]) }))}
-                              onChange={(role) => handleRoleChange(selectedMember.id, role)}
-                            />
-                          )}
-                        </label>
-
-                        {selectedMember.role === 'member' ? (
-                          <label>
-                            <span>{tx('team.relationshipAdvisorLabel')}</span>
-                            <Select
-                              size="small"
-                              searchable
-                              value={selectedAdvisor?.id ?? ''}
-                              disabled={busyId === selectedMember.id || activeTeachers.length === 0}
-                              options={activeTeachers.map((teacher) => ({
-                                value: teacher.id,
-                                label: teacher.displayName ?? teacher.invitedEmail,
-                                description: tx(ADMIN_TEAM_ROLE_LABEL_KEYS[teacher.role]),
-                              }))}
-                              onChange={(advisorMemberId) => handleAdvisorChange(selectedMember.id, advisorMemberId)}
-                            />
-                          </label>
-                        ) : null}
-
-                        {selectedLinkedUser ? (
-                          <>
-                            <label>
-                              <span>{tx('team.adminTeamSystemType')}</span>
-                              <Select
-                                size="small"
-                                value={selectedAccountType}
-                                disabled={busyId === `user:${selectedLinkedUser.id}`}
-                                options={selectedAccountOptions}
-                                ariaLabel={format(tx('admin.accountTypeForUser'), { email: selectedLinkedUser.email })}
-                                onChange={(type) => void handleLinkedUserUpdate(selectedLinkedUser.id, patchForAccountType(type as AccountType))}
-                              />
-                            </label>
-                            <label>
-                              <span>{tx('admin.quotaMb')}</span>
-                              <QuotaEditor
-                                key={`${selectedLinkedUser.id}-team-detail-storage`}
-                                quota={selectedStorageQuotaMb}
-                                label={tx('admin.quotaMb')}
-                                editLabel={tx('admin.editStorageQuota')}
-                                suffix="MB"
-                                max={102400}
-                                variant="compact"
-                                onCommit={(next) => void handleLinkedUserUpdate(selectedLinkedUser.id, { storageQuotaMb: next })}
-                              />
-                            </label>
-                          </>
-                        ) : (
-                          <p className="admin-team-detail-note">{tx('team.adminTeamPendingAccountHint')}</p>
-                        )}
+                      <div className="admin-team-detail-facts">
+                        <span>
+                          <em>{tx('team.columnRole')}</em>
+                          <strong>{tx(ADMIN_TEAM_ROLE_LABEL_KEYS[selectedMember.role])}</strong>
+                        </span>
+                        <span>
+                          <em>{tx('team.columnStatus')}</em>
+                          <strong>{tx(selectedMember.status === 'active' ? 'team.statusActive' : 'team.statusPending')}</strong>
+                        </span>
+                        <span>
+                          <em>{tx('team.relationshipAdvisorLabel')}</em>
+                          <strong>{relationshipLabelFor(selectedMember)}</strong>
+                        </span>
                       </div>
+                      {!selectedLinkedUser ? <p className="admin-team-detail-note">{tx('team.adminTeamPendingAccountHint')}</p> : null}
                     </div>
 
                     <div className="admin-team-detail-section">
@@ -3440,13 +4130,13 @@ function AdminTeamPanel({
                         <span>{tx('team.adminTeamUsage')}</span>
                         <em>{tx('team.adminTeamUsageDesc')}</em>
                       </div>
-                      <div className="admin-team-metric-grid">
-                        <span><strong>{selectedStats?.applicationCount ?? selectedLinkedUser?.applicationCount ?? 0}</strong><em>{tx('team.adminTeamApplicationsMetric')}</em></span>
-                        <span><strong>{(selectedStats?.riskCount ?? 0) + (selectedStats?.watchCount ?? 0)}</strong><em>{tx('team.adminTeamRiskMetric')}</em></span>
-                        <span><strong>{selectedStats?.dueSoonCount ?? 0}</strong><em>{tx('team.adminTeamDueMetric')}</em></span>
-                        <span><strong>{selectedStats?.reviewCommentCount ?? 0}</strong><em>{tx('team.adminTeamFeedbackMetric')}</em></span>
-                        <span><strong>{selectedStats?.activeShareCount ?? selectedLinkedUser?.activeShareCount ?? 0}</strong><em>{tx('team.adminTeamSharesMetric')}</em></span>
-                        <span><strong>{formatBytes(selectedStats?.storageUsedBytes ?? selectedLinkedUser?.storageUsedBytes ?? 0)}</strong><em>{format(tx('team.adminTeamStorageMetric'), { limit: selectedStorageLimit })}</em></span>
+                      <div className="admin-team-usage-list">
+                        <span><em>{tx('team.adminTeamApplicationsMetric')}</em><strong>{selectedStats?.applicationCount ?? 0}</strong></span>
+                        <span><em>{tx('team.adminTeamRiskMetric')}</em><strong>{(selectedStats?.riskCount ?? 0) + (selectedStats?.watchCount ?? 0)}</strong></span>
+                        <span><em>{tx('team.adminTeamDueMetric')}</em><strong>{selectedStats?.dueSoonCount ?? 0}</strong></span>
+                        <span><em>{tx('team.adminTeamFeedbackMetric')}</em><strong>{selectedStats?.reviewCommentCount ?? 0}</strong></span>
+                        <span><em>{tx('team.adminTeamSharesMetric')}</em><strong>{selectedStats?.activeShareCount ?? 0}</strong></span>
+                        <span><em>{tx('team.memberStorageUsed')}</em><strong>{formatBytes(selectedStats?.storageUsedBytes ?? 0)}</strong></span>
                       </div>
                     </div>
 
@@ -3467,7 +4157,7 @@ function AdminTeamPanel({
                           type="button"
                           className="danger-action"
                           disabled={busyId === selectedMember.id}
-                          onClick={() => handleRemove(selectedMember.id)}
+                          onClick={() => setPendingRemoveMemberId(selectedMember.id)}
                         >
                           <Trash2 size={12} aria-hidden="true" />
                           {tx('team.removeMemberTitle')}
@@ -3484,6 +4174,21 @@ function AdminTeamPanel({
         ) : (
           <p>{tx('team.noTeamDescription')}</p>
         )}
+        <ExplorerContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} />
+        <ConfirmDialog
+          open={Boolean(pendingRemoveMember)}
+          title={tx('team.removeMemberTitle')}
+          message={pendingRemoveMember ? format(tx('team.removeMemberConfirm'), {
+            name: pendingRemoveMember.displayName ?? pendingRemoveMember.invitedEmail,
+            team: summary?.team.name ?? ownerEmail,
+          }) : ''}
+          confirmLabel={tx('team.removeMemberTitle')}
+          variant="danger"
+          onConfirm={() => {
+            if (pendingRemoveMember) void handleRemove(pendingRemoveMember.id)
+          }}
+          onCancel={() => setPendingRemoveMemberId(null)}
+        />
       </div>
     </div>
     </ModalPortal>

@@ -10,6 +10,7 @@ export type LangDict = Record<string, unknown>
 type LanguageState = {
   dictionaries: Map<I18nNamespace, LangDict>
   merged: LangDict
+  scopedMerged: Map<string, LangDict>
   loadedNamespaces: Set<I18nNamespace>
 }
 
@@ -94,6 +95,7 @@ function languageState(lang: Language): LanguageState {
   const next = {
     dictionaries: new Map<I18nNamespace, LangDict>(),
     merged: {},
+    scopedMerged: new Map<string, LangDict>(),
     loadedNamespaces: new Set<I18nNamespace>(),
   }
   registry.set(lang, next)
@@ -142,11 +144,49 @@ export function registerLanguage(
   const state = languageState(normalized)
   state.dictionaries.set(normalizedNamespace, dict)
   state.loadedNamespaces.add(normalizedNamespace)
+  if (normalizedNamespace === defaultNamespace) {
+    state.scopedMerged.clear()
+  } else {
+    for (const key of state.scopedMerged.keys()) {
+      if (key.split('|').includes(normalizedNamespace)) state.scopedMerged.delete(key)
+    }
+  }
   rebuildLanguage(normalized)
 }
 
 export function getDict(lang: Language): LangDict {
   return registry.get(lang)?.merged ?? registry.get(defaultLanguage)?.merged ?? {}
+}
+
+/**
+ * Return a stable merged dictionary for one rendered surface.
+ *
+ * Loading an unrelated lazy namespace used to replace the root merged object,
+ * invalidating the app-wide i18n context on the next overlay state change. Keep
+ * namespace-scoped snapshots cached so opening a Share/Tour/Profile dialog does
+ * not force every screen beneath it to render again.
+ */
+export function getDictForNamespaces(
+  lang: Language,
+  namespaces: I18nNamespace[] = [defaultNamespace],
+): LangDict {
+  const normalizedLanguage = resolveLanguage(lang)
+  const state = registry.get(normalizedLanguage) ?? registry.get(defaultLanguage)
+  if (!state) return {}
+
+  const normalizedNamespaces = Array.from(new Set([
+    defaultNamespace,
+    ...namespaces.map(normalizeNamespace),
+  ]))
+  const key = normalizedNamespaces.sort().join('|')
+  const cached = state.scopedMerged.get(key)
+  if (cached) return cached
+
+  const merged = normalizedNamespaces.reduce<LangDict>((result, namespace) => (
+    mergeDeep(result, state.dictionaries.get(namespace) ?? {})
+  ), {})
+  state.scopedMerged.set(key, merged)
+  return merged
 }
 
 export function hasLanguageNamespaces(

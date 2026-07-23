@@ -5,55 +5,7 @@ import {
   type CSSProperties,
 } from 'react'
 import { GraduationCap } from 'lucide-react'
-
-export type LoadingVariant =
-  | 'auth'
-  | 'dashboard'
-  | 'workspace'
-  | 'profile'
-  | 'settings'
-  | 'team'
-  | 'admin'
-  | 'standalone'
-
-export type ScreenSkeletonVariant = Exclude<LoadingVariant, 'auth' | 'admin' | 'standalone'>
-
-function hasStoredSession(key: string) {
-  if (typeof window === 'undefined') return false
-  try {
-    const value = window.localStorage.getItem(key)
-    if (!value) return false
-    const parsed = JSON.parse(value) as { token?: unknown }
-    return typeof parsed?.token === 'string' && parsed.token.length > 0
-  } catch {
-    return false
-  }
-}
-
-export function inferLoadingVariant(pathname = typeof window === 'undefined' ? '/' : window.location.pathname): LoadingVariant {
-  if (pathname.startsWith('/admin')) {
-    return hasStoredSession('phd-atlas-admin-session') ? 'admin' : 'auth'
-  }
-
-  if (
-    pathname.startsWith('/share/')
-    || pathname.startsWith('/asset-upload/')
-    || pathname.startsWith('/reset-password/')
-    || pathname.startsWith('/team/accept-invite/')
-    || ['/upgrade-pro', '/pro', '/membership'].includes(pathname)
-  ) {
-    return 'standalone'
-  }
-
-  if (!hasStoredSession('phd-atlas-session')) return 'auth'
-  if (pathname.startsWith('/applications/')) return 'workspace'
-  if (pathname === '/applications') return 'workspace'
-  if (pathname.startsWith('/profile')) return 'profile'
-  if (pathname.startsWith('/settings')) return 'settings'
-  if (pathname.startsWith('/team/applications/')) return 'workspace'
-  if (pathname.startsWith('/team')) return 'team'
-  return 'dashboard'
-}
+import { inferLoadingVariant, type LoadingVariant, type ScreenSkeletonVariant } from './loadingVariant'
 
 function SkeletonBar({ size = 'full' }: { size?: 'full' | 'medium' | 'short' | 'tiny' }) {
   return <span className={`loading-skeleton-bar loading-skeleton-bar-${size}`} />
@@ -330,51 +282,6 @@ export function LaunchScreen({
       ) : null}
     </div>
   )
-}
-
-/**
- * Wait until the next paint + a short idle window so heavy React commits finish
- * under the loading curtain before it lifts (avoids post-load jank).
- */
-export function waitForUiSettle(timeoutMs = 480): Promise<void> {
-  if (typeof window === 'undefined') return Promise.resolve()
-
-  return new Promise((resolve) => {
-    let settled = false
-    const finish = () => {
-      if (settled) return
-      settled = true
-      resolve()
-    }
-
-    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-    if (reduceMotion) {
-      finish()
-      return
-    }
-
-    const hardTimeout = window.setTimeout(finish, Math.max(80, timeoutMs))
-    const idleWindow = window as Window & {
-      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
-      cancelIdleCallback?: (handle: number) => void
-    }
-
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        if (typeof idleWindow.requestIdleCallback === 'function') {
-          idleWindow.requestIdleCallback(() => {
-            window.clearTimeout(hardTimeout)
-            finish()
-          }, { timeout: 140 })
-        } else {
-          window.setTimeout(() => {
-            window.clearTimeout(hardTimeout)
-            finish()
-          }, 36)
-        }
-      })
-    })
-  })
 }
 
 export function LoadingCurtain({

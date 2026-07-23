@@ -63,7 +63,8 @@
     "emptyDescription": "Erstellen Sie Ihre erste Bewerbung und führen Sie sie dann hier durch die einzelnen Phasen.",
     "priorityValue": "P{value}",
     "moveToStatus": "Gehe zu {status}",
-    "showMore": "{count} mehr anzeigen"
+    "showMore": "{count} mehr anzeigen",
+    "moveTo": "Verschieben nach"
   },
   "explorer": {
     "selectedCount": "{count} ausgewählt",

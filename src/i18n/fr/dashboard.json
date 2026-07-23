@@ -102,6 +102,23 @@
     "discoverCta": "Ouvrir Découvrir",
     "discoverSubtitle": "Parcourez les programmes de doctorat et les conseillers, classez-les par adéquation, importez-les dans les candidatures et recevez des notifications de correspondance.",
     "discoverTitle": "Trouvez votre prochain programme",
-    "openDiscover": "Découvrez les programmes"
+    "openDiscover": "Découvrez les programmes",
+    "guidanceTitle": "Mon équipe d’accompagnement",
+    "guidanceSubtitle": "Vos contacts attitrés au sein de {team}.",
+    "guidanceEmptyTitle": "Aucun contact d’accompagnement n’est encore attribué.",
+    "guidanceEmptyDesc": "L’administration de l’organisation peut vous attribuer un enseignant depuis l’espace Membres.",
+    "guidanceRoleOwner": "Administration de l’organisation",
+    "guidanceRoleTeacher": "Enseignant",
+    "guidanceEmail": "Envoyer un e-mail à {name}",
+    "guidanceEmailShort": "E-mail",
+    "guidanceCall": "Appeler {name}",
+    "guidanceCallShort": "Appeler",
+    "guidanceWebsite": "Ouvrir le site de {name}",
+    "guidanceWebsiteShort": "Site web",
+    "guidanceHideDetails": "Masquer les détails de {name}",
+    "guidanceShowDetails": "Afficher les détails de {name}",
+    "guidanceOffice": "Bureau",
+    "guidanceAvailability": "Disponibilités",
+    "guidanceSupport": "Mon accompagnement"
   }
 }

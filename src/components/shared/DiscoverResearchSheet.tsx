@@ -1,4 +1,5 @@
-import { ChevronDown, RefreshCw, X } from 'lucide-react'
+import { CheckCircle2, ChevronDown, KeyRound, RefreshCw, Server, ShieldAlert, ShieldCheck, X } from 'lucide-react'
+import { useEffect } from 'react'
 import type { AiKey } from '../../api/phdApi'
 import type { ApplicationRecord } from '../../data/applications'
 import type { DiscoverCatalogMeta, DiscoverIntake, DiscoverRegion, PiCategory } from '../../data/discover'
@@ -16,21 +17,27 @@ const PI_PREFERENCES: Array<{ id: PiCategory; key: string }> = [
   { id: 'famous_but_fits', key: 'discover.prefFamous' },
 ]
 
+export type DiscoverResearchSubmissionPhase = 'idle' | 'saving' | 'validating' | 'queued'
+
 export function DiscoverResearchSheet({
   open,
   meta,
   draft,
   applications,
   useApplicationSeeds,
-  useAi,
   aiKeys,
-  selectedKeyId,
+  selectedKeyIds,
+  teamTargetUserId,
+  teamTargetOptions = [],
   researching,
+  submissionPhase,
+  submissionError,
   onClose,
   onDraftChange,
   onUseApplicationSeedsChange,
-  onUseAiChange,
-  onSelectedKeyChange,
+  onSelectedKeyIdsChange,
+  onTeamTargetChange,
+  onConfigureAiKeys,
   onSubmit,
 }: {
   open: boolean
@@ -38,19 +45,37 @@ export function DiscoverResearchSheet({
   draft: DiscoverIntake
   applications: ApplicationRecord[]
   useApplicationSeeds: boolean
-  useAi: boolean
   aiKeys: AiKey[]
-  selectedKeyId: string
+  selectedKeyIds: string[]
+  teamTargetUserId?: string
+  teamTargetOptions?: Array<{ id: string; name: string; email?: string; count?: number }>
   researching: boolean
+  submissionPhase: DiscoverResearchSubmissionPhase
+  submissionError: string | null
   onClose: () => void
   onDraftChange: (draft: DiscoverIntake) => void
   onUseApplicationSeedsChange: (value: boolean) => void
-  onUseAiChange: (value: boolean) => void
-  onSelectedKeyChange: (value: string) => void
+  onSelectedKeyIdsChange: (value: string[]) => void
+  onTeamTargetChange?: (userId: string) => void
+  onConfigureAiKeys: () => void
   onSubmit: () => void
 }) {
   const { tx } = useI18n()
-  const { exiting, requestClose } = useAnimatedClose(open, onClose, 180)
+  const { exiting, requestClose } = useAnimatedClose(open, onClose, 150)
+  const submissionBusy = submissionPhase === 'saving' || submissionPhase === 'validating'
+  const submissionVisible = submissionPhase !== 'idle' || Boolean(submissionError)
+  const submissionLabel = submissionError
+    ? submissionError
+    : submissionPhase === 'saving'
+      ? tx('discover.researchSavingPreferences', 'Saving research preferences…')
+      : submissionPhase === 'validating'
+        ? tx('discover.researchCheckingConfiguration', 'Checking model access and configuration…')
+        : submissionPhase === 'queued'
+          ? tx('discover.researchConfigurationReady', 'Configuration verified. Handed to the background server.')
+          : ''
+  useEffect(() => {
+    if (submissionPhase === 'queued') requestClose()
+  }, [requestClose, submissionPhase])
   const regionLabel = (region: DiscoverRegion) => tx(({
     US: 'discover.regionUS', UK: 'discover.regionUK', EU: 'discover.regionEU', CA: 'discover.regionCA',
     SG: 'discover.regionSG', HK: 'discover.regionHK', CN: 'discover.regionCN', AU: 'discover.regionAU',
@@ -64,6 +89,11 @@ export function DiscoverResearchSheet({
     const piPreferences = draft.piPreferences.includes(id) ? draft.piPreferences.filter((item) => item !== id) : [...draft.piPreferences, id]
     onDraftChange({ ...draft, piPreferences })
   }
+  const toggleKey = (id: string) => {
+    onSelectedKeyIdsChange(selectedKeyIds.includes(id)
+      ? selectedKeyIds.filter((keyId) => keyId !== id)
+      : [...selectedKeyIds, id])
+  }
   return (
     <div className={`discover-sheet-backdrop${exiting ? ' is-exiting' : ''}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}>
       <aside className={`discover-side-sheet${exiting ? ' is-exiting' : ''}`} role="dialog" aria-modal="true" aria-labelledby="discover-research-sheet-title">
@@ -75,7 +105,34 @@ export function DiscoverResearchSheet({
           <button type="button" className="discover-icon-btn" onClick={() => requestClose()} aria-label={tx('discover.close', 'Close')}><X size={17} /></button>
         </header>
 
-        <div className="discover-side-sheet-scroll">
+        <div className="discover-side-sheet-scroll" aria-busy={submissionBusy || undefined} inert={submissionBusy || undefined}>
+          {teamTargetOptions.length > 0 && teamTargetUserId && onTeamTargetChange ? (
+            <SmoothDisclosure
+              className="discover-sheet-section"
+              defaultOpen
+              summary={tx('team.teacherStudentSelectLabel', 'Student')}
+              indicator={<ChevronDown size={15} />}
+              bodyClassName="discover-sheet-section-body"
+            >
+              <label className="field">
+                <span>{tx('team.teamDiscoverTitle', 'Research a student’s programs')}</span>
+                <Select
+                  size="small"
+                  value={teamTargetUserId}
+                  onChange={onTeamTargetChange}
+                  options={teamTargetOptions.map((student) => ({
+                    value: student.id,
+                    label: student.name,
+                    description: student.email || tx('team.teamDiscoverStudentMeta', '{count} applications').replace('{count}', String(student.count ?? 0)),
+                  }))}
+                  ariaLabel={tx('team.teacherStudentSelectLabel', 'Student')}
+                  searchable
+                />
+                <small>{tx('team.teamDiscoverDesc', 'Choose one assigned student. Research and matching are saved only for that student.')}</small>
+              </label>
+            </SmoothDisclosure>
+          ) : null}
+
           <SmoothDisclosure
             className="discover-sheet-section"
             defaultOpen
@@ -187,7 +244,7 @@ export function DiscoverResearchSheet({
                 <textarea rows={5} value={draft.notes} onChange={(event) => onDraftChange({ ...draft, notes: event.target.value })} placeholder={tx('discover.notesPlaceholder')} />
               </label>
               <div className="discover-sheet-two-column">
-                <label className="field"><span>{tx('discover.nPrograms')}</span><input type="number" min={5} max={50} value={draft.nPrograms} onChange={(event) => onDraftChange({ ...draft, nPrograms: Number(event.target.value) || 20 })} /></label>
+                <label className="field"><span>{tx('discover.nPrograms')}</span><input type="number" min={5} max={120} value={draft.nPrograms} onChange={(event) => onDraftChange({ ...draft, nPrograms: Number(event.target.value) || 20 })} /></label>
                 <label className="field"><span>{tx('discover.nPis')}</span><input type="number" min={1} max={20} value={draft.nPisPerProgram} onChange={(event) => onDraftChange({ ...draft, nPisPerProgram: Number(event.target.value) || 6 })} /></label>
               </div>
           </SmoothDisclosure>
@@ -200,29 +257,77 @@ export function DiscoverResearchSheet({
             <SwitchControl checked={useApplicationSeeds} onChange={onUseApplicationSeedsChange} label={tx('discover.useApplicationsAsSeeds', 'Use my applications as a starting point')} />
           </section>
 
-          {aiKeys.length ? (
-            <SmoothDisclosure
-              className="discover-sheet-section discover-sheet-advanced"
-              summary={tx('discover.researchMethod', 'Research method')}
-              indicator={<ChevronDown size={15} />}
-              bodyClassName="discover-sheet-section-body"
-            >
-                <section className="discover-sheet-switch-row is-inner">
-                  <div><strong>{tx('discover.useConfiguredResearch', 'Use configured intelligent research')}</strong><span>{tx('discover.useConfiguredResearchHint', 'Official-source verification rules remain unchanged.')}</span></div>
-                  <SwitchControl checked={useAi} onChange={onUseAiChange} label={tx('discover.useConfiguredResearch', 'Use configured intelligent research')} />
-                </section>
-                {useAi ? <label className="field"><span>{tx('discover.aiKeyLabel')}</span><Select size="small" value={selectedKeyId} onChange={onSelectedKeyChange} options={aiKeys.map((key) => ({ value: key.id, label: `${key.label || key.model} · ${key.provider}` }))} /></label> : null}
-            </SmoothDisclosure>
-          ) : null}
+          <SmoothDisclosure
+            className="discover-sheet-section discover-sheet-advanced"
+            defaultOpen
+            summary={tx('discover.useAi', 'Use AI research agents')}
+            indicator={<ChevronDown size={15} />}
+            bodyClassName="discover-sheet-section-body"
+          >
+            {aiKeys.length > 0 ? (
+              <div className="field">
+                <span>{tx('discover.aiKeysLabel', 'AI keys')}</span>
+                <div className="discover-multiselect-grid">
+                  {aiKeys.map((key) => (
+                    <DiscoverMultiSelectOption
+                      key={key.id}
+                      checked={selectedKeyIds.includes(key.id)}
+                      onChange={() => toggleKey(key.id)}
+                      label={`${key.label || key.model} · ${key.provider}`}
+                    />
+                  ))}
+                </div>
+                <small>{selectedKeyIds.length > 0
+                  ? tx('discover.aiKeysHint', 'Selected keys are used evenly across independent research batches.')
+                  : tx('discover.selectAiKeyRequired', 'Select at least one AI research model.')}</small>
+              </div>
+            ) : (
+              <div className="discover-ai-key-required" role="status">
+                <KeyRound size={17} aria-hidden="true" />
+                <span>
+                  <strong>{tx('discover.useAiNoKeys', 'Add an AI key in Settings before starting research.')}</strong>
+                  <small>{tx('discover.useAiMultiHint', 'AI agents search, organize and cross-check official program and advisor evidence.')}</small>
+                </span>
+                <button type="button" className="secondary-action" onClick={onConfigureAiKeys}>
+                  {tx('discover.configureAiKey', 'Configure AI key')}
+                </button>
+              </div>
+            )}
+          </SmoothDisclosure>
         </div>
 
         <footer className="discover-side-sheet-footer">
-          <div className="discover-sheet-safety-note">{tx('discover.researchPreservesState', 'Updates never overwrite watched, hidden or personal notes.')}</div>
+          <div
+            className={`discover-research-validation${submissionVisible ? ' is-visible' : ''}${submissionPhase === 'queued' ? ' is-complete' : ''}${submissionError ? ' is-error' : ''}`}
+            role={submissionError ? 'alert' : 'status'}
+            aria-live="polite"
+          >
+            <span className="discover-research-validation-copy">
+              {submissionError
+                ? <ShieldAlert size={13} aria-hidden="true" />
+                : submissionPhase === 'queued'
+                  ? <CheckCircle2 size={13} aria-hidden="true" />
+                  : submissionPhase === 'validating'
+                    ? <ShieldCheck size={13} aria-hidden="true" />
+                    : <Server size={13} aria-hidden="true" />}
+              <strong>{submissionLabel}</strong>
+            </span>
+            <span className="discover-research-validation-line" aria-hidden="true"><i /></span>
+          </div>
+          <div className="discover-sheet-safety-note">{tx('discover.researchBackgroundNote', 'Research continues safely in the background after this sheet closes. Updates never overwrite watched, hidden or personal notes.')}</div>
           <div>
-            <button type="button" className="secondary-action" onClick={() => requestClose()}>{tx('discover.cancel', 'Cancel')}</button>
-            <button type="button" className="primary-action" disabled={researching || !draft.field.trim() || draft.regions.length === 0} onClick={onSubmit}>
-              <RefreshCw size={14} className={researching ? 'spin-icon' : undefined} />
-              {researching ? tx('discover.runningResearch') : tx('discover.startUpdate', 'Start update')}
+            <button type="button" className="secondary-action" disabled={submissionBusy} onClick={() => requestClose()}>{tx('discover.cancel', 'Cancel')}</button>
+            <button type="button" className="primary-action" disabled={researching || !draft.field.trim() || draft.regions.length === 0 || aiKeys.length === 0 || selectedKeyIds.length === 0} onClick={onSubmit}>
+              {submissionPhase === 'queued'
+                ? <CheckCircle2 size={14} aria-hidden="true" />
+                : <RefreshCw size={14} className={researching ? 'spin-icon' : undefined} />}
+              {submissionPhase === 'saving'
+                ? tx('discover.researchSavingPreferences', 'Saving research preferences…')
+                : submissionPhase === 'validating'
+                  ? tx('discover.researchCheckingConfiguration', 'Checking model access and configuration…')
+                  : submissionPhase === 'queued'
+                    ? tx('discover.researchConfigurationReadyShort', 'Queued in background')
+                    : tx('discover.startUpdate', 'Start update')}
             </button>
           </div>
         </footer>

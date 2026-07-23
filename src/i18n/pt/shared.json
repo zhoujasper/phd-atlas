@@ -4,6 +4,17 @@
   "confirm": "Confirmar",
   "cancel": "Cancelar",
   "done": "Concluído",
+  "filePreview": {
+    "preview": "Pré-visualização do arquivo",
+    "document": "Documento",
+    "spreadsheet": "Planilha",
+    "presentation": "Apresentação",
+    "unavailable": "Não é possível pré-visualizar este arquivo aqui",
+    "downloadHint": "Baixe-o para abrir no aplicativo nativo.",
+    "slideCount": "Slide {current} de {total}",
+    "sheets": "Planilhas da pasta de trabalho",
+    "renderError": "Não foi possível renderizar o layout original"
+  },
   "noResults": "Sem resultados",
   "search": "Pesquisa",
   "sort": "Classificar",
@@ -74,6 +85,7 @@
     "RATE_LIMITED": "Muitas solicitações. Aguarde um momento e tente novamente.",
     "NETWORK_ERROR": "Falha na conexão de rede. Verifique sua conexão e tente novamente.",
     "REQUEST_FAILED": "Falha na solicitação. Por favor, tente novamente.",
+    "DATABASE_TARGET_NOT_EMPTY": "A base de dados selecionada já contém um espaço de trabalho do PhD Atlas. A configuração inicial não o substituirá; escolha uma base vazia ou migre a partir da instalação existente.",
     "SERVER_ERROR": "Erro inesperado no servidor. Por favor, tente novamente mais tarde.",
     "TOKEN_EXPIRED": "Sua sessão expirou. Faça login novamente.",
     "UNAUTHORIZED": "É necessário fazer login.",
@@ -110,6 +122,7 @@
     "TEAM_STORAGE_QUOTA_EXCEEDED": "O armazenamento da equipe está cheio. Peça a um administrador do sistema para aumentar a cota ou remover os arquivos primeiro.",
     "TEAM_TRANSFER_NOT_AVAILABLE": "Esta candidatura universitária não pode ser movida entre espaços de trabalho pessoais e organizacionais no momento.",
     "TEAM_TRANSFER_NOT_FOUND": "A solicitação de transferência de equipe pendente não foi encontrada.",
+    "TEAM_TRANSFER_PENDING_LIMIT": "Você atingiu o máximo de candidaturas aguardando aprovação da equipe. Resolva uma antes de enviar outra.",
     "TEAM_TRANSFER_STUDENT_REQUIRED": "Somente contas de estudantes ativas na organização podem inserir ou retirar candidaturas universitárias.",
     "SHARE_LIMIT_REACHED": "Os links de compartilhamento ativos são limitados a {limit}. Atualize para o Pro ou peça a um administrador para aumentar o limite.",
     "SHARE_CREATE_LIMIT_REACHED": "Você atingiu o limite vitalício de criação de {limit} links de compartilhamento. Atualize para o Pro ou peça a um administrador para aumentar o limite.",
@@ -188,10 +201,18 @@
     "UNTRUSTED_HOST": "Este endereço de servidor PhD Atlas não é confiável.",
     "TEAM_SHARE_CREATE_LIMIT_REACHED": "A equipe atingiu seu limite vitalício de criação de links de compartilhamento {limit}. Peça a um administrador do sistema para aumentá-lo.",
     "TEAM_SHARE_LIMIT_REACHED": "A equipe atingiu seu limite de {limit} links de compartilhamento ativos. Peça a um administrador do sistema para aumentá-lo.",
-    "INVALID_UPDATE_PACKAGE": "This is not a supported PhD Atlas update package.",
-    "UPDATE_INTEGRITY_FAILED": "The update package failed its integrity check. Download it again from the official Release.",
-    "UPDATE_APPLY_FAILED": "The update failed and the previous runtime was restored.",
-    "SETUP_ALREADY_COMPLETED": "Initial setup has already been completed. Sign in with the administrator account."
+    "INVALID_UPDATE_PACKAGE": "Este não é um pacote de atualização do PhD Atlas compatível.",
+    "UPDATE_INTEGRITY_FAILED": "O pacote de atualização falhou na verificação de integridade. Baixe-o novamente no lançamento oficial.",
+    "UPDATE_APPLY_FAILED": "A atualização falhou e o tempo de execução anterior foi restaurado.",
+    "SETUP_ALREADY_COMPLETED": "A configuração inicial já foi concluída. Faça login com a conta de administrador.",
+    "TEAM_DISCOVER_FORBIDDEN": "Somente proprietários e professores da equipe podem executar a pesquisa de equipe.",
+    "TEAM_DISCOVER_KEY_FORBIDDEN": "A pesquisa de equipe só pode usar uma chave da equipe selecionada.",
+    "TEAM_DISCOVER_TARGET_FORBIDDEN": "Você só pode pesquisar para um estudante ativo atribuído.",
+    "TEAM_DISCOVER_TARGET_REQUIRED": "Escolha uma equipe e um estudante atribuído para a pesquisa de equipe.",
+    "DISCOVER_ADVISOR_EMAIL_REQUIRED": "O orientador selecionado não possui um endereço de e-mail verificado.",
+    "DISCOVER_ADVISOR_NOT_VERIFIED": "É necessário um perfil e e-mail reais do orientador antes de adicionar este programa às candidaturas.",
+    "DISCOVER_PROGRAM_NOT_VERIFIED": "Este programa não tem uma fonte oficial verificada ou prazo de candidatura atual. Atualize a pesquisa antes de importá-lo.",
+    "MAIL_ATTACHMENT_TOO_LARGE": "Um anexo é grande demais para ser incluído no e-mail."
   },
   "apiErrorFields": {
     "captchaAnswer": "resposta de verificação",
@@ -586,7 +607,9 @@
         "team_message": "Mensagem da equipe",
         "team_update": "Atualização da equipe",
         "membership_update": "Associação",
-        "admin_announcement": "Anúncio"
+        "admin_announcement": "Anúncio",
+        "discover_research_complete": "Pesquisa do Discover",
+        "discover_research_failed": "Pesquisa do Discover"
       },
       "tab": {
         "dossier": "Dossiê",

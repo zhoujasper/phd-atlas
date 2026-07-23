@@ -44,6 +44,7 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:4317',
         changeOrigin: true,
+        ws: true,
       },
     },
   },
@@ -52,6 +53,10 @@ export default defineConfig({
     globals: true,
     css: true,
     testTimeout: 15000,
+    // Server-route suites share the workspace storage fixture. Bounding file
+    // concurrency prevents Windows file locks and UI timer starvation while
+    // still keeping the full suite parallel and fast.
+    maxWorkers: 4,
     include: ['src/**/*.test.{ts,tsx}', 'server/**/*.test.js'],
   },
 })

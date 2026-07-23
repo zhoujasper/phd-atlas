@@ -62,6 +62,51 @@ function openAiChatEndpoint(provider, configuredUrl) {
   return `${baseUrl}/chat/completions`
 }
 
+function openAiResponsesEndpoint(configuredUrl) {
+  const baseUrl = normalizedBaseUrl('openai', configuredUrl)
+  const parsed = new URL(baseUrl)
+  // The official default ends in /v1, while an explicitly configured root does
+  // not. Keep both forms valid without opening this capability to arbitrary
+  // OpenAI-compatible gateways that may not implement the Responses API.
+  if (parsed.pathname === '/' || parsed.pathname === '') return `${baseUrl}/v1/responses`
+  return `${baseUrl}/responses`
+}
+
+function openAiModelsEndpoint(provider, configuredUrl) {
+  const baseUrl = normalizedBaseUrl(provider, configuredUrl)
+  const parsed = new URL(baseUrl)
+  if (parsed.pathname === '/' || parsed.pathname === '') return `${baseUrl}/v1/models`
+  return `${baseUrl}/models`
+}
+
+const TRUSTED_RESPONSES_WEB_SEARCH_HOSTS = new Set([
+  'api.openai.com',
+  // Live-tested against /v1/models and /v1/responses with web_search on
+  // 2026-07-22. The capability check below also pins the public HTTPS port
+  // and the root or /v1 base path, so a same-host proxy path is not trusted.
+  'lingsuan.top',
+])
+
+/**
+ * Responses web-search is not part of the generic Chat Completions contract.
+ * Only explicitly live-tested endpoints may receive a /responses request;
+ * every other OpenAI-compatible gateway stays on Chat Completions.
+ */
+export function supportsNativeOpenAiWebSearch(key) {
+  if (key?.provider !== 'openai') return false
+  try {
+    const url = new URL(normalizedBaseUrl('openai', key.baseUrl))
+    const pathname = url.pathname.replace(/\/+$/, '')
+    return TRUSTED_RESPONSES_WEB_SEARCH_HOSTS.has(url.hostname.toLowerCase())
+      && (!url.port || url.port === '443')
+      && (pathname === '' || pathname === '/v1')
+      && !url.search
+      && !url.hash
+  } catch {
+    return false
+  }
+}
+
 export function attachmentCapability(provider) {
   return providerDefaults(provider)?.attachmentTypes ?? []
 }
@@ -169,15 +214,28 @@ function addUsage(left, right) {
   )
 }
 
-async function fetchProvider(url, options, signal) {
+function providerHttpError(status) {
+  if (status === 429) {
+    return new AiProviderError('PROVIDER_RATE_LIMITED', 'The AI provider is temporarily rate limited. Please retry shortly.')
+  }
+  if (status === 408 || status === 504) {
+    return new AiProviderError('PROVIDER_TIMEOUT', 'The AI provider took too long to respond.')
+  }
+  if ([500, 502, 503].includes(status)) {
+    return new AiProviderError('PROVIDER_UNAVAILABLE', 'The AI provider is temporarily unavailable.')
+  }
+  return new AiProviderError('PROVIDER_REJECTED', 'The AI provider rejected this request. Check the model, key, and provider URL.')
+}
+
+async function fetchProvider(url, options, signal, timeoutMs = 90_000) {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 90_000)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   const abort = () => controller.abort()
   signal?.addEventListener('abort', abort, { once: true })
   try {
     const response = await fetch(url, { ...options, signal: controller.signal })
     if (!response.ok) {
-      throw new AiProviderError('PROVIDER_REJECTED', 'The AI provider rejected this request. Check the model, key, and provider URL.')
+      throw providerHttpError(response.status)
     }
     return response
   } catch (error) {
@@ -190,12 +248,12 @@ async function fetchProvider(url, options, signal) {
   }
 }
 
-function openAiTools() {
-  return [{
+function openAiTools(attachmentCandidates = []) {
+  const tools = [{
     type: 'function',
     function: {
       name: 'get_granted_application_context',
-      description: 'Read the applicant data the user explicitly allowed for this email draft. Call this before drafting if more details are needed.',
+      description: 'Read the applicant data the user explicitly allowed for this editable email draft, including eligible files that may be attached. Call this before drafting if more details are needed.',
       parameters: {
         type: 'object',
         properties: { reason: { type: 'string', maxLength: 240 } },
@@ -204,6 +262,31 @@ function openAiTools() {
       },
     },
   }]
+  if (attachmentCandidates.length === 0) return tools
+  const candidateSummary = attachmentCandidates
+    .slice(0, 80)
+    .map((candidate) => `${candidate.name} [${candidate.id}]`)
+    .join('; ')
+  tools.push({
+    type: 'function',
+    function: {
+      name: 'select_email_attachments',
+      description: `Add one or more suitable saved files to the editable email draft. This never sends an email. Only use candidate ids that were explicitly provided. Available candidates: ${candidateSummary}`,
+      parameters: {
+        type: 'object',
+        properties: {
+          attachmentIds: {
+            type: 'array',
+            items: { type: 'string', enum: attachmentCandidates.map((candidate) => candidate.id) },
+            maxItems: Math.min(20, attachmentCandidates.length),
+          },
+        },
+        required: ['attachmentIds'],
+        additionalProperties: false,
+      },
+    },
+  })
+  return tools
 }
 
 function openAiCompatibleAttachmentParts(attachments) {
@@ -227,9 +310,23 @@ function openAiCompatibleAttachmentParts(attachments) {
   return parts
 }
 
-async function streamOpenAiCompatible({ provider, key, system, instruction, grantedContext, attachments, onText, onStatus, signal }) {
+async function streamOpenAiCompatible({
+  provider,
+  key,
+  system,
+  instruction,
+  grantedContext,
+  attachments,
+  attachmentCandidates = [],
+  onText,
+  onStatus,
+  onAttachmentSelection,
+  signal,
+}) {
   const endpoint = openAiChatEndpoint(provider, key.baseUrl)
   const attachmentParts = openAiCompatibleAttachmentParts(attachments)
+  const tools = openAiTools(attachmentCandidates)
+  const candidateIds = new Set(attachmentCandidates.map((candidate) => candidate.id))
   const messages = [
     { role: 'system', content: system },
     {
@@ -240,7 +337,7 @@ async function streamOpenAiCompatible({ provider, key, system, instruction, gran
     },
   ]
 
-  const run = async (nextMessages, allowContextTool) => {
+  const run = async (nextMessages, remainingToolRounds) => {
     const response = await fetchProvider(endpoint, {
       method: 'POST',
       headers: {
@@ -253,7 +350,7 @@ async function streamOpenAiCompatible({ provider, key, system, instruction, gran
         stream_options: { include_usage: true },
         temperature: 0.35,
         messages: nextMessages,
-        ...(allowContextTool ? { tools: openAiTools(), tool_choice: 'auto' } : {}),
+        ...(remainingToolRounds > 0 && tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
       }),
     }, signal)
     const toolCalls = new Map()
@@ -282,21 +379,55 @@ async function streamOpenAiCompatible({ provider, key, system, instruction, gran
         toolCalls.set(index, current)
       }
     })
-    if (emittedText || toolCalls.size === 0 || !allowContextTool) return usage
-    const calls = Array.from(toolCalls.values()).filter((call) => call.function.name === 'get_granted_application_context')
-    if (calls.length === 0) return usage
-    onStatus('context')
+    if (emittedText || toolCalls.size === 0 || remainingToolRounds <= 0) return usage
+    const calls = Array.from(toolCalls.values())
     const assistantMessage = { role: 'assistant', tool_calls: Array.from(toolCalls.values()) }
-    const toolMessages = calls.map((call) => ({
-      role: 'tool',
-      tool_call_id: call.id,
-      content: JSON.stringify(grantedContext),
-    }))
-    const continuationUsage = await run([...nextMessages, assistantMessage, ...toolMessages], false)
+    let handled = false
+    const toolMessages = calls.map((call) => {
+      if (call.function.name === 'get_granted_application_context') {
+        handled = true
+        onStatus?.('context')
+        return {
+          role: 'tool',
+          tool_call_id: call.id,
+          content: JSON.stringify(grantedContext),
+        }
+      }
+      if (call.function.name === 'select_email_attachments') {
+        handled = true
+        let requestedIds = []
+        try {
+          const parsed = JSON.parse(call.function.arguments || '{}')
+          if (Array.isArray(parsed?.attachmentIds)) requestedIds = parsed.attachmentIds
+        } catch {
+          // The provider receives a structured tool error below and can still
+          // continue drafting without adding an attachment.
+        }
+        const selectedIds = Array.from(new Set(requestedIds.map((id) => String(id))))
+          .filter((id) => candidateIds.has(id))
+          .slice(0, 20)
+        if (selectedIds.length > 0) {
+          onStatus?.('attaching')
+          onAttachmentSelection?.(selectedIds)
+        }
+        return {
+          role: 'tool',
+          tool_call_id: call.id,
+          content: JSON.stringify({ selectedAttachmentIds: selectedIds, draftOnly: true }),
+        }
+      }
+      return {
+        role: 'tool',
+        tool_call_id: call.id,
+        content: JSON.stringify({ error: 'This tool is unavailable for the current email draft.' }),
+      }
+    })
+    if (!handled) return usage
+    const continuationUsage = await run([...nextMessages, assistantMessage, ...toolMessages], remainingToolRounds - 1)
     return addUsage(usage, continuationUsage)
   }
 
-  return run(messages, true)
+  return run(messages, 2)
 }
 
 async function streamAnthropic({ key, system, instruction, grantedContext, attachments, onText, signal }) {
@@ -331,7 +462,7 @@ async function streamAnthropic({ key, system, instruction, grantedContext, attac
       system,
       messages: [{ role: 'user', content }],
     }),
-  }, signal)
+  }, signal, 150_000)
   let usage = emptyUsage()
   await parseSseStream(response, (event) => {
     const reported = event.message?.usage ?? event.usage
@@ -388,12 +519,35 @@ async function streamGemini({ key, system, instruction, grantedContext, attachme
   return usage
 }
 
-export async function streamEmailDraft({ key, system, instruction, grantedContext, attachments = [], onText, onStatus, signal }) {
+export async function streamEmailDraft({
+  key,
+  system,
+  instruction,
+  grantedContext,
+  attachments = [],
+  attachmentCandidates = [],
+  onText,
+  onStatus,
+  onAttachmentSelection,
+  signal,
+}) {
   if (!providerDefaults(key.provider)) throw new AiProviderError('UNSUPPORTED_PROVIDER', 'This AI provider is not supported.')
   if (!key.apiKey) throw new AiProviderError('KEY_UNAVAILABLE', 'The saved AI key is unavailable.')
   if (key.provider === 'anthropic') return streamAnthropic({ key, system, instruction, grantedContext, attachments, onText, signal })
   if (key.provider === 'gemini') return streamGemini({ key, system, instruction, grantedContext, attachments, onText, signal })
-  return streamOpenAiCompatible({ provider: key.provider, key, system, instruction, grantedContext, attachments, onText, onStatus, signal })
+  return streamOpenAiCompatible({
+    provider: key.provider,
+    key,
+    system,
+    instruction,
+    grantedContext,
+    attachments,
+    attachmentCandidates,
+    onText,
+    onStatus,
+    onAttachmentSelection,
+    signal,
+  })
 }
 
 /** Short timeout for connectivity probes (not full drafting). */
@@ -405,7 +559,7 @@ async function fetchProviderProbe(url, options, signal, timeoutMs = 20_000) {
   try {
     const response = await fetch(url, { ...options, signal: controller.signal })
     if (!response.ok) {
-      throw new AiProviderError('PROVIDER_REJECTED', 'The AI provider rejected this request. Check the model, key, and provider URL.')
+      throw providerHttpError(response.status)
     }
     // Drain body so sockets can close promptly on keep-alive servers.
     try { await response.arrayBuffer() } catch { /* ignore */ }
@@ -418,6 +572,53 @@ async function fetchProviderProbe(url, options, signal, timeoutMs = 20_000) {
     clearTimeout(timer)
     signal?.removeEventListener('abort', abort)
   }
+}
+
+const RETRYABLE_PROVIDER_PROBE_CODES = new Set([
+  'PROVIDER_RATE_LIMITED',
+  'PROVIDER_TIMEOUT',
+  'PROVIDER_UNAVAILABLE',
+])
+
+async function waitForProviderProbeRetry(signal, delayMs = 250) {
+  if (signal?.aborted) throw new AiProviderError('PROVIDER_TIMEOUT', 'The AI provider probe was cancelled.')
+  await new Promise((resolve, reject) => {
+    let timer = null
+    const cleanup = () => signal?.removeEventListener('abort', abort)
+    const abort = () => {
+      clearTimeout(timer)
+      cleanup()
+      reject(new AiProviderError('PROVIDER_TIMEOUT', 'The AI provider probe was cancelled.'))
+    }
+    timer = setTimeout(() => {
+      cleanup()
+      resolve()
+    }, delayMs)
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) abort()
+  })
+}
+
+/**
+ * Connectivity checks are a gate, not the research workload itself. One slow
+ * gateway response must not create a false "bad key" result, while permanent
+ * credential/configuration errors must still fail immediately.
+ */
+async function retryProviderProbe(operation, signal, attempts = 2) {
+  let lastError = null
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      lastError = error
+      const retryable = error instanceof AiProviderError
+        && RETRYABLE_PROVIDER_PROBE_CODES.has(error.code)
+        && !signal?.aborted
+      if (!retryable || attempt === attempts - 1) throw error
+      await waitForProviderProbeRetry(signal)
+    }
+  }
+  throw lastError
 }
 
 async function testOpenAiCompatible(provider, key, signal) {
@@ -479,9 +680,34 @@ export async function testAiKeyConnection(key, signal) {
   if (!providerDefaults(key.provider)) throw new AiProviderError('UNSUPPORTED_PROVIDER', 'This AI provider is not supported.')
   if (!key.apiKey) throw new AiProviderError('KEY_UNAVAILABLE', 'The saved AI key is unavailable.')
   const started = Date.now()
-  if (key.provider === 'anthropic') await testAnthropic(key, signal)
-  else if (key.provider === 'gemini') await testGemini(key, signal)
-  else await testOpenAiCompatible(key.provider, key, signal)
+  await retryProviderProbe(async () => {
+    if (key.provider === 'anthropic') await testAnthropic(key, signal)
+    else if (key.provider === 'gemini') await testGemini(key, signal)
+    else await testOpenAiCompatible(key.provider, key, signal)
+  }, signal)
+  return {
+    ok: true,
+    latencyMs: Date.now() - started,
+    provider: key.provider,
+    model: key.model || providerDefaults(key.provider)?.defaultModel || '',
+  }
+}
+
+/**
+ * Discover's trusted Responses gateways are authenticated with their lightweight
+ * models endpoint. Using Chat Completions here can falsely time out even though
+ * the Responses API used by the actual research job is healthy.
+ */
+export async function testAiResearchKeyConnection(key, signal) {
+  if (!providerDefaults(key.provider)) throw new AiProviderError('UNSUPPORTED_PROVIDER', 'This AI provider is not supported.')
+  if (!key.apiKey) throw new AiProviderError('KEY_UNAVAILABLE', 'The saved AI key is unavailable.')
+  if (!supportsNativeOpenAiWebSearch(key)) return testAiKeyConnection(key, signal)
+
+  const started = Date.now()
+  await retryProviderProbe(() => fetchProviderProbe(openAiModelsEndpoint(key.provider, key.baseUrl), {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${key.apiKey}` },
+  }, signal), signal)
   return {
     ok: true,
     latencyMs: Date.now() - started,
@@ -494,12 +720,110 @@ export async function testAiKeyConnection(key, signal) {
  * Non-streaming text completion for structured research tasks (Discover agents).
  * Returns { text, usage }. Prefer JSON-only system prompts on the caller side.
  */
-export async function completeChat({ key, system, user, signal, temperature = 0.3, maxTokens = 4096 }) {
+export async function completeChat({
+  key,
+  system,
+  user,
+  signal,
+  temperature = 0.3,
+  maxTokens = 4096,
+  webSearch = false,
+  allowedDomains = [],
+  outputSchema = null,
+}) {
   if (!providerDefaults(key.provider)) throw new AiProviderError('UNSUPPORTED_PROVIDER', 'This AI provider is not supported.')
   if (!key.apiKey) throw new AiProviderError('KEY_UNAVAILABLE', 'The saved AI key is unavailable.')
+  if (webSearch && supportsNativeOpenAiWebSearch(key)) {
+    return completeOpenAiWebResearch({ key, system, user, signal, maxTokens, allowedDomains, outputSchema })
+  }
   if (key.provider === 'anthropic') return completeAnthropic({ key, system, user, signal, temperature, maxTokens })
   if (key.provider === 'gemini') return completeGemini({ key, system, user, signal, temperature, maxTokens })
   return completeOpenAiCompatible({ provider: key.provider, key, system, user, signal, temperature, maxTokens })
+}
+
+function responseOutputText(payload) {
+  if (typeof payload?.output_text === 'string' && payload.output_text.trim()) return payload.output_text.trim()
+  const text = []
+  for (const item of payload?.output ?? []) {
+    if (item?.type !== 'message') continue
+    for (const part of item.content ?? []) {
+      if (typeof part?.text === 'string') text.push(part.text)
+      else if (typeof part?.text?.value === 'string') text.push(part.text.value)
+    }
+  }
+  return text.join('').trim()
+}
+
+function responseCitationUrls(payload) {
+  const urls = new Set()
+  const collect = (value) => {
+    if (!value || typeof value !== 'object') return
+    if (typeof value.url === 'string' && /^https:\/\//i.test(value.url)) urls.add(value.url)
+    for (const child of Array.isArray(value) ? value : Object.values(value)) collect(child)
+  }
+  collect(payload?.output)
+  return [...urls].slice(0, 100)
+}
+
+/**
+ * Official OpenAI live research path. It deliberately uses the Responses API
+ * only for an `openai` key because the web-search tool is not part of the
+ * Chat Completions compatibility contract used by other providers.
+ */
+async function completeOpenAiWebResearch({ key, system, user, signal, maxTokens, allowedDomains, outputSchema }) {
+  const endpoint = openAiResponsesEndpoint(key.baseUrl)
+  const domains = [...new Set((allowedDomains || [])
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter((value) => /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(value)))]
+  const tool = {
+    type: 'web_search',
+    search_context_size: 'high',
+    // OpenAI's web-search domain filter has a bounded allow-list. Callers
+    // further scope this by region/batch; this hard cap prevents a broad source
+    // registry from turning a valid research request into a provider rejection.
+    ...(domains.length ? { filters: { allowed_domains: domains.slice(0, 100) } } : {}),
+  }
+  const response = await fetchProvider(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: key.model || providerDefaults('openai').defaultModel,
+      instructions: system,
+      input: user,
+      tools: [tool],
+      max_output_tokens: maxTokens,
+      // JSON-only prompting is not enough for a background data pipeline: a
+      // citation can otherwise turn an otherwise useful answer into invalid
+      // JSON. Responses Structured Outputs makes the first research hand-off
+      // machine-readable before we apply our independent source gate.
+      ...(outputSchema?.schema && outputSchema?.name ? {
+        text: {
+          format: {
+            type: 'json_schema',
+            name: String(outputSchema.name).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64),
+            schema: outputSchema.schema,
+            strict: outputSchema.strict !== false,
+          },
+        },
+      } : {}),
+    }),
+  }, signal)
+  const payload = await response.json().catch(() => ({}))
+  const text = responseOutputText(payload)
+  if (!text) throw new AiProviderError('EMPTY_DRAFT', 'The AI provider did not return live research text.')
+  return {
+    text,
+    sources: responseCitationUrls(payload),
+    webSearchUsed: true,
+    usage: normalizedUsage(
+      payload?.usage?.input_tokens,
+      payload?.usage?.output_tokens,
+      payload?.usage?.total_tokens,
+    ),
+  }
 }
 
 async function completeOpenAiCompatible({ provider, key, system, user, signal, temperature, maxTokens }) {

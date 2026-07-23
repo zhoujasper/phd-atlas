@@ -63,7 +63,8 @@
     "emptyDescription": "สร้างใบสมัครแรกของคุณ แล้วเลื่อนผ่านแต่ละขั้นตอนได้จากที่นี่",
     "priorityValue": "P{value}",
     "moveToStatus": "ย้ายไปที่ {status}",
-    "showMore": "แสดง {count} เพิ่มเติม"
+    "showMore": "แสดง {count} เพิ่มเติม",
+    "moveTo": "ย้ายไปยัง"
   },
   "explorer": {
     "selectedCount": "{count} เลือกแล้ว",

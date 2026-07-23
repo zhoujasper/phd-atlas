@@ -102,6 +102,23 @@
     "priorityValue": "優先度 {value}",
     "dayShort": "{count}d",
     "noTimeline": "タイムライン イベントはまだありません。",
-    "noMaterials": "チェックリスト項目はまだありません。"
+    "noMaterials": "チェックリスト項目はまだありません。",
+    "guidanceTitle": "私の指導チーム",
+    "guidanceSubtitle": "{team} であなたを担当する連絡先です。",
+    "guidanceEmptyTitle": "担当者はまだ割り当てられていません。",
+    "guidanceEmptyDesc": "組織管理者は「メンバー」ワークスペースから教員を割り当てられます。",
+    "guidanceRoleOwner": "組織管理者",
+    "guidanceRoleTeacher": "教員",
+    "guidanceEmail": "{name}にメール",
+    "guidanceEmailShort": "メール",
+    "guidanceCall": "{name}に電話",
+    "guidanceCallShort": "電話",
+    "guidanceWebsite": "{name}のウェブサイトを開く",
+    "guidanceWebsiteShort": "ウェブサイト",
+    "guidanceHideDetails": "{name}の詳細を閉じる",
+    "guidanceShowDetails": "{name}の詳細を表示",
+    "guidanceOffice": "研究室・オフィス",
+    "guidanceAvailability": "連絡可能時間",
+    "guidanceSupport": "サポートできること"
   }
 }

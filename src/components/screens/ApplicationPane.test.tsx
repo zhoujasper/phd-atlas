@@ -80,4 +80,51 @@ describe('ApplicationPane owner picker', () => {
 
     expect(view.container.querySelector('.application-line')).toHaveClass('is-removing')
   })
+
+  it('moves the shared selection surface on pointer down before opening the next record', () => {
+    vi.useFakeTimers()
+    const onSelect = vi.fn()
+    const view = render(
+      <I18nContext.Provider value={i18nContext}>
+        <ApplicationPane
+          applications={sampleApplications.slice(0, 2)}
+          totalApplicationCount={2}
+          applicationLimit={10}
+          isPro
+          selectedId={sampleApplications[0].id}
+          query=""
+          statusFilters={[]}
+          sort="deadline:asc"
+          onQuery={vi.fn()}
+          onStatusFilters={vi.fn()}
+          onSort={vi.fn()}
+          onSelect={onSelect}
+          onUpgrade={vi.fn()}
+        />
+      </I18nContext.Provider>,
+    )
+
+    const rows = view.container.querySelectorAll<HTMLButtonElement>('.application-line')
+    const targetRow = Array.from(rows).find((row) => row.title.startsWith(sampleApplications[1].school.name))
+    const slider = view.container.querySelector<HTMLElement>('.application-selection-slider')
+    expect(rows).toHaveLength(2)
+    expect(targetRow).toBeDefined()
+    expect(slider).not.toBeNull()
+
+    Object.defineProperty(targetRow!, 'offsetTop', { configurable: true, value: 52 })
+    Object.defineProperty(targetRow!, 'offsetHeight', { configurable: true, value: 46 })
+
+    fireEvent.pointerDown(targetRow!, { button: 0 })
+
+    expect(slider?.style.getPropertyValue('--application-selection-y')).toBe('52px')
+    expect(slider?.style.getPropertyValue('--application-selection-height')).toBe('46px')
+    expect(slider).toHaveClass('is-visible', 'is-moving')
+    expect(onSelect).not.toHaveBeenCalled()
+
+    fireEvent.click(targetRow!)
+    expect(onSelect).toHaveBeenCalledWith(sampleApplications[1].id)
+
+    act(() => vi.advanceTimersByTime(700))
+    expect(slider?.style.getPropertyValue('--application-selection-y')).toBe('0px')
+  })
 })

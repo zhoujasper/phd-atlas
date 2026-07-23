@@ -27,7 +27,7 @@ export function DiscoverApplicationEnrichmentDialog({
   onClose: () => void
 }) {
   const { tx } = useI18n()
-  const { exiting, requestClose } = useAnimatedClose(open, onClose, 180)
+  const { exiting, requestClose } = useAnimatedClose(open, onClose, 150)
   const dialogRef = useModalA11y<HTMLElement>({ open, onClose: requestClose })
 
   return (

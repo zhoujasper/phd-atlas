@@ -102,6 +102,23 @@
     "discoverTitle": "Tìm chương trình tiếp theo của bạn",
     "openDiscover": "Khám phá chương trình",
     "discoverSubtitle": "Duyệt qua các chương trình Tiến sĩ và cố vấn, xếp hạng theo mức độ phù hợp, nhập vào ứng dụng và nhận thông báo về trận đấu.",
-    "discoverCta": "Mở Khám phá"
+    "discoverCta": "Mở Khám phá",
+    "guidanceTitle": "Nhóm hướng dẫn của tôi",
+    "guidanceSubtitle": "Các đầu mối được phân công cho bạn tại {team}.",
+    "guidanceEmptyTitle": "Chưa có người hướng dẫn được phân công.",
+    "guidanceEmptyDesc": "Quản trị viên tổ chức có thể phân công giảng viên trong khu vực Thành viên.",
+    "guidanceRoleOwner": "Quản trị viên tổ chức",
+    "guidanceRoleTeacher": "Giảng viên",
+    "guidanceEmail": "Gửi email cho {name}",
+    "guidanceEmailShort": "Email",
+    "guidanceCall": "Gọi cho {name}",
+    "guidanceCallShort": "Gọi",
+    "guidanceWebsite": "Mở trang web của {name}",
+    "guidanceWebsiteShort": "Trang web",
+    "guidanceHideDetails": "Ẩn thông tin của {name}",
+    "guidanceShowDetails": "Xem thông tin của {name}",
+    "guidanceOffice": "Văn phòng",
+    "guidanceAvailability": "Thời gian liên hệ",
+    "guidanceSupport": "Tôi có thể hỗ trợ"
   }
 }

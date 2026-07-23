@@ -21,7 +21,8 @@
       "duration": "間隔",
       "permission": "許可",
       "scope": "範囲",
-      "actions": "アクション"
+      "actions": "アクション",
+      "subject": "共有アイテム"
     },
     "permission": {
       "view": "ビュー",
@@ -44,7 +45,8 @@
     "sectionsTitle": "共有ページ",
     "scope": {
       "all": "すべてのページ",
-      "count": "{count} ページ"
+      "count": "{count} ページ",
+      "upload": "添付ファイルのアップロード"
     },
     "sections": {
       "overview": "概要",

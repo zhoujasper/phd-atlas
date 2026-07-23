@@ -128,6 +128,44 @@ describe('mail sync application matching', () => {
     expect(tracked.timeline).toHaveLength(1)
   })
 
+  it('enriches an existing imported email with retained attachment references on a later history sync', () => {
+    const existing = {
+      id: communicationIdForMail('app_1', 'mail-key-1'),
+      subject: 'Research fit',
+      channel: 'Email',
+      date: '2026-07-09',
+      summary: 'Thanks for reaching out.',
+      direction: 'incoming',
+      messageType: 'fetched-email',
+      from: 'professor@example.edu',
+      to: 'student@example.com',
+      time: '09:15',
+      sourceMessageKey: 'mail-key-1',
+      attachments: [{ id: 'mail-legacy-1', fileName: 'CV.pdf', fileSize: 12, mimeType: 'application/pdf', source: 'mail' }],
+    }
+    const tracked = application('app_1', 'professor@example.edu', { communications: [existing] })
+    const store = { applications: [tracked] }
+
+    const result = applyFetchedMailMessages(store, user(), [message({
+      attachments: [{
+        id: 'mail-current-1',
+        fileId: 'file_mail_cv',
+        fileName: 'CV.pdf',
+        fileSize: 12,
+        mimeType: 'application/pdf',
+        storageName: 'mail-cv.pdf',
+        source: 'mail',
+      }],
+    })], { now: '2026-07-10T11:00:00.000Z' })
+
+    expect(result).toMatchObject({ filed: 0, changed: true })
+    expect(tracked.communications).toHaveLength(1)
+    expect(tracked.communications[0].attachments).toEqual([expect.objectContaining({
+      fileId: 'file_mail_cv',
+      storageName: 'mail-cv.pdf',
+    })])
+  })
+
   it('files one professor message into each matching application without duplicating either application', () => {
     const firstApp = application('app_1', 'professor@example.edu')
     const secondApp = application('app_2', 'PROFESSOR@example.edu')

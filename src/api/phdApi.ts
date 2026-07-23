@@ -1,4 +1,12 @@
-import type { ApplicationRecord, ApplicationStatus, BackupFrequency, MaterialStatus, SharePermission, ShareSection } from '../data/applications'
+import type {
+  ApplicationRecord,
+  ApplicationStatus,
+  BackupFrequency,
+  MaterialStatus,
+  ReviewComment as ApplicationReviewComment,
+  SharePermission,
+  ShareSection,
+} from '../data/applications'
 import { reportApiReachable, reportApiUnavailable } from '../connectivity'
 
 export type UserRole = 'admin' | 'user'
@@ -80,11 +88,16 @@ export type AiDraftInput = {
   /** The editable email being refined. It is sent only with this draft request. */
   currentDraft?: { subject: string; body: string }
   grants: AiDraftGrants
+  /** Profile-library cards explicitly selected for this draft's background. */
+  profileAssetIds?: string[]
+  /** Browser-local, one-off reference files. Saved workspace files resolve server-side. */
   attachments?: Array<{ name: string; mimeType: string; contentBase64: string }>
 }
 
 export type AiDraftEvent =
   | { type: 'status'; phase: string }
+  /** A provider function call selected files for the editable outgoing-email draft. */
+  | { type: 'attachment-selection'; attachmentIds: string[] }
   | { type: 'token'; text: string }
   | { type: 'done'; draftOnly: boolean }
   | { type: 'error'; message: string }
@@ -149,6 +162,10 @@ export type UserSettings = {
     verified?: boolean
     verificationSentAt?: string
   }>
+  /** Account-wide opt-in for batched system-notification emails. */
+  emailNotificationsEnabled?: boolean
+  /** Account-wide kill switch for browser push delivery; existing browser permission is left unchanged. */
+  browserNotificationsEnabled?: boolean
   autoBackup?: boolean
   backupFrequency?: BackupFrequency
   maxBackupsPerApp?: number
@@ -242,6 +259,29 @@ export type MailSyncEnqueueResult = {
 
 export type EncryptionAlgorithm = 'aes-256-gcm' | 'chacha20-poly1305'
 
+export type DatabaseEngine = 'sqlite' | 'mysql' | 'postgresql' | 'mssql'
+
+export type DatabaseConnectionInput = {
+  type: DatabaseEngine
+  sqlitePath?: string
+  host?: string
+  port?: number
+  database?: string
+  username?: string
+  /** Sent only when creating or rotating a connection; never returned by the API. */
+  password?: string
+  ssl?: boolean
+  /** Use the conservative MySQL 5.7.44-compatible connection and SQL path. */
+  mysql57Compatibility?: boolean
+  schema?: string
+}
+
+export type DatabaseConfiguration = Omit<DatabaseConnectionInput, 'password'> & {
+  configured: boolean
+  passwordSet: boolean
+  cachePath: string
+}
+
 export type AdminSettings = {
   allowRegistration: boolean
   notificationMailbox: string
@@ -323,6 +363,7 @@ export type InitialAdminSetupInput = {
   smtpPass: string
   smtpTls: boolean
   language: string
+  database: DatabaseConnectionInput
 }
 
 export type PasskeyCredentialSummary = {
@@ -463,19 +504,53 @@ export type AdminUser = PublicUser & {
 
 /**
  * `owner` = institution admin (full, unscoped access to the whole team).
- * `admin` = teacher/counselor (manages only the students they personally invited).
+ * `admin` = teacher/counselor (manages students on their collaboration roster).
  * `member` = student (owns their own application; no visibility into other students).
  */
 export type TeamRole = 'owner' | 'admin' | 'member'
 export type TeamMemberStatus = 'pending' | 'active' | 'removed'
 
-export type TeamMemberRelationships = Record<string, never>
+export type TeamMemberRelationships = {
+  /**
+   * User ids of every teacher/institution admin jointly responsible for this
+   * student. Missing keeps the legacy `invitedBy` fallback; [] is unassigned.
+   */
+  teacherIds?: string[]
+}
+
+export type TeamMemberContactProfile = {
+  /** Student-facing role or appointment title inside this organization. */
+  title?: string
+  department?: string
+  contactEmail?: string
+  phone?: string
+  office?: string
+  website?: string
+  /** Short availability or office-hours note. */
+  availability?: string
+  /** Short description of how this person supports students. */
+  bio?: string
+}
+
+export type TeamTeacherGroup = {
+  id: string
+  name: string
+  /** Team-member ids; teachers may belong to more than one functional group. */
+  memberIds: string[]
+  createdBy: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
 
 export type Team = {
   id: string
   name: string
   ownerId: string
   seatLimit: number
+  /** True until the one-time institution-admin credential is claimed. */
+  provisioning?: boolean
+  /** PNG organization logo stored as a compact data URL; rectangular artwork is preserved. */
+  logoDataUrl?: string
   createdAt: string
   updatedAt: string
   /** Optional display names for teacher/student roles (owner stays fixed). */
@@ -485,6 +560,8 @@ export type Team = {
   }
   /** Organization-only templates, already filtered to the current member's role and reporting line. */
   profilePresets?: TeamProfilePreset[]
+  /** Functional teacher groups such as writing, external affairs, or interview preparation. */
+  teacherGroups?: TeamTeacherGroup[]
 }
 
 export type TeamMember = {
@@ -499,6 +576,8 @@ export type TeamMember = {
   status: TeamMemberStatus
   invitedBy: string
   relationships?: TeamMemberRelationships
+  /** Organization-scoped contact details shared only through the existing member-visibility boundary. */
+  contactProfile?: TeamMemberContactProfile
   createdAt: string
   updatedAt: string
 }
@@ -508,9 +587,10 @@ export type TeamUsageSummary = {
   storageQuotaBytes: number | null
   applicationCount: number
   activeShareCount: number
-  shareQuota: number
+  shareQuota: number | null
   shareCreatedCount: number
-  shareCreateQuota: number
+  /** Team links have no per-member lifetime creation cap. */
+  shareCreateQuota: number | null
 }
 
 export type TeamCapacitySummary = {
@@ -526,6 +606,23 @@ export type TeamCapacitySummary = {
   shareCreateQuota: number | null
 }
 
+export type TeamTransferPreflightCheck = {
+  id: 'permission' | 'applicationQuota' | 'storage'
+  ok: boolean
+  reasonCode: string | null
+  used: number | null
+  limit: number | null
+  incoming?: number
+}
+
+export type TeamTransferPreflight = {
+  direction: 'join' | 'leave'
+  teamId: string
+  teamName: string
+  eligible: boolean
+  checks: TeamTransferPreflightCheck[]
+}
+
 export type TeamTransferRequest = {
   id: string
   teamId: string
@@ -538,6 +635,8 @@ export type TeamTransferRequest = {
   ownerId: string
   ownerName: string
   ownerEmail: string
+  assignedTeacherId?: string | null
+  preflight: TeamTransferPreflight
 }
 
 export type TeamMemberStats = {
@@ -600,14 +699,41 @@ export type TeamInvitePreview = {
   requiresRegistration: boolean
 }
 
-export type ReviewComment = {
+export type TeamJoinCode = {
   id: string
-  authorId: string
-  authorName: string
-  body: string
+  teamId: string
+  teamName: string
+  role: TeamRole
+  code: string
+  url: string
+  teacherIds: string[]
+  managerNames: string[]
+  expiresAt: string
+  maxUses: number | null
+  useCount: number
+  reusable: boolean
   createdAt: string
-  targetTab?: 'dossier' | 'materials' | 'mail' | 'funding' | 'timeline' | 'review'
+  updatedAt: string
 }
+
+export type TeamJoinCodePreview = {
+  teamId: string
+  teamName: string
+  role: TeamRole
+  expiresAt: string
+  reusable: boolean
+  managerNames: string[]
+}
+
+export type AdminTeamRecord = {
+  team: Team
+  owner: PublicUser | null
+  memberCount: number
+  teacherCount: number
+  studentCount: number
+}
+
+export type ReviewComment = ApplicationReviewComment
 
 export type SystemEvent = {
   id: string
@@ -706,6 +832,26 @@ export type SystemUpdateResult = {
   message: string
 }
 
+export type ReleaseUpdateInfo = {
+  version: string
+  tagName: string
+  name: string
+  publishedAt: string
+  htmlUrl: string
+  prerelease: boolean
+  package: {
+    name: string
+    size: number
+  }
+}
+
+export type ReleaseUpdateCheck = {
+  currentVersion: string
+  updateAvailable: boolean
+  release: ReleaseUpdateInfo | null
+  checkedAt: string
+}
+
 export type BackupRecord = {
   fileName: string
   size: number
@@ -761,6 +907,8 @@ export type NotificationType =
   | 'push_test'
   | 'discover_match'
   | 'discover_deadline'
+  | 'discover_research_complete'
+  | 'discover_research_failed'
 
 export type NotificationRecord = {
   id: string
@@ -867,6 +1015,7 @@ export type SharedApplicationPayload = {
     fileId?: string
     fileName?: string
     fileSize?: number
+    uploadReserved?: boolean
     allowedFileTypes?: string[]
     versions?: ApplicationRecord['materials'][number]['versions']
   }>
@@ -884,6 +1033,7 @@ export type SharedApplicationPayload = {
     fileId?: string
     fileName?: string
     fileSize?: number
+    uploadReserved?: boolean
     versions?: ApplicationRecord['tasks'][number]['versions']
   }>
   timeline?: ApplicationRecord['timeline']
@@ -905,6 +1055,24 @@ export type CreateApplicationInput = {
   visibleToTeam?: boolean
   /** Team-mode only: institution admins or teachers may create an application owned by a student they manage. */
   ownerId?: string
+}
+
+export type SchoolLogoResolveInput = {
+  website?: string
+  imageUrl?: string
+}
+
+export type SchoolLogoResolveResult = {
+  found: boolean
+  dataUrl?: string
+  sourceUrl?: string
+  candidateKind?: string
+  reason?: 'invalid-url' | 'unavailable' | 'unreachable' | 'not-found'
+}
+
+export type SchoolLogoPatchInput = {
+  logo: ApplicationRecord['school']['logo'] | null
+  autoDetect: boolean
 }
 
 export type MaterialInput = {
@@ -996,6 +1164,7 @@ export type RealtimeInvalidationScope =
   | 'notifications'
   | 'session'
   | 'ai-keys'
+  | 'discover'
 
 export type RealtimeInvalidationEvent = {
   type: 'connected' | 'invalidate'
@@ -1013,6 +1182,7 @@ const readCacheRevisionByPartition = new Map<string, number>()
 let clientSessionGeneration = 0
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000
 const UPLOAD_REQUEST_TIMEOUT_MS = 120_000
+const SYSTEM_UPDATE_REQUEST_TIMEOUT_MS = 30 * 60_000
 const DOWNLOAD_REQUEST_TIMEOUT_MS = 120_000
 const OFF_MAIN_JSON_THRESHOLD = 256 * 1024
 const JSON_PARSE_WORKER_TIMEOUT_MS = 10_000
@@ -1737,6 +1907,28 @@ function uploadFilesRequest<T>(
   return request<T>(path, token, { method: 'POST', body: form })
 }
 
+export type DiscoverResearchScope = {
+  teamId: string
+  targetUserId: string
+}
+
+export type DiscoverResearchInput = {
+  notify?: boolean
+  /** Discover research is AI-orchestrated; deterministic crawling remains its evidence boundary. */
+  useAi: true
+  keyId: string
+  keyIds: [string, ...string[]]
+  teamId?: string
+  targetUserId?: string
+  acceptSuggestions?: boolean
+}
+
+function discoverScopePath(path: string, scope?: DiscoverResearchScope) {
+  if (!scope) return path
+  const params = new URLSearchParams({ teamId: scope.teamId, targetUserId: scope.targetUserId })
+  return `${path}?${params.toString()}`
+}
+
 export const phdApi = {
   initialSetupStatus: () =>
     request<InitialSetupStatus>('/api/setup/status', undefined, {}, 10_000),
@@ -1877,6 +2069,18 @@ export const phdApi = {
       body: JSON.stringify(input),
     }),
 
+  resolveSchoolLogo: (token: string, applicationId: string, input: SchoolLogoResolveInput) =>
+    request<SchoolLogoResolveResult>(`/api/applications/${applicationId}/school-logo/resolve`, token, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }, 30_000),
+
+  updateSchoolLogo: (token: string, applicationId: string, input: SchoolLogoPatchInput) =>
+    request<ApplicationRecord>(`/api/applications/${applicationId}/school-logo`, token, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+
   updateApplication: (token: string, application: ApplicationRecord, baseApplication?: ApplicationRecord | null) =>
     request<ApplicationRecord>(`/api/applications/${application.id}`, token, {
       method: 'PUT',
@@ -1893,15 +2097,36 @@ export const phdApi = {
       body: JSON.stringify({ ...application, clientBaseUpdatedAt }),
     }),
 
-  updateApplicationTeamVisibility: (token: string, applicationId: string, visibleToTeam: boolean) =>
-    request<ApplicationRecord>(`/api/applications/${applicationId}/team-visibility`, token, {
-      method: 'PATCH',
-      body: JSON.stringify({ visibleToTeam }),
+  preflightApplicationTeamTransfer: (
+    token: string,
+    applicationId: string,
+    input: { visibleToTeam: boolean; teamId?: string },
+  ) =>
+    request<TeamTransferPreflight>(`/api/applications/${applicationId}/team-transfer/preflight`, token, {
+      method: 'POST',
+      body: JSON.stringify(input),
     }),
 
-  approveTeamTransferRequest: (token: string, teamId: string, requestId: string) =>
+  updateApplicationTeamVisibility: (
+    token: string,
+    applicationId: string,
+    visibleToTeam: boolean,
+    teamId?: string,
+  ) =>
+    request<ApplicationRecord>(`/api/applications/${applicationId}/team-visibility`, token, {
+      method: 'PATCH',
+      body: JSON.stringify({ visibleToTeam, teamId }),
+    }),
+
+  approveTeamTransferRequest: (
+    token: string,
+    teamId: string,
+    requestId: string,
+    teacherMemberId?: string,
+  ) =>
     request<ApplicationRecord>(`/api/teams/${teamId}/transfer-requests/${requestId}/approve`, token, {
       method: 'POST',
+      body: JSON.stringify({ teacherMemberId }),
     }),
 
   rejectTeamTransferRequest: (token: string, teamId: string, requestId: string) =>
@@ -2270,6 +2495,20 @@ export const phdApi = {
       [file],
     ),
 
+  removeSharedMaterialFile: (shareToken: string, materialId: string, fileId: string) =>
+    request<SharedApplicationPayload>(
+      `/api/share/${encodeURIComponent(shareToken)}/materials/${encodeURIComponent(materialId)}/files/${encodeURIComponent(fileId)}`,
+      undefined,
+      { method: 'DELETE' },
+    ),
+
+  renameSharedMaterialFile: (shareToken: string, materialId: string, fileId: string, fileName: string) =>
+    request<SharedApplicationPayload>(
+      `/api/share/${encodeURIComponent(shareToken)}/materials/${encodeURIComponent(materialId)}/files/${encodeURIComponent(fileId)}`,
+      undefined,
+      { method: 'PATCH', body: JSON.stringify({ fileName }) },
+    ),
+
   updateSharedMaterialStatus: (shareToken: string, materialId: string, status: MaterialStatus) =>
     request<SharedApplicationPayload>(
       `/api/share/${encodeURIComponent(shareToken)}/materials/${encodeURIComponent(materialId)}`,
@@ -2292,6 +2531,20 @@ export const phdApi = {
       `/api/share/${encodeURIComponent(shareToken)}/tasks/${encodeURIComponent(taskId)}/file`,
       undefined,
       [file],
+    ),
+
+  removeSharedTaskFile: (shareToken: string, taskId: string, fileId: string) =>
+    request<SharedApplicationPayload>(
+      `/api/share/${encodeURIComponent(shareToken)}/tasks/${encodeURIComponent(taskId)}/files/${encodeURIComponent(fileId)}`,
+      undefined,
+      { method: 'DELETE' },
+    ),
+
+  renameSharedTaskFile: (shareToken: string, taskId: string, fileId: string, fileName: string) =>
+    request<SharedApplicationPayload>(
+      `/api/share/${encodeURIComponent(shareToken)}/tasks/${encodeURIComponent(taskId)}/files/${encodeURIComponent(fileId)}`,
+      undefined,
+      { method: 'PATCH', body: JSON.stringify({ fileName }) },
     ),
 
   updateSharedTask: (shareToken: string, taskId: string, done: boolean) =>
@@ -2344,6 +2597,23 @@ export const phdApi = {
       body: JSON.stringify(input),
     }),
 
+  updateTeamMemberProfileAsset: (
+    token: string,
+    teamId: string,
+    userId: string,
+    assetId: string,
+    input: Partial<ProfileAssetInput>,
+  ) =>
+    request<ProfileAsset>(`/api/teams/${teamId}/members/${userId}/profile-assets/${assetId}`, token, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+
+  deleteTeamMemberProfileAsset: (token: string, teamId: string, userId: string, assetId: string) =>
+    request<{ id: string }>(`/api/teams/${teamId}/members/${userId}/profile-assets/${assetId}`, token, {
+      method: 'DELETE',
+    }),
+
   addProfileAsset: (token: string, input: ProfileAssetInput) =>
     request<ProfileAsset>('/api/profile-assets', token, {
       method: 'POST',
@@ -2384,6 +2654,12 @@ export const phdApi = {
       body: JSON.stringify({ expiresAt, note }),
     }),
 
+  updateProfileAssetShare: (token: string, id: string, shareId: string, expiresAt: string | null, note?: string) =>
+    request<ProfileAssetShare>(`/api/profile-assets/${id}/share/${shareId}`, token, {
+      method: 'PATCH',
+      body: JSON.stringify({ expiresAt, ...(note === undefined ? {} : { note }) }),
+    }),
+
   revokeProfileAssetShare: (token: string, id: string, shareId: string) =>
     request<{ id: string }>(`/api/profile-assets/${id}/share/${shareId}`, token, {
       method: 'DELETE',
@@ -2419,35 +2695,52 @@ export const phdApi = {
       body: JSON.stringify(input),
     }),
 
-  getDiscoverCatalog: (token: string) =>
+  getDiscoverCatalog: (token: string, scope?: DiscoverResearchScope) =>
     conditionalRequest<import('../data/discover').DiscoverCatalogPayload>(
-      '/api/discover/catalog',
+      discoverScopePath('/api/discover/catalog', scope),
       token,
       {},
       { freshForMs: 5_000 },
     ),
 
-  getDiscoverState: (token: string) =>
+  getDiscoverState: (token: string, scope?: DiscoverResearchScope) =>
     conditionalRequest<import('../data/discover').DiscoverUserState>(
-      '/api/discover/state',
+      discoverScopePath('/api/discover/state', scope),
       token,
       {},
       { freshForMs: 5_000 },
     ),
 
-  updateDiscoverState: (token: string, patch: Partial<import('../data/discover').DiscoverUserState>) =>
-    request<import('../data/discover').DiscoverCatalogPayload>('/api/discover/state', token, {
+  getDiscoverSourceIndex: (token: string, scope?: DiscoverResearchScope) =>
+    conditionalRequest<import('../data/discover').DiscoverSourceIndex>(
+      discoverScopePath('/api/discover/source-index', scope),
+      token,
+      {},
+      { freshForMs: 5_000 },
+    ),
+
+  updateDiscoverState: (token: string, patch: Partial<import('../data/discover').DiscoverUserState>, scope?: DiscoverResearchScope) =>
+    request<import('../data/discover').DiscoverCatalogPayload>(discoverScopePath('/api/discover/state', scope), token, {
       method: 'PUT',
       body: JSON.stringify(patch),
     }),
 
   runDiscoverResearch: (
     token: string,
-    input?: { notify?: boolean; useAi?: boolean; keyId?: string; acceptSuggestions?: boolean },
+    input: DiscoverResearchInput,
   ) =>
-    request<import('../data/discover').DiscoverResearchPayload>('/api/discover/research', token, {
+    request<import('../data/discover').DiscoverResearchStartPayload>('/api/discover/research/start', token, {
       method: 'POST',
-      body: JSON.stringify(input ?? {}),
+      body: JSON.stringify(input),
+    }),
+
+  deleteDiscoverPrograms: (
+    token: string,
+    input: { ids: string[] } & Partial<DiscoverResearchScope>,
+  ) =>
+    request<import('../data/discover').DiscoverCatalogPayload>('/api/discover/programs/delete', token, {
+      method: 'POST',
+      body: JSON.stringify(input),
     }),
 
   importDiscoverProgram: (token: string, input: import('../data/discover').DiscoverImportInput) =>
@@ -2664,10 +2957,33 @@ export const phdApi = {
       { method: 'DELETE' },
     ),
 
+  adminDatabaseConfiguration: (token: string) =>
+    request<DatabaseConfiguration>('/api/admin/database', token),
+
+  testAdminDatabaseConfiguration: (token: string, input: DatabaseConnectionInput) =>
+    request<DatabaseConfiguration>('/api/admin/database/test', token, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  updateAdminDatabaseConfiguration: (token: string, input: DatabaseConnectionInput) =>
+    request<DatabaseConfiguration>('/api/admin/database', token, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+
   downloadAdminBackup: (token: string, fileName: string) =>
     blobRequest(`/api/admin/backups/${encodeURIComponent(fileName)}/download`, token),
 
   adminUsers: (token: string) => request<AdminUser[]>('/api/admin/users', token),
+
+  adminTeams: (token: string) => request<AdminTeamRecord[]>('/api/admin/teams', token),
+
+  createAdminTeam: (token: string, name: string) =>
+    request<AdminTeamRecord>('/api/admin/teams', token, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
 
   adminLogs: (token: string) => request<SystemEvent[]>('/api/admin/logs', token),
 
@@ -2737,9 +3053,18 @@ export const phdApi = {
       method: 'POST',
       headers: requestHeaders(token, { body: form }),
       body: form,
-    })
+    }, SYSTEM_UPDATE_REQUEST_TIMEOUT_MS)
     return parseEnvelope<SystemUpdateResult>(response, token, false, requestGeneration)
   },
+
+  checkSystemUpdate: (token: string) =>
+    request<ReleaseUpdateCheck>('/api/admin/system-update/check', token),
+
+  installReleaseUpdate: (token: string, tagName: string) =>
+    request<SystemUpdateResult>('/api/admin/system-update/install-release', token, {
+      method: 'POST',
+      body: JSON.stringify({ tagName }),
+    }, SYSTEM_UPDATE_REQUEST_TIMEOUT_MS),
 
   deleteSystemUpdate: (token: string, storedAs: string) =>
     request<{ deleted: boolean; storedAs: string }>(
@@ -2770,6 +3095,7 @@ export const phdApi = {
   updateTeam: (token: string, teamId: string, input: {
     name?: string
     seatLimit?: number
+    logoDataUrl?: string
     roleLabels?: { admin?: string; member?: string }
   }) =>
     request<Team>(`/api/teams/${teamId}`, token, {
@@ -2858,10 +3184,26 @@ export const phdApi = {
       body: JSON.stringify(input),
     }),
 
-  inviteTeamMember: (token: string, teamId: string, email: string, role: Exclude<TeamRole, 'owner'>) =>
+  inviteTeamMember: (
+    token: string,
+    teamId: string,
+    email: string,
+    role: Exclude<TeamRole, 'owner'>,
+    teacherIds: string[] = [],
+  ) =>
     request<TeamMember>(`/api/teams/${teamId}/members`, token, {
       method: 'POST',
-      body: JSON.stringify({ email, role }),
+      body: JSON.stringify({ email, role, teacherIds }),
+    }),
+
+  createTeamJoinCode: (
+    token: string,
+    teamId: string,
+    input: { role: TeamRole; teacherIds?: string[] },
+  ) =>
+    request<TeamJoinCode>(`/api/teams/${teamId}/join-codes`, token, {
+      method: 'POST',
+      body: JSON.stringify(input),
     }),
 
   updateTeamMemberRole: (token: string, teamId: string, memberId: string, role: Exclude<TeamRole, 'owner'>) =>
@@ -2877,6 +3219,7 @@ export const phdApi = {
     input: {
       role?: Exclude<TeamRole, 'owner'>
       invitedBy?: string
+      teacherIds?: string[]
     },
   ) =>
     request<TeamMember>(`/api/teams/${teamId}/members/${memberId}`, token, {
@@ -2884,8 +3227,40 @@ export const phdApi = {
       body: JSON.stringify(input),
     }),
 
+  updateMyTeamContactProfile: (
+    token: string,
+    teamId: string,
+    input: TeamMemberContactProfile,
+  ) =>
+    request<TeamMember>(`/api/teams/${teamId}/members/me/contact-profile`, token, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+
   removeTeamMember: (token: string, teamId: string, memberId: string) =>
     request<{ id: string; removed: boolean }>(`/api/teams/${teamId}/members/${memberId}`, token, {
+      method: 'DELETE',
+    }),
+
+  createTeamTeacherGroup: (token: string, teamId: string, input: { name: string; memberIds?: string[] }) =>
+    request<TeamTeacherGroup>(`/api/teams/${teamId}/teacher-groups`, token, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  updateTeamTeacherGroup: (
+    token: string,
+    teamId: string,
+    groupId: string,
+    input: { name?: string; memberIds?: string[] },
+  ) =>
+    request<TeamTeacherGroup>(`/api/teams/${teamId}/teacher-groups/${groupId}`, token, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+
+  deleteTeamTeacherGroup: (token: string, teamId: string, groupId: string) =>
+    request<{ id: string; deleted: boolean }>(`/api/teams/${teamId}/teacher-groups/${groupId}`, token, {
       method: 'DELETE',
     }),
 
@@ -2921,6 +3296,16 @@ export const phdApi = {
 
   getTeamInvite: (inviteToken: string) =>
     request<TeamInvitePreview>(`/api/teams/invites/${encodeURIComponent(inviteToken)}`),
+
+  getTeamJoinCode: (code: string) =>
+    request<TeamJoinCodePreview>(`/api/teams/join-codes/${encodeURIComponent(code)}`),
+
+  redeemTeamJoinCode: (token: string, code: string) =>
+    request<{ membership: TeamMember; team: Team }>(
+      `/api/teams/join-codes/${encodeURIComponent(code)}/redeem`,
+      token,
+      { method: 'POST' },
+    ),
 
   acceptTeamInvite: (token: string, inviteToken: string) =>
     request<{ membership: TeamMember; team: Team }>(

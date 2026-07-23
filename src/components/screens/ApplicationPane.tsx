@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import {
   ArchiveRestore,
   ArrowDown,
@@ -38,6 +38,7 @@ import { useI18n } from '../hooks/useI18n'
 import { hasExplorerSelectionModifier, useExplorerSelection } from '../hooks/useExplorerSelection'
 import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/ExplorerContextMenu'
 import { ExplorerSelectionBar } from '../shared/ExplorerSelectionBar'
+import { SchoolLogoMark } from '../shared/SchoolLogo'
 
 const APPLICATIONS_PER_PAGE = 10
 
@@ -171,6 +172,7 @@ type ApplicationPaneProps = {
   onSort: (key: SortKey) => void
   onSelect: (id: string) => void
   onPrefetch?: () => void
+  onResolveMissingSchoolLogo?: (application: ApplicationRecord) => Promise<boolean>
   // Omitted in the team-scoped browser — no one creates an application on a teammate's behalf.
   onNew?: () => void
   onUpgrade: () => void
@@ -226,6 +228,7 @@ export function ApplicationPane({
   onSort,
   onSelect,
   onPrefetch,
+  onResolveMissingSchoolLogo,
   onNew,
   onUpgrade,
   onShowBoard,
@@ -259,12 +262,19 @@ export function ApplicationPane({
   const [pageAnimDirection, setPageAnimDirection] = useState<'next' | 'prev' | 'none'>('none')
   const [contextMenu, setContextMenu] = useState<ExplorerContextMenuState | null>(null)
   const [trashOpen, setTrashOpen] = useState(false)
+  const schoolLogoAutoAttemptsRef = useRef(new Set<string>())
+  const resolveMissingSchoolLogoRef = useRef(onResolveMissingSchoolLogo)
   const [ownerPickerOpen, setOwnerPickerOpen] = useState(false)
   const [ownerPickerQuery, setOwnerPickerQuery] = useState('')
-  const [pendingOpenId, setPendingOpenId] = useState<string | null>(null)
   const ownerPickerRef = useRef<HTMLDivElement | null>(null)
   const paneRef = useRef<HTMLElement | null>(null)
-  const pendingOpenTimerRef = useRef<number | null>(null)
+  const applicationListRef = useRef<HTMLDivElement | null>(null)
+  const applicationSelectionSliderRef = useRef<HTMLSpanElement | null>(null)
+  const applicationRowRefs = useRef(new Map<string, HTMLButtonElement>())
+  const committedSelectionRef = useRef(selectedId)
+  const optimisticSelectionRef = useRef<string | null>(null)
+  const optimisticSelectionTimerRef = useRef<number | null>(null)
+  const selectionMotionTimerRef = useRef<number | null>(null)
   const { exiting: ownerPickerExiting, requestClose: requestOwnerPickerClose } = useAnimatedClose(
     ownerPickerOpen,
     () => {
@@ -288,7 +298,20 @@ export function ApplicationPane({
   const activeSort = parseSortKey(sort)
   const pageStart = (safeCurrentPage - 1) * APPLICATIONS_PER_PAGE
   const pageEnd = Math.min(pageStart + APPLICATIONS_PER_PAGE, sorted.length)
-  const visiblePage = sorted.slice(pageStart, pageEnd)
+  const visiblePage = useMemo(
+    () => sorted.slice(pageStart, pageEnd),
+    [pageEnd, pageStart, sorted],
+  )
+  const visiblePageKey = visiblePage.map((application) => application.id).join('|')
+  const visiblePageLogoKey = visiblePage
+    .map((application) => [
+      application.id,
+      application.school.website,
+      application.school.logo?.updatedAt ?? '',
+      application.school.logoAutoDetect === false ? 'off' : 'auto',
+      readOnlyIds?.has(application.id) ? 'readonly' : 'editable',
+    ].join(':'))
+    .join('|')
   const limitReached = !isPro && totalApplicationCount >= applicationLimit
   const sortedApplicationIds = useMemo(() => sorted.map((application) => application.id), [sorted])
   const selection = useExplorerSelection(sortedApplicationIds)
@@ -304,6 +327,40 @@ export function ApplicationPane({
     return ownerFilterOptions.filter((option) => option.name.toLowerCase().includes(needle))
   }, [ownerFilterOptions, ownerPickerQuery])
 
+  useEffect(() => {
+    resolveMissingSchoolLogoRef.current = onResolveMissingSchoolLogo
+  }, [onResolveMissingSchoolLogo])
+
+  useEffect(() => {
+    const resolver = resolveMissingSchoolLogoRef.current
+    if (!resolver || typeof navigator !== 'undefined' && !navigator.onLine) return undefined
+    let cancelled = false
+    const candidates = visiblePage.filter((application) => (
+      !application.school.logo
+      && application.school.logoAutoDetect !== false
+      && Boolean(application.school.website.trim())
+      && !readOnlyIds?.has(application.id)
+    ))
+
+    void (async () => {
+      for (let index = 0; index < candidates.length; index += 2) {
+        if (cancelled) return
+        const batch = candidates.slice(index, index + 2).filter((application) => {
+          const key = `${application.id}::${application.school.website.trim()}`
+          if (schoolLogoAutoAttemptsRef.current.has(key)) return false
+          schoolLogoAutoAttemptsRef.current.add(key)
+          return true
+        })
+        if (batch.length === 0) continue
+        await Promise.allSettled(batch.map((application) => resolver(application)))
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [readOnlyIds, visiblePage, visiblePageLogoKey])
+
   const closeContextMenu = useCallback(() => setContextMenu(null), [])
 
   const goToPage = useCallback((nextPage: number, direction: 'next' | 'prev') => {
@@ -313,32 +370,112 @@ export function ApplicationPane({
     })
   }, [])
 
-    const openApplication = useCallback((id: string) => {
-    if (pendingOpenTimerRef.current !== null) {
-      window.clearTimeout(pendingOpenTimerRef.current)
+  const finishSelectionSliderMotion = useCallback(() => {
+    if (selectionMotionTimerRef.current !== null) {
+      window.clearTimeout(selectionMotionTimerRef.current)
+      selectionMotionTimerRef.current = null
     }
-    setPendingOpenId(id)
-    pendingOpenTimerRef.current = window.setTimeout(() => {
-      pendingOpenTimerRef.current = null
-      setPendingOpenId((current) => current === id ? null : current)
-    }, 700)
-    onSelect(id)
-  }, [onSelect])
+    applicationSelectionSliderRef.current?.classList.remove('is-moving')
+  }, [])
 
-  useEffect(() => {
-    if (!pendingOpenId || pendingOpenId !== selectedId) return
-    if (pendingOpenTimerRef.current !== null) {
-      window.clearTimeout(pendingOpenTimerRef.current)
-      pendingOpenTimerRef.current = null
+  const positionSelectionSlider = useCallback((
+    targetId: string | null,
+    targetRow?: HTMLButtonElement | null,
+  ) => {
+    const list = applicationListRef.current
+    const slider = applicationSelectionSliderRef.current
+    const row = targetRow ?? (targetId ? applicationRowRefs.current.get(targetId) : null)
+    if (!list || !slider || !row) {
+      finishSelectionSliderMotion()
+      slider?.classList.remove('is-visible')
+      list?.classList.remove('has-selection-slider')
+      return
     }
-    setPendingOpenId(null)
-  }, [pendingOpenId, selectedId])
+
+    // Read geometry first, then batch style/class writes. Pointer feedback calls
+    // this before the dossier's keyed record boundary starts its heavier render,
+    // so the list responds on the press instead of waiting for that commit.
+    const nextTop = row.offsetTop
+    const nextHeight = row.offsetHeight || 46
+    const nextTopValue = `${nextTop}px`
+    const nextHeightValue = `${nextHeight}px`
+    const shouldAnimate = slider.classList.contains('is-visible')
+      && (
+        slider.style.getPropertyValue('--application-selection-y') !== nextTopValue
+        || slider.style.getPropertyValue('--application-selection-height') !== nextHeightValue
+      )
+
+    if (shouldAnimate) {
+      if (selectionMotionTimerRef.current !== null) {
+        window.clearTimeout(selectionMotionTimerRef.current)
+      }
+      slider.classList.add('is-moving')
+      selectionMotionTimerRef.current = window.setTimeout(finishSelectionSliderMotion, 280)
+    }
+    slider.style.setProperty('--application-selection-y', nextTopValue)
+    slider.style.setProperty('--application-selection-height', nextHeightValue)
+    slider.classList.add('is-visible')
+    list.classList.add('has-selection-slider')
+  }, [finishSelectionSliderMotion])
+
+  const syncSelectionSlider = useCallback(() => {
+    positionSelectionSlider(optimisticSelectionRef.current ?? committedSelectionRef.current)
+  }, [positionSelectionSlider])
+
+  const primeApplicationSelection = useCallback((
+    id: string,
+    row: HTMLButtonElement,
+  ) => {
+    optimisticSelectionRef.current = id
+    positionSelectionSlider(id, row)
+
+    if (optimisticSelectionTimerRef.current !== null) {
+      window.clearTimeout(optimisticSelectionTimerRef.current)
+    }
+    // Navigation guards can reject a requested record change. If that happens,
+    // return the transient slider to the durable selection without a React render.
+    optimisticSelectionTimerRef.current = window.setTimeout(() => {
+      optimisticSelectionTimerRef.current = null
+      if (optimisticSelectionRef.current !== id) return
+      optimisticSelectionRef.current = null
+      positionSelectionSlider(committedSelectionRef.current)
+    }, 700)
+  }, [positionSelectionSlider])
+
+  const openApplication = useCallback((id: string, row: HTMLButtonElement) => {
+    primeApplicationSelection(id, row)
+    onSelect(id)
+  }, [onSelect, primeApplicationSelection])
+
+  useLayoutEffect(() => {
+    const selectionChanged = committedSelectionRef.current !== selectedId
+    committedSelectionRef.current = selectedId
+    if (selectionChanged || optimisticSelectionRef.current === selectedId) {
+      optimisticSelectionRef.current = null
+      if (optimisticSelectionTimerRef.current !== null) {
+        window.clearTimeout(optimisticSelectionTimerRef.current)
+        optimisticSelectionTimerRef.current = null
+      }
+    }
+    syncSelectionSlider()
+
+    const list = applicationListRef.current
+    const sliderTargetId = optimisticSelectionRef.current ?? committedSelectionRef.current
+    const row = sliderTargetId ? applicationRowRefs.current.get(sliderTargetId) : null
+    if (!list || typeof ResizeObserver === 'undefined') return undefined
+
+    const observer = new ResizeObserver(syncSelectionSlider)
+    observer.observe(list)
+    if (row) observer.observe(row)
+    return () => observer.disconnect()
+  }, [safeCurrentPage, selectedId, syncSelectionSlider, visiblePageKey])
 
   useEffect(() => () => {
-    if (pendingOpenTimerRef.current !== null) {
-      window.clearTimeout(pendingOpenTimerRef.current)
+    if (optimisticSelectionTimerRef.current !== null) {
+      window.clearTimeout(optimisticSelectionTimerRef.current)
     }
-  }, [])
+    finishSelectionSliderMotion()
+  }, [finishSelectionSliderMotion])
 
   const toggleStatusFilter = useCallback((item: ApplicationStatus | 'All') => {
     if (item === 'All') {
@@ -388,8 +525,10 @@ export function ApplicationPane({
         if (isActivationControlTarget(event.target)) return
         const [id] = selection.selectedIdList
         if (!id) return
+        const row = applicationRowRefs.current.get(id)
+        if (!row) return
         event.preventDefault()
-        openApplication(id)
+        openApplication(id, row)
         return
       }
 
@@ -703,19 +842,19 @@ export function ApplicationPane({
               aria-label={tx('kanban.boardView')}
               title={tx('kanban.boardView')}
             >
-              <Columns size={14} aria-hidden="true" />
+              <Columns size={12} aria-hidden="true" />
               <span>{tx('kanban.board')}</span>
             </button>
           ) : null}
           {onNew ? (
             <button
               type="button"
-              className={limitReached ? 'application-new-locked' : ''}
+              className={`application-create-button${limitReached ? ' application-new-locked' : ''}`}
               onClick={limitReached ? onUpgrade : onNew}
               aria-label={limitReached ? tx('workspace.upgradeToCreate') : tx('workspace.new')}
               title={limitReached ? tx('workspace.upgradeToCreate') : tx('workspace.new')}
             >
-              {limitReached ? <Lock size={13} aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />}
+              {limitReached ? <Lock size={12} aria-hidden="true" /> : <Plus size={12} aria-hidden="true" />}
               {limitReached ? tx('workspace.pro') : tx('workspace.new')}
             </button>
           ) : null}
@@ -772,13 +911,22 @@ export function ApplicationPane({
         <div className="application-list-shell">
           <div
             key={safeCurrentPage}
+            ref={applicationListRef}
             className={`application-list page-anim-${pageAnimDirection}`}
             data-page={safeCurrentPage}
           >
+            <span
+              ref={applicationSelectionSliderRef}
+              className="application-selection-slider"
+              aria-hidden="true"
+              onTransitionEnd={(event) => {
+                if (event.propertyName === 'transform') finishSelectionSliderMotion()
+              }}
+            />
             {visiblePage.map((application, index) => {
               const due = daysUntil(application.deadline)
               const urgency = deadlineUrgency(due)
-              const isSelected = selectedId === application.id || pendingOpenId === application.id
+              const isSelected = selectedId === application.id
               const isExplorerSelected = selection.selectedIds.has(application.id)
               const isRemoving = Boolean(removingApplicationIds?.has(application.id))
               const relation = teamRelations?.[application.id]
@@ -786,13 +934,22 @@ export function ApplicationPane({
               return (
                 <button
                   key={application.id}
+                  ref={(node) => {
+                    if (node) applicationRowRefs.current.set(application.id, node)
+                    else applicationRowRefs.current.delete(application.id)
+                  }}
                   type="button"
                   className={`application-line${relation ? ' has-team-context' : ''}${isSelected ? ' selected' : ''}${isExplorerSelected ? ' explorer-selected' : ''}${isRemoving ? ' is-removing' : ''}`}
                   style={{ '--page-item-index': index } as CSSProperties}
                   data-tour={isSelected ? 'selected-application-row' : undefined}
                   aria-selected={isExplorerSelected}
                   aria-busy={isRemoving || undefined}
-                  onPointerDown={onPrefetch}
+                  onPointerDown={(event) => {
+                    onPrefetch?.()
+                    if (event.button === 0 && !hasExplorerSelectionModifier(event)) {
+                      primeApplicationSelection(application.id, event.currentTarget)
+                    }
+                  }}
                   onPointerEnter={onPrefetch}
                   onFocus={onPrefetch}
                   onClick={(event) => {
@@ -801,12 +958,17 @@ export function ApplicationPane({
                       return
                     }
                     selection.clearSelection()
-                    openApplication(application.id)
+                    openApplication(application.id, event.currentTarget)
                   }}
                   onContextMenu={(event) => openApplicationContextMenu(event, application)}
                   title={`${application.school.name} — ${application.professor.english}`}
                 >
                   <span className="line-status" aria-hidden="true" />
+                  <SchoolLogoMark
+                    schoolName={application.school.name}
+                    logo={application.school.logo}
+                    variant="list"
+                  />
                   <span className="line-main">
                     <strong>{application.school.name}</strong>
                     {relation ? (

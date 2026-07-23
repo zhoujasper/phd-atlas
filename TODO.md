@@ -25,12 +25,14 @@ Planned work is tracked here in broad delivery order.
 
 ## Data layer
 
-- [ ] Introduce a formal storage-adapter interface around the current SQLite
-      repository.
-- [ ] Add a production-ready MySQL adapter with migrations, transaction tests,
-      backup/restore documentation, and SQLite-to-MySQL import tooling.
-- [ ] Evaluate PostgreSQL after the adapter contract and MySQL implementation
-      are stable.
+- [x] Add first-run `/admin` data-store selection, connection testing, and
+      review for SQLite, MySQL/MariaDB, PostgreSQL, and Microsoft SQL Server.
+- [x] Implement durable external-database state adapters, encrypted saved
+      passwords, controlled **Save and migrate**, and engine-aware workspace
+      backup/restore.
+- [ ] Stabilize the versioned cross-engine migration contract, expand the live
+      compatibility matrix across supported server versions, and document
+      long-term import, recovery, and support guarantees.
 
 ## Operations
 

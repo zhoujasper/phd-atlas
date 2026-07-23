@@ -21,7 +21,8 @@
       "duration": "Dauer",
       "permission": "Erlaubnis",
       "scope": "Umfang",
-      "actions": "Aktionen"
+      "actions": "Aktionen",
+      "subject": "Geteiltes Element"
     },
     "permission": {
       "view": "Sicht",
@@ -44,7 +45,8 @@
     "sectionsTitle": "Geteilte Seiten",
     "scope": {
       "all": "Alle Seiten",
-      "count": "{count} Seiten"
+      "count": "{count} Seiten",
+      "upload": "Anhang hochladen"
     },
     "sections": {
       "overview": "Überblick",

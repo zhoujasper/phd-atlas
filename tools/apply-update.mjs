@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   applyUpdatePackage,
+  claimUpdateLock,
   clearUpdateLock,
 } from '../server/systemUpdate.js'
 
@@ -49,7 +50,12 @@ function installDependencies(cwd) {
 }
 
 let exitCode = 0
+let preserveUpdateLock = false
 try {
+  await claimUpdateLock(storageRoot, {
+    packagePath,
+    helperPid: process.pid,
+  })
   await fs.access(packagePath)
   await waitForPreviousProcess()
   await applyUpdatePackage({
@@ -60,13 +66,20 @@ try {
   })
 } catch (error) {
   exitCode = 1
+  preserveUpdateLock = error?.code === 'UPDATE_ROLLBACK_FAILED'
+    || error?.code === 'UPDATE_BOOT_ROLLBACK_FAILED'
   await fs.appendFile(
     path.join(storageRoot, 'update-helper.log'),
     `${new Date().toISOString()} ${error?.stack ?? error}\n`,
     'utf8',
   ).catch(() => {})
 } finally {
-  await clearUpdateLock(storageRoot).catch(() => {})
+  if (!preserveUpdateLock) {
+    await clearUpdateLock(storageRoot, {
+      packagePath,
+      helperPid: process.pid,
+    }).catch(() => {})
+  }
 }
 
 process.exit(exitCode)

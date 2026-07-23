@@ -11,8 +11,10 @@ export type ConnectivitySnapshot = {
   consecutiveFailures: number
 }
 
-const PROBE_TIMEOUT_MS = 4_500
-const PROBE_FRESHNESS_MS = 10_000
+const SOCKET_CONNECT_TIMEOUT_MS = 4_500
+const SOCKET_STALE_TIMEOUT_MS = 42_000
+const RECONNECT_MIN_MS = 1_000
+const RECONNECT_MAX_MS = 30_000
 const SLOW_RESPONSE_MS = 1_500
 const MANUAL_OFFLINE_KEY = 'phd-atlas-manual-offline:v1'
 const listeners = new Set<() => void>()
@@ -79,6 +81,13 @@ let snapshot: ConnectivitySnapshot = {
 }
 
 let probeInFlight: Promise<ConnectivitySnapshot> | null = null
+let resolveProbe: ((value: ConnectivitySnapshot) => void) | null = null
+let healthSocket: WebSocket | null = null
+let healthSocketGeneration = 0
+let connectTimeout: number | null = null
+let staleTimeout: number | null = null
+let reconnectTimeout: number | null = null
+let reconnectAttempt = 0
 let monitorCleanup: (() => void) | null = null
 let monitorConsumers = 0
 
@@ -90,6 +99,151 @@ function publish(next: ConnectivitySnapshot) {
 
 function nowIso() {
   return new Date().toISOString()
+}
+
+function clearSocketTimers() {
+  if (connectTimeout !== null) window.clearTimeout(connectTimeout)
+  if (staleTimeout !== null) window.clearTimeout(staleTimeout)
+  connectTimeout = null
+  staleTimeout = null
+}
+
+function settleProbe(result = snapshot) {
+  const resolve = resolveProbe
+  resolveProbe = null
+  probeInFlight = null
+  resolve?.(result)
+}
+
+function healthSocketUrl() {
+  const url = new URL('/api/health/ws', window.location.href)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  return url.toString()
+}
+
+function scheduleReconnect() {
+  if (
+    reconnectTimeout !== null
+    || monitorConsumers === 0
+    || snapshot.manualOffline
+    || !browserIsOnline()
+    || typeof document !== 'undefined' && document.visibilityState !== 'visible'
+  ) return
+
+  const base = Math.min(RECONNECT_MAX_MS, RECONNECT_MIN_MS * 2 ** reconnectAttempt)
+  reconnectAttempt += 1
+  const delay = Math.round(base * (0.85 + Math.random() * 0.3))
+  reconnectTimeout = window.setTimeout(() => {
+    reconnectTimeout = null
+    void probeServerConnectivity()
+  }, delay)
+}
+
+function armStaleTimeout(socket: WebSocket, generation: number) {
+  if (staleTimeout !== null) window.clearTimeout(staleTimeout)
+  staleTimeout = window.setTimeout(() => {
+    if (generation !== healthSocketGeneration || healthSocket !== socket) return
+    // The server sends an application heartbeat as well as a WebSocket ping.
+    // Closing this stale socket gives the reconnect path one deterministic
+    // owner instead of leaving multiple overlapping probes alive.
+    socket.close(4000, 'health heartbeat timed out')
+  }, SOCKET_STALE_TIMEOUT_MS)
+}
+
+function disconnectHealthSocket() {
+  const socket = healthSocket
+  healthSocketGeneration += 1
+  healthSocket = null
+  clearSocketTimers()
+  settleProbe(snapshot)
+  if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) {
+    socket.close(1000, 'connectivity monitoring paused')
+  }
+}
+
+function handleSocketClosed(socket: WebSocket, generation: number) {
+  if (generation !== healthSocketGeneration || healthSocket !== socket) return
+  healthSocket = null
+  clearSocketTimers()
+  reportApiUnavailable()
+  settleProbe(snapshot)
+  scheduleReconnect()
+}
+
+function openHealthSocket({ replace = false } = {}) {
+  if (snapshot.manualOffline) return Promise.resolve(snapshot)
+  if (!browserIsOnline()) {
+    disconnectHealthSocket()
+    return Promise.resolve(publish({
+      ...snapshot,
+      mode: 'offline',
+      browserOnline: false,
+      serverReachable: false,
+      latencyMs: null,
+      checkedAt: nowIso(),
+      consecutiveFailures: snapshot.consecutiveFailures + 1,
+    }))
+  }
+  if (typeof WebSocket !== 'function' || typeof window === 'undefined') {
+    return Promise.resolve(reportApiUnavailable())
+  }
+  if (!replace && healthSocket?.readyState === WebSocket.OPEN) return Promise.resolve(snapshot)
+  if (!replace && probeInFlight) return probeInFlight
+
+  if (replace || healthSocket) disconnectHealthSocket()
+  const generation = ++healthSocketGeneration
+  const startedAt = performance.now()
+  const pending = new Promise<ConnectivitySnapshot>((resolve) => {
+    resolveProbe = resolve
+  })
+  probeInFlight = pending
+
+  let socket: WebSocket
+  try {
+    socket = new WebSocket(healthSocketUrl())
+  } catch {
+    reportApiUnavailable()
+    settleProbe(snapshot)
+    scheduleReconnect()
+    return pending
+  }
+  healthSocket = socket
+  connectTimeout = window.setTimeout(() => {
+    if (generation !== healthSocketGeneration || healthSocket !== socket) return
+    socket.close(4000, 'health connection timed out')
+  }, SOCKET_CONNECT_TIMEOUT_MS)
+
+  socket.onmessage = (event) => {
+    if (generation !== healthSocketGeneration || healthSocket !== socket) return
+    let message: { type?: unknown; ok?: unknown }
+    try {
+      message = JSON.parse(String(event.data)) as { type?: unknown; ok?: unknown }
+    } catch {
+      socket.close(1008, 'invalid health event')
+      return
+    }
+    if (message.ok !== true || (message.type !== 'ready' && message.type !== 'heartbeat')) {
+      socket.close(1008, 'invalid health event')
+      return
+    }
+
+    const latency = message.type === 'ready'
+      ? performance.now() - startedAt
+      : snapshot.latencyMs ?? undefined
+    reportApiReachable(latency)
+    reconnectAttempt = 0
+    if (connectTimeout !== null) window.clearTimeout(connectTimeout)
+    connectTimeout = null
+    armStaleTimeout(socket, generation)
+    settleProbe(snapshot)
+  }
+  socket.onclose = () => handleSocketClosed(socket, generation)
+  socket.onerror = () => {
+    // Browsers always follow a WebSocket error with close. Keeping all state
+    // changes in onclose prevents duplicate failure counters and reconnects.
+  }
+
+  return pending
 }
 
 export function getConnectivitySnapshot() {
@@ -131,6 +285,7 @@ export function setManualOfflineMode(enabled: boolean) {
   if (enabled === snapshot.manualOffline) return snapshot
   persistManualOffline(enabled)
   if (enabled) {
+    disconnectHealthSocket()
     return publish({
       ...snapshot,
       mode: 'offline',
@@ -165,90 +320,32 @@ export function reportApiUnavailable() {
   })
 }
 
-export async function probeServerConnectivity(options: { force?: boolean } = {}) {
-  if (snapshot.manualOffline) return snapshot
-  if (!browserIsOnline()) {
-    return publish({
-      ...snapshot,
-      mode: 'offline',
-      browserOnline: false,
-      serverReachable: false,
-      latencyMs: null,
-      checkedAt: nowIso(),
-      consecutiveFailures: snapshot.consecutiveFailures + 1,
-    })
-  }
-  if (probeInFlight && !options.force) return probeInFlight
-  if (!options.force && snapshot.checkedAt) {
-    const checkedAt = Date.parse(snapshot.checkedAt)
-    if (Number.isFinite(checkedAt) && Date.now() - checkedAt < PROBE_FRESHNESS_MS) return snapshot
-  }
-
-  const previous = snapshot
-  publish({
-    ...previous,
-    mode: previous.manualOffline
-      ? 'offline'
-      : previous.serverReachable === true ? previous.mode : 'checking',
-    browserOnline: true,
-  })
-  probeInFlight = (async () => {
-    const controller = new AbortController()
-    const timeout = window.setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
-    const startedAt = performance.now()
-    try {
-      const response = await fetch(`/api/health?connectivity=${Date.now()}`, {
-        method: 'GET',
-        cache: 'no-store',
-        credentials: 'same-origin',
-        headers: { 'X-Phd-Atlas-Connectivity-Probe': '1' },
-        signal: controller.signal,
-      })
-      // A Vite proxy can answer while the Express API behind it is completely
-      // unavailable. Only Atlas' successful JSON envelope proves business
-      // operations can actually reach the server.
-      if (!response.ok) return reportApiUnavailable()
-      const payload = await response.json() as { ok?: unknown }
-      if (payload?.ok === true) return reportApiReachable(performance.now() - startedAt)
-      return reportApiUnavailable()
-    } catch {
-      return reportApiUnavailable()
-    } finally {
-      window.clearTimeout(timeout)
-      probeInFlight = null
-    }
-  })()
-  return probeInFlight
+/**
+ * Establishes (or explicitly refreshes) the single WebSocket health channel.
+ * Calls share one in-flight promise, which is the client-side interlock that
+ * prevents focus/visibility/retry events from creating duplicate sockets.
+ */
+export function probeServerConnectivity(options: { force?: boolean } = {}) {
+  return openHealthSocket({ replace: options.force === true })
 }
 
 export function startConnectivityMonitoring() {
-  // Unit tests own fetch deterministically. Background health probes would
-  // consume mocked API responses that belong to the component under test.
+  // Unit tests own WebSocket events deterministically. A mounted app monitor
+  // would otherwise create background sockets unrelated to the test subject.
   if (import.meta.env.MODE === 'test') return () => undefined
   monitorConsumers += 1
   if (monitorCleanup) return stopConnectivityMonitoring
 
-  let timer: number | null = null
-  const schedule = () => {
-    if (timer !== null) window.clearTimeout(timer)
-    const delay = connectivityUnavailable() ? 10_000 : 30_000
-    timer = window.setTimeout(async () => {
-      if (document.visibilityState === 'visible') await probeServerConnectivity()
-      schedule()
-    }, delay)
-  }
   const checkNow = () => {
-    // A focus, pageshow and visibility event often arrive as one burst. Reuse
-    // the recent result (or the request already in flight) instead of making
-    // three identical health calls.
-    void probeServerConnectivity().finally(schedule)
+    void probeServerConnectivity()
   }
   const handleOffline = () => {
+    disconnectHealthSocket()
     reportApiUnavailable()
-    schedule()
   }
   const handleVisibility = () => {
     if (document.visibilityState === 'visible') checkNow()
+    else disconnectHealthSocket()
   }
 
   window.addEventListener('online', checkNow)
@@ -259,7 +356,9 @@ export function startConnectivityMonitoring() {
   checkNow()
 
   monitorCleanup = () => {
-    if (timer !== null) window.clearTimeout(timer)
+    if (reconnectTimeout !== null) window.clearTimeout(reconnectTimeout)
+    reconnectTimeout = null
+    disconnectHealthSocket()
     window.removeEventListener('online', checkNow)
     window.removeEventListener('offline', handleOffline)
     window.removeEventListener('focus', checkNow)
@@ -277,8 +376,11 @@ function stopConnectivityMonitoring() {
 
 export function resetConnectivityForTests() {
   monitorConsumers = 0
+  if (reconnectTimeout !== null) window.clearTimeout(reconnectTimeout)
+  reconnectTimeout = null
   monitorCleanup?.()
-  probeInFlight = null
+  disconnectHealthSocket()
+  reconnectAttempt = 0
   const online = browserIsOnline()
   persistManualOffline(false)
   publish({

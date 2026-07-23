@@ -26,8 +26,14 @@ tools/.i18n-translate-cache.json
 /manifest.json
 /phd-atlas.sqlite
 *.local
-.env
+.env*
 !.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
 
 # Local automation checkpoints
 /.harness-active

@@ -63,7 +63,8 @@
     "emptyDescription": "Создайте первую заявку и продвигайте её по этапам здесь.",
     "priorityValue": "P{value}",
     "moveToStatus": "Переехать в {status}",
-    "showMore": "Показать еще {count}"
+    "showMore": "Показать еще {count}",
+    "moveTo": "Переместить в"
   },
   "explorer": {
     "selectedCount": "{count} выбрано",

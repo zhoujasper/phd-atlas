@@ -1,6 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
   <system.webServer>
+    <webSocket enabled="true" />
+    <security>
+      <requestFiltering>
+        <!-- 550 MiB: 20 × 25 MiB files plus multipart overhead. -->
+        <requestLimits maxAllowedContentLength="576716800" />
+      </requestFiltering>
+    </security>
     <rewrite>
       <rules>
         <rule name="PhD Atlas reverse proxy" stopProcessing="true">

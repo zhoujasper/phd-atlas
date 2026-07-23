@@ -102,6 +102,23 @@
     "discoverCta": "เปิดค้นพบ",
     "openDiscover": "ค้นพบโปรแกรม",
     "discoverTitle": "ค้นหาโปรแกรมถัดไปของคุณ",
-    "discoverSubtitle": "เรียกดูโปรแกรมปริญญาเอกและที่ปรึกษา จัดอันดับตามความเหมาะสม นำเข้าใบสมัคร และรับการแจ้งเตือนการแข่งขัน"
+    "discoverSubtitle": "เรียกดูโปรแกรมปริญญาเอกและที่ปรึกษา จัดอันดับตามความเหมาะสม นำเข้าใบสมัคร และรับการแจ้งเตือนการแข่งขัน",
+    "guidanceTitle": "ทีมอาจารย์ที่ดูแลฉัน",
+    "guidanceSubtitle": "ผู้ติดต่อที่ได้รับมอบหมายใน {team}",
+    "guidanceEmptyTitle": "ยังไม่มีผู้ดูแลที่ได้รับมอบหมาย",
+    "guidanceEmptyDesc": "ผู้ดูแลองค์กรสามารถมอบหมายอาจารย์ให้คุณได้จากพื้นที่สมาชิก",
+    "guidanceRoleOwner": "ผู้ดูแลองค์กร",
+    "guidanceRoleTeacher": "อาจารย์",
+    "guidanceEmail": "ส่งอีเมลถึง {name}",
+    "guidanceEmailShort": "อีเมล",
+    "guidanceCall": "โทรหา {name}",
+    "guidanceCallShort": "โทร",
+    "guidanceWebsite": "เปิดเว็บไซต์ของ {name}",
+    "guidanceWebsiteShort": "เว็บไซต์",
+    "guidanceHideDetails": "ซ่อนรายละเอียดของ {name}",
+    "guidanceShowDetails": "ดูรายละเอียดของ {name}",
+    "guidanceOffice": "ห้องทำงาน",
+    "guidanceAvailability": "เวลาที่ติดต่อได้",
+    "guidanceSupport": "สิ่งที่ฉันช่วยได้"
   }
 }

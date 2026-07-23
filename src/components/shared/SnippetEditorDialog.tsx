@@ -1,6 +1,6 @@
-import { AlertCircle, CheckCircle2, Download, ExternalLink, FileText, Pencil, Save, Trash2, UploadCloud, X } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Download, ExternalLink, Eye, FileText, Pencil, Save, Trash2, UploadCloud, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ProfileAsset, ProfileAssetAttachment, ProfileAssetInput, ProfilePresetColor, ProfilePresetIcon } from '../../api/phdApi'
+import type { ProfileAsset, ProfileAssetAttachment, ProfileAssetInput, ProfilePreset, ProfilePresetColor, ProfilePresetIcon } from '../../api/phdApi'
 import {
   createRenamedFile,
   getUploadPresetSelection,
@@ -22,7 +22,11 @@ import {
   isBuiltInProfilePresetKind,
   isGenericCustomProfileKind,
 } from '../../profileAssets'
-import { profilePresetPresentation } from '../../profilePresets'
+import {
+  profilePresetInsertLabels,
+  profilePresetPresentation,
+  profilePresetText,
+} from '../../profilePresets'
 import { normalizeEscapedMultiline } from '../../textNormalize'
 import { useContentLanguagePacks, useI18n } from '../hooks/useI18n'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
@@ -35,6 +39,7 @@ import { LazyMarkdownTextarea as MarkdownTextarea } from './LazyMarkdownTextarea
 import { ProfileAppearancePicker } from './ProfileAppearancePicker'
 import { Select } from './Select'
 import { shareExpiryOptions, type ShareExpiry } from './shareOptions'
+import { AttachmentPreviewDialog, type AttachmentPreviewFile } from './AttachmentPreviewDialog'
 
 type PendingFile = { id: string; file: File; name: string }
 
@@ -54,9 +59,12 @@ export function SnippetEditorDialog({
   initialVersionNumber,
   initialIsPrimary,
   fromPreset = false,
+  profilePresets = [],
   initialShowShare = false,
   globalPhrase,
   contentLanguages,
+  attachmentsEnabled = true,
+  contextLabel,
   onClose,
   onCreate,
   onUpdate,
@@ -64,6 +72,7 @@ export function SnippetEditorDialog({
   onRenameFile,
   onDeleteFile,
   onDownloadFile,
+  onLoadFile,
   onCreateShare,
   onRevokeShare,
 }: {
@@ -85,12 +94,18 @@ export function SnippetEditorDialog({
   initialIsPrimary?: boolean
   /** When true (use-preset flow), hide kind chips — chips only appear for blank "Add snippet". */
   fromPreset?: boolean
+  /** Personal templates available from the blank Add snippet picker. */
+  profilePresets?: readonly ProfilePreset[]
   /** Open the share-upload panel when editing an existing snippet. */
   initialShowShare?: boolean
   /** Account-wide insert-phrase template (lead + name + tail, per language) — read-only here, used only to render the bottom preview. */
   globalPhrase: { leadZh: string; tailZh: string; leadEn: string; tailEn: string }
   /** Dual content languages from Settings — drives bilingual labels and previews. */
   contentLanguages?: ContentLanguagePair | null
+  /** Team teachers can create student snippets with the same editor while file ownership remains student-only. */
+  attachmentsEnabled?: boolean
+  /** Optional destination context, such as the selected student's library. */
+  contextLabel?: string
   onClose: () => void
   onCreate: (input: ProfileAssetInput, files: File[]) => void | Promise<void>
   onUpdate: (id: string, input: Partial<ProfileAssetInput>) => void
@@ -98,6 +113,7 @@ export function SnippetEditorDialog({
   onRenameFile: (assetId: string, fileId: string, fileName: string) => void
   onDeleteFile: (assetId: string, fileId: string) => void
   onDownloadFile: (fileId: string, fileName: string) => void
+  onLoadFile?: (fileId: string) => Promise<Blob>
   onCreateShare: (assetId: string, expiry: ShareExpiry, note: string) => void
   onRevokeShare: (assetId: string, shareId: string) => void
 }) {
@@ -129,6 +145,8 @@ export function SnippetEditorDialog({
   const [phraseMiddlePrimary, setPhraseMiddlePrimary] = useState('')
   const [phraseMiddleSecondary, setPhraseMiddleSecondary] = useState('')
   const [kind, setKind] = useState(CUSTOM_PROFILE_KIND)
+  /** Keeps the selected custom-template chip distinct from the generic Custom chip. */
+  const [selectedCustomPresetId, setSelectedCustomPresetId] = useState<string | null>(null)
   const [content, setContent] = useState('')
   const nameRef = useRef<HTMLInputElement | null>(null)
   /** Preset template text shown only as a gray empty-state hint — never saved unless the user types. */
@@ -147,6 +165,7 @@ export function SnippetEditorDialog({
   const [uploadCustomTypes, setUploadCustomTypes] = useState('')
   const [uploadTypeError, setUploadTypeError] = useState('')
   const [showShareForm, setShowShareForm] = useState(false)
+  const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreviewFile | null>(null)
   const [shareExpiry, setShareExpiry] = useState<ShareExpiry>('7d')
   const [shareNote, setShareNote] = useState('')
   const [versionLabel, setVersionLabel] = useState('')
@@ -158,6 +177,10 @@ export function SnippetEditorDialog({
 
   // Kind chips only for blank create — not when using a preset, not when editing.
   const showKindPicker = !isEditing && !fromPreset
+  const customPresets = useMemo(
+    () => profilePresets.filter((preset) => !preset.builtIn && !isBuiltInProfilePresetKind(preset.kind)),
+    [profilePresets],
+  )
 
   // Re-seed the local draft whenever the dialog opens or switches to a different asset — but not
   // on every reactive update to the *same* asset (e.g. after an attachment upload), which would
@@ -173,6 +196,7 @@ export function SnippetEditorDialog({
     const presetKey = !assetId && nextIsBuiltIn ? PROFILE_PRESET_DEFAULT_KEYS[nextKind] : undefined
     const presentation = profilePresetPresentation(nextKind)
     setKind(nextIsBuiltIn ? nextKind : CUSTOM_PROFILE_KIND)
+    setSelectedCustomPresetId(null)
 
     // Free display name (library card) — independent of insert-phrase middles.
     const kindLabelUi = nextIsBuiltIn
@@ -275,6 +299,7 @@ export function SnippetEditorDialog({
     const presetKey = isBuiltInProfilePresetKind(nextKind) ? PROFILE_PRESET_DEFAULT_KEYS[nextKind] : undefined
     const presentation = profilePresetPresentation(nextKind)
     setKind(nextKind)
+    setSelectedCustomPresetId(null)
     setIcon(presentation.icon)
     setColor(presentation.color)
     // Seed free name + bilingual insert middles from kind labels when still empty.
@@ -294,9 +319,26 @@ export function SnippetEditorDialog({
 
   const applyCustomKind = () => {
     setKind(CUSTOM_PROFILE_KIND)
+    setSelectedCustomPresetId(null)
     setIcon('file-text')
     setColor('system')
     setContentHint('')
+  }
+
+  const applyCustomPreset = (preset: ProfilePreset) => {
+    const display = profilePresetText(preset, lang, pair)
+    const insertLabels = profilePresetInsertLabels(preset, pair)
+    setKind(CUSTOM_PROFILE_KIND)
+    setSelectedCustomPresetId(preset.id)
+    setIcon(preset.icon)
+    setColor(preset.color)
+    // Match the built-in picker: choosing a template provides sensible metadata
+    // without replacing text the user has already started writing.
+    if (!name.trim()) setName(display.name)
+    if (!phraseMiddlePrimary.trim()) setPhraseMiddlePrimary(insertLabels.primary || display.name)
+    if (!phraseMiddleSecondary.trim()) setPhraseMiddleSecondary(insertLabels.secondary || display.name)
+    setContentHint(normalizeEscapedMultiline(display.content))
+    if (!content.trim()) setContent('')
   }
 
   const showContentHint = Boolean(contentHint.trim()) && !content.trim()
@@ -319,6 +361,10 @@ export function SnippetEditorDialog({
     const frame = window.requestAnimationFrame(() => renameInputRef.current?.focus())
     return () => window.cancelAnimationFrame(frame)
   }, [renamingFileId])
+
+  useEffect(() => {
+    if (!uploadReservationEnabled) setShowShareForm(false)
+  }, [uploadReservationEnabled])
 
   // contentPackVersion is read so previews recompute after async pack loads.
   void contentPackVersion
@@ -361,7 +407,7 @@ export function SnippetEditorDialog({
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault()
     if (!resolvedName) return
-    const hasFiles = Boolean(asset ? (asset.attachments?.length ?? 0) : pendingFiles.length)
+    const hasFiles = attachmentsEnabled && Boolean(asset ? (asset.attachments?.length ?? 0) : pendingFiles.length)
     // Free library name + dual insert-phrase middles (primary → En slot, secondary → Zh slot).
     const input: ProfileAssetInput = {
       name: resolvedName,
@@ -378,13 +424,15 @@ export function SnippetEditorDialog({
       versionNumber: versionNumberDraft,
       isPrimary,
       // Reservation is only meaningful while there are no real files yet.
-      uploadReserved: hasFiles ? false : uploadReservationEnabled,
-      allowedFileTypes: uploadAllowedTypes,
+      uploadReserved: attachmentsEnabled && !hasFiles ? uploadReservationEnabled : false,
+      allowedFileTypes: attachmentsEnabled ? uploadAllowedTypes : undefined,
     }
     if (asset) {
       onUpdate(asset.id, input)
     } else {
-      const files = pendingFiles.map((pending) => createRenamedFile(pending.file, pending.name))
+      const files = attachmentsEnabled
+        ? pendingFiles.map((pending) => createRenamedFile(pending.file, pending.name))
+        : []
       void Promise.resolve(onCreate(input, files))
     }
     requestClose()
@@ -476,6 +524,7 @@ export function SnippetEditorDialog({
           <div>
             <span className="eyebrow">{tx('profile.eyebrow')}</span>
             <h2>{dialogTitle}</h2>
+            {contextLabel ? <p className="snippet-editor-context">{contextLabel}</p> : null}
           </div>
           <button type="button" className="icon-action" onClick={() => requestClose()} aria-label={tx('close')}>
             <X size={16} aria-hidden="true" />
@@ -522,9 +571,22 @@ export function SnippetEditorDialog({
                     {tx(preset.labelKey)}
                   </button>
                 ))}
+                {customPresets.map((preset) => {
+                  const display = profilePresetText(preset, lang, pair)
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      className={`snippet-preset-chip ${selectedCustomPresetId === preset.id ? 'active' : ''}`}
+                      onClick={() => applyCustomPreset(preset)}
+                    >
+                      {display.name}
+                    </button>
+                  )
+                })}
                 <button
                   type="button"
-                  className={`snippet-preset-chip ${isCustomKind ? 'active' : ''}`}
+                  className={`snippet-preset-chip ${isCustomKind && !selectedCustomPresetId ? 'active' : ''}`}
                   onClick={applyCustomKind}
                 >
                   {tx('profile.presetCustom')}
@@ -613,6 +675,7 @@ export function SnippetEditorDialog({
             </div>
           </div>
 
+          {attachmentsEnabled ? (
           <div className="snippet-attachments-section">
             <div className="snippet-section-head">
               <span className="snippet-section-label">{tx('profile.attachments')}</span>
@@ -727,7 +790,13 @@ export function SnippetEditorDialog({
               </div>
             </CollapsiblePanel>
 
-            {asset ? (
+            <CollapsiblePanel
+              open={Boolean(asset) && uploadReservationEnabled}
+              className="snippet-share-upload-collapse"
+              openMs={280}
+              closeMs={220}
+              keepMounted
+            >
               <div className="snippet-share-upload-row">
                 <button
                   type="button"
@@ -738,9 +807,9 @@ export function SnippetEditorDialog({
                   <ExternalLink size={13} aria-hidden="true" /> {tx('profile.shareUpload')}
                 </button>
               </div>
-            ) : null}
+            </CollapsiblePanel>
 
-            <CollapsiblePanel open={Boolean(asset) && showShareForm} className="snippet-share-form-collapse" openMs={280} closeMs={220}>
+            <CollapsiblePanel open={Boolean(asset) && uploadReservationEnabled && showShareForm} className="snippet-share-form-collapse" openMs={280} closeMs={220}>
               <div className="snippet-share-form">
                 <Select
                   size="small"
@@ -790,10 +859,13 @@ export function SnippetEditorDialog({
                           className="snippet-attachment-name"
                           onDoubleClick={() => startRenameAttachment(attachment)}
                           onClick={(event) => {
-                            // Single click selects; double-click renames (also available via pencil).
-                            if (event.detail >= 2) startRenameAttachment(attachment)
+                            if (event.detail >= 2) {
+                              startRenameAttachment(attachment)
+                              return
+                            }
+                            if (onLoadFile) setAttachmentPreview(attachment)
                           }}
-                          title={tx('profile.renameFileHint', 'Double-click to rename')}
+                          title={onLoadFile ? tx('filePreview.preview') : tx('profile.renameFileHint', 'Double-click to rename')}
                         >
                           <span>{attachment.fileName}</span>
                           {attachment.fileSize ? <em> · {formatFileSize(attachment.fileSize)}</em> : null}
@@ -813,6 +885,17 @@ export function SnippetEditorDialog({
                         />
                       </div>
                       <div className="snippet-attachment-actions">
+                        {onLoadFile ? (
+                          <button
+                            type="button"
+                            className="icon-action"
+                            title={tx('filePreview.preview')}
+                            aria-label={tx('filePreview.preview')}
+                            onClick={() => setAttachmentPreview(attachment)}
+                          >
+                            <Eye size={12} aria-hidden="true" />
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           className={`icon-action${renaming ? ' active' : ''}`}
@@ -893,10 +976,11 @@ export function SnippetEditorDialog({
               <div className="snippet-share-list">
                 <span className="snippet-section-label">{tx('profile.shareUpload')}</span>
                 {shares.map((share) => {
-                  const url = `${window.location.origin}${share.url}`
+                  const sharePath = share.url || `/asset-upload/${share.token}`
+                  const url = `${window.location.origin}${sharePath}`
                   return (
                     <div key={share.id} className="snippet-share-row">
-                      <code className="snippet-share-link">{share.url}</code>
+                      <code className="snippet-share-link">{sharePath}</code>
                       <div className="snippet-attachment-actions">
                         <CopyButton value={url} label={tx('profile.shareUpload')} />
                         <button type="button" className="icon-action" title={tx('share.revoke')} onClick={() => asset && onRevokeShare(asset.id, share.id)}>
@@ -909,6 +993,7 @@ export function SnippetEditorDialog({
               </div>
             ) : null}
           </div>
+          ) : null}
 
           <div className="dialog-actions">
             <button type="button" className="secondary-action" onClick={() => requestClose()}>{tx('cancel')}</button>
@@ -919,6 +1004,13 @@ export function SnippetEditorDialog({
         </form>
       </section>
       </div>
+      {onLoadFile ? (
+        <AttachmentPreviewDialog
+          file={attachmentPreview}
+          loadFile={onLoadFile}
+          onClose={() => setAttachmentPreview(null)}
+        />
+      ) : null}
     </ModalPortal>
   )
 }

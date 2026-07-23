@@ -72,7 +72,12 @@ import {
   type UserSettingsPatch,
 } from './api/phdApi'
 import type { ApplicationRecord, ApplicationStatus, MaterialStatus, SharePermission, ShareSection } from './data/applications'
+import type { SharedLinkInfo } from './components/screens/settingsShareModel'
+import { canAccessDiscover, discoverStudentMembers, hasPersonalDiscoverAccess, hasTeamDiscoverAccess } from './components/screens/discoverAccess'
+import { teachersForStudent } from './teamRelationships'
+import { toggleWorkspacePaneClass } from './workspaceLayoutMotion'
 import { shareSections as allShareSections } from './data/applications'
+import { appendReviewComment } from './reviewComments'
 import { formatApplicationIdentity } from './data/countries'
 import {
   type DetailTab,
@@ -107,16 +112,21 @@ import {
   LoadingCurtain,
   PaneSkeleton,
   ScreenSkeleton,
-  waitForUiSettle,
-  type LoadingVariant,
-  type ScreenSkeletonVariant,
 } from './components/shared/LaunchScreen'
+import type { LoadingVariant, ScreenSkeletonVariant } from './components/shared/loadingVariant'
+import { waitForUiSettle } from './components/shared/uiSettle'
 import type { ShareExpiry } from './components/shared/shareOptions'
 import type { NewApplicationStudentOption, NewApplicationTeamMode } from './components/shared/NewApplicationDialog'
 import type { CommandPaletteAction } from './components/shared/CommandPalette'
 import { FormValidationPrompt } from './components/shared/FormValidationPrompt'
+import { LazyOverlayBoundary } from './components/shared/LazyOverlayBoundary'
 import { OfflineStatusCenter } from './components/shared/OfflineStatusCenter'
 import { NotFoundScreen } from './components/screens/NotFoundScreen'
+import {
+  normalizeRemoteSchoolLogoDataUrl,
+  normalizeSchoolLogoFile,
+  SchoolLogoError,
+} from './components/shared/schoolLogoModel'
 import {
   applyDocumentLanguage,
   browserDefaultLanguage,
@@ -252,7 +262,9 @@ function cssFallbackExitDuration(scope: AnimatedScreenTransitionScope) {
 
 function cssFallbackEnterDuration(scope: AnimatedScreenTransitionScope) {
   if (scope === 'screen' || scope === 'workspace-view') return 260
-  return scope === 'dossier-tab' || scope === 'dossier-record' ? 160 : 180
+  if (scope === 'dossier-record') return 220
+  if (scope === 'dossier-tab') return 220
+  return 180
 }
 
 function createPreloadedScreen<TComponent extends ComponentType<any>>(
@@ -395,7 +407,7 @@ const validScreens: Screen[] = PUBLIC_EDITION
   ? ['dashboard', 'workspace', 'discover', 'profile', 'settings']
   : ['dashboard', 'workspace', 'discover', 'profile', 'settings', 'team']
 const validTabs: DetailTab[] = ['dossier', 'materials', 'mail', 'funding', 'timeline', 'review']
-const validTeamSections: TeamSection[] = ['overview', 'applications', 'members', 'resources', 'audit', 'settings']
+const validTeamSections: TeamSection[] = ['overview', 'applications', 'members', 'resources', 'discover', 'audit', 'settings']
 const shortcutTabs: DetailTab[] = ['dossier', 'materials', 'mail', 'funding', 'timeline', 'review']
 
 function isPasskeyAbort(error: unknown) {
@@ -482,7 +494,6 @@ function createOfflineCommunication(input: CommunicationInput): ApplicationRecor
 function languageNamespacesForScreen(
   screen: Screen,
   tab: DetailTab,
-  overlays: { newApplication?: boolean; share?: boolean; tour?: boolean; teamChooser?: boolean; enrichment?: boolean } = {},
 ) {
   const namespaces = new Set<string>(['core', 'shared'])
 
@@ -508,12 +519,6 @@ function languageNamespacesForScreen(
     namespaces.add('workspace')
     namespaces.add('profile')
   }
-
-  if (overlays.newApplication) namespaces.add('dossier')
-  if (overlays.share) namespaces.add('share')
-  if (overlays.tour) namespaces.add('tour')
-  if (overlays.teamChooser) namespaces.add('team')
-  if (overlays.enrichment) namespaces.add('discover')
 
   return Array.from(namespaces)
 }
@@ -762,12 +767,6 @@ function readLanguagePreference(): Language | null {
 }
 
 function readInitialLanguage(): Language {
-  try {
-    const parsed = safeParseJson<AuthSession>(localStorage.getItem(SESSION_KEY))
-    if (parsed?.user?.settings?.language) return resolveLanguage(parsed.user.settings.language)
-  } catch {
-    // Storage can be unavailable or malformed before sign-in.
-  }
   return readLanguagePreference() ?? browserDefaultLanguage()
 }
 
@@ -1289,16 +1288,18 @@ function MailSyncJobWatcher({
   onPoll: (jobId: string) => Promise<boolean>
 }) {
   const onPollRef = useRef(onPoll)
+  const jobId = job?.id
+  const jobStatus = job?.status
   useEffect(() => {
     onPollRef.current = onPoll
   }, [onPoll])
 
   useEffect(() => {
-    if (!job || !['queued', 'running'].includes(job.status)) return
+    if (!jobId || !jobStatus || !['queued', 'running'].includes(jobStatus)) return
     let cancelled = false
     let timer: number | null = null
     const poll = async () => {
-      const keepPolling = await onPollRef.current(job.id).catch(() => true)
+      const keepPolling = await onPollRef.current(jobId).catch(() => true)
       if (!cancelled && keepPolling) timer = window.setTimeout(poll, 1800)
     }
     timer = window.setTimeout(poll, 900)
@@ -1306,14 +1307,14 @@ function MailSyncJobWatcher({
       cancelled = true
       if (timer !== null) window.clearTimeout(timer)
     }
-  }, [job?.id, job?.status])
+  }, [jobId, jobStatus])
 
   return null
 }
 
 export default function App() {
   // Theme
-  const themeProvider = useThemeProvider('light')
+  const themeProvider = useThemeProvider()
   const pwaInstall = usePwaInstall()
   const connectivity = useConnectivity()
   const isOnline = connectivity.mode !== 'offline' && connectivity.mode !== 'server-unreachable'
@@ -1339,8 +1340,9 @@ export default function App() {
   const [removingPasskeyIds, setRemovingPasskeyIds] = useState<Set<string>>(() => new Set())
   const passkeyAvailable = useMemo(() => typeof window.PublicKeyCredential === 'function', [])
 
-  // Language derived from session settings, with a persisted pre-auth preference fallback.
-  const lang: Language = resolveLanguage(session?.user?.settings?.language ?? authLanguage)
+  // Per-browser choice wins over account state so a visitor's local language
+  // preference stays consistent across signed-in and public-link surfaces.
+  const lang: Language = authLanguage
   const languageRef = useRef<Language>(lang)
 
   function changeAuthLanguage(nextLang: Language) {
@@ -1438,6 +1440,7 @@ export default function App() {
   const draftDirtyCheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const draftBaselineTaskRef = useRef<{ handle: number; idle: boolean } | null>(null)
   const draftBaselinePendingRef = useRef<{ draft: ApplicationRecord | null; version: number } | null>(null)
+  const schoolLogoInFlightRef = useRef(new Map<string, Promise<boolean>>())
 
   const clearDraftBaselineTask = useCallback(() => {
     const pending = draftBaselineTaskRef.current
@@ -1551,12 +1554,14 @@ export default function App() {
     }
   })
   const [teamSection, setTeamSection] = useState<TeamSection>(loadStoredTeamSection)
+  const [teamDiscoverTargetUserId, setTeamDiscoverTargetUserId] = useState<string | null>(null)
   const [viewModeDirection, setViewModeDirection] = useState<'to-list' | 'to-kanban'>(
     viewMode === 'kanban' ? 'to-kanban' : 'to-list',
   )
   const [workspaceViewExit, setWorkspaceViewExit] = useState<'to-kanban' | null>(null)
   const [tab, setTab] = useState<DetailTab>(loadStoredTab)
   const [workspaceLayout, setWorkspaceLayout] = useState<WorkspaceLayoutState>(loadStoredWorkspaceLayout)
+  const workspaceShellRef = useRef<HTMLDivElement | null>(null)
   const [workspaceOpeningFromDashboard, setWorkspaceOpeningFromDashboard] = useState(false)
   const [workspaceJumpIntent, setWorkspaceJumpIntent] = useState<DossierJumpIntent | null>(null)
   const workspaceJumpTokenRef = useRef(0)
@@ -1627,22 +1632,11 @@ export default function App() {
     return () => media.removeEventListener?.('change', update)
   }, [])
   const i18nNamespaces = useMemo(() => session
-    ? languageNamespacesForScreen(screen, tab, {
-        newApplication: dialogOpen,
-        share: shareDialogOpen,
-        tour: showOnboarding,
-        teamChooser: teamWorkspaceChooserOpen,
-        enrichment: dossierEnrichmentOpen,
-      })
+    ? languageNamespacesForScreen(screen, tab)
     : ['core', 'shared', 'settings', 'resetPassword'], [
-    dialogOpen,
-    dossierEnrichmentOpen,
     screen,
     session,
-    shareDialogOpen,
-    showOnboarding,
     tab,
-    teamWorkspaceChooserOpen,
   ])
   const i18nValue = useI18nValue(lang, i18nNamespaces)
 
@@ -1651,6 +1645,7 @@ export default function App() {
   const [notifications, setNotifications] = useState<NotificationRecord[]>([])
   const [notificationsLoading, setNotificationsLoading] = useState(false)
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0)
+  const [discoverRealtimeRevision, setDiscoverRealtimeRevision] = useState(0)
 
   // Top notification stack. Each item owns an independent pause/resume timer.
   const { toasts, notify, dismissToast, pauseToast, resumeToast, clearToasts } = useToastQueue()
@@ -2044,16 +2039,23 @@ export default function App() {
 
   // Keep content-language packs (ja/ko/…) warm so insert-phrase previews and built-in
   // preset copy do not fall back to English when UI language is still en/zh.
+  const sessionUserId = session?.user.id
+  const sessionContentLanguagePrimary = session?.user.settings.contentLanguagePrimary
+  const sessionContentLanguageSecondary = session?.user.settings.contentLanguageSecondary
   useEffect(() => {
-    if (!session?.user.settings) return
-    const pair = contentLanguagesFromSettings(session.user.settings)
+    if (!sessionUserId) return
+    const pair = contentLanguagesFromSettings({
+      contentLanguagePrimary: sessionContentLanguagePrimary,
+      contentLanguageSecondary: sessionContentLanguageSecondary,
+    })
     void Promise.all([
       preloadLanguage(pair.primary, CONTENT_LANGUAGE_NAMESPACES),
       preloadLanguage(pair.secondary, CONTENT_LANGUAGE_NAMESPACES),
     ])
   }, [
-    session?.user.settings?.contentLanguagePrimary,
-    session?.user.settings?.contentLanguageSecondary,
+    sessionContentLanguagePrimary,
+    sessionContentLanguageSecondary,
+    sessionUserId,
   ])
 
   useEffect(() => {
@@ -2097,8 +2099,41 @@ export default function App() {
     : null
   // Every team role has a team-mode workspace. Students still keep their personal workspace
   // for private applications, but can switch into the team system for shared work.
-  const effectiveInterfaceMode: InterfaceMode = teamViewerRole ? interfaceMode : 'personal'
+  const canEnterTeamJoinSurface = !PUBLIC_EDITION && screen === 'team'
+  const effectiveInterfaceMode: InterfaceMode = (teamViewerRole || canEnterTeamJoinSurface)
+    ? interfaceMode
+    : 'personal'
   const isTeamMode = effectiveInterfaceMode === 'team'
+  const canUseWorkspaceBoard = !isTeamMode || teamViewerRole !== 'member'
+  const canUsePersonalDiscover = hasPersonalDiscoverAccess(session)
+  const canUseTeamDiscover = isTeamMode && hasTeamDiscoverAccess(teamViewerRole)
+  const canUseDiscover = canAccessDiscover(effectiveInterfaceMode, session, teamViewerRole)
+  const teamDiscoverScope = useMemo(() => (
+    isTeamMode
+      && teamViewerRole !== 'member'
+      && teamDiscoverTargetUserId
+      && (activeTeamId || visibleTeamSummary?.team.id)
+      ? { teamId: activeTeamId || visibleTeamSummary!.team.id, targetUserId: teamDiscoverTargetUserId }
+      : undefined
+  ), [activeTeamId, isTeamMode, teamDiscoverTargetUserId, teamViewerRole, visibleTeamSummary?.team.id])
+
+  useEffect(() => {
+    if (!applicationsLoaded || screen !== 'discover') return
+    if (canUseDiscover && (!isTeamMode || teamDiscoverScope)) return
+    if (!canUseDiscover) setTeamDiscoverTargetUserId(null)
+    if (isTeamMode && teamViewerRole) {
+      setTeamSection(canUseDiscover ? 'discover' : 'overview')
+      setScreen('team')
+      return
+    }
+    setScreen('dashboard')
+  }, [applicationsLoaded, canUseDiscover, isTeamMode, screen, teamDiscoverScope, teamViewerRole])
+
+  useEffect(() => {
+    if (!teamViewerRole || teamViewerRole === 'owner' || teamSection !== 'settings') return
+    setTeamSection('overview')
+  }, [teamSection, teamViewerRole])
+
   // Which application list backs the dashboard/workspace right now — team-scoped browsing reuses
   // the exact same screens and state machinery as the personal workspace, just fed a different list.
   const workspaceApplications: ApplicationRecord[] = isTeamMode ? teamApplications : applications
@@ -2132,6 +2167,37 @@ export default function App() {
     if (session?.user.id) directory[session.user.id] = session.user.settings.avatarDataUrl
     return directory
   }, [session?.user.id, session?.user.settings.avatarDataUrl, visibleTeamSummary?.members])
+  const studentGuidanceTeam = useMemo(() => {
+    if (!visibleTeamSummary || teamViewerRole !== 'member') return undefined
+    const members = visibleTeamSummary.members
+      .filter((member) => (
+        member.status === 'active'
+        && (member.role === 'owner' || member.role === 'admin')
+        && member.userId !== session?.user.id
+      ))
+      .sort((left, right) => {
+        if (left.role !== right.role) return left.role === 'admin' ? -1 : 1
+        return (left.displayName ?? left.invitedEmail).localeCompare(right.displayName ?? right.invitedEmail)
+      })
+      .map((member) => ({
+        id: member.id,
+        name: member.displayName ?? member.invitedEmail,
+        avatarUrl: member.avatarUrl,
+        role: member.role as 'owner' | 'admin',
+        title: member.contactProfile?.title,
+        department: member.contactProfile?.department,
+        email: member.contactProfile?.contactEmail || member.invitedEmail,
+        phone: member.contactProfile?.phone,
+        office: member.contactProfile?.office,
+        website: member.contactProfile?.website,
+        availability: member.contactProfile?.availability,
+        bio: member.contactProfile?.bio,
+      }))
+    return {
+      teamName: visibleTeamSummary.team.name,
+      members,
+    }
+  }, [session?.user.id, teamViewerRole, visibleTeamSummary])
   const applicationCountsByOwner = useMemo(() => {
     const counts: Record<string, number> = {}
     for (const application of teamApplications) {
@@ -2156,12 +2222,12 @@ export default function App() {
     return Object.entries(ownerDirectory)
       .map(([id, name]) => {
         const member = membersByUserId.get(id)
-        const advisor = member?.invitedBy ? membersByUserId.get(member.invitedBy) : null
+        const teachers = teachersForStudent(member, membersByUserId)
         return {
           id,
           name,
           count: applicationCountsByOwner[id] ?? 0,
-          advisorName: advisor?.displayName ?? null,
+          advisorName: teachers.map((teacher) => teacher.displayName ?? teacher.invitedEmail).join(' · ') || null,
           role: member?.role ?? null,
         }
       })
@@ -2171,17 +2237,16 @@ export default function App() {
     const membersByUserId = new Map((visibleTeamSummary?.members ?? [])
       .filter((member) => member.userId)
       .map((member) => [member.userId!, member]))
-    return (visibleTeamSummary?.members ?? [])
-      .filter((member) => member.status === 'active' && member.role === 'member' && member.userId)
-      .filter((member) => teamViewerRole === 'admin' ? member.invitedBy === session?.user.id : true)
+    return discoverStudentMembers(visibleTeamSummary?.members ?? [], teamViewerRole, session?.user.id)
       .map((member) => {
-        const advisor = member.invitedBy ? membersByUserId.get(member.invitedBy) : null
+        const teachers = teachersForStudent(member, membersByUserId)
         const id = member.userId!
         return {
           id,
           name: member.displayName ?? member.invitedEmail,
           email: member.invitedEmail,
-          advisorName: advisor?.displayName ?? null,
+          avatarUrl: member.avatarUrl,
+          advisorName: teachers.map((teacher) => teacher.displayName ?? teacher.invitedEmail).join(' · ') || null,
           count: applicationCountsByOwner[id] ?? 0,
         }
       })
@@ -2204,10 +2269,10 @@ export default function App() {
       if (!application.ownerId) continue
       const owner = membersByUserId.get(application.ownerId)
       if (owner?.role !== 'member') continue
-      const advisor = owner.invitedBy ? membersByUserId.get(owner.invitedBy) : null
+      const teachers = teachersForStudent(owner, membersByUserId)
       relations[application.id] = {
         studentName: owner.displayName ?? application.ownerName,
-        advisorName: advisor?.displayName ?? null,
+        advisorName: teachers.map((teacher) => teacher.displayName ?? teacher.invitedEmail).join(' · ') || null,
       }
     }
     return relations
@@ -2216,16 +2281,16 @@ export default function App() {
   const effectiveOwnerFilter = isTeamMode ? ownerFilter : null
 
   useEffect(() => {
-    if (teamLookupComplete && !canUseTeamFeatures && screen === 'team') {
-      startTransition(() => setScreen('settings'))
-    }
-  }, [canUseTeamFeatures, screen, teamLookupComplete])
-
-  useEffect(() => {
-    if (teamLookupComplete && canUseTeamFeatures && screen === 'team' && interfaceMode !== 'team') {
+    if (teamLookupComplete && !PUBLIC_EDITION && screen === 'team' && interfaceMode !== 'team') {
       setInterfaceMode('team')
     }
-  }, [canUseTeamFeatures, interfaceMode, screen, teamLookupComplete])
+  }, [interfaceMode, screen, teamLookupComplete])
+
+  useEffect(() => {
+    if (!teamLookupComplete || screen !== 'team' || teamViewerRole !== 'member') return
+    if (teamSection !== 'members' && teamSection !== 'discover') return
+    startTransition(() => setTeamSection('overview'))
+  }, [screen, teamLookupComplete, teamSection, teamViewerRole])
 
   useEffect(() => {
     if (!teamLookupComplete || !canUseTeamFeatures || interfaceMode !== 'team') return
@@ -2266,6 +2331,8 @@ export default function App() {
       setStatusFilters([])
       setSort('deadline')
       setOwnerFilter(ownerId)
+      setViewModeDirection('to-list')
+      setViewMode('list')
       setSelectedId(memberApplications[0]?.id ?? teamApplications[0]?.id ?? null)
       setScreen('workspace')
       setMobileDetailOpen(true)
@@ -2333,6 +2400,7 @@ export default function App() {
     if (!session) return
     if (session.impersonation?.teamId && nextMode === 'personal') return
     if (nextMode === 'team' && effectiveInterfaceMode !== 'team' && teamWorkspaces.length > 1 && !options?.teamId) {
+      void preloadLanguage(lang, ['core', 'shared', 'team'])
       setPendingTeamWorkspaceEntry({ screen: options?.screen, teamSection: options?.teamSection })
       setTeamWorkspaceChooserOpen(true)
       return
@@ -2349,7 +2417,7 @@ export default function App() {
     const nextScreen: Screen = options?.screen
       ?? (nextMode === 'team' ? 'team' : defaultPersonalScreen)
     const destinationViewMode = nextMode === 'team'
-      ? 'list' as const
+      ? (nextScreen === 'workspace' && teamViewerRole !== 'member' ? 'kanban' as const : 'list' as const)
       : (nextScreen === 'workspace' ? 'kanban' as const : viewMode)
     const variant = handoffVariantForMode(nextMode, nextScreen)
     const requestedTeamId = nextMode === 'team' ? options?.teamId ?? activeTeamIdRef.current : null
@@ -2370,8 +2438,8 @@ export default function App() {
       setTeamSection(options?.teamSection ?? 'overview')
       setScreen(nextScreen === 'workspace' ? 'workspace' : 'team')
       if (nextScreen === 'workspace') {
-        setViewModeDirection('to-list')
-        setViewMode('list')
+        setViewModeDirection(destinationViewMode === 'kanban' ? 'to-kanban' : 'to-list')
+        setViewMode(destinationViewMode)
         setMobileDetailOpen(false)
       }
     } else {
@@ -2429,26 +2497,58 @@ export default function App() {
   // Team-only metadata (viewer's role on this specific app, owner display name) for the currently
   // selected application — undefined in personal mode, where DossierView behaves exactly as before.
   const selectedTeamMeta = isTeamMode ? teamApplications.find((a) => a.id === selected?.id) : undefined
+  const studentTeamTransferOptions = useMemo(
+    () => teamWorkspaces.filter((workspace) => workspace.viewerRole === 'member'),
+    [teamWorkspaces],
+  )
+  const selectedManagerTeamWorkspace = useMemo(
+    () => (
+      selected?.teamId && selected.ownerId !== session?.user.id
+        ? teamWorkspaces.find((workspace) => (
+            workspace.teamId === selected.teamId &&
+            (workspace.viewerRole === 'owner' || workspace.viewerRole === 'admin')
+          )) ?? null
+        : null
+    ),
+    [selected?.ownerId, selected?.teamId, session?.user.id, teamWorkspaces],
+  )
+  const canDirectlyMoveSelectedTeamApplication = Boolean(
+    isTeamMode &&
+    selectedManagerTeamWorkspace,
+  )
+  const selectedTeamTransferOptions = canDirectlyMoveSelectedTeamApplication && selectedManagerTeamWorkspace
+    ? [selectedManagerTeamWorkspace]
+    : studentTeamTransferOptions
+  useEffect(() => {
+    if (!isTeamMode && tab === 'review') setTab('dossier')
+  }, [isTeamMode, tab])
   const canToggleSelectedTeamVisibility = Boolean(
     selected &&
-    teamViewerRole === 'member' &&
-    selected.ownerId === session?.user.id,
+    (
+      (selected.ownerId === session?.user.id && studentTeamTransferOptions.length > 0) ||
+      canDirectlyMoveSelectedTeamApplication
+    ),
   )
 
   const visibleApplications = useMemo(() => {
     const needle = deferredQuery.trim().toLowerCase()
-    const matchesQuery = (application: ApplicationRecord) =>
-      [
+    const matchesQuery = (application: ApplicationRecord) => {
+      const relation = teamApplicationRelations[application.id]
+      return [
         application.school.name,
         application.program,
         application.professor.english,
         application.professor.chinese,
         application.professor.email,
         application.tags.join(' '),
+        application.ownerId ? ownerDirectory[application.ownerId] ?? '' : '',
+        relation?.studentName ?? '',
+        relation?.advisorName ?? '',
       ]
         .join(' ')
         .toLowerCase()
         .includes(needle)
+    }
     const matchesStatus = (application: ApplicationRecord) =>
       statusFilters.length === 0 || statusFilters.includes(application.status)
     const matchesOwner = (application: ApplicationRecord) =>
@@ -2463,25 +2563,108 @@ export default function App() {
     }
 
     return [selected, ...filtered.filter(function(a) { return a.id !== selected.id })]
-  }, [workspaceApplications, deferredQuery, selected, statusFilters, effectiveOwnerFilter])
+  }, [workspaceApplications, deferredQuery, selected, statusFilters, effectiveOwnerFilter, ownerDirectory, teamApplicationRelations])
+
+  const teamBoardStudents = useMemo(() => {
+    if (!isTeamMode || teamViewerRole === 'member') return []
+
+    const allApplicationsByOwner = new Map<string, ApplicationRecord[]>()
+    const visibleApplicationsByOwner = new Map<string, ApplicationRecord[]>()
+    for (const application of teamApplications) {
+      if (!application.ownerId) continue
+      const current = allApplicationsByOwner.get(application.ownerId) ?? []
+      current.push(application)
+      allApplicationsByOwner.set(application.ownerId, current)
+    }
+    for (const application of visibleApplications) {
+      if (!application.ownerId) continue
+      const current = visibleApplicationsByOwner.get(application.ownerId) ?? []
+      current.push(application)
+      visibleApplicationsByOwner.set(application.ownerId, current)
+    }
+
+    const hasActiveNarrowing = Boolean(deferredQuery.trim() || statusFilters.length > 0)
+    const knownStudentIds = new Set<string>()
+    const rows = teamCreateStudentOptions.flatMap((student) => {
+      knownStudentIds.add(student.id)
+      if (effectiveOwnerFilter && student.id !== effectiveOwnerFilter) return []
+      const studentVisibleApplications = visibleApplicationsByOwner.get(student.id) ?? []
+      if (hasActiveNarrowing && !effectiveOwnerFilter && studentVisibleApplications.length === 0) return []
+      return [{
+        id: student.id,
+        name: student.name,
+        email: student.email,
+        avatarUrl: student.avatarUrl ?? undefined,
+        advisorName: student.advisorName,
+        applications: studentVisibleApplications,
+        allApplications: allApplicationsByOwner.get(student.id) ?? [],
+        canCreateApplication: true,
+      }]
+    })
+
+    for (const [ownerId, ownerApplications] of allApplicationsByOwner) {
+      if (knownStudentIds.has(ownerId)) continue
+      if (effectiveOwnerFilter && ownerId !== effectiveOwnerFilter) continue
+      const studentVisibleApplications = visibleApplicationsByOwner.get(ownerId) ?? []
+      if (hasActiveNarrowing && !effectiveOwnerFilter && studentVisibleApplications.length === 0) continue
+      const firstApplication = ownerApplications[0]
+      const relation = firstApplication ? teamApplicationRelations[firstApplication.id] : undefined
+      rows.push({
+        id: ownerId,
+        name: relation?.studentName || ownerDirectory[ownerId] || ownerId,
+        email: undefined,
+        avatarUrl: ownerAvatarDirectory[ownerId],
+        advisorName: relation?.advisorName,
+        applications: studentVisibleApplications,
+        allApplications: ownerApplications,
+        canCreateApplication: false,
+      })
+    }
+
+    return rows
+  }, [
+    deferredQuery,
+    effectiveOwnerFilter,
+    isTeamMode,
+    ownerAvatarDirectory,
+    ownerDirectory,
+    statusFilters.length,
+    teamApplicationRelations,
+    teamApplications,
+    teamCreateStudentOptions,
+    teamViewerRole,
+    visibleApplications,
+  ])
 
   const realApplications = useMemo(
     () => applications.filter((application) => !isTourSampleApplication(application)),
     [applications],
   )
 
-  const allShares = useMemo(
-    () =>
-      realApplications.flatMap((application) =>
+  const allShares = useMemo<SharedLinkInfo[]>(
+    () => [
+      ...realApplications.flatMap((application) =>
         (application.shares ?? [])
           .filter((share) => !share.expiresAt || new Date(share.expiresAt) >= new Date())
           .map((share) => ({
+            kind: 'application' as const,
             applicationId: application.id,
             applicationName: formatApplicationIdentity(application, lang),
             share,
           })),
       ),
-    [lang, realApplications],
+      ...profileAssets.flatMap((asset) =>
+        (asset.shares ?? [])
+          .filter((share) => !share.expiresAt || new Date(share.expiresAt) >= new Date())
+          .map((share) => ({
+            kind: 'asset-upload' as const,
+            assetId: asset.id,
+            assetName: asset.name,
+            share,
+          })),
+      ),
+    ],
+    [lang, profileAssets, realApplications],
   )
 
   const selectedBackups = useMemo(
@@ -2607,15 +2790,19 @@ export default function App() {
     setScreen('dashboard')
     setMobileDetailOpen(false)
     ensureTourSampleApplication()
+    // Start the cold work, but publish the open state in the click task so the
+    // lightweight overlay cue paints immediately.
     void Promise.all([
       preloadLanguage(languageRef.current, ['core', 'shared', 'tour', 'dashboard', 'workspace', 'dossier', 'profile', 'settings']),
       loadOnboardingTour(),
       loadProfileScreen(),
       loadSettingsScreen(),
-    ]).finally(() => setShowOnboarding(true))
+    ]).catch(() => undefined)
+    setShowOnboarding(true)
   }, [ensureTourSampleApplication])
 
-  const webPushNotifications = useWebPushNotifications(session?.token, (notification) => {
+  const browserNotificationsEnabled = session?.user.settings.browserNotificationsEnabled !== false
+  const webPushNotifications = useWebPushNotifications(session?.token, browserNotificationsEnabled, (notification) => {
     const sourceToken = currentSessionTokenRef.current
     if (!sourceToken || !isCurrentSessionToken(sourceToken)) return
     const token = getLatestSessionToken(sourceToken)
@@ -2973,6 +3160,9 @@ export default function App() {
           })
           .catch(() => {})
       }
+      if (scopes.has('discover')) {
+        setDiscoverRealtimeRevision((revision) => revision + 1)
+      }
       if (scopes.has('notifications')) {
         void phdApi.unreadNotificationCount(token)
           .then((result) => {
@@ -3035,13 +3225,15 @@ export default function App() {
 
       if (mod && key === 'k' && !event.altKey) {
         event.preventDefault()
-        void loadCommandPalette().finally(() => setCommandPaletteOpen(true))
+        void loadCommandPalette().catch(() => undefined)
+        setCommandPaletteOpen(true)
         return
       }
 
       if (event.key === '?' && !event.ctrlKey && !event.metaKey && !editingText) {
         event.preventDefault()
-        void loadKeyboardShortcuts().finally(() => setShortcutsOpen(true))
+        void loadKeyboardShortcuts().catch(() => undefined)
+        setShortcutsOpen(true)
         return
       }
 
@@ -3096,7 +3288,7 @@ export default function App() {
             navigateWithShortcut(() => setScreen('settings'))
             return
           }
-          if (key === 't' && canUseTeamFeatures) {
+          if (key === 't' && !PUBLIC_EDITION) {
             navigateWithShortcut(() => {
               void switchWorkspaceMode('team', { screen: 'team', teamSection: 'overview' })
             })
@@ -3112,18 +3304,19 @@ export default function App() {
       }
 
       if (!mod) {
+        const accessibleShortcutTabs = isTeamMode ? shortcutTabs : shortcutTabs.slice(0, -1)
         const tabIndex = Number(event.key) - 1
         if (
           tabIndex >= 0
-          && tabIndex < shortcutTabs.length
+          && tabIndex < accessibleShortcutTabs.length
           && !editingText
           && screen === 'workspace'
           && viewMode === 'list'
           && Boolean(selectedId)
         ) {
           event.preventDefault()
-          const nextTab = shortcutTabs[tabIndex]
-          const direction = shortcutTabs.indexOf(nextTab) >= shortcutTabs.indexOf(tab) ? 'forward' : 'backward'
+          const nextTab = accessibleShortcutTabs[tabIndex]
+          const direction = accessibleShortcutTabs.indexOf(nextTab) >= accessibleShortcutTabs.indexOf(tab) ? 'forward' : 'backward'
           runAnimatedDossierUpdate(() => setTab(nextTab), { scope: 'dossier-tab', direction })
         }
         return
@@ -3256,7 +3449,10 @@ export default function App() {
       loadDossierView,
       () => preloadLanguage(lang, ['core', 'shared', 'dashboard', 'workspace', 'discover', 'profile', 'settings', 'team']),
     ]
-    const heavyTasks: WarmupTask[] = [
+    // Click-open overlays are interaction-critical even though they are not part
+    // of first paint. Warm them cooperatively soon after the shell settles; the
+    // former 3.2s delay left early clicks waiting on cold chunks.
+    const overlayTasks: WarmupTask[] = [
       loadNewApplicationDialog,
       loadShareDialog,
       loadNotificationCenter,
@@ -3265,18 +3461,18 @@ export default function App() {
       loadCommandPalette,
       () => preloadLanguage(lang, ['dossier', 'share', 'tour']),
     ]
-    if (canUseTeamFeatures) {
-      heavyTasks.push(loadTeamScreen, () => preloadLanguage(lang, ['team', 'workspace']))
+    if (!PUBLIC_EDITION) {
+      overlayTasks.push(loadTeamScreen, () => preloadLanguage(lang, ['team', 'workspace']))
     }
 
     const cancelNavigation = scheduleWarmup(navigationTasks, 160, 800)
-    const cancelHeavy = scheduleWarmup(heavyTasks, 3_200, 4_500)
+    const cancelOverlays = scheduleWarmup(overlayTasks, 700, 1_800)
 
     return () => {
       cancelled = true
       window.clearTimeout(railCriticalTimer)
       cancelNavigation()
-      cancelHeavy()
+      cancelOverlays()
     }
   }, [applicationsLoaded, canUseTeamFeatures, lang, session?.user.id])
 
@@ -3287,16 +3483,21 @@ export default function App() {
       if (draftRef.current !== null) setDraftState(null, { clean: true })
       return
     }
-    if (viewMode === 'kanban' && !isTeamMode) {
+    if (viewMode === 'kanban' && canUseWorkspaceBoard) {
       if (selectedId !== null) setSelectedId(null)
       if (draftRef.current !== null) setDraftState(null, { clean: true })
+      return
+    }
+    if (viewMode === 'kanban') {
+      setViewModeDirection('to-list')
+      setViewMode('list')
       return
     }
     if (!selectedId || !workspaceApplications.some((application) => application.id === selectedId)) {
       const myApps = workspaceApplications.filter(function (a) { return a.ownerId === session.user.id })
       setSelectedId(myApps[0]?.id ?? workspaceApplications[0]?.id ?? null)
     }
-  }, [applicationsLoaded, isTeamMode, screen, selectedId, session, setDraftState, viewMode, workspaceApplications])
+  }, [applicationsLoaded, canUseWorkspaceBoard, screen, selectedId, session, setDraftState, viewMode, workspaceApplications])
 
   useEffect(() => {
     if (!workspaceOpeningFromDashboard) return undefined
@@ -4170,6 +4371,132 @@ export default function App() {
     }
   }
 
+  function commitSchoolLogoApplication(saved: ApplicationRecord) {
+    setApplications((items) => items.map((item) => (item.id === saved.id ? saved : item)))
+    setTeamApplications((items) => items.map((item) => (
+      item.id === saved.id ? { ...item, ...saved } : item
+    )))
+
+    const currentDraft = draftRef.current
+    if (!currentDraft || currentDraft.id !== saved.id) return
+    const currentBaseline = safeParseJson<ApplicationRecord>(draftBaselineRef.current)
+      ?? applications.find((application) => application.id === saved.id)
+      ?? saved
+    const mergeLogoState = (application: ApplicationRecord): ApplicationRecord => {
+      const { logo: _logo, logoAutoDetect: _logoAutoDetect, ...schoolIdentity } = application.school
+      return {
+        ...application,
+        updatedAt: saved.updatedAt,
+        school: {
+          ...schoolIdentity,
+          ...(saved.school.logo ? { logo: saved.school.logo } : {}),
+          logoAutoDetect: saved.school.logoAutoDetect,
+        },
+      }
+    }
+    const nextBaseline = mergeLogoState(currentBaseline)
+    const nextDraft = mergeLogoState(currentDraft)
+    const remainsDirty = JSON.stringify(nextDraft) !== JSON.stringify(nextBaseline)
+    setDraftState(cloneApplication(nextBaseline), { clean: true })
+    setDraftState(cloneApplication(nextDraft), { dirty: remainsDirty })
+  }
+
+  function schoolLogoErrorMessage(error: unknown) {
+    if (error instanceof SchoolLogoError) {
+      if (error.reason === 'file-type') return i18nValue.tx('dossier.schoolLogoInvalidType')
+      if (error.reason === 'file-size') return i18nValue.tx('dossier.schoolLogoTooLarge')
+      return i18nValue.tx('dossier.schoolLogoInvalidImage')
+    }
+    return normalizeError(error, languageRef.current)
+  }
+
+  async function persistSchoolLogo(
+    application: ApplicationRecord,
+    logo: ApplicationRecord['school']['logo'] | null,
+    autoDetect: boolean,
+    options: { silent?: boolean; removed?: boolean } = {},
+  ) {
+    const saved = await phdApi.updateSchoolLogo(activeSession.token, application.id, {
+      logo,
+      autoDetect,
+    })
+    if (!isCurrentSessionToken(activeSession.token)) return false
+    commitSchoolLogoApplication(saved)
+    if (!options.silent) {
+      notify(i18nValue.tx(
+        options.removed ? 'dossier.schoolLogoRemoved' : 'dossier.schoolLogoSaved',
+      ), 'success')
+    }
+    return true
+  }
+
+  function resolveAndStoreSchoolLogo(
+    application: ApplicationRecord,
+    input: { website?: string; imageUrl?: string },
+    options: { silent?: boolean } = {},
+  ) {
+    const requestValue = input.imageUrl?.trim() || input.website?.trim() || ''
+    const requestKey = `${application.id}::${input.imageUrl ? 'link' : 'website'}::${requestValue}`
+    const inFlight = schoolLogoInFlightRef.current.get(requestKey)
+    if (inFlight) return inFlight
+
+    const promise = (async () => {
+      try {
+        const resolved = await phdApi.resolveSchoolLogo(activeSession.token, application.id, input)
+        if (!resolved.found || !resolved.dataUrl || !resolved.sourceUrl) {
+          if (!options.silent) notify(i18nValue.tx('dossier.schoolLogoNotFound'), 'warning')
+          return false
+        }
+        const dataUrl = await normalizeRemoteSchoolLogoDataUrl(resolved.dataUrl)
+        return await persistSchoolLogo(
+          application,
+          {
+            dataUrl,
+            source: input.imageUrl ? 'link' : 'website',
+            sourceUrl: resolved.sourceUrl,
+            updatedAt: new Date().toISOString(),
+          },
+          !input.imageUrl,
+          options,
+        )
+      } catch (error) {
+        if (!isAuthExpired(error) && !options.silent) {
+          notify(schoolLogoErrorMessage(error), 'error')
+        }
+        return false
+      }
+    })().finally(() => {
+      if (schoolLogoInFlightRef.current.get(requestKey) === promise) {
+        schoolLogoInFlightRef.current.delete(requestKey)
+      }
+    })
+    schoolLogoInFlightRef.current.set(requestKey, promise)
+    return promise
+  }
+
+  async function uploadAndStoreSchoolLogo(application: ApplicationRecord, file: File) {
+    try {
+      const dataUrl = await normalizeSchoolLogoFile(file)
+      return await persistSchoolLogo(application, {
+        dataUrl,
+        source: 'upload',
+        updatedAt: new Date().toISOString(),
+      }, false)
+    } catch (error) {
+      if (!isAuthExpired(error)) notify(schoolLogoErrorMessage(error), 'error')
+      return false
+    }
+  }
+
+  async function removeStoredSchoolLogo(application: ApplicationRecord) {
+    try {
+      return await persistSchoolLogo(application, null, false, { removed: true })
+    } catch (error) {
+      if (!isAuthExpired(error)) notify(schoolLogoErrorMessage(error), 'error')
+      return false
+    }
+  }
+
   function removeApplicationFromState(applicationId: string) {
     const nextApplications = applications.filter((item) => item.id !== applicationId)
     setApplications(nextApplications)
@@ -4218,7 +4545,7 @@ export default function App() {
       establishedToken = nextSession.token
       await refreshAll(nextSession)
       if (!isStillEstablishedLogin(establishedToken)) return
-      notify(t(nextSession.user.settings.language, 'toast.signedIn'))
+      notify(t(languageRef.current, 'toast.signedIn'))
     } catch (error) {
       if (sessionEstablished) {
         // persistSession already made `session` truthy, but the data load that follows failed —
@@ -4259,7 +4586,7 @@ export default function App() {
       establishedToken = nextSession.token
       await refreshAll(nextSession)
       if (!isStillEstablishedLogin(establishedToken)) return
-      notify(t(nextSession.user.settings.language, 'toast.signedIn'))
+      notify(t(languageRef.current, 'toast.signedIn'))
     } catch (error) {
       const cancelled = isPasskeyAbort(error)
       if (sessionEstablished) {
@@ -4297,7 +4624,7 @@ export default function App() {
       establishedToken = nextSession.token
       await refreshAll(nextSession)
       if (!isStillEstablishedLogin(establishedToken)) return
-      notify(t(nextSession.user.settings.language, 'toast.accountCreated'))
+      notify(t(languageRef.current, 'toast.accountCreated'))
     } catch (error) {
       if (sessionEstablished) {
         // See handleLogin: without this the user is stuck on the post-signup loading skeleton
@@ -4668,18 +4995,29 @@ export default function App() {
     }
   }
 
-  async function toggleApplicationTeamVisibility(applicationId: string, visibleToTeam: boolean) {
+  async function toggleApplicationTeamVisibility(applicationId: string, visibleToTeam: boolean, teamId?: string) {
     pendingSaveCountRef.current += 1
     if (pendingSaveCountRef.current === 1) setSaving(true)
     try {
-      const saved = await phdApi.updateApplicationTeamVisibility(activeSession.token, applicationId, visibleToTeam)
+      const saved = await phdApi.updateApplicationTeamVisibility(activeSession.token, applicationId, visibleToTeam, teamId)
       replaceApplication(saved)
-      notify(i18nValue.tx(visibleToTeam ? 'toast.teamTransferJoinRequested' : 'toast.teamTransferLeaveRequested'))
+      const approvalPending = saved.teamTransferRequest?.status === 'pending'
+      notify(i18nValue.tx(
+        approvalPending
+          ? visibleToTeam
+            ? 'toast.teamTransferJoinRequested'
+            : 'toast.teamTransferLeaveRequested'
+          : visibleToTeam
+            ? 'toast.teamVisibilityShared'
+            : 'toast.teamVisibilityPrivate',
+      ))
       await refreshTeamWorkspace(activeSession)
+      return true
     } catch (error) {
       if (!isAuthExpired(error)) {
         notify(normalizeError(error, languageRef.current), 'error')
       }
+      return false
     } finally {
       pendingSaveCountRef.current = Math.max(0, pendingSaveCountRef.current - 1)
       if (pendingSaveCountRef.current === 0) setSaving(false)
@@ -4853,7 +5191,7 @@ export default function App() {
   }
 
   function updateUserSettings(patch: UserSettingsPatch, message = i18nValue.tx('toast.settingsUpdated')) {
-    void run(async () => {
+    return run(async () => {
       const requestSession = activeSession
       const requestToken = requestSession.token
       const requestUserId = requestSession.user.id
@@ -5128,6 +5466,7 @@ export default function App() {
     synchronous = false,
     direction = 'forward',
   }: { synchronous?: boolean; direction?: 'forward' | 'backward' } = {}) {
+    if (!canUseWorkspaceBoard) return
     if (screen !== 'workspace') setWorkspaceOpeningFromDashboard(true)
     setViewModeDirection('to-kanban')
     if (!synchronous && screen === 'workspace' && viewMode !== 'kanban' && selectedId) {
@@ -5355,10 +5694,13 @@ export default function App() {
       setInterfaceMode('team')
     }
     runWithNavigationGuard(() => {
+      // Do not make the click wait for code or locale I/O. LazyOverlayBoundary
+      // owns the short pending cue while both resources warm concurrently.
       void Promise.all([
         preloadLanguage(lang, ['core', 'shared', 'dossier']),
         loadNewApplicationDialog(),
-      ]).finally(() => setDialogOpen(true))
+      ]).catch(() => undefined)
+      setDialogOpen(true)
     })
   }
 
@@ -5366,10 +5708,9 @@ export default function App() {
     void Promise.all([
       preloadLanguage(lang, ['core', 'shared', 'share']),
       loadShareDialog(),
-    ]).finally(() => {
-      setShareScopeSections([...allShareSections])
-      setShareDialogOpen(true)
-    })
+    ]).catch(() => undefined)
+    setShareScopeSections([...allShareSections])
+    setShareDialogOpen(true)
   }
 
   function resizeDeltaForPane(pane: 'applications' | 'inspector', delta: number, swapped: boolean) {
@@ -5429,6 +5770,19 @@ export default function App() {
     })
   }
 
+  function toggleWorkspacePane(pane: 'applications' | 'inspector') {
+    const hiddenKey = pane === 'applications' ? 'applicationsHidden' : 'inspectorHidden'
+    // Start the visual response before the large App tree reconciles. The
+    // durable preference is non-urgent and catches up in a React transition.
+    const nextHidden = toggleWorkspacePaneClass(workspaceShellRef.current, pane)
+    startTransition(() => {
+      setWorkspaceLayout((current) => ({
+        ...current,
+        [hiddenKey]: nextHidden ?? !current[hiddenKey],
+      }))
+    })
+  }
+
   function startWorkspaceResize(pane: 'applications' | 'inspector', event: ReactPointerEvent<HTMLButtonElement>) {
     event.preventDefault()
     const startX = event.clientX
@@ -5436,35 +5790,40 @@ export default function App() {
     const startHidden = paneIsHidden(startLayout, pane)
     const minWidth = paneWidthMin(pane)
     const maxWidth = paneWidthMax(pane)
+    const shell = workspaceShellRef.current
+    let previewLayout = startLayout
     document.body.classList.add('workspace-resizing')
 
     const handleMove = (moveEvent: globalThis.PointerEvent) => {
       const rawDelta = moveEvent.clientX - startX
       const adjustedDelta = resizeDeltaForPane(pane, rawDelta, startLayout.sidebarsSwapped)
-      setWorkspaceLayout((current) => {
-        if (startHidden) {
-          if (adjustedDelta <= PANE_REVEAL_DISTANCE) {
-            return patchPaneLayout(current, pane, { hidden: true })
-          }
-          return patchPaneLayout(current, pane, {
-            hidden: false,
-            width: clampNumber(
-              Math.max(paneStoredWidth(startLayout, pane), adjustedDelta),
-              minWidth,
-              maxWidth,
-            ),
-          })
-        }
-
+      if (startHidden) {
+        previewLayout = adjustedDelta <= PANE_REVEAL_DISTANCE
+          ? patchPaneLayout(startLayout, pane, { hidden: true })
+          : patchPaneLayout(startLayout, pane, {
+              hidden: false,
+              width: clampNumber(
+                Math.max(paneStoredWidth(startLayout, pane), adjustedDelta),
+                minWidth,
+                maxWidth,
+              ),
+            })
+      } else {
         const rawWidth = paneStoredWidth(startLayout, pane) + adjustedDelta
-        if (rawWidth < minWidth - PANE_COLLAPSE_DISTANCE) {
-          return patchPaneLayout(current, pane, { hidden: true })
-        }
-        return patchPaneLayout(current, pane, {
-          hidden: false,
-          width: clampNumber(rawWidth, minWidth, maxWidth),
-        })
-      })
+        previewLayout = rawWidth < minWidth - PANE_COLLAPSE_DISTANCE
+          ? patchPaneLayout(startLayout, pane, { hidden: true })
+          : patchPaneLayout(startLayout, pane, {
+              hidden: false,
+              width: clampNumber(rawWidth, minWidth, maxWidth),
+            })
+      }
+
+      if (shell) {
+        shell.style.setProperty('--pane-width', `${previewLayout.applicationPaneWidth}px`)
+        shell.style.setProperty('--inspector-width', `${previewLayout.inspectorWidth}px`)
+        shell.classList.toggle('hide-application-pane', previewLayout.applicationsHidden)
+        shell.classList.toggle('hide-inspector-pane', previewLayout.inspectorHidden)
+      }
     }
 
     const stopResize = () => {
@@ -5472,6 +5831,7 @@ export default function App() {
       window.removeEventListener('pointermove', handleMove)
       window.removeEventListener('pointerup', stopResize)
       window.removeEventListener('pointercancel', stopResize)
+      setWorkspaceLayout(previewLayout)
     }
 
     window.addEventListener('pointermove', handleMove)
@@ -5515,7 +5875,7 @@ export default function App() {
   }
 
   function openNotificationCenter() {
-    void loadNotificationCenter()
+    void loadNotificationCenter().catch(() => undefined)
     setNotificationCenterOpen(true)
     void refreshNotificationList()
   }
@@ -5625,7 +5985,10 @@ export default function App() {
   function openNotificationDestination(item: NotificationRecord) {
     setNotificationCenterOpen(false)
     const normalizedPath = normalizeNotificationPath(item.targetPath)
-    if (normalizedPath.startsWith('/team/accept-invite/')) {
+    if (
+      normalizedPath.startsWith('/team/accept-invite/')
+      || normalizedPath.startsWith('/team/join/')
+    ) {
       window.location.assign(normalizedPath)
       return
     }
@@ -5841,7 +6204,7 @@ export default function App() {
         description: i18nValue.tx('commandPalette.goTeamDesc'),
         icon: <Users size={15} aria-hidden="true" />,
         shortcut: 'G T',
-        disabled: !canUseTeamFeatures,
+        disabled: PUBLIC_EDITION,
         keywords: ['team', 'members', 'resources', 'audit'],
         onRun: navigate(() => {
           void switchWorkspaceMode('team', { screen: 'team', teamSection: 'overview' })
@@ -5862,7 +6225,7 @@ export default function App() {
         label: i18nValue.tx('kanban.board'),
         description: i18nValue.tx('commandPalette.showBoardDesc'),
         icon: <LayoutGrid size={15} aria-hidden="true" />,
-        disabled: isTeamMode || screen !== 'workspace' || viewMode === 'kanban',
+        disabled: !canUseWorkspaceBoard || screen !== 'workspace' || viewMode === 'kanban',
         keywords: ['board', 'kanban'],
         onRun: () => runWithNavigationGuard(openWorkspaceBoard),
       },
@@ -5918,7 +6281,10 @@ export default function App() {
         icon: <Keyboard size={15} aria-hidden="true" />,
         shortcut: '?',
         keywords: ['keyboard', 'shortcuts', 'help'],
-        onRun: () => void loadKeyboardShortcuts().finally(() => setShortcutsOpen(true)),
+        onRun: () => {
+          void loadKeyboardShortcuts().catch(() => undefined)
+          setShortcutsOpen(true)
+        },
       },
       {
         id: 'tour',
@@ -5951,7 +6317,9 @@ export default function App() {
 
   // Main content based on screen
   const mainContent =
-    screen === 'dashboard' ? (
+    screen === 'discover' && (!canUseDiscover || (isTeamMode && !teamDiscoverScope)) ? (
+      <DeferredPanel variant="dashboard" />
+    ) : screen === 'dashboard' ? (
       <Dashboard
         applications={workspaceApplications}
         recentOpenedIds={isTeamMode ? [] : recentOpenedIds}
@@ -6091,6 +6459,7 @@ export default function App() {
           }
         }}
         onNew={() => openNewApplicationDialog(null)}
+        guidanceTeam={!isTeamMode ? studentGuidanceTeam : undefined}
         ownerNames={isTeamMode ? teamApplicationOwnerNames : undefined}
         eyebrow={isTeamMode ? i18nValue.tx('dashboard.teamEyebrow') : undefined}
         title={isTeamMode ? i18nValue.tx('dashboard.teamTitle') : undefined}
@@ -6099,7 +6468,7 @@ export default function App() {
         ownerAvatars={isTeamMode ? ownerAvatarDirectory : undefined}
         onViewMember={isTeamMode ? viewMemberApplications : undefined}
         onOpenDiscover={
-          isTeamMode
+          isTeamMode || !canUsePersonalDiscover
             ? undefined
             : () => {
                 startTransition(() => setScreen('discover'))
@@ -6108,11 +6477,35 @@ export default function App() {
         }
         deferProgressiveReveal={deferScreenProgressiveReveal}
       />
-    ) : screen === 'discover' && activeSession ? (
+    ) : screen === 'discover' && activeSession && canUseDiscover && (!isTeamMode || teamDiscoverScope) ? (
       <DiscoverScreen
         token={activeSession.token}
-        applications={applications}
+        applications={teamDiscoverScope
+          ? teamApplications.filter((application) => application.ownerId === teamDiscoverScope.targetUserId)
+          : applications}
+        teamScope={teamDiscoverScope}
+        teamTargetOptions={teamCreateStudentOptions}
+        onTeamTargetChange={teamDiscoverScope ? setTeamDiscoverTargetUserId : undefined}
+        onExitTeamTarget={teamDiscoverScope ? () => {
+          setTeamDiscoverTargetUserId(null)
+          setTeamSection('discover')
+          startTransition(() => setScreen('team'))
+          setMobileDetailOpen(false)
+        } : undefined}
+        onConfigureAiKeys={() => {
+          startTransition(() => {
+            if (teamDiscoverScope && teamViewerRole === 'owner') {
+              setTeamSection('settings')
+              setScreen('team')
+            } else {
+              setInterfaceMode('personal')
+              setScreen('settings')
+            }
+          })
+        }}
         deferProgressiveReveal={deferScreenProgressiveReveal}
+        realtimeConnected={realtimeUpdates.connected}
+        realtimeRevision={discoverRealtimeRevision}
         onNotify={(message, tone) => notify(message, tone ?? 'success')}
         onImported={(created) => {
           setApplications((items) => [created, ...items.filter((item) => item.id !== created.id)])
@@ -6202,12 +6595,14 @@ export default function App() {
             downloadBlob(blob, fileName)
           })
         }
+        onLoadFile={(fileId) => phdApi.downloadFile(activeSession.token, fileId)}
         onCreateShare={(assetId, expiry, note) =>
           void run(async () => {
             const share = await phdApi.shareProfileAsset(activeSession.token, assetId, expiresAtForShare(expiry), note)
             setProfileAssets((items) => items.map((item) =>
               item.id === assetId ? { ...item, shares: [...(item.shares ?? []), share] } : item,
             ))
+            await refreshSessionMetadata(activeSession)
           })
         }
         onRevokeShare={(assetId, shareId) =>
@@ -6216,6 +6611,7 @@ export default function App() {
             setProfileAssets((items) => items.map((item) =>
               item.id === assetId ? { ...item, shares: (item.shares ?? []).filter((share) => share.id !== shareId) } : item,
             ))
+            await refreshSessionMetadata(activeSession)
           })
         }
         onCopy={copyValue}
@@ -6227,8 +6623,33 @@ export default function App() {
         webPushStatus={webPushNotifications.status}
         deferProgressiveReveal={deferScreenProgressiveReveal}
         onInstallApp={pwaInstall.install}
-        onEnableWebPush={() => webPushNotifications.enable()}
-        onDisableWebPush={() => webPushNotifications.disable()}
+        onEnableWebPush={async () => {
+          const result = await webPushNotifications.enable()
+          if (result !== 'granted') return result
+          const requestSession = activeSession
+          const requestEpoch = sessionIdentityEpochRef.current
+          try {
+            const user = await phdApi.updateSettings(requestSession.token, { browserNotificationsEnabled: true })
+            commitSettingsUser(requestSession, user, { browserNotificationsEnabled: true }, requestEpoch)
+            return result
+          } catch (error) {
+            // A live subscription must never outlast a failed opt-in save: the
+            // server-side preference is the authoritative delivery boundary.
+            await webPushNotifications.disable()
+            throw error
+          }
+        }}
+        onDisableWebPush={async () => {
+          // The hook first tells the service worker to discard queued events,
+          // then removes the endpoint. Persist the account-wide server gate so
+          // a stale endpoint on another browser cannot continue delivery.
+          await webPushNotifications.disable()
+          const requestSession = activeSession
+          const requestEpoch = sessionIdentityEpochRef.current
+          const user = await phdApi.updateSettings(requestSession.token, { browserNotificationsEnabled: false })
+          commitSettingsUser(requestSession, user, { browserNotificationsEnabled: false }, requestEpoch)
+          return true
+        }}
         onTestWebPush={() => webPushNotifications.test()}
         onLanguage={(nextLang) => {
           void (async () => {
@@ -6345,9 +6766,9 @@ export default function App() {
             await refreshSessionMetadata(activeSession)
           }, i18nValue.tx('toast.shareRevoked'))
         }
-        onUpdateShare={(applicationId, shareId, expiresAt, permission) =>
+        onUpdateShare={(applicationId, shareId, expiresAt, permission, sections) =>
           void run(async () => {
-            const share = await phdApi.updateShare(activeSession.token, applicationId, shareId, expiresAt, permission)
+            const share = await phdApi.updateShare(activeSession.token, applicationId, shareId, expiresAt, permission, sections)
             updateApplicationInState(applicationId, (application) => ({
               ...application,
               shares: (application.shares ?? []).map((item) =>
@@ -6365,9 +6786,34 @@ export default function App() {
             }))
           }, i18nValue.tx('toast.shareUpdated'))
         }
+        onRevokeAssetShare={(assetId, shareId) =>
+          void run(async () => {
+            await phdApi.revokeProfileAssetShare(activeSession.token, assetId, shareId)
+            setProfileAssets((items) => items.map((asset) =>
+              asset.id === assetId
+                ? { ...asset, shares: (asset.shares ?? []).filter((share) => share.id !== shareId) }
+                : asset,
+            ))
+            await refreshSessionMetadata(activeSession)
+          }, i18nValue.tx('toast.shareRevoked'))
+        }
+        onUpdateAssetShare={(assetId, shareId, expiresAt) =>
+          void run(async () => {
+            const share = await phdApi.updateProfileAssetShare(activeSession.token, assetId, shareId, expiresAt)
+            setProfileAssets((items) => items.map((asset) =>
+              asset.id === assetId
+                ? {
+                    ...asset,
+                    shares: (asset.shares ?? []).map((item) => item.id === share.id ? share : item),
+                  }
+                : asset,
+            ))
+            await refreshSessionMetadata(activeSession)
+          }, i18nValue.tx('toast.shareUpdated'))
+        }
         onReplayTutorial={handleReplayTutorial}
       />
-    ) : screen === 'team' && canUseTeamFeatures ? (
+    ) : screen === 'team' && !PUBLIC_EDITION ? (
       <TeamScreen
         session={activeSession}
         aiKeys={aiKeys}
@@ -6393,21 +6839,26 @@ export default function App() {
           // Route through the same animated path as the rail team section control.
           // (In-team swaps animate inside TeamScreen; applications uses rail handoff.)
           if (section === 'applications') {
+            const destinationViewMode = teamViewerRole === 'member' ? 'list' as const : 'kanban' as const
             const direction = validTeamSections.indexOf(section) >= validTeamSections.indexOf(teamSection)
               ? 'forward'
               : 'backward'
             runWithNavigationGuard(() => {
               runAnimatedRailScreenUpdate(() => {
                 setTeamSection('applications')
-                setViewModeDirection('to-list')
-                setViewMode('list')
-                setSelectedId((current) => current ?? defaultSelectedIdForMode('team'))
-                setMobileDetailOpen(false)
-                setScreen('workspace')
+                if (destinationViewMode === 'kanban') {
+                  commitWorkspaceBoardOpen({ synchronous: true })
+                } else {
+                  setViewModeDirection('to-list')
+                  setViewMode('list')
+                  setSelectedId((current) => current ?? defaultSelectedIdForMode('team'))
+                  setMobileDetailOpen(false)
+                  setScreen('workspace')
+                }
               }, {
                 direction,
-                ready: warmCriticalScreenAssets('workspace', tab, lang, 'list'),
-                readinessGate: readinessGateForScreen('workspace', 'list'),
+                ready: warmCriticalScreenAssets('workspace', tab, lang, destinationViewMode),
+                readinessGate: readinessGateForScreen('workspace', destinationViewMode),
               })
             })
             return
@@ -6435,18 +6886,27 @@ export default function App() {
         }}
         onSwitchToPersonal={openPersonalWorkspaceForTeamTransfer}
         onCopy={copyValue}
+        onOpenTeamDiscover={(studentUserId) => {
+          if (!canUseTeamDiscover) return
+          setTeamDiscoverTargetUserId(studentUserId)
+          setInterfaceMode('team')
+          startTransition(() => setScreen('discover'))
+          setMobileDetailOpen(false)
+        }}
       />
     ) : screen === 'team' ? (
       <DeferredPanel variant="team" />
     ) : screen === 'workspace' && viewMode === 'list' && compactWorkspaceViewport && !mobileDetailOpen ? (
       <DeferredPanel />
-    ) : screen === 'workspace' && viewMode === 'kanban' && !isTeamMode ? (
+    ) : screen === 'workspace' && viewMode === 'kanban' && canUseWorkspaceBoard ? (
       <KanbanBoard
         applications={visibleApplications}
-        onNew={() => openNewApplicationDialog(null)}
+        onNew={isTeamMode ? undefined : () => openNewApplicationDialog(null)}
+        teamStudents={isTeamMode ? teamBoardStudents : undefined}
+        onNewForStudent={isTeamMode ? (studentId) => openNewApplicationDialog(studentId) : undefined}
         onPrefetch={prefetchDossierAssets}
         onStatusChange={(id, status) => {
-          const app = applications.find((a) => a.id === id)
+          const app = workspaceApplications.find((application) => application.id === id)
           if (!app || app.status === status) return
           void saveApplication({ ...app, status }, i18nValue.tx('toast.statusUpdated', 'Status updated'))
         }}
@@ -6454,9 +6914,9 @@ export default function App() {
           selectApplication(id)
         }}
         onOpenInNewPage={(id) => openApplicationsInTabs([id])}
-        onExportApplication={(id) => exportSelectedApplications([id])}
+        onExportApplication={isTeamMode ? undefined : (id) => exportSelectedApplications([id])}
         onCopy={copyValue}
-        onDeleteApplication={(id) => confirmDeleteApplications([id])}
+        onDeleteApplication={isTeamMode ? undefined : (id) => confirmDeleteApplications([id])}
       />
     ) : selected && !displayedDossierDraft ? (
       <DeferredPanel />
@@ -6467,6 +6927,7 @@ export default function App() {
       >
         <div className="dossier-handoff-content" inert={dossierHandoffPending || undefined}>
         <DossierView
+        key={displayedDossierApplication.id}
         application={displayedDossierApplication}
         draft={displayedDossierDraft}
         tab={tab}
@@ -6479,7 +6940,6 @@ export default function App() {
           await phdApi.streamAiDraft(activeSession.token, input, onEvent, signal)
           phdApi.listAiKeys(activeSession.token).then(setAiKeys).catch(() => undefined)
         }}
-        onResolveAiAttachment={(fileId) => phdApi.downloadFile(activeSession.token, fileId)}
         onAiInspectorOpenChange={handleAiInspectorOpenChange}
         onNotify={notify}
         session={activeSession}
@@ -6497,10 +6957,20 @@ export default function App() {
         onRegisterNavigationGuard={registerNavigationGuard}
         onDraft={setDraftState}
         onCopy={copyValue}
+        onResolveSchoolLogo={(input, options) => (
+          resolveAndStoreSchoolLogo(displayedDossierApplication, input, options)
+        )}
+        onUploadSchoolLogo={(file) => uploadAndStoreSchoolLogo(displayedDossierApplication, file)}
+        onRemoveSchoolLogo={() => removeStoredSchoolLogo(displayedDossierApplication)}
         canToggleTeamVisibility={canToggleSelectedTeamVisibility}
-        onToggleTeamVisibility={(visibleToTeam) => {
+        teamTransferRequiresApproval={!canDirectlyMoveSelectedTeamApplication}
+        teamTransferOrganizations={selectedTeamTransferOptions}
+        onPreflightTeamTransfer={(visibleToTeam, teamId) => (
+          phdApi.preflightApplicationTeamTransfer(activeSession.token, selected.id, { visibleToTeam, teamId })
+        )}
+        onToggleTeamVisibility={(visibleToTeam, teamId) => {
           if (!selected) return undefined
-          return toggleApplicationTeamVisibility(selected.id, visibleToTeam)
+          return toggleApplicationTeamVisibility(selected.id, visibleToTeam, teamId)
         }}
         onSave={() => {
           const latestDraft = draftRef.current
@@ -6543,6 +7013,10 @@ export default function App() {
             notify(i18nValue.tx('dossier.enrichSaveFirst', 'Save or discard draft changes before enriching this application.'), 'warning')
             return
           }
+          void Promise.all([
+            preloadLanguage(lang, ['core', 'shared', 'discover']),
+            loadDiscoverApplicationEnrichmentDialog(),
+          ]).catch(() => undefined)
           setDossierEnrichmentOpen(true)
         }}
         onOpenUpgrade={openUpgradePage}
@@ -6576,6 +7050,7 @@ export default function App() {
             downloadBlob(blob, name ?? i18nValue.tx('dossier.file'))
           })
         }
+        onPreview={(fileId) => phdApi.downloadFile(activeSession.token, fileId)}
         onUploadMaterialFiles={(materialId, files) =>
           run(async () => {
             const material = await phdApi.uploadMaterialFiles(activeSession.token, selected.id, materialId, files)
@@ -6919,22 +7394,22 @@ export default function App() {
             i18nValue.tx('toast.timelineRemoved'),
           )
         }
-        onAddReviewComment={(body, targetTab) =>
-          void saveApplication(
-            {
-              ...selected,
-              reviewComments: [...(selected.reviewComments ?? []), {
-                id: `review_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
-                authorId: activeSession.user.id,
-                authorName: activeSession.user.name,
-                body,
-                createdAt: new Date().toISOString(),
-                targetTab,
-              }],
-            },
-            i18nValue.tx('toast.reviewCommentAdded'),
-          )
-        }
+        onAddReviewComment={isTeamMode ? (body, targetTab, parentId, mentionedUserIds) =>
+          runInteractive(async () => {
+            const comment = await phdApi.addReviewComment(
+              activeSession.token,
+              selected.id,
+              body,
+              targetTab,
+              parentId,
+              mentionedUserIds,
+            )
+            updateApplicationInState(selected.id, (application) => ({
+              ...application,
+              reviewComments: appendReviewComment(application.reviewComments, comment, parentId),
+            }))
+          }, i18nValue.tx('toast.reviewCommentAdded'))
+          : undefined}
         />
         </div>
         {dossierHandoffPending ? (
@@ -7047,6 +7522,7 @@ export default function App() {
           onPoll={pollMailSyncJob}
         />
         <div
+          ref={workspaceShellRef}
           className={`atlas-shell ${shellPaintReady && i18nValue.ready && !workspaceHandoff ? 'app-shell-ready' : 'app-shell-booting'} ${workspaceShellClass} ${activeSession.user.settings.highContrast ? 'high-contrast' : ''} ${
             screen !== 'workspace' ? 'full-width' : ''
           }`}
@@ -7099,10 +7575,12 @@ export default function App() {
         theme={themeProvider.theme}
         interfaceMode={effectiveInterfaceMode}
         teamViewerRole={teamViewerRole}
+        allowTeamJoin={!PUBLIC_EDITION}
         teamSection={teamSection}
+        canUseDiscover={canUseDiscover}
         modeSwitchLocked={Boolean(activeSession.impersonation?.teamId)}
         onPrefetchScreen={(nextScreen) => {
-          const destinationViewMode = nextScreen === 'workspace' && !isTeamMode ? 'kanban' : viewMode
+          const destinationViewMode = nextScreen === 'workspace' && canUseWorkspaceBoard ? 'kanban' : viewMode
           void warmCriticalScreenAssets(nextScreen, tab, lang, destinationViewMode)
         }}
         onTeamSection={(section, openTeamScreen = false) => {
@@ -7117,10 +7595,10 @@ export default function App() {
             return
           }
 
-          // Team applications deliberately reuse the personal application workspace.
-          // The list, dossier, and inspector stay identical; only the team-scoped data,
-          // owner filters, relationship labels, and permissions change.
+          // Team applications reuse the application workspace. Teachers and owners
+          // enter the student board; students retain the focused list/dossier flow.
           if (section === 'applications') {
+            const destinationViewMode = teamViewerRole === 'member' ? 'list' as const : 'kanban' as const
             const direction = validTeamSections.indexOf(section) >= validTeamSections.indexOf(teamSection)
               ? 'forward'
               : 'backward'
@@ -7128,15 +7606,19 @@ export default function App() {
               // Same smoothness as personal → Applications: rail exit + pane enter.
               runAnimatedRailScreenUpdate(() => {
                 setTeamSection('applications')
-                setViewModeDirection('to-list')
-                setViewMode('list')
-                setSelectedId((current) => current ?? defaultSelectedIdForMode('team'))
-                setMobileDetailOpen(false)
-                setScreen('workspace')
+                if (destinationViewMode === 'kanban') {
+                  commitWorkspaceBoardOpen({ synchronous: true })
+                } else {
+                  setViewModeDirection('to-list')
+                  setViewMode('list')
+                  setSelectedId((current) => current ?? defaultSelectedIdForMode('team'))
+                  setMobileDetailOpen(false)
+                  setScreen('workspace')
+                }
               }, {
                 direction,
-                ready: warmCriticalScreenAssets('workspace', tab, lang, 'list'),
-                readinessGate: readinessGateForScreen('workspace', 'list'),
+                ready: warmCriticalScreenAssets('workspace', tab, lang, destinationViewMode),
+                readinessGate: readinessGateForScreen('workspace', destinationViewMode),
               })
             })
             return
@@ -7180,7 +7662,7 @@ export default function App() {
 
           runWithNavigationGuard(() => {
             const navigationSequence = ++railNavigationSequenceRef.current
-            const destinationViewMode = nextScreen === 'workspace' && !isTeamMode ? 'kanban' : viewMode
+            const destinationViewMode = nextScreen === 'workspace' && canUseWorkspaceBoard ? 'kanban' : viewMode
             const warmDestination = () => {
               if (railNavigationSequenceRef.current !== navigationSequence) return Promise.resolve()
               // Keep parsing a cold destination in the background. The visual
@@ -7190,7 +7672,7 @@ export default function App() {
             const destinationReady = warmDestination()
             const destinationReadinessGate = readinessGateForScreen(nextScreen, destinationViewMode)
 
-            if (nextScreen === 'workspace' && !isTeamMode) {
+            if (nextScreen === 'workspace' && canUseWorkspaceBoard) {
               runAnimatedRailScreenUpdate(
                 () => {
                   openWorkspaceBoard({ synchronous: true })
@@ -7202,8 +7684,8 @@ export default function App() {
 
             runAnimatedRailScreenUpdate(() => {
               setScreen(nextScreen)
-              // Team-scoped application browsing stays list-first; personal browsing
-              // is handled above by openWorkspaceBoard().
+              // Student team workspaces remain list-first. Personal and teacher/admin
+              // application destinations are handled above by openWorkspaceBoard().
               if (nextScreen === 'workspace') setMobileDetailOpen(false)
             }, { direction, ready: destinationReady, readinessGate: destinationReadinessGate })
           })
@@ -7229,13 +7711,9 @@ export default function App() {
           saving={saving}
           tx={i18nValue.tx}
           viewMode={viewMode}
-          showViewModeToggle={!isTeamMode}
-          onToggleApplications={() =>
-            setWorkspaceLayout((current) => ({ ...current, applicationsHidden: !current.applicationsHidden }))
-          }
-          onToggleInspector={() =>
-            setWorkspaceLayout((current) => ({ ...current, inspectorHidden: !current.inspectorHidden }))
-          }
+          showViewModeToggle={canUseWorkspaceBoard}
+          onToggleApplications={() => toggleWorkspacePane('applications')}
+          onToggleInspector={() => toggleWorkspacePane('inspector')}
           onSwap={() =>
             setWorkspaceLayout((current) => ({ ...current, sidebarsSwapped: !current.sidebarsSwapped }))
           }
@@ -7284,6 +7762,9 @@ export default function App() {
           onStatusFilters={setStatusFilters}
           onSort={setSort}
           onPrefetch={prefetchDossierAssets}
+          onResolveMissingSchoolLogo={(application) => (
+            resolveAndStoreSchoolLogo(application, { website: application.school.website }, { silent: true })
+          )}
           onSelect={(id) => {
             if (id === selected?.id) {
               // The first row is commonly auto-selected before the user taps it.
@@ -7303,7 +7784,7 @@ export default function App() {
           }}
           onNew={() => openNewApplicationDialog(null)}
           onUpgrade={() => openUpgradePage('application-limit', String(applicationLimitUsageCount + 1), String(isProUser ? applicationLimit : applicationCreateLimit))}
-          onShowBoard={isTeamMode ? undefined : () => runWithNavigationGuard(openWorkspaceBoard)}
+          onShowBoard={canUseWorkspaceBoard ? () => runWithNavigationGuard(openWorkspaceBoard) : undefined}
           onOpenMany={isTeamMode ? undefined : openApplicationsInTabs}
           onExportMany={isTeamMode ? undefined : exportSelectedApplications}
           onRestoreTrash={restoreTrashItem}
@@ -7379,7 +7860,7 @@ export default function App() {
       {screen === 'workspace' && !compactWorkspaceViewport ? (
         <Suspense fallback={<DeferredAside kind="inspector" className="inspector-pane workspace-deferred-inspector" style={inspectorPaneStyle} />}>
         <Inspector
-          application={viewMode === 'kanban' && !isTeamMode ? null : activeDraft ?? selected}
+          application={viewMode === 'kanban' ? null : activeDraft ?? selected}
           backups={selectedBackups}
           removingBackupFileNames={removingBackupFileNames}
           busy={busy}
@@ -7464,7 +7945,7 @@ export default function App() {
       ) : null}
 
       {dialogOpen ? (
-        <Suspense fallback={null}>
+        <LazyOverlayBoundary namespaces={['core', 'shared', 'dossier']}>
           <NewApplicationDialog
             open={dialogOpen}
             busy={busy}
@@ -7545,11 +8026,11 @@ export default function App() {
               return createdSuccessfully
             }}
           />
-        </Suspense>
+        </LazyOverlayBoundary>
       ) : null}
 
       {shareDialogOpen ? (
-        <Suspense fallback={null}>
+        <LazyOverlayBoundary namespaces={['core', 'shared', 'share']}>
           <ShareDialog
             open={shareDialogOpen}
             application={selected}
@@ -7625,11 +8106,11 @@ export default function App() {
               }, i18nValue.tx('toast.shareUpdated'))
             }}
           />
-        </Suspense>
+        </LazyOverlayBoundary>
       ) : null}
 
       {dossierEnrichmentOpen && selected ? (
-        <Suspense fallback={null}>
+        <LazyOverlayBoundary namespaces={['core', 'shared', 'discover']}>
           <DiscoverApplicationEnrichmentDialog
             open={dossierEnrichmentOpen}
             token={activeSession.token}
@@ -7639,24 +8120,28 @@ export default function App() {
             onNotify={notify}
             onClose={() => setDossierEnrichmentOpen(false)}
           />
-        </Suspense>
+        </LazyOverlayBoundary>
       ) : null}
 
-      <TeamWorkspaceChooser
-        open={teamWorkspaceChooserOpen}
-        workspaces={teamWorkspaces}
-        activeTeamId={activeTeamId}
-        onClose={() => {
-          setTeamWorkspaceChooserOpen(false)
-          setPendingTeamWorkspaceEntry(null)
-        }}
-        onSelect={(teamId) => {
-          const destination = pendingTeamWorkspaceEntry ?? {}
-          setTeamWorkspaceChooserOpen(false)
-          setPendingTeamWorkspaceEntry(null)
-          void switchWorkspaceMode('team', { ...destination, teamId })
-        }}
-      />
+      {teamWorkspaceChooserOpen ? (
+        <LazyOverlayBoundary namespaces={['core', 'shared', 'team']}>
+          <TeamWorkspaceChooser
+            open
+            workspaces={teamWorkspaces}
+            activeTeamId={activeTeamId}
+            onClose={() => {
+              setTeamWorkspaceChooserOpen(false)
+              setPendingTeamWorkspaceEntry(null)
+            }}
+            onSelect={(teamId) => {
+              const destination = pendingTeamWorkspaceEntry ?? {}
+              setTeamWorkspaceChooserOpen(false)
+              setPendingTeamWorkspaceEntry(null)
+              void switchWorkspaceMode('team', { ...destination, teamId })
+            }}
+          />
+        </LazyOverlayBoundary>
+      ) : null}
 
       <ConfirmDialog
         open={!!confirmDialog}
@@ -7680,7 +8165,7 @@ export default function App() {
       />
 
       {notificationCenterOpen ? (
-        <Suspense fallback={null}>
+        <LazyOverlayBoundary namespaces={['core', 'shared', 'workspace', 'team']}>
           <NotificationCenter
             open={notificationCenterOpen}
             notifications={notifications}
@@ -7695,31 +8180,31 @@ export default function App() {
             onArchive={archiveNotifications}
             onOpenNotification={openNotificationDestination}
           />
-        </Suspense>
+        </LazyOverlayBoundary>
       ) : null}
 
       {shortcutsOpen ? (
-        <Suspense fallback={null}>
+        <LazyOverlayBoundary namespaces={['core', 'shared']}>
           <KeyboardShortcuts open={shortcutsOpen} onClose={function() { setShortcutsOpen(false) }} />
-        </Suspense>
+        </LazyOverlayBoundary>
       ) : null}
 
       {commandPaletteOpen ? (
-        <Suspense fallback={null}>
+        <LazyOverlayBoundary namespaces={['core', 'shared']}>
           <CommandPalette
             open={commandPaletteOpen}
             actions={commandPaletteActions}
             onClose={() => setCommandPaletteOpen(false)}
           />
-        </Suspense>
+        </LazyOverlayBoundary>
       ) : null}
 
       <ToastStack toasts={toasts} onClose={dismissToast} onPause={pauseToast} onResume={resumeToast} />
     </div>
     {showOnboarding ? (
-      <Suspense fallback={null}>
+      <LazyOverlayBoundary namespaces={['core', 'shared', 'tour', 'dashboard', 'workspace', 'dossier', 'profile', 'settings']}>
         <OnboardingTour onComplete={handleOnboardingComplete} onStepEnter={handleOnboardingStepEnter} />
-      </Suspense>
+      </LazyOverlayBoundary>
     ) : null}
         </>
         ) : null}

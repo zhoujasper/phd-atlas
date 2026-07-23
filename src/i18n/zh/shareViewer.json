@@ -19,7 +19,7 @@
     "uploadHubSubtitle": "请逐项上传。每条都会写清要求、允许格式与大小限制。",
     "uploadHubProgress": "已有文件 {done}/{total} 项",
     "uploadHubEmpty": "此链接没有可上传目标",
-    "uploadHubEmptyHint": "申请人未共享可接收文件的清单或任务页。",
+    "uploadHubEmptyHint": "申请人尚未将任何清单项目或任务标记为可通过此链接上传。",
     "uploadItemRequired": "必需",
     "uploadItemOptional": "可选",
     "uploadItemHasFiles": "已收到文件",

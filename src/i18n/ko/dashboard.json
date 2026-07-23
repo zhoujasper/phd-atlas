@@ -102,6 +102,23 @@
     "discoverSubtitle": "PhD 프로그램과 자문위원을 찾아보고, 적합성에 따라 순위를 매기고, 지원서로 가져오고, 일치 알림을 받으세요.",
     "discoverCta": "디스커버 열기",
     "discoverTitle": "다음 프로그램 찾기",
-    "openDiscover": "프로그램 검색"
+    "openDiscover": "프로그램 검색",
+    "guidanceTitle": "나의 지도팀",
+    "guidanceSubtitle": "{team}에서 배정된 담당자입니다.",
+    "guidanceEmptyTitle": "아직 배정된 지도 담당자가 없습니다.",
+    "guidanceEmptyDesc": "조직 관리자가 멤버 작업공간에서 교사를 배정할 수 있습니다.",
+    "guidanceRoleOwner": "조직 관리자",
+    "guidanceRoleTeacher": "교사",
+    "guidanceEmail": "{name}에게 이메일 보내기",
+    "guidanceEmailShort": "이메일",
+    "guidanceCall": "{name}에게 전화하기",
+    "guidanceCallShort": "전화",
+    "guidanceWebsite": "{name}의 웹사이트 열기",
+    "guidanceWebsiteShort": "웹사이트",
+    "guidanceHideDetails": "{name}의 상세 정보 닫기",
+    "guidanceShowDetails": "{name}의 상세 정보 보기",
+    "guidanceOffice": "연구실 / 사무실",
+    "guidanceAvailability": "연락 가능 시간",
+    "guidanceSupport": "도움을 드릴 수 있는 부분"
   }
 }

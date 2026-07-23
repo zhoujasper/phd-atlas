@@ -28,7 +28,9 @@ export function Rail({
   theme,
   interfaceMode,
   teamViewerRole,
+  allowTeamJoin = false,
   teamSection,
+  canUseDiscover = true,
   modeSwitchLocked = false,
   avatarUrl,
   userName,
@@ -47,7 +49,9 @@ export function Rail({
   // null for users without a team — every team role can switch into the team system.
   interfaceMode: InterfaceMode
   teamViewerRole: TeamRole | null
+  allowTeamJoin?: boolean
   teamSection: TeamSection
+  canUseDiscover?: boolean
   modeSwitchLocked?: boolean
   avatarUrl?: string | null
   userName?: string
@@ -60,21 +64,29 @@ export function Rail({
   onToggleTheme: () => void
   onLogout: () => void
 }) {
-  const { tx, format, lang } = useI18n()
+  const { tx, format } = useI18n()
   const safeUnreadNotificationCount = unreadNotificationCount ?? 0
 
-  const hasTeamMode = Boolean(teamViewerRole)
+  const hasTeamMode = Boolean(teamViewerRole) || allowTeamJoin
   const canToggleMode = hasTeamMode && !modeSwitchLocked
   const isTeamMode = hasTeamMode && interfaceMode === 'team'
   type NavItem = { screen: Screen; section?: TeamSection; label: string; shortLabel: string; icon: typeof LayoutList }
   const items = useMemo<NavItem[]>(() => {
     if (isTeamMode) {
+      if (!teamViewerRole) {
+        return [{
+          screen: 'team' as const,
+          section: 'overview' as const,
+          label: tx('nav.team'),
+          shortLabel: tx('navShort.teamOverview', tx('nav.team')),
+          icon: Users,
+        }]
+      }
       if (teamViewerRole === 'member') {
         const studentSections: Array<{ section: TeamSection; label: string; shortLabel: string; icon: typeof LayoutList }> = [
           { section: 'overview', label: tx('nav.dashboard'), shortLabel: tx('navShort.dashboard', tx('nav.dashboard')), icon: ClipboardList },
           { section: 'applications', label: tx('nav.applications'), shortLabel: tx('navShort.applications', tx('nav.applications')), icon: LayoutList },
           { section: 'resources', label: tx('nav.profile'), shortLabel: tx('navShort.profile', tx('nav.profile')), icon: UserRound },
-          { section: 'settings', label: tx('nav.settings'), shortLabel: tx('navShort.settings', tx('nav.settings')), icon: Settings },
         ]
         return studentSections.map((item) => ({ screen: 'team' as const, ...item }))
       }
@@ -83,6 +95,7 @@ export function Rail({
         applications: 'Applications',
         members: 'Members',
         resources: 'Resources',
+        discover: 'Discover',
         audit: 'Audit',
         settings: 'Settings',
       }
@@ -94,7 +107,9 @@ export function Rail({
         }
         return tx(`team.tab${section[0].toUpperCase()}${section.slice(1)}`, fallbacks[section])
       }
-      const sections: TeamSection[] = ['overview', 'applications', 'members', 'resources', 'audit', 'settings']
+      const sections: TeamSection[] = teamViewerRole === 'owner'
+        ? ['overview', 'applications', 'members', 'resources', 'discover', 'audit', 'settings']
+        : ['overview', 'applications', 'members', 'resources', 'discover']
       const shortLabelFor = (section: TeamSection) => {
         if (section === 'overview') return tx('navShort.teamOverview', tx('navShort.dashboard', labelFor(section)))
         if (section === 'applications') return tx('navShort.teamApplications', tx('navShort.applications', labelFor(section)))
@@ -104,6 +119,7 @@ export function Rail({
             : tx('navShort.teamMembers', labelFor(section))
         }
         if (section === 'resources') return tx('navShort.profile', labelFor(section))
+        if (section === 'discover') return tx('navShort.discover', tx('discover.navShort', 'Find'))
         if (section === 'settings') return tx('navShort.settings', labelFor(section))
         return labelFor(section)
       }
@@ -120,6 +136,8 @@ export function Rail({
                 ? Users
                 : section === 'resources'
                   ? ((teamViewerRole === 'admin' || teamViewerRole === 'owner') ? UserRound : Database)
+                : section === 'discover'
+                  ? Compass
                   : section === 'audit'
                     ? History
                     : Settings,
@@ -128,11 +146,11 @@ export function Rail({
     return [
       { screen: 'dashboard', label: tx('nav.dashboard'), shortLabel: tx('navShort.dashboard', tx('nav.dashboard')), icon: ClipboardList },
       { screen: 'workspace', label: tx('nav.applications'), shortLabel: tx('navShort.applications', tx('nav.applications')), icon: LayoutList },
-      { screen: 'discover', label: tx('nav.discover', tx('discover.nav', 'Discover')), shortLabel: tx('navShort.discover', tx('discover.navShort', 'Find')), icon: Compass },
+      ...(canUseDiscover ? [{ screen: 'discover' as const, label: tx('nav.discover', tx('discover.nav', 'Discover')), shortLabel: tx('navShort.discover', tx('discover.navShort', 'Find')), icon: Compass }] : []),
       { screen: 'profile', label: tx('nav.profile'), shortLabel: tx('navShort.profile', tx('nav.profile')), icon: UserRound },
       { screen: 'settings', label: tx('nav.settings'), shortLabel: tx('navShort.settings', tx('nav.settings')), icon: Settings },
     ]
-  }, [isTeamMode, lang, teamViewerRole, tx])
+  }, [canUseDiscover, isTeamMode, teamViewerRole, tx])
 
   const ModeIcon = isTeamMode ? Building2 : UserRound
   const modeLabel = isTeamMode ? tx('nav.modeTeam') : tx('nav.modePersonal')
@@ -144,7 +162,9 @@ export function Rail({
   const itemKeyFor = (item: NavItem) => item.section ? `${item.screen}-${item.section}` : item.screen
   const currentKey = items.find((item) => (
     item.section
-      ? (screen === 'team' && teamSection === item.section) || (screen === 'workspace' && item.section === 'applications')
+      ? (screen === 'team' && teamSection === item.section)
+        || (screen === 'workspace' && item.section === 'applications')
+        || (screen === 'discover' && item.section === 'discover')
       : item.screen === screen
   ))
   const currentActiveKey = currentKey ? itemKeyFor(currentKey) : itemKeyFor(items[0])

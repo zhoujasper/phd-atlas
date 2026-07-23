@@ -29,21 +29,18 @@
 .dossier-core-summary {
   width: 100%;
   min-width: 0;
-  min-height: 38px;
+  min-height: 30px;
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) 28px;
-  gap: 10px;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 8px;
   align-items: center;
-  padding: 4px;
+  padding: 0 0 10px;
   border: 0;
-  border-radius: var(--radius);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
   background: transparent;
   color: var(--text);
   text-align: left;
-  transition:
-    background var(--duration-fast) var(--ease-out),
-    transform 80ms var(--ease-out),
-    box-shadow var(--duration-fast) var(--ease-out);
 }
 
 .dossier-core-card.collapsed .dossier-core-summary {
@@ -52,25 +49,12 @@
   border-radius: 0;
 }
 
-.dossier-core-summary:hover {
-  background: var(--surface-secondary);
-}
-
-.dossier-core-summary:active {
-  transform: scale(0.995);
-}
-
-.dossier-core-summary:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 3px var(--accent-ring);
-}
-
 .dossier-core-summary-icon {
   width: 30px;
   height: 30px;
   display: grid;
   place-items: center;
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   background: var(--accent-soft);
   color: var(--accent);
 }

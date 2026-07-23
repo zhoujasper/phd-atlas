@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   ApiError,
   clearClientSessionCaches,
@@ -37,7 +37,6 @@ import { PUBLIC_EDITION } from '../edition'
 
 const ADMIN_SESSION_KEY = 'phd-atlas-admin-session'
 const ADMIN_LANGUAGE_KEY = 'phd-atlas-admin-language'
-const APP_SESSION_KEY = 'phd-atlas-session'
 
 function normalizeStoredLanguage(language: unknown): Language | null {
   return typeof language === 'string' ? resolveLanguage(language) : null
@@ -62,12 +61,6 @@ function persistAdminLanguagePreference(language: Language) {
 function readStoredLanguage(): Language {
   const adminPreference = readAdminLanguagePreference()
   if (adminPreference) return adminPreference
-
-  for (const key of [ADMIN_SESSION_KEY, APP_SESSION_KEY]) {
-    const parsed = safeParseJson<Partial<AuthSession>>(localStorage.getItem(key))
-    const language = normalizeStoredLanguage(parsed?.user?.settings?.language)
-    if (language) return language
-  }
   return browserDefaultLanguage()
 }
 
@@ -82,7 +75,7 @@ function isAuthExpired(error: unknown) {
 }
 
 export function AdminApp() {
-  const themeProvider = useThemeProvider('light')
+  const themeProvider = useThemeProvider()
   const [session, setSession] = useState<AuthSession | null>(() =>
     safeParseJson<AuthSession>(localStorage.getItem(ADMIN_SESSION_KEY)),
   )
@@ -107,9 +100,8 @@ export function AdminApp() {
   const initialSessionRef = useRef(session)
   const tabListRef = useRef<HTMLElement | null>(null)
   const activeTabButtonRef = useRef<HTMLButtonElement | null>(null)
-  const [tabIndicator, setTabIndicator] = useState({ left: 0, width: 0, ready: false })
   const { toasts, notify, dismissToast, pauseToast, resumeToast } = useToastQueue()
-  const i18nValue = useI18nValue(lang, ['core', 'shared', 'admin', 'settings'])
+  const i18nValue = useI18nValue(lang, ['core', 'shared', 'admin', 'settings', 'team'])
   const tx = i18nValue.tx
   const languages = languageOptions()
   const changeLanguage = (next: Language) => {
@@ -289,19 +281,15 @@ export function AdminApp() {
     { id: 'systemInfo' as const, icon: Server, label: tx('admin.tabs.systemInfo') },
   ]
   const updateTabIndicator = useCallback(() => {
+    const tabList = tabListRef.current
     const activeButton = activeTabButtonRef.current
-    if (!activeButton) return
-    setTabIndicator({
-      left: activeButton.offsetLeft,
-      width: activeButton.offsetWidth,
-      ready: true,
-    })
+    if (!tabList || !activeButton) return
+    const left = activeButton.offsetLeft
+    const width = activeButton.offsetWidth
+    tabList.style.setProperty('--admin-tab-indicator-left', `${left}px`)
+    tabList.style.setProperty('--admin-tab-indicator-width', `${width}px`)
+    tabList.style.setProperty('--admin-tab-indicator-opacity', '1')
   }, [])
-  const tabIndicatorStyle = {
-    '--admin-tab-indicator-left': `${tabIndicator.left}px`,
-    '--admin-tab-indicator-width': `${tabIndicator.width}px`,
-    '--admin-tab-indicator-opacity': tabIndicator.ready ? 1 : 0,
-  } as CSSProperties
 
   useLayoutEffect(() => {
     updateTabIndicator()
@@ -504,7 +492,6 @@ export function AdminApp() {
             className="admin-topbar-tabs"
             role="tablist"
             aria-label={tx('admin.panelTitle')}
-            style={tabIndicatorStyle}
           >
             {tabDefs.map((tab) => {
               const Icon = tab.icon

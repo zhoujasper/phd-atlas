@@ -52,6 +52,7 @@ describe('realtime invalidation hub', () => {
     expect(scopesForMutation('PUT', '/api/applications/app_1')).toEqual(['applications', 'session'])
     expect(scopesForMutation('POST', '/api/notifications/read-all')).toEqual(['notifications'])
     expect(scopesForMutation('PATCH', '/api/teams/team_1')).toEqual(['teams', 'applications', 'session'])
+    expect(scopesForMutation('POST', '/api/discover/programs/delete')).toEqual(['discover'])
   })
 
   it('targets users and teams while suppressing the originating browser tab', () => {

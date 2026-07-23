@@ -87,6 +87,18 @@ export type DossierCard = {
   updatedAt?: string
 }
 
+export type ReviewComment = {
+  id: string
+  authorId: string
+  authorName: string
+  body: string
+  createdAt: string
+  targetTab?: DetailTab
+  parentId?: string | null
+  mentionedUserIds?: string[]
+  replies?: ReviewComment[]
+}
+
 export type ApplicationRecord = {
   id: string
   ownerId?: string
@@ -116,6 +128,14 @@ export type ApplicationRecord = {
     name: string
     country: string
     website: string
+    logo?: {
+      dataUrl: string
+      source: 'website' | 'link' | 'upload'
+      sourceUrl?: string
+      updatedAt: string
+    }
+    /** Defaults to true for legacy records; false preserves an intentional removal. */
+    logoAutoDetect?: boolean
   }
   program: string
   deadline: string
@@ -177,6 +197,7 @@ export type ApplicationRecord = {
       assetId?: string
       fileSize?: number
       mimeType?: string
+      storageName?: string
       source?: string
     }>
     deliveryStatus?: 'sent' | 'log-only'
@@ -279,14 +300,7 @@ export type ApplicationRecord = {
     url?: string
   }>
   /** Team review-comment thread -- distinct from `communications` (professor correspondence). */
-  reviewComments?: Array<{
-    id: string
-    authorId: string
-    authorName: string
-    body: string
-    createdAt: string
-    targetTab?: DetailTab
-  }>
+  reviewComments?: ReviewComment[]
   backupSettings?: {
     autoBackup: boolean
     frequency: BackupFrequency

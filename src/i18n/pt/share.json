@@ -21,7 +21,8 @@
       "duration": "Duração",
       "permission": "Permissão",
       "scope": "Escopo",
-      "actions": "Ações"
+      "actions": "Ações",
+      "subject": "Item compartilhado"
     },
     "permission": {
       "view": "Visualizar",
@@ -44,7 +45,8 @@
     "sectionsTitle": "Páginas compartilhadas",
     "scope": {
       "all": "Todas as páginas",
-      "count": "{count} páginas"
+      "count": "{count} páginas",
+      "upload": "Envio de anexos"
     },
     "sections": {
       "overview": "Visão geral",

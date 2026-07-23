@@ -1,20 +1,26 @@
-import { Bot, CheckCircle2, History, LoaderCircle, Paperclip, Play, RotateCcw, ShieldCheck, Square, Sparkles, X } from 'lucide-react'
+import { Bot, CheckCircle2, FilePlus2, History, LoaderCircle, Paperclip, Play, RotateCcw, ShieldCheck, Square, Sparkles, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AiDraftEvent, AiDraftGrants, AiDraftInput, AiKey } from '../../api/phdApi'
+import type { AiDraftEvent, AiDraftGrants, AiDraftInput, AiKey, ProfileAsset } from '../../api/phdApi'
 import { normalizeErrorMessage } from '../../errorMessages'
 import { useI18n } from '../hooks/useI18n'
 import { Select } from './Select'
 import { SwitchControl } from './SwitchControl'
 import { CollapsiblePanel } from './CollapsiblePanel'
 import { InlinePresence } from './InlinePresence'
+import { FileDropzone } from './FileDropzone'
 
-type DraftAttachment = {
+/**
+ * A server-owned file that can be either supplied as AI reference or proposed
+ * for the outgoing email. `id` deliberately mirrors the backend tool id.
+ */
+export type AiAttachmentCandidate = {
   id: string
+  fileId: string
   name: string
   mimeType?: string
-  file?: File
-  fileId?: string
   fileSize?: number
+  source: 'profile' | 'checklist' | 'correspondence'
+  sourceId: string
 }
 
 type DraftSnapshot = {
@@ -25,25 +31,25 @@ type DraftSnapshot = {
   kind: 'initial' | 'generated' | 'revision'
 }
 
+// The three sources the user expects every fresh draft to begin with. More
+// sensitive material lists remain opt-in, even when the user has used them in
+// an earlier draft.
 const initialGrants: AiDraftGrants = {
-  userProfile: false,
+  userProfile: true,
   dossier: true,
   checklist: false,
   scholarships: false,
   tasks: false,
-  correspondence: false,
+  correspondence: true,
   attachments: false,
 }
 
 const EMPTY_AI_KEYS: AiKey[] = []
 const grantKeys = ['userProfile', 'dossier', 'checklist', 'scholarships', 'tasks', 'correspondence'] as const
-const MAX_ATTACHMENT_BYTES = 600 * 1024
-
-function supportsAttachment(key: AiKey | undefined, _mimeType: string) {
-  // All configured providers accept any draft attachment: images use native
-  // multimodal parts; other files are inlined as text/base64 context server-side.
-  return Boolean(key)
-}
+// Extra files are the only AI references that travel from the browser. Saved
+// workspace files are resolved by the server from the encrypted vault.
+const MAX_INLINE_EXTRA_ATTACHMENT_BYTES = 200 * 1024
+const MAX_INLINE_EXTRA_ATTACHMENTS = 3
 
 function readAttachment(file: Blob) {
   return new Promise<string>((resolve, reject) => {
@@ -55,6 +61,11 @@ function readAttachment(file: Blob) {
     }
     reader.readAsDataURL(file)
   })
+}
+
+function localAttachmentId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return `ai-extra-${crypto.randomUUID()}`
+  return `ai-extra-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
 function parseDraft(value: string) {
@@ -78,19 +89,25 @@ function sameDraft(left: { subject: string; body: string }, right: { subject: st
   return left.subject === right.subject && left.body === right.body
 }
 
+function profileMaterialSummary(asset: ProfileAsset) {
+  return asset.description.trim() || asset.kind.trim() || asset.name
+}
+
 export function AiDraftPanel({
   open,
   applicationId,
   aiKeys,
   mode,
   replyToId,
-  attachments,
+  profileAssets,
+  attachmentCandidates,
+  outputAttachmentIds,
   currentDraft,
   draftSessionKey,
   onClose,
   onDraft,
-  onResolveAttachment,
   onDraftChange,
+  onOutputAttachmentIdsChange,
   onGeneratingChange,
   onDraftRestoreChange,
   onNotify,
@@ -100,13 +117,15 @@ export function AiDraftPanel({
   aiKeys: AiKey[] | null | undefined
   mode: 'compose' | 'reply'
   replyToId?: string | null
-  attachments: DraftAttachment[]
+  profileAssets: ProfileAsset[]
+  attachmentCandidates: AiAttachmentCandidate[]
+  outputAttachmentIds: readonly string[]
   currentDraft: { subject: string; body: string }
   draftSessionKey: number
   onClose: () => void
   onDraft: (input: AiDraftInput, onEvent: (event: AiDraftEvent) => void, signal?: AbortSignal) => Promise<void>
-  onResolveAttachment?: (fileId: string) => Promise<Blob>
   onDraftChange: (draft: Partial<{ subject: string; body: string }>) => void
+  onOutputAttachmentIdsChange?: (ids: string[], options?: { byAi?: boolean }) => void
   onGeneratingChange?: (generating: boolean) => void
   onDraftRestoreChange?: (restoring: boolean) => void
   onNotify?: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
@@ -115,25 +134,49 @@ export function AiDraftPanel({
   const [keyId, setKeyId] = useState('')
   const [instructions, setInstructions] = useState('')
   const [grants, setGrants] = useState<AiDraftGrants>(initialGrants)
-  const [selectedAttachments, setSelectedAttachments] = useState<Set<string>>(new Set())
+  const [selectedProfileMaterialIds, setSelectedProfileMaterialIds] = useState<Set<string>>(new Set())
+  const [extraAttachments, setExtraAttachments] = useState<Array<{ id: string; file: File }>>([])
   const [output, setOutput] = useState('')
   const [history, setHistory] = useState<DraftSnapshot[]>([])
   const [activeRevisionId, setActiveRevisionId] = useState<string | null>(null)
-  const [phase, setPhase] = useState<'idle' | 'connecting' | 'context' | 'drafting' | 'done'>('idle')
+  const [phase, setPhase] = useState<'idle' | 'connecting' | 'context' | 'attaching' | 'drafting' | 'done'>('idle')
   const controllerRef = useRef<AbortController | null>(null)
-  const notify = (message: string, tone: 'success' | 'error' | 'info' | 'warning' = 'error') => onNotify?.(message, tone)
   const outputRef = useRef('')
   const historyRef = useRef<DraftSnapshot[]>([])
   const revisionSequenceRef = useRef(0)
   const restoreTimerRef = useRef<number | null>(null)
+  const wasOpenRef = useRef(false)
+  const outputAttachmentIdsRef = useRef<string[]>([...outputAttachmentIds])
+  const notify = (message: string, tone: 'success' | 'error' | 'info' | 'warning' = 'error') => onNotify?.(message, tone)
   const availableKeys = aiKeys ?? EMPTY_AI_KEYS
   const selectedKey = availableKeys.find((key) => key.id === keyId) ?? availableKeys[0]
   const keyOptions = useMemo(() => availableKeys.map((key) => ({
     value: key.id,
     label: `${key.label} · ${key.model}`,
   })), [availableKeys])
-  const isGenerating = phase === 'connecting' || phase === 'context' || phase === 'drafting'
+  const isGenerating = phase === 'connecting' || phase === 'context' || phase === 'attaching' || phase === 'drafting'
   const hasCompletedAiDraft = history.some((revision) => revision.kind !== 'initial')
+  const selectedProfileIdList = useMemo(() => Array.from(selectedProfileMaterialIds), [selectedProfileMaterialIds])
+  const selectedOutputAttachmentIds = useMemo(() => new Set(outputAttachmentIds), [outputAttachmentIds])
+
+  const sourceReferenceAttachments = useMemo(() => {
+    const selected = attachmentCandidates.filter((candidate) => (
+      (candidate.source === 'profile' && grants.userProfile && selectedProfileMaterialIds.has(candidate.sourceId))
+      || (candidate.source === 'checklist' && grants.checklist)
+      || (candidate.source === 'correspondence' && grants.correspondence)
+    ))
+    return Array.from(new Map(selected.map((candidate) => [candidate.fileId, candidate])).values())
+  }, [attachmentCandidates, grants.checklist, grants.correspondence, grants.userProfile, selectedProfileMaterialIds])
+
+  const outputGroups = useMemo(() => {
+    const groups: Record<AiAttachmentCandidate['source'], AiAttachmentCandidate[]> = {
+      profile: [],
+      checklist: [],
+      correspondence: [],
+    }
+    attachmentCandidates.forEach((candidate) => groups[candidate.source].push(candidate))
+    return groups
+  }, [attachmentCandidates])
 
   const createRevision = (draft: { subject: string; body: string }, kind: DraftSnapshot['kind'], instruction: string): DraftSnapshot => ({
     id: `ai-draft-${++revisionSequenceRef.current}`,
@@ -142,6 +185,10 @@ export function AiDraftPanel({
     instruction,
     kind,
   })
+
+  useEffect(() => {
+    outputAttachmentIdsRef.current = [...outputAttachmentIds]
+  }, [outputAttachmentIds])
 
   useEffect(() => {
     if (!keyId && availableKeys[0]) setKeyId(availableKeys[0].id)
@@ -159,6 +206,9 @@ export function AiDraftPanel({
     onGeneratingChange?.(false)
     onDraftRestoreChange?.(false)
     setInstructions('')
+    setGrants(initialGrants)
+    setSelectedProfileMaterialIds(new Set())
+    setExtraAttachments([])
     setOutput('')
     outputRef.current = ''
     setHistory([])
@@ -167,31 +217,59 @@ export function AiDraftPanel({
     setPhase('idle')
   }, [applicationId, draftSessionKey, mode, onDraftRestoreChange, onGeneratingChange, replyToId])
 
+  // Opening the inspector starts a fresh consent session. Closing it leaves
+  // the editable email and any already chosen outgoing attachments untouched.
+  useEffect(() => {
+    if (open && !wasOpenRef.current) {
+      setGrants(initialGrants)
+      setSelectedProfileMaterialIds(new Set())
+      setExtraAttachments([])
+    }
+    wasOpenRef.current = open
+  }, [open])
+
   useEffect(() => () => {
     controllerRef.current?.abort()
     if (restoreTimerRef.current !== null) window.clearTimeout(restoreTimerRef.current)
   }, [])
 
-  const selectableAttachments = attachments.filter((attachment) => attachment.file || (attachment.fileId && onResolveAttachment))
-  const attachmentAvailability = selectableAttachments.map((attachment) => {
-    const mimeType = attachment.mimeType || attachment.file?.type || 'application/octet-stream'
-    const tooLarge = (attachment.file?.size ?? attachment.fileSize ?? 0) > MAX_ATTACHMENT_BYTES
-    const supported = supportsAttachment(selectedKey, mimeType)
-    return { attachment, mimeType, supported, tooLarge, selectable: supported && !tooLarge }
-  })
-
   const setGrant = (key: keyof AiDraftGrants, checked: boolean) => {
     setGrants((current) => ({ ...current, [key]: checked }))
-    if (key === 'attachments' && !checked) setSelectedAttachments(new Set())
+    if (key === 'userProfile' && !checked) setSelectedProfileMaterialIds(new Set())
   }
 
-  const toggleAttachment = (id: string) => {
-    setSelectedAttachments((current) => {
+  const toggleProfileMaterial = (id: string) => {
+    setSelectedProfileMaterialIds((current) => {
       const next = new Set(current)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
+  }
+
+  const setOutputAttachmentIds = (ids: Iterable<string>, options?: { byAi?: boolean }) => {
+    const allowed = new Set(attachmentCandidates.map((candidate) => candidate.id))
+    const next = Array.from(new Set(ids)).filter((id) => allowed.has(id))
+    outputAttachmentIdsRef.current = next
+    onOutputAttachmentIdsChange?.(next, options)
+  }
+
+  const toggleOutputAttachment = (id: string) => {
+    const next = new Set(outputAttachmentIdsRef.current)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    setOutputAttachmentIds(next)
+  }
+
+  const addExtraAttachments = (files: File[]) => {
+    setExtraAttachments((current) => [
+      ...current,
+      ...files.map((file) => ({ id: localAttachmentId(), file })),
+    ])
+  }
+
+  const removeExtraAttachment = (id: string) => {
+    setExtraAttachments((current) => current.filter((attachment) => attachment.id !== id))
   }
 
   const stop = () => {
@@ -233,17 +311,15 @@ export function AiDraftPanel({
     const controller = new AbortController()
     controllerRef.current = controller
     try {
-      const selectedFiles = attachmentAvailability.filter(({ attachment, selectable }) => grants.attachments && selectable && selectedAttachments.has(attachment.id))
-      const uploadedAttachments = await Promise.all(selectedFiles.map(async ({ attachment, mimeType }) => {
-        const source = attachment.file ?? (attachment.fileId ? await onResolveAttachment?.(attachment.fileId) : undefined)
-        if (!source) throw new Error(tx('dossier.aiAttachmentReadFailed'))
-        if (source.size > MAX_ATTACHMENT_BYTES) throw new Error(format(tx('dossier.aiAttachmentTooLargeNamed'), { name: attachment.name }))
-        return {
-          name: attachment.name,
-          mimeType: attachment.mimeType || source.type || mimeType,
-          contentBase64: await readAttachment(source),
-        }
-      }))
+      const uploadedAttachments = await Promise.all(extraAttachments.map(async ({ file }) => ({
+        name: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        contentBase64: await readAttachment(file),
+      })))
+      const effectiveGrants: AiDraftGrants = {
+        ...grants,
+        attachments: sourceReferenceAttachments.length > 0 || uploadedAttachments.length > 0,
+      }
       await onDraft({
         keyId: selectedKey.id,
         applicationId,
@@ -251,11 +327,21 @@ export function AiDraftPanel({
         instructions: instruction,
         ...(mode === 'reply' && replyToId ? { replyToId } : {}),
         ...(hasDraftContent(draftBeforeGeneration) ? { currentDraft: draftBeforeGeneration } : {}),
-        grants,
+        grants: effectiveGrants,
+        profileAssetIds: grants.userProfile ? selectedProfileIdList : [],
         attachments: uploadedAttachments,
       }, (event) => {
         if (event.type === 'status') {
-          setPhase(event.phase === 'context' ? 'context' : 'drafting')
+          if (event.phase === 'context') setPhase('context')
+          else if (event.phase === 'attaching') setPhase('attaching')
+          else setPhase('drafting')
+          return
+        }
+        if (event.type === 'attachment-selection') {
+          const next = new Set(outputAttachmentIdsRef.current)
+          event.attachmentIds.forEach((id) => next.add(id))
+          setOutputAttachmentIds(next, { byAi: true })
+          setPhase('attaching')
           return
         }
         if (event.type === 'token') {
@@ -317,6 +403,12 @@ export function AiDraftPanel({
     }
   }
 
+  const phaseLabel = phase === 'context'
+    ? tx('dossier.aiReadingContext')
+    : phase === 'attaching'
+      ? tx('dossier.aiSelectingAttachments')
+      : tx('dossier.aiDrafting')
+
   return (
     <aside className={`ai-draft-panel ${open ? 'open' : ''}`} aria-label={tx('dossier.aiTitle')} aria-hidden={!open}>
       <div className="ai-draft-head">
@@ -377,42 +469,110 @@ export function AiDraftPanel({
             <div className="ai-draft-consent-head"><span>{tx('dossier.aiContextTitle')}</span><small>{tx('dossier.aiContextHint')}</small></div>
             <div className="ai-draft-grant-list">
               {grantKeys.map((key) => (
-                <div key={key} className="ai-draft-grant">
-                  <span><strong>{tx(`dossier.aiGrants.${key}`)}</strong><small>{tx(`dossier.aiGrantHints.${key}`)}</small></span>
-                  <SwitchControl checked={grants[key]} label={tx(`dossier.aiGrants.${key}`)} onChange={(checked) => setGrant(key, checked)} disabled={isGenerating} />
+                <div key={key} className={`ai-draft-grant-stack ${key === 'userProfile' && grants.userProfile ? 'expanded' : ''}`}>
+                  <div className="ai-draft-grant">
+                    <span>
+                      <strong>{tx(`dossier.aiGrants.${key}`)}</strong>
+                      <small>{tx(`dossier.aiGrantHints.${key}`)}</small>
+                      {(key === 'checklist' || key === 'correspondence') && grants[key] && sourceReferenceAttachments.filter((attachment) => attachment.source === key).length > 0 ? (
+                        <em>{format(tx('dossier.aiReferenceFileCount'), { count: sourceReferenceAttachments.filter((attachment) => attachment.source === key).length })}</em>
+                      ) : null}
+                    </span>
+                    <SwitchControl checked={grants[key]} label={tx(`dossier.aiGrants.${key}`)} onChange={(checked) => setGrant(key, checked)} disabled={isGenerating} />
+                  </div>
+                  {key === 'userProfile' ? (
+                    <CollapsiblePanel open={grants.userProfile} keepMounted className="ai-profile-material-collapse">
+                      <div className="ai-profile-material-picker">
+                        <div className="ai-profile-material-picker-head">
+                          <span>{tx('dossier.aiProfileMaterialsTitle')}</span>
+                          <small>{tx('dossier.aiProfileMaterialsHint')}</small>
+                        </div>
+                        {profileAssets.length === 0 ? (
+                          <p className="ai-profile-material-empty">{tx('dossier.aiProfileMaterialsEmpty')}</p>
+                        ) : (
+                          <div className="ai-profile-material-list">
+                            {profileAssets.map((asset) => {
+                              const checked = selectedProfileMaterialIds.has(asset.id)
+                              const attachmentCount = asset.attachments?.length ?? 0
+                              return (
+                                <label key={asset.id} className={`ai-profile-material ${checked ? 'selected' : ''}`}>
+                                  <input type="checkbox" checked={checked} onChange={() => toggleProfileMaterial(asset.id)} disabled={isGenerating} />
+                                  <span>
+                                    <strong>{asset.name}</strong>
+                                    <small>{profileMaterialSummary(asset)}</small>
+                                  </span>
+                                  {attachmentCount > 0 ? <em><Paperclip size={11} aria-hidden="true" /> {attachmentCount}</em> : null}
+                                </label>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </CollapsiblePanel>
+                  ) : null}
                 </div>
               ))}
             </div>
           </div>
 
-          <div className="ai-draft-attachments">
-            <div className="ai-draft-grant">
-              <span><strong>{tx('dossier.aiGrants.attachments')}</strong><small>{tx('dossier.aiGrantHints.attachments')}</small></span>
-              <SwitchControl checked={grants.attachments} label={tx('dossier.aiGrants.attachments')} onChange={(checked) => setGrant('attachments', checked)} disabled={isGenerating || selectableAttachments.length === 0} />
+          <section className="ai-draft-extra-attachments" aria-label={tx('dossier.aiUploadExtraAttachments')}>
+            <div className="ai-draft-section-head">
+              <span><FilePlus2 size={13} aria-hidden="true" /> {tx('dossier.aiUploadExtraAttachments')}</span>
+              <small>{tx('dossier.aiUploadExtraAttachmentsHint')}</small>
             </div>
-            <CollapsiblePanel open={grants.attachments && selectableAttachments.length > 0} keepMounted className="ai-draft-attachment-collapse">
-              <div className="ai-draft-attachment-list">
-                {attachmentAvailability.map(({ attachment, supported, tooLarge, selectable }) => (
-                  <label key={attachment.id} className={`ai-draft-attachment ${selectable ? '' : 'disabled'}`}>
-                    <input type="checkbox" checked={selectedAttachments.has(attachment.id)} onChange={() => toggleAttachment(attachment.id)} disabled={!selectable || isGenerating} />
+            <FileDropzone
+              className="ai-draft-extra-dropzone"
+              compact
+              title={tx('dossier.aiUploadExtraAttachments')}
+              hint={tx('dossier.aiUploadExtraAttachmentsHint')}
+              maxFileSize={MAX_INLINE_EXTRA_ATTACHMENT_BYTES}
+              maxFiles={MAX_INLINE_EXTRA_ATTACHMENTS}
+              existingFileCount={extraAttachments.length}
+              disabled={isGenerating}
+              onFiles={addExtraAttachments}
+            />
+            <CollapsiblePanel open={extraAttachments.length > 0} keepMounted className="ai-draft-extra-list-collapse">
+              <div className="ai-draft-extra-list">
+                {extraAttachments.map(({ id, file }) => (
+                  <span key={id} className="ai-draft-extra-file">
                     <Paperclip size={12} aria-hidden="true" />
-                    <span>{attachment.name}</span>
-                    {!supported ? <em>{tx('dossier.aiAttachmentUnsupported')}</em> : tooLarge ? <em>{tx('dossier.aiAttachmentTooLarge')}</em> : null}
-                  </label>
+                    <span>{file.name}</span>
+                    <button type="button" onClick={() => removeExtraAttachment(id)} aria-label={tx('dossier.remove')} disabled={isGenerating}><X size={12} aria-hidden="true" /></button>
+                  </span>
                 ))}
               </div>
             </CollapsiblePanel>
-            <CollapsiblePanel open={grants.attachments && Boolean(selectedKey)} keepMounted className="ai-draft-attachment-note-collapse">
-              <p className="ai-draft-attachment-note">
-                <Paperclip size={12} aria-hidden="true" /> {tx('dossier.aiAnyAttachmentHint')}
-              </p>
-            </CollapsiblePanel>
-          </div>
+          </section>
+
+          <section className="ai-draft-output-attachments" aria-label={tx('dossier.aiOutputAttachmentTitle')}>
+            <div className="ai-draft-section-head">
+              <span><Paperclip size={13} aria-hidden="true" /> {tx('dossier.aiOutputAttachmentTitle')}</span>
+              <small>{tx('dossier.aiOutputAttachmentHint')}</small>
+            </div>
+            {attachmentCandidates.length === 0 ? (
+              <p className="ai-output-attachment-empty">{tx('dossier.aiOutputAttachmentEmpty')}</p>
+            ) : (
+              <div className="ai-output-attachment-list">
+                {(Object.keys(outputGroups) as AiAttachmentCandidate['source'][]).map((source) => outputGroups[source].length > 0 ? (
+                  <div key={source} className="ai-output-attachment-group">
+                    <span>{tx(`dossier.aiAttachmentSources.${source}`)}</span>
+                    {outputGroups[source].map((candidate) => (
+                      <label key={candidate.id} className={`ai-output-attachment ${selectedOutputAttachmentIds.has(candidate.id) ? 'selected' : ''}`}>
+                        <input type="checkbox" checked={selectedOutputAttachmentIds.has(candidate.id)} onChange={() => toggleOutputAttachment(candidate.id)} disabled={isGenerating} />
+                        <Paperclip size={12} aria-hidden="true" />
+                        <span>{candidate.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : null)}
+              </div>
+            )}
+          </section>
 
           <CollapsiblePanel open={Boolean(isGenerating || output)} keepMounted className="ai-draft-progress-collapse">
             <div className={`ai-draft-progress ${isGenerating ? 'working' : 'complete'}`} aria-live="polite">
               <span className="ai-draft-progress-icon" aria-hidden="true">{isGenerating ? <LoaderCircle className="ai-spin" size={14} /> : <CheckCircle2 size={14} />}</span>
-              <span>{isGenerating ? (phase === 'context' ? tx('dossier.aiReadingContext') : tx('dossier.aiDrafting')) : tx('dossier.aiDraftReady')}</span>
+              <span>{isGenerating ? phaseLabel : tx('dossier.aiDraftReady')}</span>
               {isGenerating ? <i aria-hidden="true"><i /><i /><i /></i> : null}
             </div>
           </CollapsiblePanel>

@@ -64,6 +64,54 @@ function communicationEquivalent(existing, input) {
     && existingTo.some((address) => incomingTo.includes(address))
 }
 
+function attachmentMetadataIdentity(attachment) {
+  return [
+    String(attachment?.fileName ?? '').toLowerCase(),
+    Number(attachment?.fileSize ?? 0),
+    String(attachment?.mimeType ?? '').toLowerCase(),
+  ].join('|')
+}
+
+function attachmentIdentity(attachment) {
+  if (attachment?.fileId) return `file:${attachment.fileId}`
+  return attachmentMetadataIdentity(attachment)
+}
+
+/**
+ * A previously imported correspondence row may predate encrypted mail-file
+ * retention. On a later history sync, enrich that same row instead of adding
+ * a duplicate email so its attachments become available to the AI context.
+ */
+function mergeFetchedAttachmentReferences(communication, input) {
+  const incoming = input.attachments ?? []
+  if (incoming.length === 0) return false
+  const next = [...(communication.attachments ?? [])]
+  let changed = false
+  for (const attachment of incoming) {
+    const identity = attachmentIdentity(attachment)
+    const metadataIdentity = attachmentMetadataIdentity(attachment)
+    const index = next.findIndex((candidate) => (
+      attachmentIdentity(candidate) === identity
+      || (!candidate.fileId && attachmentMetadataIdentity(candidate) === metadataIdentity)
+    ))
+    if (index === -1) {
+      next.push(attachment)
+      changed = true
+      continue
+    }
+    const current = next[index]
+    if (
+      (!current.fileId && attachment.fileId)
+      || (current.fileId === attachment.fileId && !current.storageName && attachment.storageName)
+    ) {
+      next[index] = { ...current, ...attachment }
+      changed = true
+    }
+  }
+  if (changed) communication.attachments = next
+  return changed
+}
+
 function professorIndex(applications, userId) {
   const result = new Map()
   for (const application of applications ?? []) {
@@ -211,6 +259,9 @@ export function applyFetchedMailMessages(store, user, fetchedMessages, options =
         else outgoing += 1
         changed = true
         newlyImported = true
+      } else if (mergeFetchedAttachmentReferences(communication, input)) {
+        application.updatedAt = now
+        changed = true
       }
 
       if (mode === 'incremental' && (newlyImported || communication.importedAt)) {

@@ -102,6 +102,23 @@
     "discoverCta": "Apri Scopri",
     "discoverTitle": "Trova il tuo prossimo programma",
     "openDiscover": "Scopri i programmi",
-    "discoverSubtitle": "Sfoglia programmi e consulenti di dottorato, classifica in base all'idoneità, importa nelle applicazioni e ricevi notifiche sulle partite."
+    "discoverSubtitle": "Sfoglia programmi e consulenti di dottorato, classifica in base all'idoneità, importa nelle applicazioni e ricevi notifiche sulle partite.",
+    "guidanceTitle": "Il mio team di orientamento",
+    "guidanceSubtitle": "I tuoi contatti assegnati in {team}.",
+    "guidanceEmptyTitle": "Non è ancora stato assegnato un referente.",
+    "guidanceEmptyDesc": "L’amministrazione dell’organizzazione può assegnarti un docente dall’area Membri.",
+    "guidanceRoleOwner": "Amministrazione dell’organizzazione",
+    "guidanceRoleTeacher": "Docente",
+    "guidanceEmail": "Invia un’e-mail a {name}",
+    "guidanceEmailShort": "E-mail",
+    "guidanceCall": "Chiama {name}",
+    "guidanceCallShort": "Chiama",
+    "guidanceWebsite": "Apri il sito di {name}",
+    "guidanceWebsiteShort": "Sito web",
+    "guidanceHideDetails": "Nascondi i dettagli di {name}",
+    "guidanceShowDetails": "Mostra i dettagli di {name}",
+    "guidanceOffice": "Ufficio",
+    "guidanceAvailability": "Disponibilità",
+    "guidanceSupport": "Come posso aiutarti"
   }
 }

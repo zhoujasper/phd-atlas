@@ -68,6 +68,41 @@
   gap: 8px;
 }
 
+/* Paired text actions form one visual control tier. Keep the primary action
+   from becoming taller or typographically louder than its cancel/secondary
+   peer, while allowing feature-specific and mobile rules to opt into a
+   different size through their normal, more-specific selectors. */
+:where(
+  :has(> :where(button.primary-action, a.primary-action))
+  :has(> :where(
+    button.quiet-action,
+    a.quiet-action,
+    button.danger-action,
+    a.danger-action,
+    button.warning-action,
+    a.warning-action,
+    button.ghost-action,
+    a.ghost-action
+  ))
+) > :where(
+  button.primary-action,
+  a.primary-action,
+  button.quiet-action,
+  a.quiet-action,
+  button.danger-action,
+  a.danger-action,
+  button.warning-action,
+  a.warning-action,
+  button.ghost-action,
+  a.ghost-action
+) {
+  min-height: 32px;
+  height: 32px;
+  padding-inline: 12px;
+  font-size: 12px;
+  line-height: 1;
+}
+
 /* ── Global interaction snappiness ──────────────────────────────────────── */
 
 .quiet-action,
@@ -669,8 +704,8 @@ select:focus-visible,
 }
 
 /* Hold every shared overlay on its entrance keyframe before the first paint.
-   Without this, the final modal frame can flash for one frame before the
-   opacity/scale animation starts, especially on large or scrollable dialogs. */
+   The final keyframe resolves to `transform: none`, so this does not retain a
+   compositor layer after the entrance has completed. */
 .dialog-layer:not(.exiting),
 .dialog-layer:not(.exiting) > * {
   animation-fill-mode: both;
@@ -678,7 +713,6 @@ select:focus-visible,
 
 .dialog-layer:not(.exiting) > * {
   transform-origin: center;
-  backface-visibility: hidden;
 }
 
 /* ── Reduced motion ─────────────────────────────────────────────────────── */

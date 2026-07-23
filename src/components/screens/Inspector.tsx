@@ -66,6 +66,8 @@ type InspectorProps = {
   readOnly?: boolean
   /** Optional version history shown as a compact inspector card. */
   versions?: ApplicationRecord['versions']
+  /** Export and backup belong to the owner workspace, not a shared editor. */
+  showManagementActions?: boolean
 }
 
 export function Inspector({
@@ -89,6 +91,7 @@ export function Inspector({
   aiActive = false,
   readOnly = false,
   versions,
+  showManagementActions = true,
 }: InspectorProps) {
   const { tx, format, lang } = useI18n()
   const locale = localeForLanguage(lang)
@@ -412,7 +415,7 @@ export function Inspector({
         <div className="inspector-overview-deadlines">
           <div className="inspector-deadline-heading">
             <h4>{tx('inspector.deadline')}</h4>
-            {pastDeadlineEntries.length > 0 ? (
+            {pastDeadlineEntries.length > 0 && onShowPastDeadlinesChange ? (
               <button
                 type="button"
                 className={`inspector-past-deadlines-toggle${showPastDeadlines ? ' active' : ''}`}
@@ -547,11 +550,11 @@ export function Inspector({
       ) : null}
 
       {/* Export / Backup — owner workspace only */}
-      {!readOnly ? (
+      {!readOnly && showManagementActions ? (
         <>
           <div className="inspector-card">
             <h4>{tx('inspector.export')}</h4>
-            <div className="export-grid">
+            <div className="export-grid inspector-export-grid">
               {(['json', 'csv', 'excel', 'pdf'] as const).map((fmt) => (
                 <AsyncActionButton
                   key={fmt}
@@ -577,7 +580,7 @@ export function Inspector({
                 </button>
               ) : (
                 <AsyncActionButton
-                  className="full-line"
+                  className="full-line inspector-backup-action"
                   onAction={onBackup}
                   disabled={busy}
                   IdleIcon={DatabaseBackup}

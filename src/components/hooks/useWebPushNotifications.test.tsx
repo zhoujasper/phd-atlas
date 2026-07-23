@@ -25,6 +25,7 @@ const originalNotification = Object.getOwnPropertyDescriptor(window, 'Notificati
 const originalPushManager = Object.getOwnPropertyDescriptor(window, 'PushManager')
 const originalServiceWorker = Object.getOwnPropertyDescriptor(navigator, 'serviceWorker')
 let serviceWorker: ServiceWorkerContainer
+let activeWorker: { postMessage: ReturnType<typeof vi.fn> }
 
 beforeEach(() => {
   vi.resetModules()
@@ -38,8 +39,9 @@ beforeEach(() => {
     unsubscribe: vi.fn().mockResolvedValue(true),
   }
   let currentSubscription: typeof subscription | null = null
+  activeWorker = { postMessage: vi.fn() }
   const registration = {
-    active: {},
+    active: activeWorker,
     pushManager: {
       getSubscription: vi.fn(async () => currentSubscription),
       subscribe: vi.fn(async () => {
@@ -156,6 +158,22 @@ describe('useWebPushNotifications', () => {
 
     const registration = await serviceWorker.getRegistration()
     expect(registration!.pushManager.subscribe).not.toHaveBeenCalled()
+    expect(api.saveWebPushSubscription).not.toHaveBeenCalled()
+  })
+
+  it('persists a disabled delivery preference and ignores a late worker message', async () => {
+    const onNotification = vi.fn()
+    const { useWebPushNotifications } = await import('./useWebPushNotifications')
+    renderHook(() => useWebPushNotifications('session_token', false, onNotification))
+
+    await waitFor(() => expect(activeWorker.postMessage).toHaveBeenCalledWith({
+      type: 'SET_PUSH_NOTIFICATIONS_ENABLED',
+      enabled: false,
+    }))
+    serviceWorker.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'PUSH_NOTIFICATION', notification: { id: 'late', title: 'Late alert' } },
+    }))
+    expect(onNotification).not.toHaveBeenCalled()
     expect(api.saveWebPushSubscription).not.toHaveBeenCalled()
   })
 

@@ -98,6 +98,8 @@
     "adminNotificationMailbox": "Почтовый ящик для уведомлений администратора",
     "receiveAt": "Получить в",
     "receiveEmails": "Получать электронные письма",
+    "emailNotifications": "Уведомления по электронной почте",
+    "emailNotificationsDesc": "Получайте одно сводное письмо с последними обновлениями вместо отдельного письма для каждого уведомления.",
     "primaryRecovery": "Первичное восстановление",
     "notify": "Уведомить",
     "makePrimary": "Сделать основным",
@@ -386,7 +388,9 @@
     "testEmailRecipient": "Тестовый адрес электронной почты получателя",
     "passkeyRenamed": "Ключ доступа переименован.",
     "passkeyRenameCancel": "Отменить переименование",
-    "testEmailRecipientPlaceholder": "получатель@example.com"
+    "testEmailRecipientPlaceholder": "получатель@example.com",
+    "shareProjectLinkType": "Предпросмотр проекта",
+    "shareUploadLinkType": "Загрузка вложений"
   },
   "calendar": {
     "title": "Лента календаря",
@@ -400,6 +404,8 @@
     "regenerateHint": "При повторном создании создается новый частный URL-адрес и отключается старая ссылка на подписку.",
     "regeneratedToast": "Ссылка на подписку на календарь восстановлена.",
     "enable": "Включить ленту календаря",
+    "enabling": "Включение календарной ленты…",
+    "statusEnabling": "Включение",
     "enabledToast": "Лента календаря включена.",
     "notEnabled": "Лента календаря отключена. Включите его, чтобы создать частный URL-адрес iCal для ваших сроков и напоминаний.",
     "providerLinks": "Ссылки на приложение «Календарь»",

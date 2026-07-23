@@ -3,11 +3,11 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import type { AiDraftEvent, AiDraftInput, AiKey } from '../../api/phdApi'
+import type { AiDraftEvent, AiDraftInput, AiKey, ProfileAsset } from '../../api/phdApi'
 import englishDossier from '../../i18n/en/dossier.json'
 import { getDict, registerLanguage, t as translate, tpl } from '../../i18n'
 import { I18nContext } from '../hooks/useI18n'
-import { AiDraftPanel } from './AiDraftPanel'
+import { AiDraftPanel, type AiAttachmentCandidate } from './AiDraftPanel'
 
 registerLanguage('en', englishDossier, 'dossier')
 
@@ -31,14 +31,15 @@ type DraftRunner = (input: AiDraftInput, onEvent: (event: AiDraftEvent) => void,
 
 function DraftHarness({
   onDraft,
-  attachments = [],
-  onResolveAttachment,
+  profileAssets = [],
+  attachmentCandidates = [],
 }: {
   onDraft: DraftRunner
-  attachments?: Array<{ id: string; name: string; mimeType?: string; file?: File; fileId?: string; fileSize?: number }>
-  onResolveAttachment?: (fileId: string) => Promise<Blob>
+  profileAssets?: ProfileAsset[]
+  attachmentCandidates?: AiAttachmentCandidate[]
 }) {
   const [draft, setDraft] = useState({ subject: '', body: '' })
+  const [outputAttachmentIds, setOutputAttachmentIds] = useState<string[]>([])
   return (
     <I18nContext.Provider value={{
       lang: 'en',
@@ -47,18 +48,21 @@ function DraftHarness({
       tx: (path, fallback) => translate('en', path, fallback),
     }}>
       <output data-testid="draft-output">{`${draft.subject}\n${draft.body}`}</output>
+      <output data-testid="output-attachments">{outputAttachmentIds.join(',')}</output>
       <AiDraftPanel
         open
         applicationId="app_1"
         aiKeys={[testKey]}
         mode="compose"
-        attachments={attachments}
+        profileAssets={profileAssets}
+        attachmentCandidates={attachmentCandidates}
+        outputAttachmentIds={outputAttachmentIds}
         currentDraft={draft}
         draftSessionKey={0}
         onClose={vi.fn()}
         onDraft={onDraft}
-        onResolveAttachment={onResolveAttachment}
         onDraftChange={(change) => setDraft((current) => ({ ...current, ...change }))}
+        onOutputAttachmentIdsChange={setOutputAttachmentIds}
       />
     </I18nContext.Provider>
   )
@@ -98,32 +102,61 @@ describe('AiDraftPanel revisions', () => {
     expect(screen.getByTestId('draft-output')).toHaveTextContent('Research fit question')
   })
 
-  it('resolves and sends a linked dossier attachment selected by the user', async () => {
+  it('authorizes saved material references server-side without reading the file in the browser', async () => {
     const user = userEvent.setup()
     const onDraft = vi.fn<DraftRunner>(async (_input, onEvent) => {
       onEvent({ type: 'token', text: 'Subject: Attached CV\n\nPlease see the attached CV.' })
       onEvent({ type: 'done', draftOnly: true })
     })
-    const onResolveAttachment = vi.fn(async () => new Blob(['resume'], { type: 'application/pdf' }))
     render(
       <DraftHarness
         onDraft={onDraft}
-        attachments={[{ id: 'linked_1', name: 'cv.pdf', mimeType: 'application/pdf', fileId: 'file_1', fileSize: 6 }]}
-        onResolveAttachment={onResolveAttachment}
+        attachmentCandidates={[{
+          id: 'file:file_1',
+          fileId: 'file_1',
+          name: 'cv.pdf',
+          mimeType: 'application/pdf',
+          fileSize: 6,
+          source: 'checklist',
+          sourceId: 'material_1',
+        }]}
       />,
     )
 
     await user.type(screen.getByRole('textbox', { name: /what should this email accomplish/i }), 'Mention my attached CV')
-    await user.click(screen.getByRole('switch', { name: /selected attachments/i }))
-    await user.click(screen.getByRole('checkbox', { name: /cv\.pdf/i }))
+    await user.click(screen.getByRole('switch', { name: /application materials/i }))
     await user.click(screen.getByRole('button', { name: /generate draft/i }))
 
     await waitFor(() => expect(onDraft).toHaveBeenCalledTimes(1))
-    expect(onResolveAttachment).toHaveBeenCalledWith('file_1')
-    expect(onDraft.mock.calls[0][0].attachments).toEqual([{
-      name: 'cv.pdf',
-      mimeType: 'application/pdf',
-      contentBase64: 'cmVzdW1l',
-    }])
+    expect(onDraft.mock.calls[0][0].grants).toMatchObject({ checklist: true, attachments: true })
+    expect(onDraft.mock.calls[0][0].attachments).toEqual([])
+  })
+
+  it('adds a model-selected safe file to the editable output attachment plan', async () => {
+    const user = userEvent.setup()
+    const onDraft = vi.fn<DraftRunner>(async (_input, onEvent) => {
+      onEvent({ type: 'attachment-selection', attachmentIds: ['file:cv_1'] })
+      onEvent({ type: 'status', phase: 'attaching' })
+      onEvent({ type: 'token', text: 'Subject: Research fit\n\nDear Professor Chen,' })
+      onEvent({ type: 'done', draftOnly: true })
+    })
+    render(
+      <DraftHarness
+        onDraft={onDraft}
+        attachmentCandidates={[{
+          id: 'file:cv_1',
+          fileId: 'cv_1',
+          name: 'CV.pdf',
+          mimeType: 'application/pdf',
+          source: 'profile',
+          sourceId: 'profile_cv',
+        }]}
+      />,
+    )
+
+    await user.type(screen.getByRole('textbox', { name: /what should this email accomplish/i }), 'Write a concise introduction')
+    await user.click(screen.getByRole('button', { name: /generate draft/i }))
+
+    await waitFor(() => expect(screen.getByTestId('output-attachments')).toHaveTextContent('file:cv_1'))
   })
 })

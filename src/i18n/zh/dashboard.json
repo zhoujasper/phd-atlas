@@ -102,6 +102,23 @@
     "priorityValue": "优先级 {value}",
     "dayShort": "{count} 天",
     "noTimeline": "暂无时间线事件。",
-    "noMaterials": "暂无清单项。"
+    "noMaterials": "暂无清单项。",
+    "guidanceTitle": "我的指导团队",
+    "guidanceSubtitle": "你在 {team} 中的负责人与联系方式。",
+    "guidanceEmptyTitle": "尚未分配指导联系人",
+    "guidanceEmptyDesc": "机构管理员可在“成员”工作区为你分配老师。",
+    "guidanceRoleOwner": "机构管理员",
+    "guidanceRoleTeacher": "老师",
+    "guidanceEmail": "给{name}发邮件",
+    "guidanceEmailShort": "邮件",
+    "guidanceCall": "致电{name}",
+    "guidanceCallShort": "电话",
+    "guidanceWebsite": "打开{name}的主页",
+    "guidanceWebsiteShort": "主页",
+    "guidanceHideDetails": "收起{name}的详情",
+    "guidanceShowDetails": "查看{name}的详情",
+    "guidanceOffice": "办公室",
+    "guidanceAvailability": "可联系时间",
+    "guidanceSupport": "我可以提供的帮助"
   }
 }

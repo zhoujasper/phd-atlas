@@ -40,7 +40,6 @@ import {
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
 import type { AiKey, AiKeyInput, AuthSession, PasskeyCredentialSummary, UserSettings, UserSettingsPatch, WebPushTestResult } from '../../api/phdApi'
 import {
-  normalizeSharePermission,
   normalizeShareSections,
   shareSections,
   type BackupFrequency,
@@ -65,6 +64,7 @@ import { InfoTooltip } from '../shared/InfoTooltip'
 import { InlineTestEmailAction } from '../shared/InlineTestEmailAction'
 import { CopyButton } from '../shared/CopyButton'
 import { OverflowReveal } from '../shared/OverflowReveal'
+import { AnchoredPopover } from '../shared/AnchoredPopover'
 import { Select } from '../shared/Select'
 import { SwitchControl } from '../shared/SwitchControl'
 import { VerificationResendAction } from '../shared/VerificationResendAction'
@@ -75,19 +75,30 @@ import {
   TableCell,
   TableColGroup,
   TableHeaderCell,
-  useTableColumnMenu,
 } from '../shared/TableColumnChrome'
+import { useTableColumnMenu } from '../shared/useTableColumnMenu'
 import type { TableColumnDef } from '../shared/useTableColumns'
+import {
+  expiresAtForShare,
+  formatManagedShareScope,
+  formatPasskeyTimestamp,
+  formatShareExpiry,
+  formatShareTimestamp,
+  managedShareKindLabel,
+  sharedLinkPath,
+  sharedLinkPermission,
+  sharedLinkSubject,
+  shareExpiryChoice,
+  type ShareExpiryChoice,
+  type SharedLinkInfo,
+} from './settingsShareModel'
+import {
+  fallbackReceiveEmails,
+  MAX_RECEIVE_EMAILS,
+  normalizeReceiveEmails,
+  type ReceiveEmail,
+} from './settingsReceiveEmailModel'
 
-type ReceiveEmail = {
-  address: string
-  isPrimary: boolean
-  notify: boolean
-  verified?: boolean
-  verificationSentAt?: string
-}
-
-type ShareExpiryChoice = '1h' | '1d' | '7d' | '30d' | 'never'
 type ShareSortColumn = 'application' | 'created' | 'expires' | 'permission'
 type ShareSortState = { column: ShareSortColumn; direction: 'asc' | 'desc' }
 type IncomingProtocol = 'pop3' | 'imap'
@@ -100,21 +111,7 @@ type SettingsSectionId =
   | 'settings-usage-section'
   | 'settings-data-section'
 
-export type SharedLinkInfo = {
-  applicationId: string
-  applicationName: string
-  share: {
-    id: string
-    token: string
-    createdAt: string
-    expiresAt: string | null
-    permission?: SharePermission
-    sections?: ShareSection[]
-  }
-}
-
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const MAX_RECEIVE_EMAILS = 5
 const DEFAULT_SHARE_QUOTA = 5
 const SHARE_PAGE_SIZE = 10
 const DEFAULT_USER_SESSION_MINUTES = 720
@@ -234,7 +231,7 @@ const shareExpiryOptions: Array<{ value: ShareExpiryChoice; labelKey: string; fa
 ]
 
 const shareSortColumns: Array<{ column: ShareSortColumn; labelKey: string; fallback: string }> = [
-  { column: 'application', labelKey: 'share.table.application', fallback: 'Application' },
+  { column: 'application', labelKey: 'share.table.subject', fallback: 'Shared item' },
   { column: 'created', labelKey: 'share.table.created', fallback: 'Created' },
   { column: 'expires', labelKey: 'share.table.expires', fallback: 'Expires' },
   { column: 'permission', labelKey: 'share.table.permission', fallback: 'Permission' },
@@ -250,99 +247,96 @@ const sessionDurationOptions = [
   { value: '43200', labelKey: 'settings.sessionDuration30d', fallback: '30 days' },
 ]
 
-function fallbackReceiveEmails(session: AuthSession): ReceiveEmail[] {
-  const configured = session.user.settings.receiveEmails
-  if (configured?.length) {
-    return configured.slice(0, MAX_RECEIVE_EMAILS).map((email) => ({
-      ...email,
-      address: email.address.trim().toLowerCase(),
-      verified: email.verified ?? true,
-    }))
-  }
-  return [{
-    address: session.user.settings.receiveAt || session.user.email,
-    isPrimary: true,
-    notify: true,
-    verified: true,
-  }]
-}
+function ShareScopePicker({
+  sections,
+  summary,
+  labels,
+  onChange,
+}: {
+  sections: ShareSection[] | undefined
+  summary: string
+  labels: string
+  onChange: (sections: ShareSection[]) => void
+}) {
+  const { tx } = useI18n()
+  const normalizedSections = normalizeShareSections(sections)
+  const sectionsKey = normalizedSections.join('|')
+  const [draftSections, setDraftSections] = useState<ShareSection[]>(normalizedSections)
+  const normalizedSectionsRef = useRef(normalizedSections)
+  normalizedSectionsRef.current = normalizedSections
 
-function normalizeReceiveEmails(emails: ReceiveEmail[]) {
-  const deduped = emails.reduce<ReceiveEmail[]>((items, email) => {
-    const address = email.address.trim().toLowerCase()
-    if (!address || items.some((item) => item.address === address) || items.length >= MAX_RECEIVE_EMAILS) return items
-    items.push({
-      ...email,
-      address,
-      verified: email.verified ?? false,
-      isPrimary: Boolean(email.isPrimary && (email.verified ?? false)),
+  useEffect(() => {
+    // `sectionsKey` is the canonical semantic dependency. Keep the latest array
+    // in a ref so parent renders with equal sections do not reset an open draft.
+    setDraftSections(normalizedSectionsRef.current)
+  }, [sectionsKey])
+
+  const toggleSection = (section: ShareSection) => {
+    setDraftSections((current) => {
+      if (current.includes(section)) {
+        return current.length > 1 ? current.filter((item) => item !== section) : current
+      }
+      return shareSections.filter((item) => current.includes(item) || item === section)
     })
-    return items
-  }, [])
-  if (deduped.length === 0) return []
-
-  const primaryIndex = deduped.findIndex((email) => email.isPrimary && email.verified)
-  const fallbackPrimaryIndex = deduped.findIndex((email) => email.verified)
-  return deduped.map((email, index) => ({
-    ...email,
-    isPrimary: index === (primaryIndex >= 0 ? primaryIndex : fallbackPrimaryIndex),
-  }))
-}
-
-function formatShareExpiry(expiresAt: string | null, lang: string, tx: (path: string, fallback?: string) => string) {
-  if (!expiresAt) return tx('share.neverExpires')
-  return new Date(expiresAt).toLocaleString(localeForLanguage(lang), {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  })
-}
-
-function formatShareTimestamp(value: string, lang: string) {
-  return new Date(value).toLocaleString(localeForLanguage(lang), {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  })
-}
-
-function formatPasskeyTimestamp(value: string | null | undefined, lang: string, tx: (path: string, fallback?: string) => string) {
-  if (!value) return tx('settings.passkeyNeverUsed')
-  return new Date(value).toLocaleString(localeForLanguage(lang), {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  })
-}
-
-function expiresAtForShare(expiry: ShareExpiryChoice) {
-  if (expiry === 'never') return null
-  const durations: Record<Exclude<ShareExpiryChoice, 'never'>, number> = {
-    '1h': 60 * 60 * 1000,
-    '1d': 24 * 60 * 60 * 1000,
-    '7d': 7 * 24 * 60 * 60 * 1000,
-    '30d': 30 * 24 * 60 * 60 * 1000,
   }
-  return new Date(Date.now() + durations[expiry]).toISOString()
-}
 
-function shareExpiryChoice(expiresAt: string | null): ShareExpiryChoice {
-  if (!expiresAt) return 'never'
-  const delta = new Date(expiresAt).getTime() - Date.now()
-  if (delta <= 60 * 60 * 1000 * 1.5) return '1h'
-  if (delta <= 24 * 60 * 60 * 1000 * 1.5) return '1d'
-  if (delta <= 7 * 24 * 60 * 60 * 1000 * 1.5) return '7d'
-  return '30d'
-}
-
-function formatShareScope(
-  sections: ShareSection[] | undefined,
-  tx: (path: string, fallback?: string) => string,
-  format: (template: string, values: Record<string, string | number>) => string,
-) {
-  const normalized = normalizeShareSections(sections)
-  const summary = normalized.length === shareSections.length
-    ? tx('share.scope.all')
-    : format(tx('share.scope.count'), { count: normalized.length })
-  const labels = normalized.map((section) => tx(`share.sections.${section}`, section)).join(', ')
-  return { summary, labels }
+  return (
+    <AnchoredPopover
+      triggerAriaLabel={`${tx('share.sectionsTitle')}: ${summary}`}
+      popoverAriaLabel={tx('share.sectionsTitle')}
+      triggerClassName="settings-share-scope-trigger"
+      popoverClassName="settings-share-scope-popover"
+      width={272}
+      estimatedHeight={312}
+      align="end"
+      trigger={
+        <span className="settings-share-scope-chip" title={labels}>
+          <span className="settings-share-scope-summary">{summary}</span>
+          <ChevronDown className="settings-share-scope-chevron" size={12} aria-hidden="true" />
+        </span>
+      }
+    >
+      {(close) => (
+        <div className="settings-share-scope-picker">
+          <strong>{tx('share.sectionsTitle')}</strong>
+          <div className="settings-share-scope-options" role="group" aria-label={tx('share.sectionsTitle')}>
+            {shareSections.map((section) => {
+              const selected = draftSections.includes(section)
+              const isOnlySelection = selected && draftSections.length === 1
+              return (
+                <button
+                  key={section}
+                  type="button"
+                  className={`settings-share-scope-option${selected ? ' selected' : ''}`}
+                  aria-pressed={selected}
+                  disabled={isOnlySelection}
+                  onClick={() => toggleSection(section)}
+                >
+                  <span className="settings-share-scope-option-mark" aria-hidden="true">
+                    {selected ? <Check size={11} /> : null}
+                  </span>
+                  <span>{tx(`share.sections.${section}`, section)}</span>
+                </button>
+              )
+            })}
+          </div>
+          <div className="settings-share-scope-actions">
+            <button type="button" className="quiet-action" onClick={close}>{tx('cancel')}</button>
+            <button
+              type="button"
+              className="primary-action"
+              onClick={() => {
+                if (draftSections.join('|') !== sectionsKey) onChange(draftSections)
+                close()
+              }}
+            >
+              {tx('save')}
+            </button>
+          </div>
+        </div>
+      )}
+    </AnchoredPopover>
+  )
 }
 
 function formatBytes(bytes: number) {
@@ -449,6 +443,8 @@ export function SettingsScreen({
   allShares = [],
   onRevokeShare,
   onUpdateShare,
+  onRevokeAssetShare,
+  onUpdateAssetShare,
   onReplayTutorial,
   aiKeys = [],
   onCreateAiKey,
@@ -475,7 +471,7 @@ export function SettingsScreen({
   onAccentColor?: (color: string) => void
   onAvatarSave?: (avatarDataUrl: string) => Promise<boolean | void> | boolean | void
   onUpdateSetting?: (key: string, value: unknown) => void
-  onUpdateSettings?: (patch: UserSettingsPatch, message?: string) => void
+  onUpdateSettings?: (patch: UserSettingsPatch, message?: string) => Promise<void> | void
   passkeys?: PasskeyCredentialSummary[]
   /** Credentials kept mounted briefly while their confirmed removal collapses. */
   removingPasskeyIds?: ReadonlySet<string>
@@ -492,7 +488,9 @@ export function SettingsScreen({
   onDeleteAccount: () => void
   allShares?: SharedLinkInfo[]
   onRevokeShare?: (applicationId: string, shareId: string) => void
-  onUpdateShare?: (applicationId: string, shareId: string, expiresAt: string | null, permission?: SharePermission) => void
+  onUpdateShare?: (applicationId: string, shareId: string, expiresAt: string | null, permission?: SharePermission, sections?: ShareSection[]) => void
+  onRevokeAssetShare?: (assetId: string, shareId: string) => void
+  onUpdateAssetShare?: (assetId: string, shareId: string, expiresAt: string | null) => void
   onReplayTutorial?: () => void
   aiKeys?: AiKey[]
   onCreateAiKey?: (input: AiKeyInput) => Promise<void> | void
@@ -519,7 +517,10 @@ export function SettingsScreen({
 
   // Keep dual content-language selects in sync with the session after a successful save/reload.
   useEffect(() => {
-    setContentLangPair(contentLanguagesFromSettings(session.user.settings))
+    setContentLangPair(contentLanguagesFromSettings({
+      contentLanguagePrimary: session.user.settings.contentLanguagePrimary,
+      contentLanguageSecondary: session.user.settings.contentLanguageSecondary,
+    }))
   }, [
     session.user.settings.contentLanguagePrimary,
     session.user.settings.contentLanguageSecondary,
@@ -536,6 +537,8 @@ export function SettingsScreen({
   const [webPushTestDelivery, setWebPushTestDelivery] = useState(0)
   /** Immediate click feedback so the enable/disable action never feels ignored while the hook settles. */
   const [webPushActionPending, setWebPushActionPending] = useState<'enable' | 'disable' | null>(null)
+  /** Keep calendar token creation visibly pending until the settings request has actually settled. */
+  const [calendarTokenActionPending, setCalendarTokenActionPending] = useState<'enable' | 'regenerate' | null>(null)
   const [offlineScopeOpen, setOfflineScopeOpen] = useState(false)
   const [selectedAccent, setSelectedAccent] = useState(accent)
   const [avatarDialogOpen, setAvatarDialogOpen] = useState(false)
@@ -559,7 +562,7 @@ export function SettingsScreen({
   const [sharePage, setSharePage] = useState(0)
   const [shareSearch, setShareSearch] = useState('')
   const [shareSort, setShareSort] = useState<ShareSortState>({ column: 'created', direction: 'desc' })
-  const [confirmRevokeShare, setConfirmRevokeShare] = useState<{ appId: string; shareId: string } | null>(null)
+  const [confirmRevokeShare, setConfirmRevokeShare] = useState<SharedLinkInfo | null>(null)
   const [settingsRevealStep, setSettingsRevealStep] = useState(() => {
     if (navigator.userAgent.toLowerCase().includes('jsdom')) return 3
     return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 3 : 0
@@ -574,6 +577,7 @@ export function SettingsScreen({
     setSelectedAccent(accent)
   }, [accent])
   const receiveEmails = fallbackReceiveEmails(session)
+  const emailNotificationsEnabled = session.user.settings.emailNotificationsEnabled !== false
   const backupFrequency = normalizeBackupFrequency(session.user.settings.backupFrequency ?? session.settings.backupFrequency)
   const isAdmin = session.user.role === 'admin'
   const encryptionAtRest = Boolean(session.settings.encryptionAtRest)
@@ -606,13 +610,13 @@ export function SettingsScreen({
   const sessionDurationLabel = tx(sessionDurationOption.labelKey, sessionDurationOption.fallback)
 
   const shareTableColumns = useMemo<TableColumnDef[]>(() => [
-    { id: 'application', label: tx('share.table.application', 'Application'), defaultWidth: 148, minWidth: 96 },
+    { id: 'application', label: tx('share.table.subject', 'Shared item'), defaultWidth: 148, minWidth: 96 },
     { id: 'created', label: tx('share.table.created', 'Created'), defaultWidth: 118, minWidth: 88 },
     { id: 'expires', label: tx('share.table.expires', 'Expires'), defaultWidth: 128, minWidth: 96 },
     { id: 'permission', label: tx('share.table.permission', 'Permission'), defaultWidth: 124, minWidth: 100 },
     { id: 'link', label: tx('share.table.link', 'Link'), defaultWidth: 168, minWidth: 120 },
     { id: 'duration', label: tx('share.table.duration', 'Duration'), defaultWidth: 132, minWidth: 100 },
-    { id: 'scope', label: tx('share.table.scope', 'Scope'), defaultWidth: 120, minWidth: 88 },
+    { id: 'scope', label: tx('share.table.scope', 'Scope'), defaultWidth: 136, minWidth: 120 },
     { id: 'actions', label: tx('share.table.actions', 'Actions'), defaultWidth: 88, minWidth: 72, hideable: false, resizable: true },
   ], [tx])
   const {
@@ -635,12 +639,14 @@ export function SettingsScreen({
   const visibleShares = useMemo(() => {
     if (!shareListReady) return []
     const filtered = normalizedShareSearch
-      ? activeShares.filter(({ applicationName, share }) => {
-          const permission = normalizeSharePermission(share.permission)
-          const scope = formatShareScope(share.sections, tx, format)
+      ? activeShares.filter((link) => {
+          const { share } = link
+          const permission = sharedLinkPermission(link)
+          const scope = formatManagedShareScope(link, tx, format)
           const haystack = [
-            applicationName,
-            `/share/${share.token}`,
+            sharedLinkSubject(link),
+            sharedLinkPath(link),
+            managedShareKindLabel(link, tx),
             tx(`share.permission.${permission}`),
             scope.summary,
             scope.labels,
@@ -656,7 +662,7 @@ export function SettingsScreen({
     return [...filtered].sort((a, b) => {
       let compare = 0
       if (shareSort.column === 'application') {
-        compare = a.applicationName.localeCompare(b.applicationName, locale)
+        compare = sharedLinkSubject(a).localeCompare(sharedLinkSubject(b), locale)
       } else if (shareSort.column === 'created') {
         compare = a.share.createdAt.localeCompare(b.share.createdAt)
       } else if (shareSort.column === 'expires') {
@@ -664,7 +670,7 @@ export function SettingsScreen({
         const bTime = b.share.expiresAt ? new Date(b.share.expiresAt).getTime() : Number.MAX_SAFE_INTEGER
         compare = aTime - bTime
       } else {
-        compare = normalizeSharePermission(a.share.permission).localeCompare(normalizeSharePermission(b.share.permission))
+        compare = sharedLinkPermission(a).localeCompare(sharedLinkPermission(b))
       }
       if (compare !== 0) return compare * direction
       // Stable secondary sort: newest first
@@ -706,8 +712,17 @@ export function SettingsScreen({
   const calendarOutlookUrl = calendarFeedUrl
     ? `https://outlook.live.com/calendar/0/addfromweb?url=${encodeURIComponent(calendarFeedUrl)}&name=${encodeURIComponent(tx('calendar.feedName', 'PhD Atlas deadlines'))}`
     : ''
-  const requestCalendarToken = (message: string) => {
-    onUpdateSettings?.({ generateCalendarToken: true }, message)
+  const calendarTokenBusy = calendarTokenActionPending !== null
+  const calendarEnabling = calendarTokenActionPending === 'enable' && !calendarToken
+  const calendarRegenerating = calendarTokenActionPending === 'regenerate'
+  const requestCalendarToken = async (action: 'enable' | 'regenerate', message: string) => {
+    if (!onUpdateSettings || calendarTokenBusy) return
+    setCalendarTokenActionPending(action)
+    try {
+      await onUpdateSettings({ generateCalendarToken: true }, message)
+    } finally {
+      setCalendarTokenActionPending(null)
+    }
   }
   const sendFromValid = EMAIL_PATTERN.test(sendFrom.trim())
   const smtpPortNumber = Number(smtpPort)
@@ -1026,6 +1041,15 @@ export function SettingsScreen({
       setRemovingReceiveEmailAddress(null)
       receiveEmailRemoveTimerRef.current = null
     }, reduceMotion ? 0 : RECEIVE_EMAIL_REMOVE_EXIT_MS)
+  }
+
+  const toggleEmailNotifications = () => {
+    const next = !emailNotificationsEnabled
+    if (onUpdateSettings) {
+      onUpdateSettings({ emailNotificationsEnabled: next })
+      return
+    }
+    onUpdateSetting?.('emailNotificationsEnabled', next)
   }
 
   const submitPasskey = (event: FormEvent) => {
@@ -2140,6 +2164,17 @@ export function SettingsScreen({
                     <Plus size={13} aria-hidden="true" /> {tx('settings.addEmail')}
                   </button>
                 </div>
+                <div className="mail-notification-preference">
+                  <div>
+                    <strong>{tx('settings.emailNotifications', 'Email notifications')}</strong>
+                    <p>{tx('settings.emailNotificationsDesc', 'Receive one combined email for recent updates instead of a separate email for each notification.')}</p>
+                  </div>
+                  <SwitchControl
+                    checked={emailNotificationsEnabled}
+                    label={tx('settings.emailNotifications', 'Email notifications')}
+                    onChange={toggleEmailNotifications}
+                  />
+                </div>
                 <div className="receive-email-list">
                   {receiveEmails.map((email, index) => {
                     const verified = email.verified ?? true
@@ -2795,24 +2830,31 @@ export function SettingsScreen({
                         </tr>
                       </thead>
                       <tbody key={`share-page-${sharePage}-${shareSort.column}-${shareSort.direction}-${normalizedShareSearch}`}>
-                        {pagedShares.map(({ applicationId, applicationName, share }, index) => {
-                          const url = `${window.location.origin}/share/${share.token}`
-                          const path = `/share/${share.token}`
-                          const permission = normalizeSharePermission(share.permission)
-                          const scope = formatShareScope(share.sections, tx, format)
+                        {pagedShares.map((link, index) => {
+                          const { share } = link
+                          const isAssetUpload = link.kind === 'asset-upload'
+                          const url = `${window.location.origin}${sharedLinkPath(link)}`
+                          const path = sharedLinkPath(link)
+                          const permission = sharedLinkPermission(link)
+                          const scope = formatManagedShareScope(link, tx, format)
                           return (
                             <tr
-                              key={share.id}
+                              key={`${link.kind}-${share.id}`}
                               style={{ '--share-row-index': index } as CSSProperties}
                             >
-                              <TableCell columnId="application" api={shareTableApi} dataLabel={tx('share.table.application')}>
-                                <OverflowReveal
-                                  as="strong"
-                                  className="settings-share-app"
-                                  text={applicationName}
-                                  label={tx('share.table.application')}
-                                  onCopyResult={notifyCopyResult}
-                                />
+                              <TableCell columnId="application" api={shareTableApi} dataLabel={tx('share.table.subject', 'Shared item')}>
+                                <div className="settings-share-subject">
+                                  <OverflowReveal
+                                    as="strong"
+                                    className="settings-share-app"
+                                    text={sharedLinkSubject(link)}
+                                    label={tx('share.table.subject', 'Shared item')}
+                                    onCopyResult={notifyCopyResult}
+                                  />
+                                  <span className={`settings-share-kind${isAssetUpload ? ' is-upload' : ''}`}>
+                                    {managedShareKindLabel(link, tx)}
+                                  </span>
+                                </div>
                               </TableCell>
                               <TableCell columnId="created" api={shareTableApi} dataLabel={tx('share.table.created')}>
                                 <span className="settings-share-date">{formatShareTimestamp(share.createdAt, lang)}</span>
@@ -2824,18 +2866,22 @@ export function SettingsScreen({
                                 </span>
                               </TableCell>
                               <TableCell columnId="permission" api={shareTableApi} dataLabel={tx('share.table.permission')}>
-                                <div className="settings-share-cell-control">
-                                  <Select
-                                    size="small"
-                                    value={permission}
-                                    options={sharePermissionOptions.map((option) => ({
-                                      value: option.value,
-                                      label: tx(option.labelKey, option.fallback),
-                                    }))}
-                                    onChange={(value) => onUpdateShare?.(applicationId, share.id, share.expiresAt, value)}
-                                    ariaLabel={tx('share.table.permission')}
-                                  />
-                                </div>
+                                {link.kind === 'asset-upload' ? (
+                                  <span className="settings-share-static-value">{tx('share.permission.upload')}</span>
+                                ) : (
+                                  <div className="settings-share-cell-control">
+                                    <Select
+                                      size="small"
+                                      value={permission}
+                                      options={sharePermissionOptions.map((option) => ({
+                                        value: option.value,
+                                        label: tx(option.labelKey, option.fallback),
+                                      }))}
+                                      onChange={(value) => onUpdateShare?.(link.applicationId, link.share.id, link.share.expiresAt, value)}
+                                      ariaLabel={tx('share.table.permission')}
+                                    />
+                                  </div>
+                                )}
                               </TableCell>
                               <TableCell columnId="link" api={shareTableApi} dataLabel={tx('share.table.link')}>
                                 <OverflowReveal
@@ -2856,21 +2902,29 @@ export function SettingsScreen({
                                       value: option.value,
                                       label: tx(option.labelKey, option.fallback),
                                     }))}
-                                    onChange={(value) => onUpdateShare?.(applicationId, share.id, expiresAtForShare(value))}
+                                    onChange={(value) => {
+                                      const expiresAt = expiresAtForShare(value)
+                                      if (link.kind === 'asset-upload') {
+                                        onUpdateAssetShare?.(link.assetId, share.id, expiresAt)
+                                      } else {
+                                        onUpdateShare?.(link.applicationId, share.id, expiresAt)
+                                      }
+                                    }}
                                     ariaLabel={tx('share.table.duration')}
                                   />
                                 </div>
                               </TableCell>
                               <TableCell columnId="scope" api={shareTableApi} dataLabel={tx('share.table.scope')}>
-                                <OverflowReveal
-                                  as="span"
-                                  className="settings-share-scope-chip"
-                                  text={scope.labels}
-                                  label={tx('share.table.scope')}
-                                  onCopyResult={notifyCopyResult}
-                                >
-                                  {scope.summary}
-                                </OverflowReveal>
+                                {link.kind === 'asset-upload' ? (
+                                  <span className="settings-share-static-value">{scope.summary}</span>
+                                ) : (
+                                  <ShareScopePicker
+                                    sections={link.share.sections}
+                                    summary={scope.summary}
+                                    labels={scope.labels}
+                                    onChange={(sections) => onUpdateShare?.(link.applicationId, link.share.id, link.share.expiresAt, permission, sections)}
+                                  />
+                                )}
                               </TableCell>
                               <TableCell columnId="actions" api={shareTableApi} dataLabel={tx('share.table.actions')}>
                                 <div className="settings-share-actions">
@@ -2878,7 +2932,7 @@ export function SettingsScreen({
                                   <button
                                     type="button"
                                     className="icon-action settings-share-icon-button settings-share-revoke"
-                                    onClick={() => setConfirmRevokeShare({ appId: applicationId, shareId: share.id })}
+                                    onClick={() => setConfirmRevokeShare(link)}
                                     aria-label={tx('share.revoke')}
                                     title={tx('share.revoke')}
                                   >
@@ -2938,10 +2992,13 @@ export function SettingsScreen({
           cancelLabel={tx('cancel')}
           variant="danger"
           onConfirm={() => {
-            if (confirmRevokeShare) {
-              onRevokeShare?.(confirmRevokeShare.appId, confirmRevokeShare.shareId)
-              setConfirmRevokeShare(null)
+            if (!confirmRevokeShare) return
+            if (confirmRevokeShare.kind === 'asset-upload') {
+              onRevokeAssetShare?.(confirmRevokeShare.assetId, confirmRevokeShare.share.id)
+            } else {
+              onRevokeShare?.(confirmRevokeShare.applicationId, confirmRevokeShare.share.id)
             }
+            setConfirmRevokeShare(null)
           }}
           onCancel={() => setConfirmRevokeShare(null)}
         />
@@ -2965,7 +3022,10 @@ export function SettingsScreen({
         />
 
         <div className="settings-footer-layout">
-          <section className={`calendar-feed-card ${calendarToken ? 'is-enabled' : 'is-disabled'}`}>
+          <section
+            className={`calendar-feed-card ${calendarToken ? 'is-enabled' : 'is-disabled'}${calendarTokenBusy ? ' is-pending' : ''}`}
+            aria-busy={calendarTokenBusy || undefined}
+          >
             <div className="calendar-feed-main">
               <div className="calendar-feed-icon" aria-hidden="true">
                 <CalendarDays size={18} />
@@ -2973,8 +3033,16 @@ export function SettingsScreen({
               <div className="calendar-feed-copy">
                 <div className="calendar-feed-heading">
                   <h3 className="settings-section-title">{tx('calendar.title', 'Calendar Feed')}</h3>
-                  <span className={`calendar-status-chip ${calendarToken ? 'ok' : 'muted'}`}>
-                    {calendarToken ? tx('calendar.statusActive', 'Active') : tx('calendar.statusOff', 'Off')}
+                  <span
+                    className={`calendar-status-chip ${calendarEnabling ? 'pending' : calendarToken ? 'ok' : 'muted'}`}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {calendarEnabling
+                      ? tx('calendar.statusEnabling', 'Enabling')
+                      : calendarToken
+                        ? tx('calendar.statusActive', 'Active')
+                        : tx('calendar.statusOff', 'Off')}
                   </span>
                 </div>
                 <p className="settings-hint">{tx('calendar.description', 'Subscribe to your deadlines in Google Calendar, Apple Calendar, Outlook, or any app that supports iCal subscriptions.')}</p>
@@ -2996,8 +3064,16 @@ export function SettingsScreen({
                   </label>
                   <div className="calendar-feed-actions">
                     <CopyButton value={calendarFeedUrl} label={tx('calendar.subscriptionUrl', 'Subscription URL')} className="calendar-copy-button" />
-                    <button type="button" className="quiet-action calendar-regenerate-action" onClick={() => requestCalendarToken(tx('calendar.regeneratedToast', 'Calendar subscription link regenerated.'))}>
-                      <RefreshCw size={13} aria-hidden="true" />
+                    <button
+                      type="button"
+                      className={`quiet-action calendar-regenerate-action${calendarRegenerating ? ' is-loading' : ''}`}
+                      disabled={calendarTokenBusy || !onUpdateSettings}
+                      aria-busy={calendarRegenerating || undefined}
+                      onClick={() => void requestCalendarToken('regenerate', tx('calendar.regeneratedToast', 'Calendar subscription link regenerated.'))}
+                    >
+                      {calendarRegenerating
+                        ? <LoaderCircle className="spin-icon" size={13} aria-hidden="true" />
+                        : <RefreshCw size={13} aria-hidden="true" />}
                       {tx('calendar.regenerate', 'Regenerate')}
                     </button>
                   </div>
@@ -3027,9 +3103,19 @@ export function SettingsScreen({
             ) : (
               <div className="calendar-feed-empty">
                 <p>{tx('calendar.notEnabled', 'Calendar feed is off. Enable it to create a private iCal URL for your deadlines and reminders.')}</p>
-                <button type="button" className="primary-action" onClick={() => requestCalendarToken(tx('calendar.enabledToast', 'Calendar feed enabled.'))}>
-                  <CalendarDays size={14} aria-hidden="true" />
-                  {tx('calendar.enable', 'Enable Calendar Feed')}
+                <button
+                  type="button"
+                  className={`primary-action calendar-enable-action${calendarEnabling ? ' loading is-loading' : ''}`}
+                  disabled={calendarTokenBusy || !onUpdateSettings}
+                  aria-busy={calendarEnabling || undefined}
+                  onClick={() => void requestCalendarToken('enable', tx('calendar.enabledToast', 'Calendar feed enabled.'))}
+                >
+                  {calendarEnabling
+                    ? <LoaderCircle className="spin-icon" size={14} aria-hidden="true" />
+                    : <CalendarDays size={14} aria-hidden="true" />}
+                  {calendarEnabling
+                    ? tx('calendar.enabling', 'Enabling calendar feed…')
+                    : tx('calendar.enable', 'Enable Calendar Feed')}
                 </button>
               </div>
             )}

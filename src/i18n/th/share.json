@@ -21,7 +21,8 @@
       "duration": "ระยะเวลา",
       "permission": "การอนุญาต",
       "scope": "ขอบเขต",
-      "actions": "การดำเนินการ"
+      "actions": "การดำเนินการ",
+      "subject": "รายการที่แชร์"
     },
     "permission": {
       "view": "ดู",
@@ -44,7 +45,8 @@
     "sectionsTitle": "เพจที่แชร์",
     "scope": {
       "all": "ทุกหน้า",
-      "count": "{count} หน้า"
+      "count": "{count} หน้า",
+      "upload": "อัปโหลดไฟล์แนบ"
     },
     "sections": {
       "overview": "ภาพรวม",

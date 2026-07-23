@@ -21,7 +21,8 @@
       "duration": "Продолжительность",
       "permission": "Разрешение",
       "scope": "Область применения",
-      "actions": "Действия"
+      "actions": "Действия",
+      "subject": "Общий элемент"
     },
     "permission": {
       "view": "Посмотреть",
@@ -44,7 +45,8 @@
     "sectionsTitle": "Общие страницы",
     "scope": {
       "all": "Все страницы",
-      "count": "{count} страниц"
+      "count": "{count} страниц",
+      "upload": "Загрузка вложений"
     },
     "sections": {
       "overview": "Обзор",

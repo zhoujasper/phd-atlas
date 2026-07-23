@@ -98,6 +98,8 @@
     "adminNotificationMailbox": "Hộp thư thông báo của quản trị viên",
     "receiveAt": "Nhận tại",
     "receiveEmails": "Nhận email",
+    "emailNotifications": "Thông báo qua email",
+    "emailNotificationsDesc": "Nhận một email tổng hợp các cập nhật gần đây thay vì một email riêng cho từng thông báo.",
     "primaryRecovery": "Khôi phục sơ cấp",
     "notify": "Thông báo",
     "makePrimary": "Làm chính",
@@ -386,7 +388,9 @@
     "passkeyRenameHint": "Bấm đúp để đổi tên",
     "passkeyRenameCancel": "Hủy đổi tên",
     "passkeyRenameSave": "Lưu tên",
-    "passkeyRenamed": "Mật khẩu đã được đổi tên."
+    "passkeyRenamed": "Mật khẩu đã được đổi tên.",
+    "shareProjectLinkType": "Xem trước dự án",
+    "shareUploadLinkType": "Tải lên tệp đính kèm"
   },
   "calendar": {
     "title": "Nguồn cấp dữ liệu lịch",
@@ -400,6 +404,8 @@
     "regenerateHint": "Việc tạo lại sẽ tạo một URL riêng tư mới và vô hiệu hóa liên kết đăng ký cũ.",
     "regeneratedToast": "Liên kết đăng ký lịch đã được tạo lại.",
     "enable": "Bật nguồn cấp dữ liệu lịch",
+    "enabling": "Đang bật nguồn cấp dữ liệu lịch…",
+    "statusEnabling": "Đang bật",
     "enabledToast": "Đã bật nguồn cấp dữ liệu lịch.",
     "notEnabled": "Nguồn cấp dữ liệu lịch bị tắt. Kích hoạt tính năng này để tạo URL iCal riêng cho thời hạn và lời nhắc của bạn.",
     "providerLinks": "Link ứng dụng Lịch",

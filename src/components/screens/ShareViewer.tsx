@@ -1,10 +1,12 @@
 import {
   Download,
+  Eye,
   FileText,
   GraduationCap,
   Lock,
   MapPin,
   Save,
+  Trash2,
   Undo2,
   UploadCloud,
 } from 'lucide-react'
@@ -36,13 +38,17 @@ import { allowedFileTypesLabel, normalizeAllowedFileTypes } from '../../fileType
 import { useI18n } from '../hooks/useI18n'
 import { LaunchScreen } from '../shared/LaunchScreen'
 import { FileDropzone } from '../shared/FileDropzone'
+import { AttachmentPreviewDialog, type AttachmentPreviewFile } from '../shared/AttachmentPreviewDialog'
+import { StandalonePreferences } from '../shared/StandalonePreferences'
 import { DossierView } from './DossierView'
 import { Inspector } from './Inspector'
+import { shareSectionsToDetailTabs, sharedPayloadToApplication } from './shareViewerModel'
 
 type SharedUploadAttachment = {
   fileId?: string
   fileName: string
   fileSize?: number
+  mimeType?: string
 }
 
 type SharedViewerTransitionDocument = Document & {
@@ -81,7 +87,8 @@ function sharedUploadAttachments(item: {
   fileId?: string
   fileName?: string
   fileSize?: number
-  versions?: Array<{ fileId?: string; file: string; size?: number }>
+  mimeType?: string
+  versions?: Array<{ fileId?: string; file: string; size?: number; mimeType?: string }>
 }) {
   const seen = new Set<string>()
   const attachments: SharedUploadAttachment[] = []
@@ -93,6 +100,7 @@ function sharedUploadAttachments(item: {
       fileId: version.fileId,
       fileName: version.file,
       fileSize: version.size,
+      mimeType: version.mimeType,
     })
   })
   if (item.fileId && !seen.has(item.fileId)) {
@@ -100,91 +108,27 @@ function sharedUploadAttachments(item: {
       fileId: item.fileId,
       fileName: item.fileName ?? '',
       fileSize: item.fileSize,
+      mimeType: item.mimeType,
     })
   }
   return attachments.reverse()
 }
 
-/** Map share sections → dossier DetailTabs (materials + tasks share the checklist tab). */
-export function shareSectionsToDetailTabs(sections: readonly ShareSection[]): DetailTab[] {
-  const tabs: DetailTab[] = []
-  const set = new Set(sections)
-  if (set.has('overview')) tabs.push('dossier')
-  if (set.has('materials') || set.has('tasks')) tabs.push('materials')
-  if (set.has('communications')) tabs.push('mail')
-  if (set.has('funding')) tabs.push('funding')
-  if (set.has('timeline')) tabs.push('timeline')
-  return tabs
-}
+function useCompactShareViewport() {
+  const [compact, setCompact] = useState(() => (
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 820px)').matches
+  ))
 
-export function sharedPayloadToApplication(data: SharedApplicationPayload): ApplicationRecord {
-  return {
-    id: 'shared-application',
-    ownerId: 'share-owner',
-    professor: {
-      english: data.professor.english,
-      chinese: data.professor.chinese ?? '',
-      email: data.professor.email,
-      phone: data.professor.phone ?? '',
-      social: data.professor.social ?? '',
-      homepage: data.professor.homepage,
-      research: data.professor.research,
-      lab: data.professor.lab ?? '',
-    },
-    school: {
-      name: data.school.name,
-      country: data.school.country,
-      website: data.school.website,
-    },
-    program: data.program,
-    deadline: data.deadline,
-    status: data.status,
-    progress: typeof data.progress === 'number' ? data.progress : 0,
-    priority: typeof data.priority === 'number' ? data.priority : 0,
-    tags: data.tags ?? [],
-    nextReminder: data.nextReminder ?? '',
-    result: data.result ?? '',
-    dossierCards: data.dossierCards,
-    materials: (data.materials ?? []).map((material) => ({
-      id: material.id,
-      name: material.name,
-      type: material.type ?? 'Document',
-      status: material.status,
-      group: material.group,
-      details: material.details,
-      reminderEnabled: material.reminderEnabled,
-      reminderDate: material.reminderDate,
-      requiredCount: material.requiredCount,
-      recommenders: material.recommenders,
-      version: material.version ?? 'v0',
-      updatedAt: material.updatedAt ?? '',
-      fileId: material.fileId,
-      fileName: material.fileName,
-      fileSize: material.fileSize,
-      allowedFileTypes: material.allowedFileTypes,
-      versions: material.versions,
-    })),
-    communications: data.communications ?? [],
-    scholarships: data.scholarships ?? [],
-    fees: data.fees ?? [],
-    tasks: (data.tasks ?? []).map((task) => ({
-      id: task.id,
-      title: task.title,
-      due: task.due,
-      done: task.done,
-      details: task.details,
-      attachmentRequired: task.attachmentRequired,
-      allowedFileTypes: task.allowedFileTypes,
-      fileId: task.fileId,
-      fileName: task.fileName,
-      fileSize: task.fileSize,
-      versions: task.versions,
-    })),
-    timeline: data.timeline ?? [],
-    versions: data.versions ?? [],
-    createdAt: data.createdAt,
-    updatedAt: data.updatedAt,
-  }
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return undefined
+    const query = window.matchMedia('(max-width: 820px)')
+    const update = () => setCompact(query.matches)
+    update()
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+
+  return compact
 }
 
 function cloneApplication(app: ApplicationRecord): ApplicationRecord {
@@ -226,6 +170,9 @@ export function ShareViewer({ token }: { token: string }) {
   const [saving, setSaving] = useState(false)
   const [tab, setTab] = useState<DetailTab>('dossier')
   const [uploadingMaterialId, setUploadingMaterialId] = useState<string | null>(null)
+  const [removingAttachmentKey, setRemovingAttachmentKey] = useState<string | null>(null)
+  const [uploadPreview, setUploadPreview] = useState<AttachmentPreviewFile | null>(null)
+  const compactShareViewport = useCompactShareViewport()
 
   const applyPayload = useCallback((payload: SharedApplicationPayload) => {
     const record = sharedPayloadToApplication(payload)
@@ -258,7 +205,10 @@ export function ShareViewer({ token }: { token: string }) {
   }, [token, tx, lang, applyPayload])
 
   const permission: SharePermission = data ? normalizeSharePermission(data.permission) : 'view'
-  const sections = data ? normalizeShareSections(data.sections) : []
+  const sections = useMemo(
+    () => (data ? normalizeShareSections(data.sections) : []),
+    [data],
+  )
   const canEdit = permission === 'edit'
   const canUpload = permission === 'upload' || permission === 'edit'
   const hasSection = useCallback(
@@ -288,7 +238,37 @@ export function ShareViewer({ token }: { token: string }) {
     link.href = url
     link.download = name
     link.click()
-    URL.revokeObjectURL(url)
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+
+  const removeSharedFile = async (kind: 'material' | 'task', itemId: string, fileId: string) => {
+    const targetKey = `${kind}:${itemId}:${fileId}`
+    setRemovingAttachmentKey(targetKey)
+    setActionError(null)
+    try {
+      // Keep a short exit beat so a confirmed removal never reads as a refresh.
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 140))
+      const payload = kind === 'material'
+        ? await phdApi.removeSharedMaterialFile(token, itemId, fileId)
+        : await phdApi.removeSharedTaskFile(token, itemId, fileId)
+      applyPayload(payload)
+    } catch (err) {
+      setActionError(normalizeErrorMessage(err, lang, tx('shareViewer.editFailed')))
+    } finally {
+      setRemovingAttachmentKey(null)
+    }
+  }
+
+  const renameSharedFile = async (kind: 'material' | 'task', itemId: string, fileId: string, fileName: string) => {
+    setActionError(null)
+    try {
+      const payload = kind === 'material'
+        ? await phdApi.renameSharedMaterialFile(token, itemId, fileId, fileName)
+        : await phdApi.renameSharedTaskFile(token, itemId, fileId, fileName)
+      applyPayload(payload)
+    } catch (err) {
+      setActionError(normalizeErrorMessage(err, lang, tx('shareViewer.editFailed')))
+    }
   }
 
   const uploadMaterialFiles = async (materialId: string, files: File[]) => {
@@ -490,8 +470,11 @@ export function ShareViewer({ token }: { token: string }) {
 
   /* ─── Upload-only hub (pure upload links) ─── */
   if (permission === 'upload' && !canEdit) {
-    const materials = data.materials ?? []
-    const tasks = data.tasks ?? []
+    // The server already strips non-reserved items from an upload-only link.
+    // Keep this guard as well so a mixed-version deployment never renders an
+    // item that the guest must not be asked to upload.
+    const materials = (data.materials ?? []).filter((material) => material.uploadReserved)
+    const tasks = (data.tasks ?? []).filter((task) => task.uploadReserved)
     const uploadTargets: Array<{
       key: string
       kind: 'material' | 'task'
@@ -550,6 +533,7 @@ export function ShareViewer({ token }: { token: string }) {
             <GraduationCap size={20} aria-hidden="true" />
             <span>{tx('shareViewer.brand')}</span>
             <span className="share-permission-chip is-upload">{modeLabel}</span>
+            <StandalonePreferences className="share-project-preferences" />
           </div>
           <div className="share-project-title-row">
             <div>
@@ -618,21 +602,60 @@ export function ShareViewer({ token }: { token: string }) {
 
                     {hasFiles ? (
                       <div className="share-uploaded-files" aria-label={tx('dossier.attachments')}>
-                        {item.attachments.map((attachment, index) => (
-                          <button
-                            key={attachment.fileId ?? `${attachment.fileName}-${index}`}
-                            type="button"
-                            disabled={!attachment.fileId}
-                            onClick={() => attachment.fileId && void downloadSharedFile(attachment.fileId, attachment.fileName || item.name)}
-                          >
-                            <FileText size={13} aria-hidden="true" />
-                            <span>
-                              <strong>{attachment.fileName || item.name}</strong>
-                              {attachment.fileSize ? <small>{formatFileSize(attachment.fileSize)}</small> : null}
-                            </span>
-                            <Download size={12} aria-hidden="true" />
-                          </button>
-                        ))}
+                        {item.attachments.map((attachment, index) => {
+                          const fileId = attachment.fileId
+                          const attachmentKey = `${item.kind}:${item.id}:${fileId ?? `${attachment.fileName}-${index}`}`
+                          const removing = removingAttachmentKey === attachmentKey
+                          const displayName = attachment.fileName || item.name
+                          return (
+                            <div key={attachmentKey} className={`share-uploaded-file${removing ? ' is-removing' : ''}`}>
+                              <button
+                                type="button"
+                                className="share-uploaded-file-main"
+                                disabled={!fileId || removing}
+                                onClick={() => fileId && setUploadPreview({ fileId, fileName: displayName, mimeType: attachment.mimeType })}
+                              >
+                                <FileText size={13} aria-hidden="true" />
+                                <span>
+                                  <strong>{displayName}</strong>
+                                  {attachment.fileSize ? <small>{formatFileSize(attachment.fileSize)}</small> : null}
+                                </span>
+                              </button>
+                              <div className="share-uploaded-file-actions">
+                                <button
+                                  type="button"
+                                  className="checklist-icon-control"
+                                  disabled={!fileId || removing}
+                                  onClick={() => fileId && setUploadPreview({ fileId, fileName: displayName, mimeType: attachment.mimeType })}
+                                  title={tx('filePreview.preview')}
+                                  aria-label={tx('filePreview.preview')}
+                                >
+                                  <Eye size={13} aria-hidden="true" />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="checklist-icon-control"
+                                  disabled={!fileId || removing}
+                                  onClick={() => fileId && void downloadSharedFile(fileId, displayName)}
+                                  title={tx('dossier.download')}
+                                  aria-label={tx('dossier.download')}
+                                >
+                                  <Download size={13} aria-hidden="true" />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="checklist-icon-control danger"
+                                  disabled={!fileId || removing}
+                                  onClick={() => fileId && void removeSharedFile(item.kind, item.id, fileId)}
+                                  title={tx('dossier.remove')}
+                                  aria-label={tx('dossier.remove')}
+                                >
+                                  <Trash2 size={13} aria-hidden="true" />
+                                </button>
+                              </div>
+                            </div>
+                          )
+                        })}
                       </div>
                     ) : null}
 
@@ -655,6 +678,11 @@ export function ShareViewer({ token }: { token: string }) {
             </div>
           )}
         </section>
+        <AttachmentPreviewDialog
+          file={uploadPreview}
+          loadFile={(fileId) => phdApi.downloadSharedFile(token, fileId)}
+          onClose={() => setUploadPreview(null)}
+        />
       </main>
     )
   }
@@ -687,18 +715,19 @@ export function ShareViewer({ token }: { token: string }) {
         <p className="share-workspace-hint">
           {canEdit ? tx('shareViewer.editPermissionHint') : tx('shareViewer.viewPermissionHint')}
         </p>
-        {canEdit && isDirty ? (
-          <div className="share-workspace-save-actions">
-            <button type="button" className="warning-action" onClick={discardDraft} disabled={saving}>
+        {canEdit ? (
+          <div className={`share-workspace-save-actions${isDirty ? ' is-visible' : ''}`} aria-hidden={!isDirty}>
+            <button type="button" className="warning-action" onClick={discardDraft} disabled={!isDirty || saving} tabIndex={isDirty ? 0 : -1}>
               <Undo2 size={13} aria-hidden="true" />
               {tx('dossier.discardChanges')}
             </button>
-            <button type="button" className="primary-action" onClick={() => void saveSharedDraft()} disabled={saving}>
+            <button type="button" className="primary-action" onClick={() => void saveSharedDraft()} disabled={!isDirty || saving} tabIndex={isDirty ? 0 : -1}>
               <Save size={13} aria-hidden="true" />
               {saving ? tx('dossier.saving') : tx('dossier.save')}
             </button>
           </div>
         ) : null}
+        <StandalonePreferences className="share-workspace-preferences" />
       </header>
 
       {actionError ? <p className="settings-inline-error share-workspace-error">{actionError}</p> : null}
@@ -761,6 +790,11 @@ export function ShareViewer({ token }: { token: string }) {
                 onDownload={(fileId, name) => {
                   if (fileId) void downloadSharedFile(fileId, name || 'download')
                 }}
+                onPreview={(fileId) => phdApi.downloadSharedFile(token, fileId)}
+                onRemoveMaterialFile={canUpload ? (materialId, fileId) => removeSharedFile('material', materialId, fileId) : undefined}
+                onRemoveTaskFile={canUpload ? (taskId, fileId) => removeSharedFile('task', taskId, fileId) : undefined}
+                onRenameMaterialFile={canEdit ? (materialId, fileId, fileName) => renameSharedFile('material', materialId, fileId, fileName) : undefined}
+                onRenameTaskFile={canEdit ? (taskId, fileId, fileName) => renameSharedFile('task', taskId, fileId, fileName) : undefined}
                 onAddTask={(title, due, options) => {
                   if (!canEdit) return
                   patchDraft((current) => ({
@@ -951,20 +985,23 @@ export function ShareViewer({ token }: { token: string }) {
             </div>
           ) : null}
 
-          <Inspector
-            application={draft}
-            backups={[]}
-            isPro={false}
-            readOnly={readOnly}
-            versions={showVersions ? draft.versions : []}
-            onCopy={(value) => void copyText(value)}
-            onEditField={handleInspectorEditField}
-            onExport={() => undefined}
-            onBackup={() => undefined}
-            onUpgrade={() => undefined}
-            onRestore={() => undefined}
-            onDeleteBackup={() => undefined}
-          />
+          {!(permission === 'view' && compactShareViewport) ? (
+            <Inspector
+              application={draft}
+              backups={[]}
+              isPro={false}
+              readOnly={readOnly}
+              showManagementActions={false}
+              versions={showVersions ? draft.versions : []}
+              onCopy={(value) => void copyText(value)}
+              onEditField={handleInspectorEditField}
+              onExport={() => undefined}
+              onBackup={() => undefined}
+              onUpgrade={() => undefined}
+              onRestore={() => undefined}
+              onDeleteBackup={() => undefined}
+            />
+          ) : null}
         </div>
       )}
     </main>

@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
+  Database,
   KeyRound,
   Mail,
   Server,
@@ -10,11 +11,12 @@ import {
   Sparkles,
   UserRound,
 } from 'lucide-react'
-import type { InitialAdminSetupInput } from '../../api/phdApi'
+import type { DatabaseEngine, InitialAdminSetupInput } from '../../api/phdApi'
 import { useI18n } from '../hooks/useI18n'
+import { Select } from '../shared/Select'
 import { SwitchControl } from '../shared/SwitchControl'
 
-type SetupStep = 'account' | 'mail' | 'review'
+type SetupStep = 'account' | 'storage' | 'mail' | 'review'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -41,6 +43,16 @@ export function AdminSetupScreen({
   const [smtpPass, setSmtpPass] = useState('')
   const [smtpTls, setSmtpTls] = useState(true)
   const [notificationMailbox, setNotificationMailbox] = useState('')
+  const [databaseType, setDatabaseType] = useState<DatabaseEngine>('sqlite')
+  const [sqlitePath, setSqlitePath] = useState('')
+  const [databaseHost, setDatabaseHost] = useState('')
+  const [databasePort, setDatabasePort] = useState('')
+  const [databaseName, setDatabaseName] = useState('')
+  const [databaseUser, setDatabaseUser] = useState('')
+  const [databasePassword, setDatabasePassword] = useState('')
+  const [databaseSsl, setDatabaseSsl] = useState(false)
+  const [mysql57Compatibility, setMysql57Compatibility] = useState(false)
+  const [databaseSchema, setDatabaseSchema] = useState('')
 
   const accountValid = name.trim().length >= 2
     && EMAIL_PATTERN.test(email.trim())
@@ -54,24 +66,38 @@ export function AdminSetupScreen({
     && EMAIL_PATTERN.test(smtpUser.trim())
     && smtpPass.length > 0
     && EMAIL_PATTERN.test(notificationMailbox.trim())
-  const stepIndex = step === 'account' ? 0 : step === 'mail' ? 1 : 2
+  const databasePortNumber = Number(databasePort)
+  const externalDatabase = databaseType !== 'sqlite'
+  const databaseValid = !externalDatabase || (
+    databaseHost.trim().length > 0
+    && Number.isInteger(databasePortNumber)
+    && databasePortNumber >= 1
+    && databasePortNumber <= 65535
+    && databaseName.trim().length > 0
+    && databaseUser.trim().length > 0
+    && databasePassword.length > 0
+  )
+  const stepIndex = step === 'account' ? 0 : step === 'storage' ? 1 : step === 'mail' ? 2 : 3
   const steps = useMemo(() => [
     { id: 'account' as const, label: tx('admin.setup.accountStep'), icon: UserRound },
+    { id: 'storage' as const, label: tx('admin.setup.storageStep'), icon: Database },
     { id: 'mail' as const, label: tx('admin.setup.mailStep'), icon: Mail },
     { id: 'review' as const, label: tx('admin.setup.reviewStep'), icon: Check },
   ], [tx])
 
   const goForward = () => {
-    if (step === 'account' && accountValid) setStep('mail')
+    if (step === 'account' && accountValid) setStep('storage')
+    else if (step === 'storage' && databaseValid) setStep('mail')
     else if (step === 'mail' && mailValid) setStep('review')
   }
   const goBack = () => {
     if (step === 'review') setStep('mail')
-    else if (step === 'mail') setStep('account')
+    else if (step === 'mail') setStep('storage')
+    else if (step === 'storage') setStep('account')
   }
 
   const submit = async () => {
-    if (!accountValid || !mailValid || busy) return
+    if (!accountValid || !databaseValid || !mailValid || busy) return
     await onSubmit({
       name: name.trim(),
       email: email.trim().toLowerCase(),
@@ -83,6 +109,19 @@ export function AdminSetupScreen({
       smtpPass,
       smtpTls,
       language,
+      database: databaseType === 'sqlite'
+        ? { type: 'sqlite', sqlitePath: sqlitePath.trim() || undefined }
+        : {
+            type: databaseType,
+            host: databaseHost.trim(),
+            port: databasePortNumber,
+            database: databaseName.trim(),
+            username: databaseUser.trim(),
+            password: databasePassword,
+            ssl: databaseSsl,
+            mysql57Compatibility: databaseType === 'mysql' && mysql57Compatibility,
+            schema: databaseSchema.trim() || undefined,
+          },
     })
   }
 
@@ -193,6 +232,91 @@ export function AdminSetupScreen({
             </>
           ) : null}
 
+          {step === 'storage' ? (
+            <>
+              <div className="admin-setup-section-head">
+                <span><Database size={17} aria-hidden="true" /></span>
+                <div>
+                  <h2>{tx('admin.setup.storageTitle')}</h2>
+                  <p>{tx('admin.setup.storageDesc')}</p>
+                </div>
+              </div>
+              <div className="admin-setup-fields admin-setup-mail-grid">
+                <label className="admin-setup-field-wide">
+                  <span>{tx('admin.database.engine')}</span>
+                  <Select
+                    value={databaseType}
+                    ariaLabel={tx('admin.database.engine')}
+                    options={[
+                      { value: 'sqlite', label: tx('admin.database.sqlite') },
+                      { value: 'mysql', label: tx('admin.database.mysql') },
+                      { value: 'postgresql', label: tx('admin.database.postgresql') },
+                      { value: 'mssql', label: tx('admin.database.mssql') },
+                    ]}
+                    onChange={(value) => {
+                      const next = value as DatabaseEngine
+                      setDatabaseType(next)
+                      if (next === 'mysql') setDatabasePort('3306')
+                      if (next === 'postgresql') setDatabasePort('5432')
+                      if (next === 'mssql') setDatabasePort('1433')
+                    }}
+                  />
+                  <small>{tx('admin.setup.storageHint')}</small>
+                </label>
+                {databaseType === 'sqlite' ? (
+                  <label className="admin-setup-field-wide">
+                    <span>{tx('admin.database.sqlitePath')}</span>
+                    <input value={sqlitePath} onChange={(event) => setSqlitePath(event.target.value)} placeholder={tx('admin.database.sqlitePathPlaceholder')} />
+                    <small>{tx('admin.database.sqlitePathHint')}</small>
+                  </label>
+                ) : (
+                  <>
+                    <label className="admin-setup-field-wide">
+                      <span>{tx('admin.database.host')}</span>
+                      <input value={databaseHost} onChange={(event) => setDatabaseHost(event.target.value)} placeholder="db.example.com" autoFocus />
+                    </label>
+                    <label>
+                      <span>{tx('admin.database.port')}</span>
+                      <input type="number" min="1" max="65535" value={databasePort} onChange={(event) => setDatabasePort(event.target.value)} inputMode="numeric" />
+                    </label>
+                    <label>
+                      <span>{tx('admin.database.name')}</span>
+                      <input value={databaseName} onChange={(event) => setDatabaseName(event.target.value)} />
+                    </label>
+                    <label>
+                      <span>{tx('admin.database.username')}</span>
+                      <input value={databaseUser} onChange={(event) => setDatabaseUser(event.target.value)} autoComplete="username" />
+                    </label>
+                    <label>
+                      <span>{tx('admin.database.password')}</span>
+                      <input type="password" value={databasePassword} onChange={(event) => setDatabasePassword(event.target.value)} autoComplete="new-password" />
+                    </label>
+                    <label className="admin-setup-field-wide">
+                      <span>{tx('admin.database.schema')}</span>
+                      <input value={databaseSchema} onChange={(event) => setDatabaseSchema(event.target.value)} placeholder={databaseType === 'postgresql' ? 'public' : 'dbo'} />
+                    </label>
+                    {databaseType === 'mysql' ? (
+                      <div className="admin-setup-switch-row admin-setup-field-wide">
+                        <div>
+                          <strong>{tx('admin.database.mysql57Compatibility')}</strong>
+                          <small>{tx('admin.database.mysql57CompatibilityHint')}</small>
+                        </div>
+                        <SwitchControl checked={mysql57Compatibility} label={tx('admin.database.mysql57Compatibility')} onChange={setMysql57Compatibility} />
+                      </div>
+                    ) : null}
+                    <div className="admin-setup-switch-row admin-setup-field-wide">
+                      <div>
+                        <strong>{tx('admin.database.ssl')}</strong>
+                        <small>{tx('admin.database.sslHint')}</small>
+                      </div>
+                      <SwitchControl checked={databaseSsl} label={tx('admin.database.ssl')} onChange={setDatabaseSsl} />
+                    </div>
+                  </>
+                )}
+              </div>
+            </>
+          ) : null}
+
           {step === 'review' ? (
             <>
               <div className="admin-setup-section-head">
@@ -206,6 +330,11 @@ export function AdminSetupScreen({
                 <div>
                   <span><UserRound size={15} /></span>
                   <p><small>{tx('admin.setup.administrator')}</small><strong>{name}</strong><em>{email}</em></p>
+                  <Check size={15} className="admin-setup-check" />
+                </div>
+                <div>
+                  <span><Database size={15} /></span>
+                  <p><small>{tx('admin.database.engine')}</small><strong>{tx(`admin.database.${databaseType}`)}</strong><em>{databaseType === 'sqlite' ? (sqlitePath || tx('admin.database.sqliteDefaultPath')) : `${databaseHost}:${databasePort} / ${databaseName}`}{databaseType === 'mysql' && mysql57Compatibility ? ` · ${tx('admin.database.mysql57Compatibility')}` : ''}</em></p>
                   <Check size={15} className="admin-setup-check" />
                 </div>
                 <div>
@@ -239,7 +368,7 @@ export function AdminSetupScreen({
                 type="button"
                 className="primary-action"
                 onClick={goForward}
-                disabled={step === 'account' ? !accountValid : !mailValid}
+                disabled={step === 'account' ? !accountValid : step === 'storage' ? !databaseValid : !mailValid}
               >
                 {tx('admin.setup.continue')} <ArrowRight size={14} aria-hidden="true" />
               </button>

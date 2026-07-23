@@ -16,6 +16,8 @@ import {
   lockedWriteStore,
   pruneApplicationBackups,
   readStore,
+  resetMailFetchState,
+  withWriteLock,
   renameTeam,
   upsertPushSubscription,
   writeStore,
@@ -45,20 +47,24 @@ afterEach(async () => {
 
 describe('durable mail sync jobs', () => {
   it('coalesces active clicks and persists queue, running, and completion states', async () => {
-    const store = await readStore()
-    const sourceUser = store.users[0]
     const stamp = `${Date.now()}_${Math.random().toString(36).slice(2)}`
     const userId = `user_mail_sync_${stamp}`
-    store.users.push({
-      ...JSON.parse(JSON.stringify(sourceUser)),
-      id: userId,
-      email: `mail-sync-${stamp}@example.com`,
-      settings: {
-        ...JSON.parse(JSON.stringify(sourceUser.settings ?? {})),
-        incomingProtocol: 'imap',
-      },
+    await withWriteLock(async () => {
+      const store = await readStore()
+      const sourceUser = store.users[0]
+      store.users.push({
+        ...JSON.parse(JSON.stringify(sourceUser)),
+        id: userId,
+        email: `mail-sync-${stamp}@example.com`,
+        // This test exercises durable-job storage only. Do not inherit the
+        // developer mailbox or enable the production polling scheduler.
+        settings: {
+          incomingProtocol: 'imap',
+          autoFetchMail: false,
+        },
+      })
+      await writeStore(store)
     })
-    await writeStore(store)
 
     try {
       const first = await enqueueMailSyncJob(userId, 'history')
@@ -97,10 +103,15 @@ describe('durable mail sync jobs', () => {
       expect(next.alreadyQueued).toBe(false)
       expect(next.job.id).not.toBe(first.job.id)
     } finally {
-      const latest = await readStore()
-      latest.users = latest.users.filter((user) => user.id !== userId)
-      latest.applications = latest.applications.filter((application) => application.ownerId !== userId)
-      await writeStore(latest)
+      await withWriteLock(async () => {
+        // Explicitly remove queued/running state as well. It protects older
+        // databases that predate the foreign-key cascade on mail_fetch_state.
+        await resetMailFetchState(userId)
+        const latest = await readStore()
+        latest.users = latest.users.filter((user) => user.id !== userId)
+        latest.applications = latest.applications.filter((application) => application.ownerId !== userId)
+        await writeStore(latest)
+      })
     }
   })
 })

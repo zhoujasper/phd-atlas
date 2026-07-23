@@ -21,7 +21,8 @@
       "duration": "Durée",
       "permission": "Autorisation",
       "scope": "Portée",
-      "actions": "Actes"
+      "actions": "Actes",
+      "subject": "Élément partagé"
     },
     "permission": {
       "view": "Voir",
@@ -44,7 +45,8 @@
     "sectionsTitle": "Pages partagées",
     "scope": {
       "all": "Toutes les pages",
-      "count": "Pages {count}"
+      "count": "Pages {count}",
+      "upload": "Téléversement de pièces jointes"
     },
     "sections": {
       "overview": "Aperçu",

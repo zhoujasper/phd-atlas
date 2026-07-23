@@ -15,6 +15,7 @@
     "limitReached": "活跃分享链接上限为 {limit} 条。",
     "table": {
       "application": "申请",
+      "subject": "共享对象",
       "link": "链接",
       "created": "创建时间",
       "expires": "过期时间",
@@ -44,7 +45,8 @@
     "sectionsTitle": "共享页面",
     "scope": {
       "all": "全部页面",
-      "count": "{count} 个页面"
+      "count": "{count} 个页面",
+      "upload": "附件上传"
     },
     "sections": {
       "overview": "项目概览",

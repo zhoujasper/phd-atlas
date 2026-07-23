@@ -4,6 +4,17 @@
   "confirm": "ยืนยัน",
   "cancel": "ยกเลิก",
   "done": "เสร็จแล้ว",
+  "filePreview": {
+    "preview": "ตัวอย่างไฟล์",
+    "document": "เอกสาร",
+    "spreadsheet": "สเปรดชีต",
+    "presentation": "งานนำเสนอ",
+    "unavailable": "ไม่สามารถแสดงตัวอย่างไฟล์นี้ที่นี่ได้",
+    "downloadHint": "ดาวน์โหลดเพื่อเปิดด้วยแอปต้นฉบับ",
+    "slideCount": "สไลด์ {current} จาก {total}",
+    "sheets": "แผ่นงานในสมุดงาน",
+    "renderError": "ไม่สามารถแสดงเค้าโครงเดิมได้"
+  },
   "noResults": "ไม่มีผลลัพธ์",
   "search": "ค้นหา",
   "sort": "เรียงลำดับ",
@@ -74,6 +85,7 @@
     "RATE_LIMITED": "คำขอมากเกินไป กรุณารอสักครู่แล้วลองอีกครั้ง",
     "NETWORK_ERROR": "การเชื่อมต่อเครือข่ายล้มเหลว ตรวจสอบการเชื่อมต่อของคุณแล้วลองอีกครั้ง",
     "REQUEST_FAILED": "คำขอล้มเหลว โปรดลองอีกครั้ง",
+    "DATABASE_TARGET_NOT_EMPTY": "ฐานข้อมูลที่เลือกมีพื้นที่ทำงาน PhD Atlas อยู่แล้ว การตั้งค่าเริ่มต้นจะไม่เขียนทับ โปรดเลือกฐานข้อมูลว่างหรือย้ายข้อมูลจากการติดตั้งเดิม",
     "SERVER_ERROR": "ข้อผิดพลาดเซิร์ฟเวอร์ที่ไม่คาดคิด โปรดลองอีกครั้งในภายหลัง",
     "TOKEN_EXPIRED": "เซสชันของคุณหมดอายุแล้ว กรุณาเข้าสู่ระบบอีกครั้ง",
     "UNAUTHORIZED": "ต้องลงชื่อเข้าใช้",
@@ -110,6 +122,7 @@
     "TEAM_STORAGE_QUOTA_EXCEEDED": "พื้นที่เก็บข้อมูลของทีมเต็ม ขอให้ผู้ดูแลระบบเพิ่มโควต้าหรือลบไฟล์ก่อน",
     "TEAM_TRANSFER_NOT_AVAILABLE": "บันทึกการสมัครรับเข้าเรียนนี้ไม่สามารถย้ายระหว่างพื้นที่ทำงานส่วนบุคคลและองค์กรได้ในขณะนี้",
     "TEAM_TRANSFER_NOT_FOUND": "ไม่พบคำขอโอนทีมที่รอดำเนินการ",
+    "TEAM_TRANSFER_PENDING_LIMIT": "จำนวนใบสมัครที่รอการอนุมัติจากทีมถึงขีดจำกัดแล้ว โปรดดำเนินการหนึ่งรายการก่อนส่งรายการใหม่",
     "TEAM_TRANSFER_STUDENT_REQUIRED": "เฉพาะบัญชีนักเรียนที่ใช้งานอยู่ในองค์กรเท่านั้นที่สามารถย้ายบันทึกการสมัครเข้าหรือออกได้",
     "SHARE_LIMIT_REACHED": "ลิงก์แชร์ที่ใช้งานอยู่ถูกจำกัดไว้ที่ {limit} อัปเกรดเป็น Pro หรือขอให้ผู้ดูแลระบบเพิ่มขีดจำกัด",
     "SHARE_CREATE_LIMIT_REACHED": "คุณสร้างลิงก์แชร์ถึงขีดจำกัดตลอดอายุที่ {limit} แล้ว อัปเกรดเป็น Pro หรือขอให้ผู้ดูแลระบบเพิ่มขีดจำกัด",
@@ -188,10 +201,18 @@
     "UNSAFE_ATTACHMENT": "ไม่สามารถยอมรับเอกสารแนบนี้ได้อย่างปลอดภัย ตรวจสอบประเภทและเนื้อหาแล้วลองอีกครั้ง",
     "UNTRUSTED_HOST": "ที่อยู่เซิร์ฟเวอร์ PhD Atlas นี้ไม่เชื่อถือ",
     "TEAM_SHARE_CREATE_LIMIT_REACHED": "ทีมงานถึงขีดจำกัดการสร้างลิงก์แชร์ {limit} ตลอดอายุการใช้งานแล้ว ขอให้ผู้ดูแลระบบยกมันขึ้นมา",
-    "INVALID_UPDATE_PACKAGE": "This is not a supported PhD Atlas update package.",
-    "UPDATE_INTEGRITY_FAILED": "The update package failed its integrity check. Download it again from the official Release.",
-    "UPDATE_APPLY_FAILED": "The update failed and the previous runtime was restored.",
-    "SETUP_ALREADY_COMPLETED": "Initial setup has already been completed. Sign in with the administrator account."
+    "INVALID_UPDATE_PACKAGE": "นี่ไม่ใช่แพ็คเกจการอัปเดต PhD Atlas ที่ได้รับการสนับสนุน",
+    "UPDATE_INTEGRITY_FAILED": "แพคเกจการอัปเดตไม่ผ่านการตรวจสอบความสมบูรณ์ ดาวน์โหลดอีกครั้งจากการเปิดตัวอย่างเป็นทางการ",
+    "UPDATE_APPLY_FAILED": "การอัปเดตล้มเหลวและรันไทม์ก่อนหน้าได้รับการกู้คืนแล้ว",
+    "SETUP_ALREADY_COMPLETED": "การตั้งค่าเริ่มต้นเสร็จสมบูรณ์แล้ว ลงชื่อเข้าใช้ด้วยบัญชีผู้ดูแลระบบ",
+    "TEAM_DISCOVER_FORBIDDEN": "เฉพาะเจ้าของทีมและอาจารย์เท่านั้นที่สามารถเริ่มการวิจัยทีมได้",
+    "TEAM_DISCOVER_KEY_FORBIDDEN": "การวิจัยทีมใช้ได้เฉพาะคีย์ของทีมที่เลือกเท่านั้น",
+    "TEAM_DISCOVER_TARGET_FORBIDDEN": "คุณสามารถวิจัยได้เฉพาะนักศึกษาที่ได้รับมอบหมายและยังใช้งานอยู่",
+    "TEAM_DISCOVER_TARGET_REQUIRED": "เลือกทั้งทีมและนักศึกษาที่ได้รับมอบหมายสำหรับการวิจัยทีม",
+    "DISCOVER_ADVISOR_EMAIL_REQUIRED": "อาจารย์ที่ปรึกษาที่เลือกไม่มีอีเมลที่ยืนยันแล้ว",
+    "DISCOVER_ADVISOR_NOT_VERIFIED": "ต้องมีโปรไฟล์และอีเมลจริงของอาจารย์ที่ปรึกษาก่อนเพิ่มหลักสูตรนี้ลงในใบสมัคร",
+    "DISCOVER_PROGRAM_NOT_VERIFIED": "หลักสูตรนี้ไม่มีแหล่งข้อมูลทางการที่ยืนยันแล้วหรือกำหนดส่งใบสมัครปัจจุบัน โปรดรีเฟรชการวิจัยก่อนนำเข้า",
+    "MAIL_ATTACHMENT_TOO_LARGE": "ไฟล์แนบมีขนาดใหญ่เกินกว่าจะเพิ่มลงในอีเมลได้"
   },
   "apiErrorFields": {
     "captchaAnswer": "คำตอบสำหรับการยืนยัน",
@@ -586,7 +607,9 @@
         "team_message": "ข้อความจากทีม",
         "team_update": "อัปเดตทีม",
         "membership_update": "สมาชิกภาพ",
-        "admin_announcement": "ประกาศ"
+        "admin_announcement": "ประกาศ",
+        "discover_research_complete": "การวิจัย Discover",
+        "discover_research_failed": "การวิจัย Discover"
       },
       "tab": {
         "dossier": "แฟ้มใบสมัคร",

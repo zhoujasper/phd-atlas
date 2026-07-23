@@ -83,18 +83,44 @@ export function useTheme(): ThemeContextValue {
   return useContext(ThemeContext)
 }
 
-export function useThemeProvider(defaultTheme: Theme = 'light') {
+/** Use the operating-system browser preference until the visitor makes a choice. */
+export function browserDefaultTheme(): Theme {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'light'
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
+function storedThemePreference(): Theme | null {
+  try {
+    const stored = localStorage.getItem('phd-atlas-theme')
+    return stored === 'dark' || stored === 'light' ? stored : null
+  } catch {
+    return null
+  }
+}
+
+function storedThemeAccent(): string | null {
+  try {
+    return localStorage.getItem('phd-atlas-accent')
+  } catch {
+    return null
+  }
+}
+
+export function useThemeProvider(defaultTheme: Theme = browserDefaultTheme()) {
   const [theme, setThemeState] = useState<Theme>(() => {
-    const stored = localStorage.getItem('phd-atlas-theme') as Theme | null
-    return stored ?? defaultTheme
+    return storedThemePreference() ?? defaultTheme
   })
 
   const setTheme = useCallback((t: Theme) => {
     setThemeState(t)
-    localStorage.setItem('phd-atlas-theme', t)
+    try {
+      localStorage.setItem('phd-atlas-theme', t)
+    } catch {
+      // Storage may be disabled; retain the choice for the current page.
+    }
     document.documentElement.setAttribute('data-theme', t)
     /* Re-apply accent preset with correct dark/light variants */
-    applyThemePreset(localStorage.getItem('phd-atlas-accent'))
+    applyThemePreset(storedThemeAccent())
   }, [])
 
   const toggleTheme = useCallback(() => {
@@ -106,7 +132,7 @@ export function useThemeProvider(defaultTheme: Theme = 'light') {
   }, [theme])
 
   useEffect(() => {
-    applyThemePreset(localStorage.getItem('phd-atlas-accent'))
+    applyThemePreset(storedThemeAccent())
   }, [])
 
   return { theme, setTheme, toggleTheme }

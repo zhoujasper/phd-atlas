@@ -162,23 +162,52 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { phdApi, type AiDraftEvent, type AiDraftInput, type AiKey, type AuthSession, type CommunicationAttachmentInput, type CommunicationInput, type CommunicationPatchInput, type CommunicationSendInput, type ProfileAsset, type TeamRole } from '../../api/phdApi'
+import { phdApi, type AiDraftEvent, type AiDraftInput, type AiKey, type AuthSession, type CommunicationAttachmentInput, type CommunicationInput, type CommunicationPatchInput, type CommunicationSendInput, type ProfileAsset, type TeamRole, type TeamTransferPreflight, type TeamWorkspaceOption } from '../../api/phdApi'
 import type {
   ApplicationRecord,
   ApplicationStatus,
   MaterialRecommender,
   MaterialStatus,
 } from '../../data/applications'
+import { countReviewComments, reviewRepliesFor } from '../../reviewComments'
 import type { DetailTab } from '../../appModel'
 import { formatDate, today, daysUntil, deadlineUrgency, relativeTime, groupTimelineEvents, priorityToLevel, priorityTone, timelineDateStatus } from '../../appModel'
-import { countryDisplayName } from '../../data/countries'
 import { PrioritySlider } from '../shared/PrioritySlider'
 import { contentLanguagesFromSettings } from '../../contentLanguages'
 import { normalizeErrorMessage } from '../../errorMessages'
 import { formatList, localeForLanguage, localizeStaticText, t as translate, tpl, type Language } from '../../i18n'
 import { materialStatusMenuTone, statusCssSlug, statusLabel } from '../../statusLabels'
 import { profileKindLabel } from '../../profileAssets'
-import { safeExternalHttpUrl, safeMailtoHref, safeTelHref } from '../../safeLinks'
+import {
+  createDossierResourceCard,
+  createDossierResourceField,
+  dossierResourceCardWidths,
+  dossierResourceColors,
+  dossierResourceFieldTypes,
+  dossierResourceFieldWidths,
+  dossierResourceIconPresets,
+  isDossierResourceFieldType,
+  localizeDossierResourceCardTitle,
+  localizeDossierResourceFieldLabel,
+  mailtoHref,
+  phoneHref,
+  normalizeDossierResourceCardWidth,
+  normalizeDossierResourceColor,
+  normalizeDossierResourceFieldWidth,
+  normalizeDossierResourceIcon,
+  normalizeDossierResourceCards,
+  normalizedExternalHref,
+  preferredDossierResourceFieldWidth,
+  resourceFieldSummary,
+  resourceTags,
+} from './dossierResourceModel'
+import type {
+  DossierResourceCard,
+  DossierResourceCardSettingsDraft,
+  DossierResourceDefaultValues,
+  DossierResourceField,
+  DossierResourceFieldType,
+} from './dossierResourceModel'
 import {
   DEFAULT_UPLOAD_ALLOWED_TYPES,
   MAX_MAIL_ATTACHMENT_FILES,
@@ -206,10 +235,10 @@ import { ModalPortal } from '../shared/ModalPortal'
 import { CopyButton } from '../shared/CopyButton'
 import { DatePicker } from '../shared/DatePicker'
 import { TimePicker } from '../shared/TimePicker'
-import { Select } from '../shared/Select'
+import { Select, type SelectCreateConfig } from '../shared/Select'
 import { CountrySelect } from '../shared/CountrySelect'
 import { useI18n } from '../hooks/useI18n'
-import { useAnimatedClose } from '../hooks/useAnimatedClose'
+import { getMotionDelay, useAnimatedClose } from '../hooks/useAnimatedClose'
 import { hasExplorerSelectionModifier, useExplorerSelection } from '../hooks/useExplorerSelection'
 import { useModalA11y } from '../hooks/useModalA11y'
 import { CollapsiblePanel } from '../shared/CollapsiblePanel'
@@ -219,17 +248,47 @@ import { AssetInsertMenu, type InsertLanguage } from '../shared/AssetInsertMenu'
 import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/ExplorerContextMenu'
 import { ExplorerSelectionBar } from '../shared/ExplorerSelectionBar'
 import { FileDropzone } from '../shared/FileDropzone'
+import { AttachmentPreviewDialog, type AttachmentPreviewFile } from '../shared/AttachmentPreviewDialog'
 import FeeTracker from '../shared/FeeTracker'
 import { MarkdownContent } from '../shared/MarkdownContent'
 import { LazyMarkdownTextarea as MarkdownTextarea } from '../shared/LazyMarkdownTextarea'
 import { AiDraftPanel } from '../shared/AiDraftPanel'
 import { AnchoredPopover } from '../shared/AnchoredPopover'
+import { ApplicationTransferDialog } from '../shared/ApplicationTransferDialog'
+import { SchoolLogoManager, SchoolLogoMark } from '../shared/SchoolLogo'
+import { buildDossierAiAttachmentCandidates } from './dossierAiAttachmentCandidates'
+import {
+  cleanScholarshipDraft,
+  createScholarshipDraft,
+  scholarshipStatusOrder,
+  scholarshipToDraft,
+  type ScholarshipFormDraft,
+  type ScholarshipItem,
+  type ScholarshipMaterialItem,
+  type ScholarshipStatus,
+  type ScholarshipTaskItem,
+} from './dossierScholarshipDraft'
+import {
+  checklistGroupI18n,
+  checklistGroups,
+  checklistMaterialTypeI18n,
+  checklistMaterialTypes,
+  fileSizeLabel,
+  isChecklistGroup,
+  isRecommendationMaterial,
+  materialStatusFilterValue,
+  normalizeRecommenders,
+} from './dossierChecklistModel'
+import type {
+  MaterialFilter,
+  MaterialItem,
+} from './dossierChecklistModel'
 import {
   TableCell,
   TableColGroup,
   TableHeaderCell,
-  useTableColumnMenu,
 } from '../shared/TableColumnChrome'
+import { useTableColumnMenu } from '../shared/useTableColumnMenu'
 import type { TableColumnDef } from '../shared/useTableColumns'
 
 const statusOrder: ApplicationStatus[] = [
@@ -249,51 +308,9 @@ const materialStatusOrder: MaterialStatus[] = [
   'Submitted',
 ]
 const BASE_DETAIL_TABS: DetailTab[] = ['dossier', 'materials', 'mail', 'funding', 'timeline']
-const scholarshipStatusOrder = ['Draft', 'Preparing', 'Submitted', 'Awarded', 'Rejected'] as const
 
-const checklistGroups = [
-  'Core materials',
-  'Recommendations',
-  'Testing',
-  'Portal',
-  'Writing',
-  'Funding',
-  'Administrative',
-  'Interview',
-  'Post-submit',
-  'Visa',
-  'Submission',
-  'Custom',
-] as const
-
-type ChecklistGroup = typeof checklistGroups[number]
-type MaterialItem = ApplicationRecord['materials'][number]
 type TaskItem = ApplicationRecord['tasks'][number]
 type CommunicationItem = ApplicationRecord['communications'][number]
-type ScholarshipItem = ApplicationRecord['scholarships'][number]
-type DossierResourceCard = NonNullable<ApplicationRecord['dossierCards']>[number]
-type DossierResourceField = DossierResourceCard['fields'][number]
-type DossierResourceFieldType = DossierResourceField['type']
-type DossierResourceCardSettingsDraft = Pick<DossierResourceCard, 'title' | 'icon' | 'color' | 'width' | 'fields'>
-type DossierResourceCardWidth = NonNullable<DossierResourceCard['width']>
-type DossierResourceFieldWidth = NonNullable<DossierResourceField['width']>
-type ScholarshipStatus = typeof scholarshipStatusOrder[number]
-type ScholarshipMaterialItem = NonNullable<ScholarshipItem['materials']>[number]
-type ScholarshipTaskItem = NonNullable<ScholarshipItem['tasks']>[number]
-type ScholarshipTimelineItem = NonNullable<ScholarshipItem['timeline']>[number]
-type ScholarshipFormDraft = {
-  name: string
-  amount: string
-  startDate: string
-  endDate: string
-  school: string
-  issuer: string
-  status: ScholarshipStatus
-  notes: string
-  materials: ScholarshipMaterialItem[]
-  tasks: ScholarshipTaskItem[]
-  timeline: ScholarshipTimelineItem[]
-}
 type ChecklistUploadTarget =
   | { kind: 'material'; id: string }
   | { kind: 'task'; id: string }
@@ -307,7 +324,6 @@ type UploadDraftFile = {
   file: File
   name: string
 }
-type MaterialFilter = 'all' | `status:${string}` | 'with-reminder' | 'with-attachment'
 type MaterialSort = 'manual' | 'name' | 'status' | 'group' | 'updated'
 type TaskFilter = 'all' | 'open' | 'done' | 'overdue' | 'with-attachment' | 'with-reminder'
 type TaskSort = 'manual' | 'due' | 'title' | 'status'
@@ -449,6 +465,7 @@ function ChecklistDisclosureItem({
   style,
   ariaSelected,
   onContextMenu,
+  onOpenChange,
   children,
 }: {
   id: string
@@ -461,6 +478,7 @@ function ChecklistDisclosureItem({
   style?: CSSProperties
   ariaSelected: boolean
   onContextMenu: (event: MouseEvent<HTMLDivElement>) => void
+  onOpenChange?: (open: boolean) => void
   children: (open: boolean, toggle: () => void) => ReactNode
 }) {
   const [open, setOpen] = useState(externalOpen)
@@ -470,8 +488,12 @@ function ChecklistDisclosureItem({
   }, [externalOpen, syncVersion])
 
   const toggle = useCallback(() => {
-    setOpen((current) => !current)
-  }, [])
+    setOpen((current) => {
+      const next = !current
+      onOpenChange?.(next)
+      return next
+    })
+  }, [onOpenChange])
 
   return (
     <div
@@ -568,7 +590,12 @@ type EmailAttachmentDraft = CommunicationAttachmentInput & {
   file?: File
   fileSize?: number
   mimeType?: string
+  /** Candidate selected in the AI attachment planner. */
+  aiCandidateId?: string
+  /** Gives tool-selected chips a one-time arrival animation in the composer. */
+  aiAttachedByTool?: boolean
 }
+
 type CorrespondenceKind =
   | 'outgoing-email'
   | 'incoming-email'
@@ -579,21 +606,6 @@ type CorrespondenceKind =
 type CorrespondenceMode = 'draft-email' | 'record-email' | 'record-message' | 'note'
 type CorrespondenceView = 'all' | 'drafts'
 type ComposerExitRequest = { proceed: () => void; keepOpenAfterSave?: boolean }
-
-const checklistGroupI18n: Record<ChecklistGroup, string> = {
-  'Core materials': 'core',
-  Recommendations: 'recommendations',
-  Testing: 'testing',
-  Portal: 'portal',
-  Writing: 'writing',
-  Funding: 'funding',
-  Administrative: 'administrative',
-  Interview: 'interview',
-  'Post-submit': 'postSubmit',
-  Visa: 'visa',
-  Submission: 'submission',
-  Custom: 'custom',
-}
 
 const correspondenceKinds: Array<{
   value: CorrespondenceKind
@@ -608,171 +620,6 @@ const correspondenceKinds: Array<{
   { value: 'note', labelKey: 'dossier.correspondenceTypes.note', channel: 'Note', direction: 'note' },
 ]
 
-const dossierResourceFieldTypes: DossierResourceFieldType[] = [
-  'url',
-  'text',
-  'textarea',
-  'email',
-  'phone',
-  'contact',
-  'tags',
-  'date',
-]
-
-const dossierResourceColors = [
-  { value: 'accent', labelKey: 'dossier.resourceColors.accent' },
-  { value: 'blue', labelKey: 'dossier.resourceColors.blue' },
-  { value: 'green', labelKey: 'dossier.resourceColors.green' },
-  { value: 'orange', labelKey: 'dossier.resourceColors.orange' },
-  { value: 'red', labelKey: 'dossier.resourceColors.red' },
-  { value: 'violet', labelKey: 'dossier.resourceColors.violet' },
-  { value: 'slate', labelKey: 'dossier.resourceColors.slate' },
-] as const
-
-type DossierResourceColor = typeof dossierResourceColors[number]['value']
-const dossierResourceCardWidths: DossierResourceCardWidth[] = ['half', 'full']
-const dossierResourceFieldWidths: DossierResourceFieldWidth[] = ['half', 'full']
-
-type DossierResourceIconPreset = {
-  id: string
-  icon: string
-  label: string
-  labelKey: string
-  keywords: string
-}
-
-function createDossierResourceIconPreset(
-  id: string,
-  icon: string,
-  label: string,
-  keywords: string,
-): DossierResourceIconPreset {
-  return {
-    id,
-    icon,
-    label,
-    labelKey: `dossier.resourceIconLabels.${id}`,
-    keywords,
-  }
-}
-
-const dossierResourceIconPresets = [
-  createDossierResourceIconPreset('link', 'Link', 'Link', 'url link website href 链接 网站 网址'),
-  createDossierResourceIconPreset('globe', 'Globe', 'Website', 'global web admissions international 网页 网站 国际'),
-  createDossierResourceIconPreset('door-open', 'DoorOpen', 'Portal', 'portal application login door 网申 门户 登录 入口'),
-  createDossierResourceIconPreset('key', 'KeyRound', 'Account', 'password account login key credential 账号 密码 登录'),
-  createDossierResourceIconPreset('checklist', 'ClipboardList', 'Checklist', 'checklist task requirements todo 清单 要求 任务'),
-  createDossierResourceIconPreset('file', 'FileText', 'File', 'document file pdf material 文件 材料 文档'),
-  createDossierResourceIconPreset('file-pen', 'FilePenLine', 'Writing', 'writing essay sop statement 文书 写作 文档'),
-  createDossierResourceIconPreset('professor', 'GraduationCap', 'Professor', 'professor advisor faculty mentor 导师 教授'),
-  createDossierResourceIconPreset('user', 'User', 'Person', 'person contact user applicant 联系人 用户'),
-  createDossierResourceIconPreset('building', 'Building2', 'Department', 'department building office 院系 学院 办公室'),
-  createDossierResourceIconPreset('school', 'Library', 'University', 'university library school 大学 学校 图书馆'),
-  createDossierResourceIconPreset('book', 'BookOpen', 'Research', 'research reading program book 研究 项目 书'),
-  createDossierResourceIconPreset('book-marked', 'BookMarked', 'Guide', 'saved bookmark guideline guide 收藏 指南 书签'),
-  createDossierResourceIconPreset('lab', 'Compass', 'Lab', 'lab research direction compass 实验室 方向'),
-  createDossierResourceIconPreset('email', 'Mail', 'Email', 'mail email inbox 邮件 邮箱'),
-  createDossierResourceIconPreset('mail-check', 'MailCheck', 'Confirmed mail', 'verified received mail confirmed 已确认 邮件'),
-  createDossierResourceIconPreset('at', 'AtSign', 'Social handle', 'social handle at username 社交 账号'),
-  createDossierResourceIconPreset('phone', 'PhoneCall', 'Phone', 'phone call contact 电话 联系'),
-  createDossierResourceIconPreset('message', 'MessageCircle', 'Message', 'message chat note 消息 聊天 备注'),
-  createDossierResourceIconPreset('chat', 'MessageSquare', 'Conversation', 'conversation thread chat dialog 往来 对话 聊天'),
-  createDossierResourceIconPreset('calendar', 'Calendar', 'Date', 'date deadline event calendar 日期 截止 日历'),
-  createDossierResourceIconPreset('clock', 'Clock', 'Time', 'time reminder schedule clock 时间 提醒 日程'),
-  createDossierResourceIconPreset('location', 'MapPin', 'Location', 'address campus location pin 地址 校区 地点'),
-  createDossierResourceIconPreset('wallet', 'WalletCards', 'Payment', 'fee payment tuition wallet 费用 支付 学费'),
-  createDossierResourceIconPreset('funding', 'CircleDollarSign', 'Funding', 'funding scholarship money dollar 奖学金 资金 钱'),
-  createDossierResourceIconPreset('award', 'Award', 'Award', 'award fellowship honor certificate 奖项 荣誉'),
-  createDossierResourceIconPreset('shield', 'ShieldCheck', 'Security', 'visa security privacy shield 签证 安全 隐私'),
-  createDossierResourceIconPreset('id', 'IdCard', 'ID', 'id identity account number 身份 编号 账号'),
-  createDossierResourceIconPreset('notes', 'NotebookTabs', 'Notes', 'notes memo notebook remarks 备注 笔记'),
-  createDossierResourceIconPreset('tags', 'Tags', 'Tags', 'tags labels category 标签 分类'),
-  createDossierResourceIconPreset('bank', 'Landmark', 'Office', 'office finance institution bank 办公室 财务 机构'),
-  createDossierResourceIconPreset('upload', 'UploadCloud', 'Upload', 'upload submit submission cloud 上传 提交'),
-  createDossierResourceIconPreset('briefcase', 'Briefcase', 'Work', 'career work professional job 工作 职业'),
-  createDossierResourceIconPreset('folder-open', 'FolderOpen', 'Folder', 'folder archive collection 文件夹 归档'),
-  createDossierResourceIconPreset('file-check', 'FileCheck', 'Approved file', 'approved submitted complete file 已提交 完成 文件'),
-  createDossierResourceIconPreset('file-clock', 'FileClock', 'Pending file', 'pending waiting draft file 等待 草稿 文件'),
-  createDossierResourceIconPreset('file-lock', 'FileLock', 'Private file', 'locked private secure file 私密 加密 文件'),
-  createDossierResourceIconPreset('file-search', 'FileSearch', 'Review file', 'review search scan file 审核 搜索 文件'),
-  createDossierResourceIconPreset('file-up', 'FileUp', 'Upload file', 'file upload attachment 上传 附件 文件'),
-  createDossierResourceIconPreset('files', 'Files', 'Files', 'multiple files copies documents 多文件 文档'),
-  createDossierResourceIconPreset('paperclip', 'Paperclip', 'Attachment', 'attachment paperclip clip 附件'),
-  createDossierResourceIconPreset('pencil-line', 'PencilLine', 'Edit note', 'edit write pencil note 编辑 书写'),
-  createDossierResourceIconPreset('signature', 'Signature', 'Signature', 'signature sign form 签名 签字 表格'),
-  createDossierResourceIconPreset('stamp', 'Stamp', 'Stamp', 'stamp official seal approval 印章 盖章 官方'),
-  createDossierResourceIconPreset('badge-check', 'BadgeCheck', 'Verified', 'verified check approved badge 认证 通过'),
-  createDossierResourceIconPreset('badge-dollar', 'BadgeDollarSign', 'Fee badge', 'fee dollar payment badge 费用 支付'),
-  createDossierResourceIconPreset('badge-info', 'BadgeInfo', 'Info badge', 'info detail badge 信息 说明'),
-  createDossierResourceIconPreset('bell-ring', 'BellRing', 'Reminder', 'alert reminder notification bell 提醒 通知'),
-  createDossierResourceIconPreset('bookmark', 'Bookmark', 'Bookmark', 'bookmark saved favorite 收藏 标记'),
-  createDossierResourceIconPreset('book-open-check', 'BookOpenCheck', 'Requirement', 'requirement guideline check 要求 指南'),
-  createDossierResourceIconPreset('book-text', 'BookText', 'Handbook', 'handbook catalog text manual 手册 文本'),
-  createDossierResourceIconPreset('brain', 'Brain', 'Research idea', 'brain research idea cognition 研究 想法'),
-  createDossierResourceIconPreset('chart-bar', 'ChartNoAxesColumn', 'Stats', 'chart stats ranking bar 统计 排名'),
-  createDossierResourceIconPreset('chart-pie', 'ChartPie', 'Analysis', 'chart pie analytics 分析 图表'),
-  createDossierResourceIconPreset('check-check', 'CheckCheck', 'Completed', 'complete done double check 完成 勾选'),
-  createDossierResourceIconPreset('alert', 'CircleAlert', 'Alert', 'alert warning issue 注意 警告'),
-  createDossierResourceIconPreset('check-circle', 'CircleCheck', 'Accepted', 'accepted success complete 通过 成功'),
-  createDossierResourceIconPreset('help-circle', 'CircleHelp', 'Help', 'help question faq support 帮助 问题'),
-  createDossierResourceIconPreset('profile', 'CircleUserRound', 'Profile', 'profile person applicant 画像 个人'),
-  createDossierResourceIconPreset('cloud', 'Cloud', 'Cloud', 'cloud online storage 云端 在线'),
-  createDossierResourceIconPreset('cloud-upload', 'CloudUpload', 'Cloud upload', 'cloud upload sync 云 上传 同步'),
-  createDossierResourceIconPreset('code', 'Code', 'Code', 'code technical cs github 代码 计算机'),
-  createDossierResourceIconPreset('compass', 'Compass', 'Direction', 'direction fit strategy compass 方向 策略'),
-  createDossierResourceIconPreset('contact', 'Contact', 'Contact card', 'contact card address book 联系人 名片'),
-  createDossierResourceIconPreset('database', 'Database', 'Database', 'database record data 数据库 记录'),
-  createDossierResourceIconPreset('earth', 'Earth', 'International', 'earth global international world 国际 世界'),
-  createDossierResourceIconPreset('external', 'ExternalLink', 'External link', 'external open outbound link 外链 打开'),
-  createDossierResourceIconPreset('eye', 'Eye', 'View', 'view visible preview eye 查看 预览'),
-  createDossierResourceIconPreset('flag', 'Flag', 'Flag', 'flag milestone priority 标记 里程碑'),
-  createDossierResourceIconPreset('handshake', 'Handshake', 'Agreement', 'agreement offer partnership 握手 协议 offer'),
-  createDossierResourceIconPreset('heart-handshake', 'HeartHandshake', 'Fit', 'fit relationship support match 匹配 支持'),
-  createDossierResourceIconPreset('home', 'Home', 'Home', 'home housing address 住宿 地址 家'),
-  createDossierResourceIconPreset('inbox', 'Inbox', 'Inbox', 'inbox received mail 收件箱 接收'),
-  createDossierResourceIconPreset('languages', 'Languages', 'Language', 'language translation english chinese 语言 翻译'),
-  createDossierResourceIconPreset('laptop', 'Laptop', 'Online system', 'laptop online system computer 在线 系统'),
-  createDossierResourceIconPreset('layers', 'Layers', 'Layers', 'layers stack versions 层级 版本'),
-  createDossierResourceIconPreset('lightbulb', 'Lightbulb', 'Idea', 'idea insight tip lightbulb 想法 灵感'),
-  createDossierResourceIconPreset('list-checks', 'ListChecks', 'Task list', 'task list checklist todo 任务 清单'),
-  createDossierResourceIconPreset('lock', 'LockKeyhole', 'Password', 'lock password secure 密码 锁 安全'),
-  createDossierResourceIconPreset('map', 'Map', 'Map', 'map campus location 地图 校区'),
-  createDossierResourceIconPreset('map-pinned', 'MapPinned', 'Pinned place', 'pin place campus pinned 地点 地址'),
-  createDossierResourceIconPreset('megaphone', 'Megaphone', 'Announcement', 'announcement news update 通知 公告'),
-  createDossierResourceIconPreset('messages', 'MessagesSquare', 'Messages', 'messages comments thread 消息 评论'),
-  createDossierResourceIconPreset('microscope', 'Microscope', 'Lab research', 'microscope lab science research 实验 科研'),
-  createDossierResourceIconPreset('network', 'Network', 'Network', 'network connections graph 网络 关系'),
-  createDossierResourceIconPreset('newspaper', 'Newspaper', 'News', 'news article page 新闻 文章'),
-  createDossierResourceIconPreset('package-check', 'PackageCheck', 'Package', 'package delivery complete 包裹 材料'),
-  createDossierResourceIconPreset('panel-top', 'PanelTop', 'Portal page', 'portal page web panel 页面 门户'),
-  createDossierResourceIconPreset('plane', 'Plane', 'Travel', 'travel flight visa plane 旅行 航班 签证'),
-  createDossierResourceIconPreset('presentation', 'Presentation', 'Presentation', 'presentation slides interview 演示 面试'),
-  createDossierResourceIconPreset('qr-code', 'QrCode', 'QR code', 'qr code barcode 二维码 编码'),
-  createDossierResourceIconPreset('receipt', 'Receipt', 'Receipt', 'receipt invoice fee 发票 收据 费用'),
-  createDossierResourceIconPreset('route', 'Route', 'Route', 'route plan path 路线 计划'),
-  createDossierResourceIconPreset('school-campus', 'School', 'Campus', 'school campus college 校园 学校'),
-  createDossierResourceIconPreset('search-check', 'SearchCheck', 'Search done', 'search verify lookup 搜索 核查'),
-  createDossierResourceIconPreset('send', 'Send', 'Send', 'send submit email 发送 提交'),
-  createDossierResourceIconPreset('settings', 'Settings', 'Settings', 'settings config preference 设置 配置'),
-  createDossierResourceIconPreset('share', 'Share2', 'Share', 'share link collaboration 分享 链接'),
-  createDossierResourceIconPreset('sparkles', 'Sparkles', 'Highlight', 'highlight premium sparkle 重点 高亮'),
-  createDossierResourceIconPreset('square-pen', 'SquarePen', 'Edit form', 'edit form write 编辑 表单'),
-  createDossierResourceIconPreset('star', 'Star', 'Priority', 'star favorite priority 星标 优先级'),
-  createDossierResourceIconPreset('sticky-note', 'StickyNote', 'Memo', 'memo sticky note 便签 备注'),
-  createDossierResourceIconPreset('target', 'Target', 'Target', 'target goal fit 目标 匹配'),
-  createDossierResourceIconPreset('timer', 'Timer', 'Timer', 'timer countdown deadline 倒计时 截止'),
-  createDossierResourceIconPreset('trophy', 'Trophy', 'Outcome', 'trophy result win 结果 奖杯'),
-  createDossierResourceIconPreset('university', 'University', 'Institution', 'university institution school 大学 机构'),
-  createDossierResourceIconPreset('user-check', 'UserCheck', 'Confirmed person', 'user check verified person 已确认 联系人'),
-  createDossierResourceIconPreset('user-search', 'UserRoundSearch', 'Find person', 'find professor user search 查找 导师'),
-  createDossierResourceIconPreset('users-round', 'UsersRound', 'Group', 'group team people 群组 团队'),
-  createDossierResourceIconPreset('waypoints', 'Waypoints', 'Workflow points', 'workflow process points 流程 节点'),
-  createDossierResourceIconPreset('wifi', 'Wifi', 'Online', 'online wifi connection 网络 在线'),
-  createDossierResourceIconPreset('workflow', 'Workflow', 'Workflow', 'workflow automation process 流程 自动化'),
-  createDossierResourceIconPreset('zap', 'Zap', 'Urgent', 'urgent fast lightning 紧急 快速'),
-  createDossierResourceIconPreset('archive-box', 'Archive', 'Archive', 'archive storage saved 归档 保存'),
-  createDossierResourceIconPreset('archive-restore', 'ArchiveRestore', 'Restore', 'restore backup archive 恢复 备份'),
-]
 
 const lucideResourceIcons: Record<string, LucideIcon> = {
   Archive,
@@ -893,26 +740,6 @@ const lucideResourceIcons: Record<string, LucideIcon> = {
 const dossierResourceIconMap: Record<string, LucideIcon> = Object.fromEntries(
   dossierResourceIconPresets.map((preset) => [preset.id, lucideResourceIcons[preset.icon] ?? Link]),
 ) as Record<string, LucideIcon>
-const dossierResourceBuiltinLanguages: Language[] = ['en', 'zh']
-const defaultDossierResourceCardTitleKeys: Record<string, string> = {
-  'default-application-portal': 'dossier.resourceDefaults.portalTitle',
-  'default-program-page': 'dossier.resourceDefaults.programTitle',
-  'default-professor-contact': 'dossier.resourceDefaults.professorTitle',
-  'default-requirements': 'dossier.resourceDefaults.requirementsTitle',
-}
-const defaultDossierResourceFieldLabelKeys: Record<string, string> = {
-  'default-portal-link': 'dossier.resourceDefaults.portalLink',
-  'default-portal-account': 'dossier.resourceDefaults.portalAccount',
-  'default-portal-notes': 'dossier.resourceDefaults.portalNotes',
-  'default-program-website': 'dossier.resourceDefaults.admissionsWebsite',
-  'default-program-name': 'dossier.program',
-  'default-program-deadline': 'dossier.deadline',
-  'default-professor-email': 'dossier.email',
-  'default-professor-homepage': 'dossier.homepage',
-  'default-professor-contact': 'dossier.resourceDefaults.contactMethod',
-  'default-requirements-tags': 'dossier.tags',
-  'default-requirements-notes': 'dossier.resourceDefaults.requirementsNotes',
-}
 const taskReminderOffsetOptions = [
   { value: 'same-day', labelKey: 'dossier.reminderSameDay' },
   { value: '1d', labelKey: 'dossier.reminder1d' },
@@ -925,217 +752,6 @@ function createLocalId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-function isDossierResourceFieldType(value: unknown): value is DossierResourceFieldType {
-  return typeof value === 'string' && dossierResourceFieldTypes.includes(value as DossierResourceFieldType)
-}
-
-function normalizeDossierResourceColor(value: unknown): DossierResourceColor {
-  return dossierResourceColors.some((color) => color.value === value) ? value as DossierResourceColor : 'accent'
-}
-
-function normalizeDossierResourceCardWidth(value: unknown): DossierResourceCardWidth {
-  return value === 'full' ? 'full' : 'half'
-}
-
-function preferredDossierResourceFieldWidth(type: DossierResourceFieldType): DossierResourceFieldWidth {
-  return type === 'textarea' || type === 'tags' ? 'full' : 'half'
-}
-
-function normalizeDossierResourceFieldWidth(
-  value: unknown,
-  type: DossierResourceFieldType,
-): DossierResourceFieldWidth {
-  if (type === 'textarea') return 'full'
-  return value === 'half' || value === 'full' ? value : preferredDossierResourceFieldWidth(type)
-}
-
-function normalizeDossierResourceIcon(value: unknown) {
-  return typeof value === 'string' && dossierResourceIconMap[value] ? value : 'link'
-}
-
-function isDossierResourceBuiltinValue(value: string, key: string) {
-  const trimmed = value.trim()
-  if (!trimmed) return true
-  return dossierResourceBuiltinLanguages.some((language) => translate(language, key) === trimmed)
-}
-
-function localizeDossierResourceCardTitle(
-  card: DossierResourceCard,
-  tx: (key: string, fallback?: string) => string,
-) {
-  const titleKey = defaultDossierResourceCardTitleKeys[card.id]
-  if (titleKey && isDossierResourceBuiltinValue(card.title, titleKey)) return tx(titleKey)
-  if (isDossierResourceBuiltinValue(card.title, 'dossier.resourceUntitledCard')) {
-    return tx('dossier.resourceUntitledCard')
-  }
-  return card.title
-}
-
-function localizeDossierResourceFieldLabel(
-  field: DossierResourceField,
-  tx: (key: string, fallback?: string) => string,
-) {
-  const labelKey = defaultDossierResourceFieldLabelKeys[field.id] ?? `dossier.resourceFieldTypes.${field.type}`
-  if (isDossierResourceBuiltinValue(field.label, labelKey)) return tx(labelKey)
-  return field.label
-}
-
-function createDefaultDossierResourceCards(
-  draft: ApplicationRecord,
-  tx: (key: string, fallback?: string) => string,
-): DossierResourceCard[] {
-  return [
-    {
-      id: 'default-application-portal',
-      title: tx('dossier.resourceDefaults.portalTitle'),
-      icon: 'door-open',
-      color: 'accent',
-      width: 'half',
-      fields: [
-        { id: 'default-portal-link', type: 'url', label: tx('dossier.resourceDefaults.portalLink'), value: '', width: 'half' },
-        { id: 'default-portal-account', type: 'text', label: tx('dossier.resourceDefaults.portalAccount'), value: '', width: 'half' },
-        { id: 'default-portal-notes', type: 'textarea', label: tx('dossier.resourceDefaults.portalNotes'), value: '', width: 'full' },
-      ],
-    },
-    {
-      id: 'default-program-page',
-      title: tx('dossier.resourceDefaults.programTitle'),
-      icon: 'globe',
-      color: 'slate',
-      width: 'half',
-      fields: [
-        { id: 'default-program-website', type: 'url', label: tx('dossier.resourceDefaults.admissionsWebsite'), value: draft.school.website, width: 'half' },
-        { id: 'default-program-name', type: 'text', label: tx('dossier.program'), value: draft.program, width: 'half' },
-        { id: 'default-program-deadline', type: 'date', label: tx('dossier.deadline'), value: draft.deadline, width: 'half' },
-      ],
-    },
-    {
-      id: 'default-professor-contact',
-      title: tx('dossier.resourceDefaults.professorTitle'),
-      icon: 'email',
-      color: 'green',
-      width: 'half',
-      fields: [
-        { id: 'default-professor-email', type: 'email', label: tx('dossier.email'), value: draft.professor.email, width: 'half' },
-        { id: 'default-professor-homepage', type: 'url', label: tx('dossier.homepage'), value: draft.professor.homepage, width: 'half' },
-        { id: 'default-professor-contact', type: 'contact', label: tx('dossier.resourceDefaults.contactMethod'), value: draft.professor.social || draft.professor.phone, width: 'half' },
-      ],
-    },
-    {
-      id: 'default-requirements-notes',
-      title: tx('dossier.resourceDefaults.requirementsTitle'),
-      icon: 'checklist',
-      color: 'orange',
-      width: 'half',
-      fields: [
-        { id: 'default-requirements-tags', type: 'tags', label: tx('dossier.tags'), value: draft.tags.join(', '), width: 'full' },
-        { id: 'default-requirements-notes', type: 'textarea', label: tx('dossier.resourceDefaults.requirementsNotes'), value: '', width: 'full' },
-      ],
-    },
-  ]
-}
-
-function normalizeDossierResourceCards(
-  cards: ApplicationRecord['dossierCards'],
-  draft: ApplicationRecord,
-  tx: (key: string, fallback?: string) => string,
-) {
-  const source = Array.isArray(cards) && cards.length > 0 ? cards : createDefaultDossierResourceCards(draft, tx)
-  return source.map((card, cardIndex) => ({
-    id: String(card.id || `resource-card-${cardIndex + 1}`),
-    title: String(card.title ?? ''),
-    icon: normalizeDossierResourceIcon(card.icon),
-    color: normalizeDossierResourceColor(card.color),
-    width: normalizeDossierResourceCardWidth(card.width),
-    createdAt: card.createdAt,
-    updatedAt: card.updatedAt,
-    fields: (Array.isArray(card.fields) ? card.fields : []).map((field, fieldIndex) => ({
-      id: String(field.id || `${card.id || `resource-card-${cardIndex + 1}`}-field-${fieldIndex + 1}`),
-      type: isDossierResourceFieldType(field.type) ? field.type : 'text',
-      label: String(field.label ?? ''),
-      value: String(field.value ?? ''),
-      width: normalizeDossierResourceFieldWidth(
-        'width' in field ? field.width : undefined,
-        isDossierResourceFieldType(field.type) ? field.type : 'text',
-      ),
-    })),
-  }))
-}
-
-function createDossierResourceField(
-  type: DossierResourceFieldType,
-  tx: (key: string, fallback?: string) => string,
-  width: DossierResourceFieldWidth = preferredDossierResourceFieldWidth(type),
-): DossierResourceField {
-  return {
-    id: createLocalId('resource-field'),
-    type,
-    label: tx(`dossier.resourceFieldTypes.${type}`),
-    value: type === 'date' ? today : '',
-    width,
-  }
-}
-
-function createDossierResourceCard(
-  tx: (key: string, fallback?: string) => string,
-  width: DossierResourceCardWidth = 'half',
-): DossierResourceCard {
-  const stamp = new Date().toISOString()
-  return {
-    id: createLocalId('resource-card'),
-    title: tx('dossier.resourceUntitledCard'),
-    icon: 'link',
-    color: 'accent',
-    width,
-    fields: [
-      createDossierResourceField('url', tx),
-      createDossierResourceField('textarea', tx),
-    ],
-    createdAt: stamp,
-    updatedAt: stamp,
-  }
-}
-
-function normalizedExternalHref(value: string) {
-  return safeExternalHttpUrl(value)
-}
-
-function mailtoHref(value: string) {
-  return safeMailtoHref(value)
-}
-
-function phoneHref(value: string) {
-  return safeTelHref(value)
-}
-
-function resourceTags(value: string) {
-  return value
-    .split(/[,，\n]/)
-    .map((tag) => tag.trim())
-    .filter(Boolean)
-}
-
-function resourceFieldSummary(field: DossierResourceField) {
-  if (field.type === 'tags') return resourceTags(field.value).slice(0, 3).join(' · ')
-  if (field.type === 'textarea') return field.value.split('\n').map((line) => line.trim()).find(Boolean) ?? ''
-  return field.value.trim()
-}
-
-function firstSummaryLine(value: string) {
-  return value.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? ''
-}
-
-function joinSummaryValues(values: Array<string | null | undefined>) {
-  const seen = new Set<string>()
-  return values
-    .map((value) => value?.trim() ?? '')
-    .filter((value) => {
-      if (!value || seen.has(value)) return false
-      seen.add(value)
-      return true
-    })
-    .join(' · ')
-}
 
 function sameReminderTarget(a: ReminderMenuTarget, b: ReminderMenuTarget) {
   if (!a || !b) return a === b
@@ -1211,132 +827,6 @@ function findFixedContainingBlock(element: HTMLElement) {
     current = current.parentElement
   }
   return null
-}
-
-function materialStatusFilterValue(status: MaterialStatus): MaterialFilter {
-  return `status:${status}`
-}
-
-function fileSizeLabel(size?: number) {
-  if (!size && size !== 0) return '—'
-  if (size < 1024) return `${size} B`
-  const units = ['KB', 'MB', 'GB']
-  let value = size / 1024
-  let unitIndex = 0
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024
-    unitIndex += 1
-  }
-  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`
-}
-
-function createScholarshipDraft(school = ''): ScholarshipFormDraft {
-  return {
-    name: '',
-    amount: '',
-    startDate: today,
-    endDate: today,
-    school,
-    issuer: '',
-    status: 'Preparing',
-    notes: '',
-    materials: [],
-    tasks: [],
-    timeline: [],
-  }
-}
-
-function scholarshipToDraft(scholarship: ScholarshipItem, fallbackSchool = ''): ScholarshipFormDraft {
-  return {
-    name: scholarship.name ?? '',
-    amount: scholarship.amount ?? '',
-    startDate: scholarship.startDate || today,
-    endDate: scholarship.endDate || scholarship.startDate || today,
-    school: scholarship.school || fallbackSchool,
-    issuer: scholarship.issuer ?? '',
-    status: scholarship.status ?? 'Preparing',
-    notes: scholarship.notes ?? '',
-    materials: (scholarship.materials ?? []).map((material) => ({
-      id: material.id,
-      name: material.name,
-      status: material.status ?? 'Draft',
-      due: material.due ?? '',
-      details: material.details ?? '',
-    })),
-    tasks: (scholarship.tasks ?? []).map((task) => ({
-      id: task.id,
-      title: task.title,
-      due: task.due || scholarship.endDate || today,
-      done: Boolean(task.done),
-      details: task.details ?? '',
-    })),
-    timeline: (scholarship.timeline ?? []).map((event) => ({
-      id: event.id,
-      title: event.title,
-      date: event.date || scholarship.endDate || today,
-      note: event.note ?? '',
-    })),
-  }
-}
-
-function cleanScholarshipDraft(draft: ScholarshipFormDraft): Omit<ScholarshipItem, 'id'> {
-  const startDate = draft.startDate || today
-  const endDate = draft.endDate || startDate
-  return {
-    name: draft.name.trim(),
-    amount: draft.amount.trim(),
-    startDate,
-    endDate,
-    school: draft.school.trim(),
-    issuer: draft.issuer.trim(),
-    status: draft.status,
-    notes: draft.notes.trim(),
-    materials: draft.materials
-      .filter((material) => material.name.trim())
-      .map((material) => ({
-        id: material.id,
-        name: material.name.trim(),
-        status: material.status,
-        due: material.due || '',
-        details: material.details?.trim() ?? '',
-      })),
-    tasks: draft.tasks
-      .filter((task) => task.title.trim())
-      .map((task) => ({
-        id: task.id,
-        title: task.title.trim(),
-        due: task.due || endDate,
-        done: Boolean(task.done),
-        details: task.details?.trim() ?? '',
-      })),
-    timeline: draft.timeline
-      .filter((event) => event.title.trim())
-      .map((event) => ({
-        id: event.id,
-        title: event.title.trim(),
-        date: event.date || endDate,
-        note: event.note?.trim() ?? '',
-      })),
-  }
-}
-
-function isChecklistGroup(value: string): value is ChecklistGroup {
-  return checklistGroups.includes(value as ChecklistGroup)
-}
-
-function isRecommendationMaterial(material: MaterialItem) {
-  return material.type === 'Request' || /recommendation|recommender|推荐/i.test(material.name)
-}
-
-function normalizeRecommenders(material: MaterialItem, count = material.requiredCount ?? 1): MaterialRecommender[] {
-  return Array.from({ length: count }, (_, index) => {
-    const recommender = material.recommenders?.[index]
-    return {
-      id: recommender?.id ?? `${material.id}-recommender-${index + 1}`,
-      name: recommender?.name ?? '',
-      contact: recommender?.contact ?? '',
-    }
-  })
 }
 
 type TimelineJumpDockProps = {
@@ -1565,17 +1055,23 @@ export function DossierView({
   application, draft, tab, saving, isDirty,
   profileAssets, session,
   deferHeavyContent = false,
-  aiKeys = [], onAiDraft, onResolveAiAttachment, onAiInspectorOpenChange, onNotify,
+  aiKeys = [], onAiDraft, onAiInspectorOpenChange, onNotify,
   onTab, onDraft, onSave, onDiscardDraft, onDelete, onShare, onEnrich,
+  onResolveSchoolLogo, onUploadSchoolLogo, onRemoveSchoolLogo,
   canToggleTeamVisibility = false,
+  teamTransferRequiresApproval = true,
+  teamTransferOrganizations = [],
+  onPreflightTeamTransfer,
   onToggleTeamVisibility,
   onCloseApplication,
   onOpenUpgrade,
   onRegisterNavigationGuard,
   onCopy,
   onAddReviewComment,
+  currentUserApplicationRole,
   applicationOwnerName,
   onUpload, onDownload,
+  onPreview,
   onUploadMaterialFiles, onUploadTaskFiles,
   onRemoveMaterialFile, onRemoveTaskFile,
   onRenameMaterialFile, onRenameTaskFile,
@@ -1603,7 +1099,6 @@ export function DossierView({
   deferHeavyContent?: boolean
   aiKeys?: AiKey[]
   onAiDraft?: (input: AiDraftInput, onEvent: (event: AiDraftEvent) => void, signal?: AbortSignal) => Promise<void>
-  onResolveAiAttachment?: (fileId: string) => Promise<Blob>
   onAiInspectorOpenChange?: (open: boolean) => void
   onNotify?: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
   onTab: (tab: DetailTab, direction?: 'forward' | 'backward') => void
@@ -1614,12 +1109,22 @@ export function DossierView({
   onDelete: () => void
   onShare: () => void
   onEnrich?: () => void
+  onResolveSchoolLogo?: (
+    input: { website?: string; imageUrl?: string },
+    options?: { silent?: boolean },
+  ) => Promise<boolean>
+  onUploadSchoolLogo?: (file: File) => Promise<boolean>
+  onRemoveSchoolLogo?: () => Promise<boolean>
   canToggleTeamVisibility?: boolean
-  onToggleTeamVisibility?: (visible: boolean) => void | Promise<void>
+  teamTransferRequiresApproval?: boolean
+  teamTransferOrganizations?: TeamWorkspaceOption[]
+  onPreflightTeamTransfer?: (visible: boolean, teamId: string) => Promise<TeamTransferPreflight>
+  onToggleTeamVisibility?: (visible: boolean, teamId?: string) => boolean | void | Promise<boolean | void>
   onCloseApplication?: () => void
   onOpenUpgrade?: (feature: string, requested: string, limit?: string) => void
   onCopy?: (value: string, label: string) => void
   onUpload: (file: File | null) => void | Promise<void>
+  onPreview?: (fileId: string) => Promise<Blob>
   onUploadMaterialFiles?: (materialId: string, files: File[]) => void | Promise<void>
   onUploadTaskFiles?: (taskId: string, files: File[]) => void | Promise<void>
   onRemoveMaterialFile?: (materialId: string, fileId: string) => void | Promise<void>
@@ -1648,7 +1153,12 @@ export function DossierView({
   onUpdateTimelineEvent?: (id: string, title: string, date: string, note: string) => void
   onRemoveTimelineEvent?: (id: string) => void
   onRemoveTimelineEvents?: (ids: string[]) => void
-  onAddReviewComment?: (body: string, targetTab?: DetailTab) => void | Promise<void>
+  onAddReviewComment?: (
+    body: string,
+    targetTab?: DetailTab,
+    parentId?: string,
+    mentionedUserIds?: string[],
+  ) => void | Promise<void>
   // Only set when viewing this application through the team-scoped workspace — the caller's
   // effective role on THIS application ('owner' also covers "it's my own app").
   // undefined/null means the personal workspace.
@@ -1664,12 +1174,13 @@ export function DossierView({
   readOnlyBanner?: string
 }) {
   const { tx, format, lang } = useI18n()
+  const [teamTransferDirection, setTeamTransferDirection] = useState<'join' | 'leave' | null>(null)
   const attachmentTableColumns = useMemo<TableColumnDef[]>(() => [
     { id: 'name', label: tx('dossier.uploadFileName'), defaultWidth: 220, minWidth: 120 },
     { id: 'size', label: tx('dossier.fileSize'), defaultWidth: 96, minWidth: 72 },
     { id: 'author', label: tx('dossier.uploadedBy'), defaultWidth: 120, minWidth: 80 },
     { id: 'uploadedAt', label: tx('dossier.uploadedAt'), defaultWidth: 140, minWidth: 100 },
-    { id: 'actions', label: tx('dossier.actions'), defaultWidth: 88, minWidth: 72, hideable: false },
+    { id: 'actions', label: tx('dossier.actions'), defaultWidth: 136, minWidth: 128, hideable: false, resizable: false },
   ], [tx])
   const {
     api: attachmentTableApi,
@@ -1693,11 +1204,12 @@ export function DossierView({
   const isOwnApplication = application.ownerId === session.user.id
   const pendingTeamTransfer = application.teamTransferRequest?.status === 'pending' ? application.teamTransferRequest : null
   const isTeamVisible = Boolean(application.teamId)
-  const canManageOwnTeamVisibility = isOwnApplication && canToggleTeamVisibility && !isReadOnly
+  const canManageTeamVisibility = canToggleTeamVisibility && !isReadOnly
+  const isDirectManagedTransfer = canManageTeamVisibility && !isOwnApplication && !teamTransferRequiresApproval
   const shouldShowTeamVisibility = !isReadOnly && Boolean(
     pendingTeamTransfer ||
     (!isOwnApplication && isTeamVisible) ||
-    canManageOwnTeamVisibility,
+    canManageTeamVisibility,
   )
   const teamVisibilityTitle = pendingTeamTransfer
     ? pendingTeamTransfer.direction === 'join'
@@ -1713,13 +1225,16 @@ export function DossierView({
     : isTeamVisible
       ? tx('dossier.teamVisibilityVisibleDesc')
       : tx('dossier.teamVisibilityPrivateDesc')
+  const teamFeedbackAvailable = Boolean(application.teamId && currentUserApplicationRole)
   const detailTabs: DetailTab[] = useMemo(() => {
     if (allowedTabs && allowedTabs.length > 0) {
-      const unique = allowedTabs.filter((item, index) => allowedTabs.indexOf(item) === index)
-      return unique
+      const unique = allowedTabs
+        .filter((item, index) => allowedTabs.indexOf(item) === index)
+        .filter((item) => item !== 'review' || teamFeedbackAvailable)
+      return unique.length > 0 ? unique : ['dossier']
     }
-    return application.teamId ? [...BASE_DETAIL_TABS, 'review'] : BASE_DETAIL_TABS
-  }, [allowedTabs, application.teamId])
+    return teamFeedbackAvailable ? [...BASE_DETAIL_TABS, 'review'] : BASE_DETAIL_TABS
+  }, [allowedTabs, teamFeedbackAvailable])
   const directionForTab = useCallback((nextTab: DetailTab) => (
     detailTabs.indexOf(nextTab) >= detailTabs.indexOf(tab) ? 'forward' : 'backward'
   ), [detailTabs, tab])
@@ -1755,7 +1270,7 @@ export function DossierView({
   const [editNote, setEditNote] = useState('')
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set())
   const [newTag, setNewTag] = useState('')
-  const [collapsedDossierCoreCards, setCollapsedDossierCoreCards] = useState<Set<string>>(new Set())
+  const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreviewFile | null>(null)
   const [expandedDossierResourceCards, setExpandedDossierResourceCards] = useState<Set<string>>(new Set())
   const [editingDossierResourceCardId, setEditingDossierResourceCardId] = useState<string | null>(null)
   const [dossierResourceSettingsDraft, setDossierResourceSettingsDraft] = useState<DossierResourceCardSettingsDraft | null>(null)
@@ -1766,8 +1281,11 @@ export function DossierView({
   const [dossierResourceDropTarget, setDossierResourceDropTarget] = useState<DossierResourceDropTarget>(null)
   const [dossierResourceDragOffset, setDossierResourceDragOffset] = useState<DossierResourceDragOffset>(null)
   const [expandedMaterials, setExpandedMaterials] = useState<Set<string>>(new Set())
+  const [materialVisualGroupPins, setMaterialVisualGroupPins] = useState<Record<string, string>>({})
+  const [materialGroupArrivalIds, setMaterialGroupArrivalIds] = useState<Set<string>>(new Set())
   const [expandedChecklistTasks, setExpandedChecklistTasks] = useState<Set<string>>(new Set())
   const [materialExpansionSyncVersion, setMaterialExpansionSyncVersion] = useState(0)
+  const materialGroupMoveTimersRef = useRef<Record<string, number>>({})
   const [taskExpansionSyncVersion, setTaskExpansionSyncVersion] = useState(0)
   const [pendingTimelineNav, setPendingTimelineNav] = useState<TimelineNav | null>(null)
   const [checklistSearch, setChecklistSearch] = useState('')
@@ -1789,6 +1307,8 @@ export function DossierView({
   const [removingTimelineIds, setRemovingTimelineIds] = useState<Set<string>>(new Set())
   const [reviewCommentText, setReviewCommentText] = useState('')
   const [reviewCommentBusy, setReviewCommentBusy] = useState(false)
+  const [reviewReplyToId, setReviewReplyToId] = useState<string | null>(null)
+  const [reviewReplyText, setReviewReplyText] = useState('')
   const [feedbackNote, setFeedbackNote] = useState('')
   const [feedbackBusy, setFeedbackBusy] = useState(false)
   const [feedbackStatus, setFeedbackStatus] = useState<string | null>(null)
@@ -1831,6 +1351,7 @@ export function DossierView({
   const [emailScheduleDate, setEmailScheduleDate] = useState(today)
   const [emailScheduleTime, setEmailScheduleTime] = useState('')
   const [emailAttachments, setEmailAttachments] = useState<EmailAttachmentDraft[]>([])
+  const [aiOutputAttachmentIds, setAiOutputAttachmentIds] = useState<string[]>([])
   const [emailInsertAnimating, setEmailInsertAnimating] = useState(false)
   const [emailAiRestoreAnimating, setEmailAiRestoreAnimating] = useState(false)
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
@@ -2050,11 +1571,32 @@ export function DossierView({
         date: `${formatDate(emailScheduleDate, lang)}${emailScheduleTime.trim() ? ` ${emailScheduleTime.trim()}` : ''}`,
       })
     : tx('dossier.emailManualSend')
+  const dossierResourceDefaultValues = useMemo<DossierResourceDefaultValues>(() => ({
+    school: { website: draft.school.website },
+    program: draft.program,
+    deadline: draft.deadline,
+    professor: {
+      email: draft.professor.email,
+      homepage: draft.professor.homepage,
+      social: draft.professor.social,
+      phone: draft.professor.phone,
+    },
+    tags: draft.tags,
+  }), [
+    draft.deadline,
+    draft.professor.email,
+    draft.professor.homepage,
+    draft.professor.phone,
+    draft.professor.social,
+    draft.program,
+    draft.school.website,
+    draft.tags,
+  ])
   const dossierResourceCards = useMemo(
     () => tab === 'dossier' && tabContentReady
-      ? normalizeDossierResourceCards(draft.dossierCards, draft, tx)
+      ? normalizeDossierResourceCards(draft.dossierCards, dossierResourceDefaultValues, tx)
       : [],
-    [draft, tab, tabContentReady, tx],
+    [dossierResourceDefaultValues, draft.dossierCards, tab, tabContentReady, tx],
   )
   const dossierResourceFieldTypeOptions = useMemo(
     () => dossierResourceFieldTypes.map((type) => ({
@@ -2140,81 +1682,21 @@ export function DossierView({
     })
   }
 
-  const isDossierCoreCardExpanded = (cardId: string) => !collapsedDossierCoreCards.has(cardId)
-
-  const toggleDossierCoreCard = (cardId: string) => {
-    setCollapsedDossierCoreCards((current) => {
-      const next = new Set(current)
-      if (next.has(cardId)) next.delete(cardId)
-      else next.add(cardId)
-      return next
-    })
-  }
-
   const renderDossierCoreSummary = (
-    cardId: 'school' | 'professor' | 'research' | 'config',
     Icon: LucideIcon,
     title: string,
-    primary: string,
-    secondary: string,
   ) => {
-    const expanded = isDossierCoreCardExpanded(cardId)
     return (
-      <button
-        type="button"
-        className={`dossier-core-summary ${expanded ? 'open' : ''}`}
-        onClick={() => toggleDossierCoreCard(cardId)}
-        aria-label={`${expanded ? tx('dossier.collapse') : tx('dossier.expand')} ${title}`}
-        aria-expanded={expanded}
-      >
+      <div className="dossier-core-summary">
         <span className="dossier-core-summary-icon" aria-hidden="true">
           <Icon size={16} />
         </span>
         <span className="dossier-core-summary-copy">
           <strong>{title}</strong>
-          {!expanded && (primary || secondary) ? (
-            <span className="dossier-core-summary-preview">
-              {primary ? <span className="dossier-core-summary-primary">{primary}</span> : null}
-              {secondary ? <span className="dossier-core-summary-secondary">{secondary}</span> : null}
-            </span>
-          ) : null}
         </span>
-        <span className="dossier-core-summary-chevron" aria-hidden="true">
-          <ChevronDown size={15} />
-        </span>
-      </button>
+      </div>
     )
   }
-
-  const schoolCountryLabel = draft.school.country.trim()
-    ? countryDisplayName(draft.school.country, lang)
-    : ''
-  const schoolSummaryPrimary = localize(
-    draft.school.name.trim() || draft.program.trim() || schoolCountryLabel,
-  )
-  const schoolSummarySecondary = joinSummaryValues([
-    localize(draft.program),
-    schoolCountryLabel,
-  ].filter((value) => value !== schoolSummaryPrimary))
-  const professorSummaryPrimary = localize(
-    draft.professor.english.trim() || draft.professor.chinese.trim() || draft.professor.email.trim(),
-  )
-  const professorSummarySecondary = joinSummaryValues([
-    localize(draft.professor.chinese),
-    draft.professor.email,
-  ].filter((value) => value !== professorSummaryPrimary))
-  const researchDirectionSummary = localize(firstSummaryLine(draft.professor.research))
-  const researchLabSummary = localize(firstSummaryLine(draft.professor.lab))
-  const researchSummaryPrimary = researchDirectionSummary || researchLabSummary
-  const researchSummarySecondary = researchLabSummary === researchSummaryPrimary ? '' : researchLabSummary
-  const configSummaryPrimary = joinSummaryValues([
-    statusLabel(draft.status, tx),
-    formatDate(draft.deadline, lang),
-  ])
-  const configSummarySecondary = joinSummaryValues([
-    `${tx('dossier.priority')} ${draft.priority}`,
-    ...draft.tags.slice(0, 2).map(localize),
-  ])
 
   const addDossierResourceCard = () => {
     const card = createDossierResourceCard(tx, 'half')
@@ -2685,6 +2167,7 @@ export function DossierView({
     }
     const slotHeight = Math.max(dossierResourceDragOffset.height, 96)
     const targetCard = dossierResourceCards.find((card) => card.id === id)
+    const targetIndex = dossierResourceCards.findIndex((card) => card.id === id)
     const fullWidth = normalizeDossierResourceCardWidth(targetCard?.width) === 'full'
     return (
       <div
@@ -2693,6 +2176,7 @@ export function DossierView({
         style={{
           '--resource-slot-height': `${slotHeight}px`,
           '--checklist-slot-height': `${slotHeight}px`,
+          '--resource-card-order': `${Math.max(targetIndex, 0) * 2 + (position === 'before' ? -1 : 1)}`,
           height: `${slotHeight}px`,
           minHeight: `${slotHeight}px`,
         } as CSSProperties}
@@ -2879,6 +2363,10 @@ export function DossierView({
     }))
 
   const removeAttachment = (id: string) => {
+    const candidateId = emailAttachments.find((item) => item.id === id)?.aiCandidateId
+    if (candidateId) {
+      setAiOutputAttachmentIds((current) => current.filter((value) => value !== candidateId))
+    }
     setEmailAttachments((current) => current.filter((item) => item.id !== id))
   }
 
@@ -2907,6 +2395,7 @@ export function DossierView({
     setEmailScheduleDate(today)
     setEmailScheduleTime('')
     setEmailAttachments([])
+    setAiOutputAttachmentIds([])
     setAiPanelOpen(false)
     setAiReplyToId(null)
     setAiDraftMode('compose')
@@ -3002,6 +2491,12 @@ export function DossierView({
   const openAiDraft = (replyTo?: CommunicationItem) => {
     if (!onAiDraft) return
     const open = () => {
+      // The composer trigger is a true disclosure: repeated clicks toggle the
+      // same inspector rather than only ever re-opening it.
+      if (!replyTo && composerOpen && correspondenceMode === 'draft-email' && aiPanelOpen) {
+        setAiPanelOpen(false)
+        return
+      }
       applyCorrespondenceMode('draft-email')
       setComposerOpen(true)
       setAiDraftMode(replyTo ? 'reply' : 'compose')
@@ -3191,11 +2686,16 @@ export function DossierView({
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
   }, [composerOpen, hasComposerContent, isDirty, itemEditDirty, resourceSettingsDirty])
 
-  // App keeps this component mounted while records slide between each other. Reset
-  // record-scoped controls before paint so the new dossier never inherits a stale
-  // expansion, dialog, drag target, or composer state from the previous record.
+  // App keys this component by application so normal record switches start from
+  // fresh state in one render. Keep the reset path for embedders that update the
+  // application prop in place, while avoiding a second synchronous mount render.
+  const recordStateInitializedRef = useRef(false)
   useLayoutEffect(() => {
     activeApplicationIdRef.current = application.id
+    if (!recordStateInitializedRef.current) {
+      recordStateInitializedRef.current = true
+      return
+    }
     setPendingTaskCreate(false)
     setScholarshipAddOpen(false)
     setScholarshipDraft(createScholarshipDraft(application.school.name))
@@ -3221,7 +2721,6 @@ export function DossierView({
     setEditNote('')
     setExpandedNotes(new Set())
     setNewTag('')
-    setCollapsedDossierCoreCards(new Set())
     setExpandedDossierResourceCards(new Set(dossierResourceCards.map((card) => card.id)))
     setEditingDossierResourceCardId(null)
     setDossierResourceSettingsDraft(null)
@@ -3238,6 +2737,8 @@ export function DossierView({
     dossierResourceDropTargetRef.current = null
     document.body.classList.remove('resource-drag-active')
     setExpandedMaterials(new Set())
+    setMaterialVisualGroupPins({})
+    setMaterialGroupArrivalIds(new Set())
     setExpandedChecklistTasks(new Set())
     setMaterialExpansionSyncVersion((version) => version + 1)
     setTaskExpansionSyncVersion((version) => version + 1)
@@ -3737,14 +3238,40 @@ export function DossierView({
     ],
     [checklistContentReady, draft.materials],
   )
-  const checklistGroupOptions = checklistGroups.map((group) => ({
-    value: group,
-    label: tx(`dossier.checklistGroups.${checklistGroupI18n[group]}`),
-  }))
-  const materialStatusOptions = materialStatuses.map((status) => ({
+  const materialTypeOptions = useMemo(() => {
+    const builtIn = new Set<string>(checklistMaterialTypes)
+    const customTypes = checklistContentReady
+      ? Array.from(new Set(draft.materials.map((material) => material.type.trim()).filter((type) => type && !builtIn.has(type))))
+      : []
+    return [
+      ...checklistMaterialTypes.map((type) => ({
+        value: type,
+        label: tx(`dossier.checklistMaterialTypes.${checklistMaterialTypeI18n[type]}`, type),
+      })),
+      ...customTypes.map((type) => ({ value: type, label: localize(type), custom: true })),
+    ]
+  }, [checklistContentReady, draft.materials, localize, tx])
+  const checklistGroupOptions = useMemo(() => {
+    const builtInGroups = checklistGroups.filter((group) => group !== 'Custom')
+    const builtIn = new Set<string>(builtInGroups)
+    const customGroups = checklistContentReady
+      ? Array.from(new Set(draft.materials
+        .map((material) => (material.group || 'Core materials').trim())
+        .filter((group) => group && !builtIn.has(group))))
+      : []
+    return [
+      ...builtInGroups.map((group) => ({
+        value: group,
+        label: tx(`dossier.checklistGroups.${checklistGroupI18n[group]}`),
+      })),
+      ...customGroups.map((group) => ({ value: group, label: localize(group), custom: true })),
+    ]
+  }, [checklistContentReady, draft.materials, localize, tx])
+  const materialStatusOptions = useMemo(() => materialStatuses.map((status) => ({
     value: status,
     label: statusLabel(status, tx),
-  }))
+    custom: !materialStatusOrder.includes(status),
+  })), [materialStatuses, tx])
   const scholarshipStatusOptions = scholarshipStatusOrder.map((status) => ({
     value: status,
     label: tx(`dossier.scholarshipStatus.${status}`, status),
@@ -3820,7 +3347,8 @@ export function DossierView({
       ].join(' ').toLocaleLowerCase().includes(normalizedChecklistSearch)
     }
     const filtered = draft.materials.filter((material) => {
-      if (materialGroupFilter !== 'all' && (material.group || 'Core materials') !== materialGroupFilter) return false
+      const visualGroup = materialVisualGroupPins[material.id] || material.group || 'Core materials'
+      if (materialGroupFilter !== 'all' && visualGroup !== materialGroupFilter) return false
       if (materialFilter === 'with-reminder' && !material.reminderEnabled) return false
       if (materialFilter === 'with-attachment' && !material.fileId && !material.fileName) return false
       if (materialFilter.startsWith('status:') && material.status !== materialFilter.slice('status:'.length)) return false
@@ -3833,7 +3361,7 @@ export function DossierView({
       if (materialSort === 'group') return groupLabel(a.group || 'Core materials').localeCompare(groupLabel(b.group || 'Core materials'), lang)
       return (b.updatedAt || '').localeCompare(a.updatedAt || '')
     })
-  }, [checklistContentReady, draft.materials, groupLabel, lang, materialFilter, materialGroupFilter, materialSort, materialStatuses, normalizedChecklistSearch, localize, tx])
+  }, [checklistContentReady, draft.materials, groupLabel, lang, materialFilter, materialGroupFilter, materialSort, materialStatuses, materialVisualGroupPins, normalizedChecklistSearch, localize, tx])
 
   const visibleTasks = useMemo(() => {
     if (!checklistContentReady) return []
@@ -3868,7 +3396,7 @@ export function DossierView({
       checklistContentReady
         ? visibleMaterials.reduce<Array<{ group: string; items: MaterialItem[] }>>(
           (groups, material) => {
-            const group = material.group || 'Core materials'
+            const group = materialVisualGroupPins[material.id] || material.group || 'Core materials'
             const existing = groups.find((candidate) => candidate.group === group)
             if (existing) {
               existing.items.push(material)
@@ -3880,7 +3408,7 @@ export function DossierView({
           [],
         )
         : [],
-    [checklistContentReady, visibleMaterials],
+    [checklistContentReady, materialVisualGroupPins, visibleMaterials],
   )
 
   const hasChecklistFilters =
@@ -3902,6 +3430,100 @@ export function DossierView({
       ),
     })
   }
+
+  const replaceMaterialTaxonomyValue = (
+    key: 'type' | 'group' | 'status',
+    previousValue: string,
+    nextValue: string,
+  ) => {
+    const cleanValue = nextValue.trim()
+    if (!cleanValue || cleanValue === previousValue) return
+    const currentDraft = draftRef.current
+    commitDraft({
+      ...currentDraft,
+      materials: currentDraft.materials.map((material) => (
+        String(material[key] ?? '') === previousValue
+          ? { ...material, [key]: cleanValue, updatedAt: today }
+          : material
+      )),
+    })
+  }
+
+  const deleteMaterialTaxonomyValue = (key: 'type' | 'group' | 'status', value: string) => {
+    const fallback = key === 'type' ? 'File' : key === 'group' ? 'Core materials' : 'Draft'
+    replaceMaterialTaxonomyValue(key, value, fallback)
+  }
+
+  const changeMaterialGroup = (material: MaterialItem, nextGroup: string, keepVisualPosition: boolean) => {
+    const cleanGroup = nextGroup.trim()
+    if (!cleanGroup || cleanGroup === (material.group || 'Core materials')) return
+    if (keepVisualPosition) {
+      setMaterialVisualGroupPins((current) => current[material.id]
+        ? current
+        : { ...current, [material.id]: material.group || 'Core materials' })
+    }
+    updateMaterial(material.id, { group: cleanGroup })
+  }
+
+  const materialTaxonomyCreateConfig = (
+    key: 'type' | 'group' | 'status',
+    material: MaterialItem,
+    keepVisualPosition: boolean,
+  ): SelectCreateConfig<string> => ({
+    label: tx('dossier.addCustomOption'),
+    placeholder: tx('dossier.customOptionPlaceholder'),
+    createAriaLabel: tx('dossier.addCustomOption'),
+    renameAriaLabel: tx('dossier.renameCustomOption'),
+    deleteAriaLabel: tx('dossier.deleteCustomOption'),
+    onCreate: (value) => {
+      if (key === 'group') changeMaterialGroup(material, value, keepVisualPosition)
+      else if (key === 'type') updateMaterial(material.id, { type: value })
+      else updateMaterial(material.id, { status: value })
+    },
+    onRename: (value, nextValue) => {
+      if (key === 'group' && keepVisualPosition && value === (material.group || 'Core materials')) {
+        setMaterialVisualGroupPins((current) => current[material.id]
+          ? current
+          : { ...current, [material.id]: material.group || 'Core materials' })
+      }
+      replaceMaterialTaxonomyValue(key, value, nextValue)
+    },
+    onDelete: (value) => {
+      if (key === 'group' && keepVisualPosition && value === (material.group || 'Core materials')) {
+        setMaterialVisualGroupPins((current) => current[material.id]
+          ? current
+          : { ...current, [material.id]: material.group || 'Core materials' })
+      }
+      deleteMaterialTaxonomyValue(key, value)
+    },
+  })
+
+  const releaseMaterialGroupPin = useCallback((materialId: string) => {
+    const currentTimer = materialGroupMoveTimersRef.current[materialId]
+    if (currentTimer) window.clearTimeout(currentTimer)
+    materialGroupMoveTimersRef.current[materialId] = window.setTimeout(() => {
+      setMaterialVisualGroupPins((current) => {
+        if (!current[materialId]) return current
+        const next = { ...current }
+        delete next[materialId]
+        return next
+      })
+      setMaterialGroupArrivalIds((current) => new Set(current).add(materialId))
+      materialGroupMoveTimersRef.current[materialId] = window.setTimeout(() => {
+        setMaterialGroupArrivalIds((current) => {
+          const next = new Set(current)
+          next.delete(materialId)
+          return next
+        })
+        delete materialGroupMoveTimersRef.current[materialId]
+      }, getMotionDelay(520))
+    }, getMotionDelay(390))
+  }, [])
+
+  useEffect(() => () => {
+    Object.values(materialGroupMoveTimersRef.current).forEach((timer) => window.clearTimeout(timer))
+    materialGroupMoveTimersRef.current = {}
+  }, [])
 
   const updateRecommenderCount = (material: MaterialItem, count: number) => {
     const nextCount = Math.min(12, Math.max(1, count))
@@ -4396,7 +4018,6 @@ export function DossierView({
                             }}
                           >
                             <span>{displayName}</span>
-                            {row.current ? <em>{tx('dossier.currentAttachment')}</em> : null}
                           </button>
                           <input
                             ref={renaming ? renameChecklistFileInputRef : undefined}
@@ -4440,6 +4061,23 @@ export function DossierView({
                           >
                             <Pencil size={13} aria-hidden="true" />
                           </button>
+                        ) : null}
+                        {fileId ? (
+                          onPreview ? (
+                            <button
+                              type="button"
+                              className="checklist-icon-control"
+                              onClick={() => setAttachmentPreview({
+                                fileId,
+                                fileName: row.file || title,
+                                mimeType: row.mimeType,
+                              })}
+                              title={tx('filePreview.preview')}
+                              aria-label={tx('filePreview.preview')}
+                            >
+                              <Eye size={13} aria-hidden="true" />
+                            </button>
+                          ) : null
                         ) : null}
                         {fileId ? (
                           <button
@@ -4726,9 +4364,12 @@ export function DossierView({
 
     const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
     const revealRows = (items: HTMLElement[]) => {
+      // Read every row position before changing styles/classes. Sorting with a
+      // layout read inside the comparator re-measured the same rows O(n log n).
       items
-        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
-        .forEach((row, index) => {
+        .map((row) => ({ row, top: row.getBoundingClientRect().top }))
+        .sort((a, b) => a.top - b.top)
+        .forEach(({ row }, index) => {
           row.style.setProperty('--timeline-reveal-delay', `${Math.min(index, 4) * 34}ms`)
           row.classList.add('is-scroll-revealed')
         })
@@ -5116,6 +4757,11 @@ export function DossierView({
   }
 
   const setMaterialsExpanded = (ids: string[], expanded: boolean) => {
+    if (!expanded) {
+      ids.forEach((id) => {
+        if (materialVisualGroupPins[id]) releaseMaterialGroupPin(id)
+      })
+    }
     startTransition(() => {
       setExpandedMaterials((current) => {
         const next = new Set(current)
@@ -6142,6 +5788,19 @@ export function DossierView({
           onSelect: () => setMaterialsExpanded(ids, false),
         },
         {
+          id: 'preview',
+          label: tx('filePreview.preview'),
+          icon: <Eye size={14} aria-hidden="true" />,
+          shortcut: 'P',
+          accessKey: 'p',
+          disabled: !single?.fileId || !onPreview,
+          onSelect: () => single?.fileId && onPreview && setAttachmentPreview({
+            fileId: single.fileId,
+            fileName: single.fileName ?? single.name,
+            mimeType: single.mimeType,
+          }),
+        },
+        {
           id: 'download',
           label: tx('explorer.download'),
           icon: <Download size={14} aria-hidden="true" />,
@@ -6248,6 +5907,19 @@ export function DossierView({
           shortcut: 'X',
           accessKey: 'x',
           onSelect: () => setTasksExpanded(ids, false),
+        },
+        {
+          id: 'preview',
+          label: tx('filePreview.preview'),
+          icon: <Eye size={14} aria-hidden="true" />,
+          shortcut: 'P',
+          accessKey: 'p',
+          disabled: !single?.fileId || !onPreview,
+          onSelect: () => single?.fileId && onPreview && setAttachmentPreview({
+            fileId: single.fileId,
+            fileName: single.fileName ?? single.title,
+            mimeType: single.mimeType,
+          }),
         },
         {
           id: 'download',
@@ -6942,15 +6614,6 @@ export function DossierView({
     const color = normalizeDossierResourceColor(card.color)
     const width = normalizeDossierResourceCardWidth(settingsDraft?.width ?? card.width)
     const fields = Array.isArray(card.fields) ? card.fields : []
-    const firstHref = fields
-      .map((field) =>
-        field.type === 'url'
-          ? normalizedExternalHref(field.value)
-          : field.type === 'email'
-            ? mailtoHref(field.value)
-            : '',
-      )
-      .find(Boolean)
     const previews = fields
       .map((field) => ({
         id: field.id,
@@ -6990,7 +6653,10 @@ export function DossierView({
         data-resource-card-id={card.id}
         data-resource-layout-key={`card-${card.id}`}
         className={`resource-card width-${width} tone-${color} ${isExpanded ? 'expanded' : ''} ${isEditingSettings ? 'editing-settings' : ''} ${isNew ? 'resource-card-new' : ''} ${dossierResourceDrag?.id === card.id ? 'dragging' : ''} ${dossierResourceDropTarget?.id === card.id ? `drop-target drop-${dossierResourceDropTarget.position}` : ''}`}
-        style={dossierResourceDragStyle(card.id)}
+        style={{
+          '--resource-card-order': `${Math.max(cardIndex, 0) * 2}`,
+          ...(dossierResourceDragStyle(card.id) ?? {}),
+        } as CSSProperties}
       >
         <div
           className="resource-card-summary"
@@ -7037,18 +6703,6 @@ export function DossierView({
             </div>
           ) : null}
           <div className="resource-card-actions" onClick={(event) => event.stopPropagation()}>
-            {firstHref ? (
-              <a
-                href={firstHref}
-                target={firstHref.startsWith('http') ? '_blank' : undefined}
-                rel={firstHref.startsWith('http') ? 'noopener noreferrer' : undefined}
-                className="resource-mini-btn"
-                title={tx('dossier.openLink')}
-                aria-label={tx('dossier.openLink')}
-              >
-                <ArrowUpRight size={13} aria-hidden="true" />
-              </a>
-            ) : null}
             <button
               type="button"
               className="resource-mini-btn"
@@ -7304,6 +6958,7 @@ export function DossierView({
         type="button"
         className="resource-add-card"
         data-resource-layout-key="add-card"
+        style={{ '--resource-card-order': `${dossierResourceCards.length * 2 + 2}` } as CSSProperties}
         onClick={addDossierResourceCard}
       >
         <span className="resource-add-card-icon" aria-hidden="true">
@@ -7320,10 +6975,91 @@ export function DossierView({
         {renderDossierResourceDropSlot(card.id, 'after')}
       </Fragment>
     )
-    return [
-      ...dossierResourceCards.map(renderCardWithSlots),
-      renderAddCard(),
-    ]
+    const blocks: ReactNode[] = []
+    let leftColumn: ReactNode[] = []
+    let rightColumn: ReactNode[] = []
+
+    const flushColumns = () => {
+      if (leftColumn.length === 0 && rightColumn.length === 0) return
+      const left = leftColumn
+      const right = rightColumn
+      blocks.push(
+        <div key={`resource-card-run-${blocks.length}`} className="resource-card-run">
+          <div className="resource-card-column">{left}</div>
+          <div className="resource-card-column">{right}</div>
+        </div>,
+      )
+      leftColumn = []
+      rightColumn = []
+    }
+
+    dossierResourceCards.forEach((card) => {
+      const previewWidth = editingDossierResourceCardId === card.id
+        ? dossierResourceSettingsDraft?.width
+        : card.width
+      if (normalizeDossierResourceCardWidth(previewWidth) === 'full') {
+        flushColumns()
+        blocks.push(renderCardWithSlots(card))
+        return
+      }
+      if (leftColumn.length <= rightColumn.length) leftColumn.push(renderCardWithSlots(card))
+      else rightColumn.push(renderCardWithSlots(card))
+    })
+
+    if (leftColumn.length <= rightColumn.length) leftColumn.push(renderAddCard())
+    else rightColumn.push(renderAddCard())
+    flushColumns()
+
+    return blocks
+  }
+
+  const aiAttachmentCandidates = useMemo(
+    () => buildDossierAiAttachmentCandidates(application, profileAssets),
+    [application, profileAssets],
+  )
+
+  const updateAiOutputAttachmentIds = (
+    ids: string[],
+    options?: { byAi?: boolean },
+  ) => {
+    const candidateById = new Map(aiAttachmentCandidates.map((candidate) => [candidate.id, candidate]))
+    const nextIds = Array.from(new Set(ids)).filter((id) => candidateById.has(id))
+    const nextCandidates = nextIds.map((id) => candidateById.get(id)!).filter(Boolean)
+    const nextFileIds = new Set(nextCandidates.map((candidate) => candidate.fileId))
+    setAiOutputAttachmentIds(nextIds)
+    setEmailAttachments((current) => {
+      const existingByCandidateId = new Map(current
+        .filter((attachment) => attachment.aiCandidateId)
+        .map((attachment) => [attachment.aiCandidateId!, attachment]))
+      const existingByFileId = new Map(current
+        .filter((attachment) => attachment.fileId)
+        .map((attachment) => [attachment.fileId!, attachment]))
+      const manualAttachments = current.filter((attachment) => (
+        !attachment.aiCandidateId && !nextFileIds.has(attachment.fileId ?? '')
+      ))
+      const plannedAttachments = nextCandidates.map((candidate) => {
+        const existing = existingByCandidateId.get(candidate.id) ?? existingByFileId.get(candidate.fileId)
+        if (existing) {
+          return {
+            ...existing,
+            aiCandidateId: candidate.id,
+            aiAttachedByTool: Boolean(options?.byAi || existing.aiAttachedByTool),
+          }
+        }
+        return {
+          id: createLocalId('att'),
+          name: candidate.name,
+          fileName: candidate.name,
+          fileId: candidate.fileId,
+          fileSize: candidate.fileSize,
+          mimeType: candidate.mimeType,
+          assetId: candidate.source === 'profile' ? candidate.sourceId : undefined,
+          aiCandidateId: candidate.id,
+          aiAttachedByTool: Boolean(options?.byAi),
+        }
+      })
+      return [...manualAttachments, ...plannedAttachments]
+    })
   }
 
   const aiInspectorHost = typeof document === 'undefined' ? null : document.getElementById('ai-inspector-host')
@@ -7334,16 +7070,18 @@ export function DossierView({
       aiKeys={aiKeys}
       mode={aiDraftMode}
       replyToId={aiReplyToId}
-      attachments={emailAttachments.map((attachment) => ({ id: attachment.id, name: attachment.name, mimeType: attachment.mimeType, file: attachment.file, fileId: attachment.fileId, fileSize: attachment.fileSize }))}
+      profileAssets={profileAssets}
+      attachmentCandidates={aiAttachmentCandidates}
+      outputAttachmentIds={aiOutputAttachmentIds}
       currentDraft={{ subject: emailSubject, body: emailBody }}
       draftSessionKey={aiDraftSessionKey}
       onClose={() => setAiPanelOpen(false)}
       onDraft={onAiDraft}
-      onResolveAttachment={onResolveAiAttachment}
       onDraftChange={({ subject, body }) => {
         if (subject) setEmailSubject(subject)
         if (body !== undefined) setEmailBody(body)
       }}
+      onOutputAttachmentIdsChange={updateAiOutputAttachmentIds}
       onGeneratingChange={setEmailInsertAnimating}
       onDraftRestoreChange={setEmailAiRestoreAnimating}
       onNotify={onNotify}
@@ -7354,13 +7092,32 @@ export function DossierView({
     <section className="dossier-pane content-flow-enter" aria-label={tx('dialog.title')} data-tour="dossier-pane">
       {/* Header */}
       <header className="dossier-header">
-        <div>
-          <span className="eyebrow">
-            {application.program}
-            {applicationOwnerName ? <span className="dossier-owner-chip">{format(tx('dossier.byOwner'), { name: applicationOwnerName })}</span> : null}
-          </span>
-          <h2>{application.school.name}</h2>
-          <p>{application.professor.english}</p>
+        <div className="dossier-header-identity">
+          {!isReadOnly && onResolveSchoolLogo && onUploadSchoolLogo && onRemoveSchoolLogo ? (
+            <SchoolLogoManager
+              schoolName={application.school.name}
+              website={draft.school.website}
+              logo={application.school.logo}
+              autoDetectEnabled={application.school.logoAutoDetect !== false}
+              onResolve={onResolveSchoolLogo}
+              onUpload={onUploadSchoolLogo}
+              onRemove={onRemoveSchoolLogo}
+            />
+          ) : (
+            <SchoolLogoMark
+              schoolName={application.school.name}
+              logo={application.school.logo}
+              variant="header"
+            />
+          )}
+          <div className="dossier-header-copy">
+            <span className="eyebrow">
+              {application.program}
+              {applicationOwnerName ? <span className="dossier-owner-chip">{format(tx('dossier.byOwner'), { name: applicationOwnerName })}</span> : null}
+            </span>
+            <h2>{application.school.name}</h2>
+            <p>{application.professor.english}</p>
+          </div>
         </div>
         {(!isReadOnly && isOwnApplication) || onCloseApplication ? (
           <div className="dossier-actions">
@@ -7405,23 +7162,42 @@ export function DossierView({
             <strong>{teamVisibilityTitle}</strong>
             <em>{teamVisibilityDesc}</em>
           </span>
-          {canManageOwnTeamVisibility && onToggleTeamVisibility ? (
+          {canManageTeamVisibility && onToggleTeamVisibility ? (
             <button
               type="button"
               className={isTeamVisible ? 'quiet-action compact-action' : 'primary-action compact-action'}
-              disabled={saving || isDirty || Boolean(pendingTeamTransfer)}
-              onClick={() => onToggleTeamVisibility(!isTeamVisible)}
+              disabled={saving || isDirty || Boolean(pendingTeamTransfer && !isDirectManagedTransfer)}
+              onClick={() => setTeamTransferDirection(isTeamVisible ? 'leave' : 'join')}
               title={isDirty ? tx('dossier.teamVisibilitySaveFirst') : undefined}
             >
-              {pendingTeamTransfer ? tx('dossier.teamVisibilityPending') : isTeamVisible ? tx('dossier.teamVisibilityMakePrivate') : tx('dossier.teamVisibilityShare')}
+              {isDirectManagedTransfer && isTeamVisible
+                ? tx('dossier.teamVisibilityMoveToPersonal')
+                : pendingTeamTransfer
+                  ? tx('dossier.teamVisibilityPending')
+                  : isTeamVisible
+                    ? tx('dossier.teamVisibilityMakePrivate')
+                    : tx('dossier.teamVisibilityShare')}
             </button>
           ) : (
             <small>{tx('dossier.teamVisibilityReadOnly')}</small>
           )}
-          {canManageOwnTeamVisibility && isDirty ? (
+          {canManageTeamVisibility && isDirty ? (
             <p>{tx('dossier.teamVisibilitySaveFirst')}</p>
           ) : null}
         </section>
+      ) : null}
+
+      {teamTransferDirection && onPreflightTeamTransfer && onToggleTeamVisibility ? (
+        <ApplicationTransferDialog
+          open
+          application={application}
+          direction={teamTransferDirection}
+          approvalRequired={teamTransferRequiresApproval}
+          organizations={teamTransferOrganizations}
+          onPreflight={(teamId) => onPreflightTeamTransfer(teamTransferDirection === 'join', teamId)}
+          onSubmit={(teamId) => onToggleTeamVisibility(teamTransferDirection === 'join', teamId)}
+          onClose={() => setTeamTransferDirection(null)}
+        />
       ) : null}
 
       {/* Tab strip */}
@@ -7485,16 +7261,13 @@ export function DossierView({
             </div>
 
             <div className="dossier-cards">
-              <section className={`section-card dossier-core-card ${isDossierCoreCardExpanded('school') ? 'expanded' : 'collapsed'}`} data-tour="dossier-fields">
+              <section className="section-card dossier-core-card expanded" data-tour="dossier-fields">
                 {renderDossierCoreSummary(
-                  'school',
                   Building2,
                   tx('dossier.school'),
-                  schoolSummaryPrimary,
-                  schoolSummarySecondary,
                 )}
                 <CollapsiblePanel
-                  open={isDossierCoreCardExpanded('school')}
+                  open
                   className="dossier-core-collapse"
                   innerClassName="dossier-core-collapse-inner"
                   keepMounted
@@ -7531,16 +7304,13 @@ export function DossierView({
                 </CollapsiblePanel>
               </section>
 
-              <section className={`section-card dossier-core-card ${isDossierCoreCardExpanded('professor') ? 'expanded' : 'collapsed'}`}>
+              <section className="section-card dossier-core-card expanded">
                 {renderDossierCoreSummary(
-                  'professor',
                   User,
                   tx('dossier.professor'),
-                  professorSummaryPrimary,
-                  professorSummarySecondary,
                 )}
                 <CollapsiblePanel
-                  open={isDossierCoreCardExpanded('professor')}
+                  open
                   className="dossier-core-collapse"
                   innerClassName="dossier-core-collapse-inner"
                   keepMounted
@@ -7586,16 +7356,13 @@ export function DossierView({
 
               {tabContentReady ? (
               <>
-              <section className={`section-card dossier-core-card ${isDossierCoreCardExpanded('research') ? 'expanded' : 'collapsed'}`}>
+              <section className="section-card dossier-core-card expanded">
                 {renderDossierCoreSummary(
-                  'research',
                   BookOpen,
                   tx('dossier.research'),
-                  researchSummaryPrimary,
-                  researchSummarySecondary,
                 )}
                 <CollapsiblePanel
-                  open={isDossierCoreCardExpanded('research')}
+                  open
                   className="dossier-core-collapse"
                   innerClassName="dossier-core-collapse-inner"
                   keepMounted
@@ -7609,16 +7376,13 @@ export function DossierView({
                 </CollapsiblePanel>
               </section>
 
-              <section className={`section-card dossier-core-card ${isDossierCoreCardExpanded('config') ? 'expanded' : 'collapsed'}`} id="dossier-config-card" data-tour="dossier-config">
+              <section className="section-card dossier-core-card expanded" id="dossier-config-card" data-tour="dossier-config">
                 {renderDossierCoreSummary(
-                  'config',
                   Hash,
                   tx('dossier.config'),
-                  configSummaryPrimary,
-                  configSummarySecondary,
                 )}
                 <CollapsiblePanel
-                  open={isDossierCoreCardExpanded('config')}
+                  open
                   className="dossier-core-collapse"
                   innerClassName="dossier-core-collapse-inner"
                   keepMounted
@@ -8105,9 +7869,6 @@ export function DossierView({
                     const externallyExpanded = expandedMaterials.has(mat.id)
                     const isRemoving = removingMaterialIds.has(mat.id)
                     const isRecommendation = isRecommendationMaterial(mat)
-                    const groupValue: ChecklistGroup = isChecklistGroup(mat.group ?? '')
-                      ? (mat.group as ChecklistGroup)
-                      : 'Custom'
                     const recommenders = isRecommendation
                       ? normalizeRecommenders(mat, mat.requiredCount ?? 3)
                       : []
@@ -8131,12 +7892,15 @@ export function DossierView({
                         tour={mat.id === 'tour-cv' ? 'checklist-material' : undefined}
                         externalOpen={externallyExpanded}
                         syncVersion={materialExpansionSyncVersion}
-                        className={(isExpanded) => `checklist-item ${submitted ? 'done' : ''} ${isExpanded ? 'expanded' : ''} ${isRemoving ? 'is-removing' : ''} ${materialSelection.selectedCount > 1 && materialSelection.selectedIds.has(mat.id) ? 'explorer-selected' : ''} ${recentChecklistItem?.kind === 'material' && recentChecklistItem.id === mat.id ? 'checklist-item-new' : ''} ${checklistFilterAnimKey > 0 ? 'checklist-filter-enter' : ''} ${checklistDrag?.kind === 'material' && checklistDrag.id === mat.id ? 'dragging' : ''} ${checklistDropTarget?.kind === 'material' && checklistDropTarget.id === mat.id ? `drop-target drop-${checklistDropTarget.position}` : ''}`}
+                        className={(isExpanded) => `checklist-item ${submitted ? 'done' : ''} ${isExpanded ? 'expanded' : ''} ${isRemoving ? 'is-removing' : ''} ${materialSelection.selectedCount > 1 && materialSelection.selectedIds.has(mat.id) ? 'explorer-selected' : ''} ${recentChecklistItem?.kind === 'material' && recentChecklistItem.id === mat.id ? 'checklist-item-new' : ''} ${materialGroupArrivalIds.has(mat.id) ? 'checklist-item-group-arrival' : ''} ${checklistFilterAnimKey > 0 ? 'checklist-filter-enter' : ''} ${checklistDrag?.kind === 'material' && checklistDrag.id === mat.id ? 'dragging' : ''} ${checklistDropTarget?.kind === 'material' && checklistDropTarget.id === mat.id ? `drop-target drop-${checklistDropTarget.position}` : ''}`}
                         style={materialDragStyle || materialFilterStyle
                           ? { ...(materialDragStyle ?? {}), ...(materialFilterStyle ?? {}) }
                           : undefined}
                         ariaSelected={materialSelection.selectedIds.has(mat.id)}
                         onContextMenu={(event) => openMaterialContextMenu(event, mat)}
+                        onOpenChange={(open) => {
+                          if (!open && materialVisualGroupPins[mat.id]) releaseMaterialGroupPin(mat.id)
+                        }}
                       >
                         {(isExpanded, toggleExpanded) => (
                         <>
@@ -8193,18 +7957,7 @@ export function DossierView({
                               <span className="checklist-item-title-visual" aria-hidden="true">{localize(mat.name)}</span>
                             </span>
                             <div className="checklist-item-chips">
-                              <label className="checklist-type-chip editable">
-                                <input
-                                  value={localize(mat.type)}
-                                  size={Math.max(3, Math.min(18, localize(mat.type).length || 3))}
-                                  onChange={(event) => updateMaterial(mat.id, { type: event.target.value })}
-                                  onClick={(event) => event.stopPropagation()}
-                                  onBlur={(event) => {
-                                    if (!event.target.value.trim()) updateMaterial(mat.id, { type: tx('dossier.file') })
-                                  }}
-                                  aria-label={tx('dossier.materialType')}
-                                />
-                              </label>
+                              <span className="checklist-type-chip">{localize(mat.type)}</span>
                               <MaterialPill status={mat.status} />
                               <span className="checklist-group-chip">{groupLabel(mat.group || 'Core materials')}</span>
                               {mat.reminderEnabled && <span className="checklist-file-chip"><Bell size={10} /> {materialReminderSummary(mat)}</span>}
@@ -8216,6 +7969,19 @@ export function DossierView({
                             <button type="button" className="checklist-mini-btn"
                               onClick={(e) => { e.stopPropagation(); requestChecklistUpload({ kind: 'material', id: mat.id }); }}
                               title={tx('dossier.uploadAttachment')}><UploadCloud size={13} /></button>
+                            {materialDownloadTarget?.fileId && onPreview && (
+                              <button type="button" className="checklist-mini-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setAttachmentPreview({
+                                    fileId: materialDownloadTarget.fileId!,
+                                    fileName: materialDownloadTarget.file || mat.name,
+                                    mimeType: materialDownloadTarget.mimeType,
+                                  })
+                                }}
+                                title={tx('filePreview.preview')}
+                                aria-label={tx('filePreview.preview')}><Eye size={13} /></button>
+                            )}
                             {materialDownloadTarget?.fileId && (
                               <button type="button" className="checklist-mini-btn"
                                 onClick={(e) => { e.stopPropagation(); onDownload(materialDownloadTarget.fileId, materialDownloadTarget.file || mat.name); }}
@@ -8234,39 +8000,38 @@ export function DossierView({
                             <div className="checklist-detail-grid">
                               <label>
                                 <span>{tx('dossier.materialType')}</span>
-                                <input
-                                  value={localize(mat.type)}
-                                  onChange={(event) => updateMaterial(mat.id, { type: event.target.value })}
-                                  placeholder={tx('dossier.materialTypePlaceholder')}
+                                <Select
+                                  value={mat.type}
+                                  options={materialTypeOptions}
+                                  onChange={(value) => updateMaterial(mat.id, { type: value })}
+                                  searchable
+                                  create={materialTaxonomyCreateConfig('type', mat, isExpanded)}
+                                  ariaLabel={tx('dossier.materialType')}
+                                  size="small"
                                 />
                               </label>
                               <label>
                                 <span>{tx('dossier.group')}</span>
-                                <Select value={groupValue} options={checklistGroupOptions}
-                                  onChange={(v) => updateMaterial(mat.id, { group: v })} size="small" />
+                                <Select
+                                  value={mat.group || 'Core materials'}
+                                  options={checklistGroupOptions}
+                                  onChange={(value) => changeMaterialGroup(mat, value, isExpanded)}
+                                  searchable
+                                  create={materialTaxonomyCreateConfig('group', mat, isExpanded)}
+                                  ariaLabel={tx('dossier.group')}
+                                  size="small"
+                                />
                               </label>
-                              {groupValue === 'Custom' && (
-                                <label>
-                                  <span>{tx('dossier.customGroup')}</span>
-                                  <input value={mat.group === 'Custom' ? '' : mat.group ?? ''}
-                                    onChange={(e) => updateMaterial(mat.id, { group: e.target.value })}
-                                    placeholder={tx('dossier.customGroup')} />
-                                </label>
-                              )}
                               <label>
                                 <span>{tx('dossier.status')}</span>
-                                <Select value={mat.status} options={materialStatusOptions}
-                                  onChange={(v) => updateMaterial(mat.id, { status: v })} size="small" />
-                              </label>
-                              <label>
-                                <span>{tx('dossier.customStatus')}</span>
-                                <input
+                                <Select
                                   value={mat.status}
-                                  onChange={(event) => updateMaterial(mat.id, { status: event.target.value })}
-                                  onBlur={(event) => {
-                                    if (!event.target.value.trim()) updateMaterial(mat.id, { status: 'Draft' })
-                                  }}
-                                  placeholder={tx('dossier.customStatusPlaceholder')}
+                                  options={materialStatusOptions}
+                                  onChange={(value) => updateMaterial(mat.id, { status: value })}
+                                  searchable
+                                  create={materialTaxonomyCreateConfig('status', mat, isExpanded)}
+                                  ariaLabel={tx('dossier.status')}
+                                  size="small"
                                 />
                               </label>
                             </div>
@@ -8476,6 +8241,24 @@ export function DossierView({
                             >
                               <UploadCloud size={13} />
                             </button>
+                            {taskDownloadTarget?.fileId && onPreview && (
+                              <button
+                                type="button"
+                                className="checklist-mini-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setAttachmentPreview({
+                                    fileId: taskDownloadTarget.fileId!,
+                                    fileName: taskDownloadTarget.file || task.title,
+                                    mimeType: taskDownloadTarget.mimeType,
+                                  })
+                                }}
+                                title={tx('filePreview.preview')}
+                                aria-label={tx('filePreview.preview')}
+                              >
+                                <Eye size={13} />
+                              </button>
+                            )}
                             {taskDownloadTarget?.fileId && (
                               <button
                                 type="button"
@@ -8726,11 +8509,18 @@ export function DossierView({
                       <TimePicker value={emailScheduleTime} onChange={setEmailScheduleTime} ariaLabel={tx('dossier.messageClock')} />
                     </div>
                   </div>
+                  <InlinePresence present={emailInsertAnimating} className="composer-ai-writing-slot">
+                    <span className="composer-ai-writing-status" role="status" aria-live="polite">
+                      <Sparkles size={12} aria-hidden="true" />
+                      <span>{tx('dossier.aiDrafting')}</span>
+                      <i aria-hidden="true"><i /><i /><i /></i>
+                    </span>
+                  </InlinePresence>
                   <MarkdownTextarea ref={composerBodyRef} defaultMode="source" className={`composer-body ${emailInsertAnimating ? 'ai-writing' : emailAiRestoreAnimating ? 'ai-restoring' : ''}`} value={emailBody} onChange={(e) => setEmailBody(e.target.value)} placeholder={tx('dossier.emailBodyPlaceholder')} rows={10} />
                   <div className="composer-attachments">
                     <div className="composer-attachment-list">
                       {emailAttachments.map((att) => (
-                        <span key={att.id} className="tag-chip">
+                        <span key={att.id} className={`tag-chip${att.aiAttachedByTool ? ' ai-tool-attached' : ''}`}>
                           <Paperclip size={10} />
                           {renamingAttachmentId === att.id ? (
                             <input
@@ -9810,25 +9600,61 @@ export function DossierView({
         })()}
         </fieldset>
 
-        {/* Team feedback stays outside the fieldset so comments remain available even when fields are grouped. */}
-        {tab === 'review' && (() => {
-          const comments = [...(draft.reviewComments ?? [])].reverse()
-          const reviewCountStr = comments.length === 0
+        {/* Team feedback is available only from the team-scoped workspace. */}
+        {tab === 'review' && teamFeedbackAvailable && (() => {
+          const allComments = draft.reviewComments ?? []
+          const comments = allComments.filter((comment) => !comment.parentId).reverse()
+          const reviewCount = countReviewComments(allComments)
+          const reviewCountStr = reviewCount === 0
             ? tx('dossier.reviewEmpty')
-            : String(comments.length)
+            : String(reviewCount)
+          const formatCommentTime = (createdAt: string) => {
+            try {
+              return new Date(createdAt).toLocaleString(localeForLanguage(lang), {
+                dateStyle: 'medium',
+                timeStyle: 'short',
+              })
+            } catch {
+              return createdAt
+            }
+          }
+          const commentRoleKey = (authorId: string) => (
+            authorId === draft.ownerId ? 'dossier.reviewStudentRole' : 'dossier.reviewAdvisorRole'
+          )
+          const replyActionKey = (authorId: string) => (
+            authorId === draft.ownerId ? 'dossier.reviewReplyToStudent' : 'dossier.reviewReplyToAdvisor'
+          )
           async function handleSubmitComment() {
             if (!reviewCommentText.trim() || !onAddReviewComment) return
             const sourceApplicationId = application.id
             setReviewCommentBusy(true)
             try {
-              await onAddReviewComment(reviewCommentText.trim(), 'dossier')
+              await onAddReviewComment(reviewCommentText.trim(), 'review')
               if (activeApplicationIdRef.current === sourceApplicationId) setReviewCommentText('')
+            } catch {
+              // The App orchestrator reports the API error and the draft stays available for retry.
+            } finally {
+              if (activeApplicationIdRef.current === sourceApplicationId) setReviewCommentBusy(false)
+            }
+          }
+          async function handleSubmitReply(parentId: string, targetAuthorId: string) {
+            if (!reviewReplyText.trim() || !onAddReviewComment) return
+            const sourceApplicationId = application.id
+            setReviewCommentBusy(true)
+            try {
+              await onAddReviewComment(reviewReplyText.trim(), 'review', parentId, [targetAuthorId])
+              if (activeApplicationIdRef.current === sourceApplicationId) {
+                setReviewReplyText('')
+                setReviewReplyToId(null)
+              }
+            } catch {
+              // Keep the reply in place so a failed online request can be retried.
             } finally {
               if (activeApplicationIdRef.current === sourceApplicationId) setReviewCommentBusy(false)
             }
           }
           const canRequestFeedback = Boolean(
-            draft.teamId
+            teamFeedbackAvailable
             && session.user.id
             && draft.ownerId === session.user.id,
           )
@@ -9917,19 +9743,113 @@ export function DossierView({
               <p className="muted">{tx('dossier.reviewEmpty')}</p>
             ) : (
               <ul className="review-comment-list">
-                {comments.map((comment) => (
-                  <li key={comment.id} id={`review-comment-${comment.id}`} className="review-comment-item">
-                    <div className="review-comment-head">
-                      <span className="review-comment-author">{comment.authorName}</span>
-                      <span className="review-comment-time" title={comment.createdAt}>
-                        {(() => {
-                          try { return formatDate(comment.createdAt.slice(0, 10), lang) } catch { return comment.createdAt }
-                        })()}
-                      </span>
-                    </div>
-                    <MarkdownContent value={comment.body} className="review-comment-body" />
-                  </li>
-                ))}
+                {comments.map((comment) => {
+                  const replies = reviewRepliesFor(allComments, comment)
+                  const replyTarget = replies.at(-1) ?? comment
+                  const replyOpen = reviewReplyToId === comment.id
+                  const canReply = Boolean(onAddReviewComment && replyTarget.authorId !== session.user.id)
+                  const replyPanelId = `review-reply-composer-${comment.id}`
+                  return (
+                    <li key={comment.id} id={`review-comment-${comment.id}`} className={`review-comment-item${replyOpen ? ' is-replying' : ''}`}>
+                      <div className="review-comment-head">
+                        <span className="review-comment-author-group">
+                          <span className="review-comment-author">{comment.authorName}</span>
+                          <span className="review-comment-role">{tx(commentRoleKey(comment.authorId))}</span>
+                        </span>
+                        <span className="review-comment-time" title={comment.createdAt}>
+                          {formatCommentTime(comment.createdAt)}
+                        </span>
+                      </div>
+                      <MarkdownContent value={comment.body} className="review-comment-body" />
+                      {replies.length > 0 ? (
+                        <ul className="review-comment-replies" aria-label={tx('dossier.reviewReplies')}>
+                          {replies.map((reply) => (
+                            <li key={reply.id} id={`review-comment-${reply.id}`} className="review-comment-reply">
+                              <div className="review-comment-head">
+                                <span className="review-comment-author-group">
+                                  <span className="review-comment-author">{reply.authorName}</span>
+                                  <span className="review-comment-role">{tx(commentRoleKey(reply.authorId))}</span>
+                                </span>
+                                <span className="review-comment-time" title={reply.createdAt}>
+                                  {formatCommentTime(reply.createdAt)}
+                                </span>
+                              </div>
+                              <MarkdownContent value={reply.body} className="review-comment-body" />
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {canReply ? (
+                        <div className="review-comment-reply-action">
+                          <button
+                            type="button"
+                            className="review-comment-reply-trigger"
+                            aria-expanded={replyOpen}
+                            aria-controls={replyPanelId}
+                            onClick={() => {
+                              setReviewReplyToId(replyOpen ? null : comment.id)
+                              setReviewReplyText('')
+                            }}
+                          >
+                            <Reply size={12} aria-hidden="true" />
+                            {tx(replyActionKey(replyTarget.authorId))}
+                          </button>
+                        </div>
+                      ) : null}
+                      <CollapsiblePanel
+                        id={replyPanelId}
+                        open={replyOpen}
+                        className="review-inline-reply-panel"
+                        innerClassName="review-inline-reply-composer"
+                        collapseMs={220}
+                      >
+                        <span className="review-inline-reply-context">
+                          {format(tx('dossier.reviewReplyingTo'), { name: replyTarget.authorName })}
+                        </span>
+                        <MarkdownTextarea
+                          value={reviewReplyText}
+                          onChange={(event) => setReviewReplyText(event.target.value)}
+                          placeholder={tx('dossier.reviewReplyPlaceholder')}
+                          rows={2}
+                          maxLength={4000}
+                          disabled={reviewCommentBusy}
+                          autoFocus
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' && !event.shiftKey) {
+                              event.preventDefault()
+                              void handleSubmitReply(comment.id, replyTarget.authorId)
+                            }
+                          }}
+                        />
+                        <div className="review-inline-reply-footer">
+                          <span className="review-composer-hint">{reviewReplyText.length}/4000</span>
+                          <div>
+                            <button
+                              type="button"
+                              className="quiet-action compact-action"
+                              disabled={reviewCommentBusy}
+                              onClick={() => {
+                                setReviewReplyToId(null)
+                                setReviewReplyText('')
+                              }}
+                            >
+                              {tx('cancel')}
+                            </button>
+                            <button
+                              type="button"
+                              className="primary-action compact-action"
+                              disabled={reviewCommentBusy || !reviewReplyText.trim()}
+                              onClick={() => void handleSubmitReply(comment.id, replyTarget.authorId)}
+                            >
+                              <Reply size={12} aria-hidden="true" />
+                              {reviewCommentBusy ? tx('working') : tx('dossier.reviewReplySubmit')}
+                            </button>
+                          </div>
+                        </div>
+                      </CollapsiblePanel>
+                    </li>
+                  )
+                })}
               </ul>
             )}
           </div>
@@ -10042,6 +9962,13 @@ export function DossierView({
           </div>
         </ModalPortal>
       )}
+      {onPreview ? (
+        <AttachmentPreviewDialog
+          file={attachmentPreview}
+          loadFile={onPreview}
+          onClose={() => setAttachmentPreview(null)}
+        />
+      ) : null}
       <ExplorerContextMenu menu={explorerMenu} onClose={closeExplorerMenu} />
       <ConfirmDialog
         open={confirmRemoveAttachment !== null}

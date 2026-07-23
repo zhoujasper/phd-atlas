@@ -15,6 +15,13 @@ export const MaterialStatusSchema = z.string().trim().min(1).max(64)
 const ReminderDateSchema = z.union([z.iso.date(), z.literal('')]).default('')
 const OptionalUrlSchema = z.union([z.url(), z.literal('')])
 
+const SchoolLogoSchema = z.object({
+  dataUrl: z.string().max(260_000).regex(/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/),
+  source: z.enum(['website', 'link', 'upload']),
+  sourceUrl: z.url().max(2_048).refine((value) => value.startsWith('https://')).optional(),
+  updatedAt: z.string().max(64),
+})
+
 const MaterialRecommenderSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
@@ -101,6 +108,7 @@ export const CommunicationSchema = z.object({
     assetId: z.string().optional(),
     fileSize: z.number().nonnegative().optional(),
     mimeType: z.string().optional(),
+    storageName: z.string().optional(),
     source: z.string().optional(),
   })).default([]),
   deliveryStatus: z.enum(['sent', 'log-only']).optional(),
@@ -238,6 +246,8 @@ export const ApplicationSchema = z.object({
     name: z.string().min(1),
     country: z.string().min(1),
     website: OptionalUrlSchema,
+    logo: SchoolLogoSchema.optional(),
+    logoAutoDetect: z.boolean().optional(),
   }),
   program: z.string().min(1),
   deadline: z.iso.date(),

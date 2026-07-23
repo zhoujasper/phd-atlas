@@ -63,7 +63,8 @@
     "emptyDescription": "Crie sua primeira candidatura universitária e avance por cada etapa aqui.",
     "priorityValue": "P{value}",
     "moveToStatus": "Mover para {status}",
-    "showMore": "Mostrar mais {count}"
+    "showMore": "Mostrar mais {count}",
+    "moveTo": "Mover para"
   },
   "explorer": {
     "selectedCount": "{count} selecionado",

@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { copyToClipboard } from './CopyButton'
+import { copyToClipboard } from './clipboard'
 import { useI18n } from '../hooks/useI18n'
 
 type OverflowRevealProps = {

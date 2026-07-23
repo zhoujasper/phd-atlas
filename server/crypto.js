@@ -44,17 +44,23 @@ let runtime = {
   algorithm: /** @type {EncryptionAlgorithm} */ ('aes-256-gcm'),
   /** @type {Buffer} */
   key: deriveKeyMaterial(),
+  passwordBinding: '',
 }
 
 /**
- * @param {{ algorithm?: string }} config
+ * @param {{ algorithm?: string, passwordBinding?: string }} config
  */
 export function setRuntimeCryptoConfig(config = {}) {
   const algorithm = normalizeAlgorithm(config.algorithm)
+  const passwordBinding = String(config.passwordBinding || '')
   runtime = {
     algorithm,
-    // Field sealing always uses the server env key so the process can boot alone.
-    key: deriveKeyMaterial(),
+    // The server secret remains mandatory. When password protection is on, the
+    // salted password verifier becomes an additional KDF binding so changing
+    // the admin-selected password actually rotates the field data key while
+    // unattended boot remains possible.
+    key: deriveKeyMaterial(passwordBinding),
+    passwordBinding,
   }
   return getRuntimeCryptoConfig()
 }
@@ -166,7 +172,17 @@ export function decryptSecret(ciphertext, options = {}) {
  * @param {{ key?: Buffer }} [profile]
  */
 export function decryptSecretWithProfile(ciphertext, profile = {}) {
-  return decryptSecret(ciphertext, { key: profile.key ?? runtime.key })
+  const key = profile.key
+    ?? deriveKeyMaterial(String(profile.passwordBinding || ''))
+  return decryptSecret(ciphertext, { key })
+}
+
+/** Encrypt with an explicit password-binding profile during durable migrations. */
+export function encryptSecretWithProfile(plaintext, profile = {}) {
+  return encryptSecret(plaintext, {
+    algorithm: normalizeAlgorithm(profile.algorithm),
+    key: profile.key ?? deriveKeyMaterial(String(profile.passwordBinding || '')),
+  })
 }
 
 /**

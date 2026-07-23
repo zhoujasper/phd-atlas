@@ -10,6 +10,8 @@ services:
       PORT: 4317
     ports:
       - "127.0.0.1:${APP_PORT:-4317}:4317"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - phd-atlas-data:/app/storage
     security_opt:

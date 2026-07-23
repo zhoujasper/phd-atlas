@@ -8,6 +8,8 @@ import {
   getActivePrograms,
   getDiscoverCatalog,
   listAllScoredPrograms,
+  mergeDiscoverSourceIndexes,
+  normalizeDiscoverSourceIndex,
   normalizeDiscoverState,
   parseAiResearchResponse,
   parseCatalogUpload,
@@ -16,6 +18,13 @@ import {
   scoreProgram,
 } from './discover-catalog.js'
 import { attachRequirements, normalizeRequirements } from './discover-requirements.js'
+
+function fixtureState() {
+  const state = defaultDiscoverState()
+  state.catalogSource = 'builtin'
+  state.officialResearchOnly = false
+  return state
+}
 
 describe('discover-catalog', () => {
   it('exposes a non-empty curated catalog with regions and PIs', () => {
@@ -38,8 +47,66 @@ describe('discover-catalog', () => {
     expect(state.hiddenProgramIds).toEqual(['prog_mit_eecs'])
   })
 
+  it('keeps deleted program tombstones and filters matching persisted results', () => {
+    const state = normalizeDiscoverState({
+      deletedProgramIds: ['deleted_program'],
+      customPrograms: [
+        {
+          id: 'deleted_program',
+          school: 'Deleted University',
+          program: 'Computer Science PhD',
+          provenance: 'manual',
+        },
+        {
+          id: 'retained_program',
+          school: 'Retained University',
+          program: 'Computer Science PhD',
+          provenance: 'manual',
+        },
+      ],
+    })
+
+    expect(state.deletedProgramIds).toEqual(['deleted_program'])
+    expect(state.customPrograms.map((program) => program.id)).toEqual(['retained_program'])
+  })
+
+  it('orders newly collected verified results ahead of older and manual rows', () => {
+    const verified = { status: 'partial', officialSourceCount: 1, advisorSourceCount: 0 }
+    const state = normalizeDiscoverState({
+      researchRuns: 2,
+      customPrograms: [
+        {
+          id: 'older_ai',
+          school: 'Older University',
+          program: 'Computer Science PhD',
+          provenance: 'ai',
+          collectedAt: '2026-07-22T12:00:00.000Z',
+          sources: ['https://older.edu/phd'],
+          verification: verified,
+        },
+        {
+          id: 'newer_ai',
+          school: 'Newer University',
+          program: 'Computer Science PhD',
+          provenance: 'ai',
+          collectedAt: '2026-07-23T12:00:00.000Z',
+          sources: ['https://newer.edu/phd'],
+          verification: verified,
+        },
+        {
+          id: 'manual_row',
+          school: 'Manual University',
+          program: 'User note',
+          provenance: 'manual',
+        },
+      ],
+    })
+
+    expect(state.customPrograms.map((program) => program.id)).toEqual(['newer_ai', 'older_ai', 'manual_row'])
+  })
+
   it('scores and ranks programs with hidden filtering', () => {
-    const state = defaultDiscoverState()
+    const state = fixtureState()
     state.intake.field = 'Machine Learning'
     state.intake.interestTags = ['Machine Learning', 'NLP']
     state.intake.regions = ['US']
@@ -51,8 +118,163 @@ describe('discover-catalog', () => {
     expect(ranked[0].matchScore).toBeGreaterThanOrEqual(ranked[ranked.length - 1].matchScore)
   })
 
+  it('shows only source-gated AI rows after an official-only research run', () => {
+    const state = normalizeDiscoverState({
+      catalogSource: 'custom',
+      officialResearchOnly: true,
+      customPrograms: [
+        {
+          id: 'official_row', school: 'Example University', program: 'Computer Science PhD', region: 'US',
+          website: 'https://example.edu/cs/phd', sources: ['https://example.edu/cs/phd'],
+          provenance: 'ai', verification: { status: 'partial', officialSourceCount: 1, advisorSourceCount: 0 },
+        },
+        {
+          id: 'old_placeholder', school: 'Example University', program: 'PhD opportunity in Anything', region: 'US',
+          provenance: 'manual', verification: { status: 'unverified', officialSourceCount: 0, advisorSourceCount: 0 },
+        },
+      ],
+    })
+
+    expect(getActivePrograms(state).map((program) => program.id)).toEqual(['official_row'])
+    expect(state.customPrograms.map((program) => program.id)).toContain('old_placeholder')
+  })
+
+  it('does not expose built-in Example fixtures in the default user decision set', () => {
+    const programs = getActivePrograms(defaultDiscoverState())
+    expect(programs).toEqual([])
+    expect(programs.some((program) => program.pis?.some((pi) => /example/i.test(pi.name)))).toBe(false)
+  })
+
+  it('removes copied built-in fixtures without deleting an explicit manual row', () => {
+    const builtInFixture = getDiscoverCatalog().programs[0]
+    const state = normalizeDiscoverState({
+      researchRuns: 1,
+      customPrograms: [
+        builtInFixture,
+        {
+          id: 'renamed_legacy_fixture',
+          school: 'Legacy Sample University',
+          program: 'Computer Science PhD',
+          provenance: 'official_catalog',
+        },
+        {
+          id: 'user_manual_quantum',
+          school: 'User Selected University',
+          program: 'Quantum Computing PhD',
+          provenance: 'manual',
+        },
+      ],
+    })
+
+    expect(state.customPrograms.map((program) => program.id)).toEqual(['user_manual_quantum'])
+    expect(state.customPrograms[0].provenance).toBe('manual')
+    expect(getActivePrograms(state)).toEqual([])
+  })
+
+  it('drops generic legacy AI rows and canonical duplicate AI programs from the decision set', () => {
+    const verification = { status: 'partial', officialSourceCount: 1, advisorSourceCount: 0 }
+    const state = normalizeDiscoverState({
+      researchRuns: 1,
+      customPrograms: [
+        {
+          id: 'cambridge-cst-phd',
+          school: 'University of Cambridge',
+          program: 'Ph.D. in Computer Science',
+          provenance: 'ai',
+          website: 'https://www.cst.cam.ac.uk/admissions/phd/?utm_source=legacy',
+          sources: ['https://www.cst.cam.ac.uk/admissions/phd/?utm_source=legacy'],
+          verification,
+        },
+        {
+          id: 'cambridge-ai-current',
+          school: 'Cambridge University',
+          program: 'Computer Science PhD',
+          provenance: 'ai',
+          website: 'https://cst.cam.ac.uk/admissions/phd',
+          sources: ['https://cst.cam.ac.uk/admissions/phd'],
+          pis: [{ id: 'cambridge-advisor', name: 'Dr Ada Researcher', url: 'https://cst.cam.ac.uk/people/ada' }],
+          verification: { ...verification, status: 'verified', advisorSourceCount: 1 },
+        },
+        {
+          id: 'southampton-postgraduate-research',
+          school: 'University of Southampton',
+          program: 'Find Your PhD',
+          provenance: 'ai',
+          website: 'https://southampton.ac.uk/study/postgraduate-research',
+          sources: ['https://southampton.ac.uk/study/postgraduate-research'],
+          verification,
+        },
+      ],
+    })
+
+    expect(state.customPrograms.map((program) => program.id)).toEqual(['cambridge-ai-current'])
+    expect(getActivePrograms(state).map((program) => program.id)).toEqual(['cambridge-ai-current'])
+  })
+
+  it('preserves persisted source-page contamination and declaration evidence', () => {
+    const index = normalizeDiscoverSourceIndex({
+      schemaVersion: 2,
+      schools: [{
+        school: 'Example University',
+        officialUrl: 'https://example.edu/',
+        pages: [{
+          url: 'https://example.edu/people/example',
+          types: ['advisor'],
+          fetched: true,
+          individualAdvisor: true,
+          declaredKinds: ['faculty', 'research'],
+          promptInjectionSuspected: true,
+        }],
+      }],
+    })
+
+    expect(index.schools[0].pages[0]).toMatchObject({
+      individualAdvisor: true,
+      declaredKinds: ['faculty', 'research'],
+      promptInjectionSuspected: true,
+    })
+    expect(index.schools[0].advisorPages[0].promptInjectionSuspected).toBe(true)
+  })
+
+  it('merges bounded source runs without dropping older fetched evidence', () => {
+    const previous = {
+      generatedAt: '2026-07-22T00:00:00.000Z',
+      schools: [
+        {
+          school: 'Example University',
+          officialUrl: 'https://example.edu/',
+          pages: [
+            { url: 'https://example.edu/phd', fetched: true, title: 'Older observation', types: ['program'] },
+            { url: 'https://example.edu/funding', fetched: true, title: 'Funding', types: ['funding'] },
+          ],
+        },
+        {
+          school: 'Prior University',
+          officialUrl: 'https://prior.edu/',
+          pages: [{ url: 'https://prior.edu/phd', fetched: true, title: 'Prior PhD', types: ['program'] }],
+        },
+      ],
+    }
+    const current = {
+      generatedAt: '2026-07-23T00:00:00.000Z',
+      schools: [{
+        school: 'Example University',
+        officialUrl: 'https://example.edu/',
+        pages: [{ url: 'https://example.edu/phd', fetched: true, title: 'Fresh observation', types: ['program'] }],
+      }],
+    }
+
+    const merged = mergeDiscoverSourceIndexes(previous, current)
+    expect(merged.schools.map((school) => school.school)).toEqual(['Example University', 'Prior University'])
+    expect(merged.schools[0].pages.map((page) => page.url)).toEqual([
+      'https://example.edu/phd',
+      'https://example.edu/funding',
+    ])
+    expect(merged.schools[0].pages[0].title).toBe('Fresh observation')
+  })
+
   it('computes stats and COL series', () => {
-    const stats = computeDiscoverStats(defaultDiscoverState())
+    const stats = computeDiscoverStats(fixtureState())
     expect(stats.programCount).toBeGreaterThan(0)
     expect(stats.colSeries.length).toBeGreaterThan(0)
   })
@@ -68,7 +290,7 @@ describe('discover-catalog', () => {
   })
 
   it('runs research and emits match notification candidates for new tops', () => {
-    const state = defaultDiscoverState()
+    const state = fixtureState()
     state.intake.field = 'Robotics'
     state.intake.interestTags = ['Robotics']
     state.intake.notifyMatches = true
@@ -84,7 +306,7 @@ describe('discover-catalog', () => {
   })
 
   it('lists scored programs with watch/hide flags', () => {
-    const state = defaultDiscoverState()
+    const state = fixtureState()
     state.watchedProgramIds = ['prog_eth_cs']
     state.hiddenProgramIds = ['prog_anu_cs']
     const list = listAllScoredPrograms(state)
@@ -114,7 +336,7 @@ describe('discover-catalog', () => {
     expect(uploaded).toHaveLength(1)
     expect(uploaded[0].school).toBe('Example Tech')
 
-    const state = defaultDiscoverState()
+    const state = fixtureState()
     state.customPrograms = uploaded
     state.catalogSource = 'merged'
     const active = getActivePrograms(state)
@@ -136,7 +358,7 @@ describe('discover-catalog', () => {
     expect(eth.requirements.restrictions.supervisorContact).toBe('required')
     expect(eth.requirements.deadlines.some((d) => d.certainty === 'rolling')).toBe(true)
 
-    const stats = computeDiscoverStats(defaultDiscoverState())
+    const stats = computeDiscoverStats(fixtureState())
     expect(stats.requirements.greOptional).toBeGreaterThan(0)
     expect(stats.upcomingDeadlines.length).toBeGreaterThan(0)
 
@@ -156,7 +378,7 @@ describe('discover-catalog', () => {
   })
 
   it('parses AI research JSON enrichments without inventing unknown program ids', () => {
-    const state = defaultDiscoverState()
+    const state = fixtureState()
     const ranked = rankPrograms(state).slice(0, 3)
     const parsed = parseAiResearchResponse(
       JSON.stringify({

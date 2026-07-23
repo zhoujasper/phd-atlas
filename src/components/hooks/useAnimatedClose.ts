@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-export const overlayExitDurationMs = 160
+export const overlayExitDurationMs = 150
 
 export function getMotionDelay(duration: number) {
   if (

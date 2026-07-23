@@ -4,6 +4,17 @@
   "confirm": "확인",
   "cancel": "취소",
   "done": "완료",
+  "filePreview": {
+    "preview": "파일 미리보기",
+    "document": "문서",
+    "spreadsheet": "스프레드시트",
+    "presentation": "프레젠테이션",
+    "unavailable": "이 파일은 여기에서 미리 볼 수 없습니다",
+    "downloadHint": "기본 앱에서 열려면 다운로드하세요.",
+    "slideCount": "슬라이드 {current}/{total}",
+    "sheets": "통합 문서 시트",
+    "renderError": "원본 레이아웃을 렌더링할 수 없습니다"
+  },
   "noResults": "결과 없음",
   "search": "검색",
   "sort": "정렬",
@@ -74,6 +85,7 @@
     "RATE_LIMITED": "요청이 너무 많습니다. 잠시 후에 다시 시도해 주세요.",
     "NETWORK_ERROR": "네트워크 연결에 실패했습니다. 연결을 확인하고 다시 시도하세요.",
     "REQUEST_FAILED": "요청이 실패했습니다. 다시 시도해 주세요.",
+    "DATABASE_TARGET_NOT_EMPTY": "선택한 데이터베이스에 이미 PhD Atlas 작업 공간이 있습니다. 초기 설정에서는 덮어쓰지 않습니다. 빈 데이터베이스를 선택하거나 기존 설치에서 마이그레이션하세요.",
     "SERVER_ERROR": "예상치 못한 서버 오류가 발생했습니다. 나중에 다시 시도해 주세요.",
     "TOKEN_EXPIRED": "세션이 만료되었습니다. 다시 로그인해 주세요.",
     "UNAUTHORIZED": "로그인이 필요합니다.",
@@ -110,6 +122,7 @@
     "TEAM_STORAGE_QUOTA_EXCEEDED": "팀 저장공간이 가득 찼습니다. 먼저 시스템 관리자에게 할당량을 높이거나 파일을 제거하도록 요청하세요.",
     "TEAM_TRANSFER_NOT_AVAILABLE": "지금은 이 애플리케이션을 개인 작업 공간과 조직 작업 공간 간에 이동할 수 없습니다.",
     "TEAM_TRANSFER_NOT_FOUND": "대기 중인 팀 이전 요청을 찾을 수 없습니다.",
+    "TEAM_TRANSFER_PENDING_LIMIT": "팀 승인 대기 중인 지원서가 한도에 도달했습니다. 하나를 처리한 뒤 새 요청을 제출하세요.",
     "TEAM_TRANSFER_STUDENT_REQUIRED": "조직의 활성 학생 계정만 지원서를 내부 또는 외부로 이동할 수 있습니다.",
     "SHARE_LIMIT_REACHED": "활성 공유 링크는 {limit}로 제한됩니다. Pro로 업그레이드하거나 관리자에게 한도 상향을 요청하세요.",
     "SHARE_CREATE_LIMIT_REACHED": "평생 생성 한도인 {limit} 공유 링크에 도달했습니다. Pro로 업그레이드하거나 관리자에게 한도 상향을 요청하세요.",
@@ -188,10 +201,18 @@
     "TEAM_SHARE_CREATE_LIMIT_REACHED": "팀이 평생 생성 한도인 {limit} 공유 링크에 도달했습니다. 시스템 관리자에게 요청하여 문제를 제기하세요.",
     "UNTRUSTED_HOST": "이 PhD Atlas 서버 주소는 신뢰할 수 없습니다.",
     "TEAM_SHARE_LIMIT_REACHED": "팀의 활성 공유 링크 한도인 {limit}에 도달했습니다. 시스템 관리자에게 요청하여 문제를 제기하세요.",
-    "INVALID_UPDATE_PACKAGE": "This is not a supported PhD Atlas update package.",
-    "UPDATE_INTEGRITY_FAILED": "The update package failed its integrity check. Download it again from the official Release.",
-    "UPDATE_APPLY_FAILED": "The update failed and the previous runtime was restored.",
-    "SETUP_ALREADY_COMPLETED": "Initial setup has already been completed. Sign in with the administrator account."
+    "INVALID_UPDATE_PACKAGE": "이는 지원되는 PhD Atlas 업데이트 패키지가 아닙니다.",
+    "UPDATE_INTEGRITY_FAILED": "업데이트 패키지가 무결성 검사에 실패했습니다. 공식 릴리스에서 다시 다운로드하세요.",
+    "UPDATE_APPLY_FAILED": "업데이트가 실패하여 이전 런타임이 복원되었습니다.",
+    "SETUP_ALREADY_COMPLETED": "초기 설정이 이미 완료되었습니다. 관리자 계정으로 로그인하세요.",
+    "TEAM_DISCOVER_FORBIDDEN": "팀 탐색은 팀 소유자와 교사만 실행할 수 있습니다.",
+    "TEAM_DISCOVER_KEY_FORBIDDEN": "팀 탐색은 선택한 팀의 키만 사용할 수 있습니다.",
+    "TEAM_DISCOVER_TARGET_FORBIDDEN": "할당된 활성 학생만 조사할 수 있습니다.",
+    "TEAM_DISCOVER_TARGET_REQUIRED": "팀 탐색을 위해 팀과 할당된 학생을 모두 선택하세요.",
+    "DISCOVER_ADVISOR_EMAIL_REQUIRED": "선택한 지도교수에게 확인된 이메일 주소가 없습니다.",
+    "DISCOVER_ADVISOR_NOT_VERIFIED": "이 프로그램을 지원서에 추가하려면 실제 지도교수 프로필과 이메일이 필요합니다.",
+    "DISCOVER_PROGRAM_NOT_VERIFIED": "이 프로그램에는 확인된 공식 출처 또는 현재 지원 마감일이 없습니다. 가져오기 전에 조사를 새로 고치세요.",
+    "MAIL_ATTACHMENT_TOO_LARGE": "첨부 파일이 너무 커서 이메일에 추가할 수 없습니다."
   },
   "apiErrorFields": {
     "captchaAnswer": "확인 답변",
@@ -586,7 +607,9 @@
         "team_message": "팀 메시지",
         "team_update": "팀 업데이트",
         "membership_update": "회원",
-        "admin_announcement": "발표"
+        "admin_announcement": "발표",
+        "discover_research_complete": "Discover 조사",
+        "discover_research_failed": "Discover 조사"
       },
       "tab": {
         "dossier": "지원 서류",

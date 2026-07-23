@@ -4,6 +4,7 @@ import {
   type I18nNamespace,
   type Language,
   getDict,
+  getDictForNamespaces,
   hasLanguageNamespaces,
   loadLanguage,
   preloadLanguage,
@@ -59,22 +60,30 @@ export function useI18n(): I18nContextValue {
 export function useI18nValue(lang: Language, namespaces: I18nNamespace[] = ['core']): I18nContextValue {
   const namespaceKey = useMemo(() => Array.from(new Set(['core', ...namespaces])).sort().join('|'), [namespaces])
   const [, setVersion] = useState(0)
-  const ready = hasLanguageNamespaces(lang, namespaceKey.split('|'))
+  const requestKey = `${lang}:${namespaceKey}`
+  const [failedRequestKey, setFailedRequestKey] = useState<string | null>(null)
+  const ready = hasLanguageNamespaces(lang, namespaceKey.split('|')) || failedRequestKey === requestKey
 
   useEffect(() => {
     const namespacesToLoad = namespaceKey.split('|')
     if (hasLanguageNamespaces(lang, namespacesToLoad)) return undefined
 
     let cancelled = false
-    void loadLanguage(lang, namespacesToLoad).finally(() => {
-      if (!cancelled) setVersion((current) => current + 1)
-    })
+    void loadLanguage(lang, namespacesToLoad)
+      .then(() => {
+        if (!cancelled) setVersion((current) => current + 1)
+      })
+      .catch(() => {
+        // Fail open with the canonical English/path fallbacks rather than leave
+        // a screen or click-open overlay trapped behind a loading indicator.
+        if (!cancelled) setFailedRequestKey(requestKey)
+      })
     return () => {
       cancelled = true
     }
-  }, [lang, namespaceKey])
+  }, [lang, namespaceKey, requestKey])
 
-  const dict = getDict(lang)
+  const dict = getDictForNamespaces(lang, namespaceKey.split('|'))
 
   return useMemo(() => ({
     lang,

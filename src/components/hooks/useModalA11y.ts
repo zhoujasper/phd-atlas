@@ -32,10 +32,14 @@ export function useModalA11y<T extends HTMLElement = HTMLElement>({
   useEffect(() => {
     if (!open) return undefined
     const previousFocus = document.activeElement as HTMLElement | null
-    const target = initialFocusRefRef.current?.current ?? dialogRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)
-    // Prevent the browser from scrolling either the page or a long dialog before
-    // the overlay has painted. That one-frame scroll jump reads as a flash.
-    target?.focus({ preventScroll: true })
+    // Let the overlay's cheap opacity/transform layer paint first. Focusing a
+    // control can trigger style, layout and virtual-keyboard work; doing that in
+    // the same commit made large dialogs visibly miss their first animation frame.
+    const focusFrame = window.requestAnimationFrame(() => {
+      const target = initialFocusRefRef.current?.current
+        ?? dialogRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)
+      target?.focus({ preventScroll: true })
+    })
 
     function handleKey(event: KeyboardEvent) {
       if (event.key === 'Escape') {
@@ -69,6 +73,7 @@ export function useModalA11y<T extends HTMLElement = HTMLElement>({
 
     document.addEventListener('keydown', handleKey)
     return () => {
+      window.cancelAnimationFrame(focusFrame)
       document.removeEventListener('keydown', handleKey)
       previousFocus?.focus?.({ preventScroll: true })
     }

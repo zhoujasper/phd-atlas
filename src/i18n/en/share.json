@@ -15,6 +15,7 @@
     "limitReached": "Active share links are capped at {limit}.",
     "table": {
       "application": "Application",
+      "subject": "Shared item",
       "link": "Link",
       "created": "Created",
       "expires": "Expires",
@@ -44,7 +45,8 @@
     "sectionsTitle": "Shared pages",
     "scope": {
       "all": "All pages",
-      "count": "{count} pages"
+      "count": "{count} pages",
+      "upload": "Attachment upload"
     },
     "sections": {
       "overview": "Overview",

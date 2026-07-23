@@ -63,7 +63,8 @@
     "emptyDescription": "Cree su primera candidatura y avance por cada etapa desde aquí.",
     "priorityValue": "P{value}",
     "moveToStatus": "Mover a {status}",
-    "showMore": "Mostrar {count} más"
+    "showMore": "Mostrar {count} más",
+    "moveTo": "Mover a"
   },
   "explorer": {
     "selectedCount": "{count} seleccionado",

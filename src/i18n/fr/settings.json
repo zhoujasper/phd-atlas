@@ -386,7 +386,11 @@
     "mailSyncBackgroundActive": "Le serveur se synchronise en arrière-plan. Vous pouvez actualiser ou quitter cette page en toute sécurité.",
     "passkeyRenameCancel": "Annuler le changement de nom",
     "passkeyRenamed": "Clé d'accès renommée.",
-    "testingIncomingMail": "Test de connexion…"
+    "testingIncomingMail": "Test de connexion…",
+    "emailNotificationsDesc": "Recevez un e-mail combiné pour les mises à jour récentes au lieu d'un e-mail distinct pour chaque notification.",
+    "emailNotifications": "Notifications par courrier électronique",
+    "shareProjectLinkType": "Aperçu du projet",
+    "shareUploadLinkType": "Téléversement de pièces jointes"
   },
   "calendar": {
     "title": "Flux de calendrier",
@@ -400,6 +404,8 @@
     "regenerateHint": "La régénération crée une nouvelle URL privée et désactive l'ancien lien d'abonnement.",
     "regeneratedToast": "Lien d'abonnement au calendrier régénéré.",
     "enable": "Activer le flux de calendrier",
+    "enabling": "Activation du flux de calendrier…",
+    "statusEnabling": "Activation",
     "enabledToast": "Flux de calendrier activé.",
     "notEnabled": "Le flux du calendrier est désactivé. Activez-le pour créer une URL iCal privée pour vos délais et rappels.",
     "providerLinks": "Liens vers l'application Calendrier",

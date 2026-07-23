@@ -18,7 +18,7 @@ export type ContentLanguagePair = {
 export type ContentLanguageSlot = 'primary' | 'secondary'
 
 /** Resolve the account's two preferred content languages (defaults: en + zh). */
-export function contentLanguagesFromSettings(settings?: Pick<UserSettings, 'contentLanguagePrimary' | 'contentLanguageSecondary' | 'language'> | null): ContentLanguagePair {
+export function contentLanguagesFromSettings(settings?: Pick<UserSettings, 'contentLanguagePrimary' | 'contentLanguageSecondary'> | null): ContentLanguagePair {
   const primary = resolveLanguage(settings?.contentLanguagePrimary ?? 'en')
   let secondary = resolveLanguage(settings?.contentLanguageSecondary ?? 'zh')
   if (secondary === primary) {

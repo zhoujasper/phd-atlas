@@ -10,23 +10,29 @@ import {
   useState,
 } from 'react'
 import {
+  AlertTriangle,
   ArrowRight,
   CalendarClock,
+  ChevronDown,
   Copy,
   Download,
   ExternalLink,
   FolderOpen,
+  GraduationCap,
   GripVertical,
   LayoutGrid,
   ListChecks,
   Mail,
   Plus,
   Trash2,
+  UsersRound,
 } from 'lucide-react'
 import type { ApplicationRecord, ApplicationStatus } from '../../data/applications'
 import { daysUntil } from '../../appModel'
 import { statusLabel } from '../../statusLabels'
 import { DeadlineBadge } from '../shared/DeadlineBadge'
+import { StatusPill } from '../shared/StatusPill'
+import { UserAvatar } from '../shared/UserAvatar'
 import { useI18n } from '../hooks/useI18n'
 import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/ExplorerContextMenu'
 
@@ -38,6 +44,17 @@ const KANBAN_GROUPS: Array<{
   { key: 'decision', statuses: ['Accepted', 'Rejected', 'Waitlist'] },
 ]
 
+export type TeamKanbanStudent = {
+  id: string
+  name: string
+  email?: string
+  avatarUrl?: string
+  advisorName?: string | null
+  applications: ApplicationRecord[]
+  allApplications: ApplicationRecord[]
+  canCreateApplication?: boolean
+}
+
 interface KanbanBoardProps {
   applications: ApplicationRecord[]
   onStatusChange: (id: string, status: ApplicationStatus) => void
@@ -48,6 +65,8 @@ interface KanbanBoardProps {
   onCopy?: (value: string, label: string) => void
   onDeleteApplication?: (id: string) => void
   onNew?: () => void
+  teamStudents?: TeamKanbanStudent[]
+  onNewForStudent?: (studentId: string) => void
 }
 
 function priorityLabel(p: number): 'high' | 'medium' | 'low' {
@@ -60,8 +79,349 @@ const kanbanStatusOrder: ApplicationStatus[] = ['Draft', 'Preparing', 'Submitted
 const KANBAN_COLUMN_INITIAL_COUNT = 4
 const KANBAN_COLUMN_COMPACT_INITIAL_COUNT = 8
 const KANBAN_COLUMN_BATCH_SIZE = 8
+const TEAM_STUDENT_PREVIEW_COUNT = 3
+const terminalStatuses = new Set<ApplicationStatus>(['Accepted', 'Rejected', 'Waitlist'])
 
-export function KanbanBoard({
+type TeamStudentBoardState = 'missing' | 'risk' | 'due' | 'steady'
+
+function applicationNeedsAttention(application: ApplicationRecord): boolean {
+  if (terminalStatuses.has(application.status)) return false
+  const due = daysUntil(application.deadline)
+  return due < 0 || due <= 30 || (
+    (application.status === 'Draft' || application.status === 'Preparing') &&
+    application.progress < 40
+  )
+}
+
+function teamStudentBoardState(applications: ApplicationRecord[]): TeamStudentBoardState {
+  if (applications.length === 0) return 'missing'
+  const activeApplications = applications.filter((application) => !terminalStatuses.has(application.status))
+  if (activeApplications.some((application) => {
+    const due = daysUntil(application.deadline)
+    return due < 0 || (
+      (application.status === 'Draft' || application.status === 'Preparing') &&
+      application.progress < 40
+    )
+  })) return 'risk'
+  if (activeApplications.some((application) => {
+    const due = daysUntil(application.deadline)
+    return due >= 0 && due <= 30
+  })) return 'due'
+  return 'steady'
+}
+
+function teamStudentStateLabelKey(state: TeamStudentBoardState): string {
+  if (state === 'missing') return 'team.teacherStudentStateMissing'
+  if (state === 'risk') return 'team.teacherStudentStateRisk'
+  if (state === 'due') return 'team.teacherStudentStateDue'
+  return 'team.teacherStudentStateSteady'
+}
+
+function teamStudentStateScore(state: TeamStudentBoardState): number {
+  if (state === 'risk') return 0
+  if (state === 'due') return 1
+  if (state === 'missing') return 2
+  return 3
+}
+
+function TeamStudentKanbanBoard({
+  students,
+  onSelect,
+  onPrefetch,
+  onNewForStudent,
+}: {
+  students: TeamKanbanStudent[]
+  onSelect: (id: string) => void
+  onPrefetch?: () => void
+  onNewForStudent?: (studentId: string) => void
+}) {
+  const { tx, format } = useI18n()
+  const [expandedStudentIds, setExpandedStudentIds] = useState<Set<string>>(() => new Set())
+
+  const boardData = useMemo(() => {
+    let totalApplications = 0
+    let attentionApplications = 0
+    let dueSoonApplications = 0
+    const rows = students.map((student) => {
+      const allApplications = student.allApplications
+      const state = teamStudentBoardState(allApplications)
+      const averageProgress = allApplications.length
+        ? Math.round(allApplications.reduce((sum, application) => sum + application.progress, 0) / allApplications.length)
+        : 0
+      const dueSoonCount = allApplications.filter((application) => {
+        if (terminalStatuses.has(application.status)) return false
+        const due = daysUntil(application.deadline)
+        return due >= 0 && due <= 30
+      }).length
+      const attentionCount = allApplications.filter(applicationNeedsAttention).length
+      const statusCounts = Object.fromEntries(
+        kanbanStatusOrder.map((status) => [
+          status,
+          allApplications.filter((application) => application.status === status).length,
+        ]),
+      ) as Record<ApplicationStatus, number>
+      const visibleApplications = [...student.applications].sort((left, right) => {
+        const attentionDifference = Number(applicationNeedsAttention(right)) - Number(applicationNeedsAttention(left))
+        if (attentionDifference !== 0) return attentionDifference
+        return left.deadline.localeCompare(right.deadline)
+      })
+
+      totalApplications += allApplications.length
+      attentionApplications += attentionCount
+      dueSoonApplications += dueSoonCount
+
+      return {
+        ...student,
+        state,
+        averageProgress,
+        dueSoonCount,
+        attentionCount,
+        statusCounts,
+        visibleApplications,
+      }
+    }).sort((left, right) => {
+      const stateDifference = teamStudentStateScore(left.state) - teamStudentStateScore(right.state)
+      if (stateDifference !== 0) return stateDifference
+      return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })
+    })
+
+    return {
+      rows,
+      totalApplications,
+      attentionApplications,
+      dueSoonApplications,
+    }
+  }, [students])
+
+  function toggleStudent(studentId: string) {
+    setExpandedStudentIds((current) => {
+      const next = new Set(current)
+      if (next.has(studentId)) next.delete(studentId)
+      else next.add(studentId)
+      return next
+    })
+  }
+
+  return (
+    <section className="kanban-workspace team-kanban-workspace" aria-label={tx('team.teacherApplicationsTitle')}>
+      <div className="kanban-hero team-kanban-hero">
+        <div className="kanban-hero-info">
+          <span className="eyebrow">{tx('team.teacherApplicationsEyebrow')}</span>
+          <h2>{tx('team.teacherApplicationsTitle')}</h2>
+          <p>{tx('team.teacherApplicationsDesc')}</p>
+        </div>
+        <div className="kanban-summary" aria-label={tx('team.studentMetricsLabel')}>
+          <span>
+            <UsersRound size={13} aria-hidden="true" />
+            {format(tx('team.teacherStudentsTitle'), { count: boardData.rows.length })}
+          </span>
+          <span>
+            <LayoutGrid size={13} aria-hidden="true" />
+            {format(tx('kanban.totalCount'), { count: boardData.totalApplications })}
+          </span>
+          <span>
+            <AlertTriangle size={13} aria-hidden="true" />
+            {format(tx('team.teacherWorkbenchRisk'), { count: boardData.attentionApplications })}
+          </span>
+          <span>
+            <CalendarClock size={13} aria-hidden="true" />
+            {format(tx('team.teacherWorkbenchDue'), { count: boardData.dueSoonApplications })}
+          </span>
+        </div>
+      </div>
+
+      {boardData.rows.length === 0 ? (
+        <div className="kanban-empty-state team-kanban-empty-state">
+          <UsersRound size={28} aria-hidden="true" />
+          <div className="kanban-empty-copy">
+            <strong>{tx('team.teacherNoFilteredStudents')}</strong>
+            <span>{tx('team.teacherNoFilteredStudentsDesc')}</span>
+          </div>
+        </div>
+      ) : (
+        <div className="team-kanban-grid">
+          {boardData.rows.map((student) => {
+            const expanded = expandedStudentIds.has(student.id)
+            const visibleApplications = expanded
+              ? student.visibleApplications
+              : student.visibleApplications.slice(0, TEAM_STUDENT_PREVIEW_COUNT)
+            const remainingCount = Math.max(0, student.visibleApplications.length - TEAM_STUDENT_PREVIEW_COUNT)
+            const totalApplications = student.allApplications.length
+            const hasFilteredApplications = student.applications.length !== totalApplications
+
+            return (
+              <article key={student.id} className={`team-kanban-student state-${student.state}`}>
+                <header className="team-kanban-student-header">
+                  <UserAvatar
+                    avatarUrl={student.avatarUrl}
+                    name={student.name}
+                    email={student.email}
+                    className="team-kanban-student-avatar"
+                  />
+                  <span className="team-kanban-student-identity">
+                    <strong>{student.name}</strong>
+                    <em>{format(tx('team.teacherFocusSubtitle'), {
+                      email: student.email || tx('team.noLinkedEmail'),
+                      teacher: student.advisorName || tx('workspace.unassignedAdvisor'),
+                    })}</em>
+                  </span>
+                  <span className="team-kanban-student-actions">
+                    <span className={`team-kanban-state state-${student.state}`}>
+                      {tx(teamStudentStateLabelKey(student.state))}
+                    </span>
+                    {onNewForStudent && student.canCreateApplication !== false ? (
+                      <button
+                        type="button"
+                        className="team-kanban-create-button"
+                        onClick={() => onNewForStudent(student.id)}
+                        title={tx('team.teacherCreateForStudent')}
+                        aria-label={tx('team.teacherCreateForStudent')}
+                      >
+                        <Plus size={13} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                  </span>
+                </header>
+
+                <div className="team-kanban-metrics" aria-label={tx('team.studentMetricsLabel')}>
+                  <span>
+                    <strong>{totalApplications}</strong>
+                    <em>{tx('team.metricApplications')}</em>
+                  </span>
+                  <span>
+                    <strong>{student.averageProgress}%</strong>
+                    <em>{tx('team.metricProgress')}</em>
+                  </span>
+                  <span className={student.attentionCount > 0 ? 'is-attention' : ''}>
+                    <strong>{student.attentionCount}</strong>
+                    <em>{tx('team.metricRisk')}</em>
+                  </span>
+                  <span>
+                    <strong>{student.dueSoonCount}</strong>
+                    <em>{tx('team.metricDue')}</em>
+                  </span>
+                </div>
+
+                <div className="team-kanban-status-overview">
+                  <div className={`team-kanban-status-track${totalApplications === 0 ? ' is-empty' : ''}`} aria-hidden="true">
+                    {kanbanStatusOrder.map((status) => {
+                      const count = student.statusCounts[status]
+                      if (count === 0) return null
+                      return (
+                        <span
+                          key={status}
+                          className={`team-kanban-status-segment ${status.toLowerCase()}`}
+                          style={{ flexGrow: count }}
+                        />
+                      )
+                    })}
+                  </div>
+                  {totalApplications > 0 ? (
+                    <div className="team-kanban-status-legend">
+                      {kanbanStatusOrder.map((status) => {
+                        const count = student.statusCounts[status]
+                        if (count === 0) return null
+                        return (
+                          <span key={status} className={`team-kanban-status-key ${status.toLowerCase()}`}>
+                            <i aria-hidden="true" />
+                            {statusLabel(status, tx)}
+                            <b>{count}</b>
+                          </span>
+                        )
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="team-kanban-application-section">
+                  {hasFilteredApplications ? (
+                    <p className="team-kanban-filter-summary">
+                      {format(tx('team.teacherSelectedStudentAppsDesc'), {
+                        count: student.applications.length,
+                        total: totalApplications,
+                      })}
+                    </p>
+                  ) : null}
+                  {student.visibleApplications.length === 0 ? (
+                    <div className="team-kanban-student-empty">
+                      <GraduationCap size={17} aria-hidden="true" />
+                      <span>
+                        <strong>
+                          {totalApplications === 0
+                            ? tx('team.teacherStudentNoApplications')
+                            : tx('team.teacherStudentNoFilteredApplications')}
+                        </strong>
+                        <em>
+                          {totalApplications === 0
+                            ? tx('team.teacherStudentNoApplicationsDesc')
+                            : tx('team.teacherStudentNoFilteredApplicationsDesc')}
+                        </em>
+                      </span>
+                      {totalApplications === 0 && onNewForStudent && student.canCreateApplication !== false ? (
+                        <button
+                          type="button"
+                          className="quiet-action compact-action"
+                          onClick={() => onNewForStudent(student.id)}
+                        >
+                          <Plus size={12} aria-hidden="true" />
+                          {tx('team.teacherActionCreateFirstCta')}
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="team-kanban-application-list">
+                      {visibleApplications.map((application) => (
+                        <button
+                          key={application.id}
+                          type="button"
+                          className="team-kanban-application-row"
+                          onPointerDown={onPrefetch}
+                          onPointerEnter={onPrefetch}
+                          onFocus={onPrefetch}
+                          onClick={() => onSelect(application.id)}
+                        >
+                          <span className="team-kanban-application-copy">
+                            <strong>{application.school.name}</strong>
+                            <em>{application.program} · {application.professor.english}</em>
+                          </span>
+                          <span className="team-kanban-application-state">
+                            <StatusPill status={application.status} />
+                            <span className="team-kanban-row-meta">
+                              <DeadlineBadge deadline={application.deadline} compact />
+                              <small>{application.progress}%</small>
+                            </span>
+                          </span>
+                          <ArrowRight size={13} aria-hidden="true" />
+                        </button>
+                      ))}
+                      {remainingCount > 0 ? (
+                        <button
+                          type="button"
+                          className="team-kanban-disclosure"
+                          onClick={() => toggleStudent(student.id)}
+                          aria-expanded={expanded}
+                        >
+                          <span>
+                            {expanded
+                              ? tx('explorer.collapseSelected')
+                              : format(tx('kanban.showMore'), { count: remainingCount })}
+                          </span>
+                          <ChevronDown size={13} aria-hidden="true" />
+                        </button>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              </article>
+            )
+          })}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function PersonalKanbanBoard({
   applications,
   onStatusChange,
   onSelect,
@@ -241,7 +601,7 @@ export function KanbanBoard({
       .filter((status) => status !== app.status)
       .map((status) => ({
         id: `move-${status}`,
-        label: format(tx('kanban.moveToStatus'), { status: statusLabel(status, tx) }),
+        label: statusLabel(status, tx),
         icon: <ArrowRight size={14} aria-hidden="true" />,
         onSelect: () => onStatusChange(app.id, status),
       }))
@@ -301,7 +661,16 @@ export function KanbanBoard({
           disabled: !app.professor.email.trim() || !onCopy,
           onSelect: () => onCopy?.(app.professor.email, tx('inspector.copyEmail')),
         },
-        ...statusItems,
+        {
+          id: 'move-to',
+          label: tx('kanban.moveTo'),
+          icon: <ArrowRight size={14} aria-hidden="true" />,
+          submenu: {
+            title: tx('kanban.moveTo'),
+            backLabel: tx('kanban.moveTo'),
+            items: statusItems,
+          },
+        },
         {
           id: 'delete',
           label: tx('explorer.delete'),
@@ -485,4 +854,18 @@ export function KanbanBoard({
       <ExplorerContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} />
     </section>
   )
+}
+
+export function KanbanBoard(props: KanbanBoardProps) {
+  if (props.teamStudents) {
+    return (
+      <TeamStudentKanbanBoard
+        students={props.teamStudents}
+        onSelect={props.onSelect}
+        onPrefetch={props.onPrefetch}
+        onNewForStudent={props.onNewForStudent}
+      />
+    )
+  }
+  return <PersonalKanbanBoard {...props} />
 }

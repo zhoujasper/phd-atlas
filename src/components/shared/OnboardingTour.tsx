@@ -390,7 +390,7 @@ export default function OnboardingTour({
     if (actionAdvanceTimerRef.current) window.clearTimeout(actionAdvanceTimerRef.current)
     if (focusTimerRef.current) window.clearTimeout(focusTimerRef.current)
     setExiting(true)
-    window.setTimeout(onComplete, getMotionDelay(180))
+    window.setTimeout(onComplete, getMotionDelay(150))
   }, [onComplete])
 
   const advance = useCallback(() => {

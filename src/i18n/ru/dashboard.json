@@ -102,6 +102,23 @@
     "discoverSubtitle": "Просматривайте программы PhD и консультантов, ранжируйте их по критериям, импортируйте в приложения и получайте уведомления о совпадениях.",
     "discoverTitle": "Найдите следующую программу",
     "discoverCta": "Открыть Обнаружение",
-    "openDiscover": "Откройте для себя программы"
+    "openDiscover": "Откройте для себя программы",
+    "guidanceTitle": "Моя команда наставников",
+    "guidanceSubtitle": "Назначенные вам контакты в {team}.",
+    "guidanceEmptyTitle": "Контакт наставника пока не назначен.",
+    "guidanceEmptyDesc": "Администратор организации может назначить преподавателя в разделе участников.",
+    "guidanceRoleOwner": "Администратор организации",
+    "guidanceRoleTeacher": "Преподаватель",
+    "guidanceEmail": "Написать {name}",
+    "guidanceEmailShort": "Почта",
+    "guidanceCall": "Позвонить {name}",
+    "guidanceCallShort": "Позвонить",
+    "guidanceWebsite": "Открыть сайт {name}",
+    "guidanceWebsiteShort": "Сайт",
+    "guidanceHideDetails": "Скрыть сведения о {name}",
+    "guidanceShowDetails": "Показать сведения о {name}",
+    "guidanceOffice": "Кабинет",
+    "guidanceAvailability": "Время для связи",
+    "guidanceSupport": "Чем я могу помочь"
   }
 }

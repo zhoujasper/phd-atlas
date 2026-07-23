@@ -1,6 +1,10 @@
 const BUILD_ID = '__PHD_ATLAS_BUILD_ID__'
 const SHELL_CACHE = `phd-atlas-shell-${BUILD_ID}`
 const RUNTIME_CACHE = `phd-atlas-runtime-${BUILD_ID}`
+// This deliberately survives shell-cache upgrades. It prevents a push that
+// was already queued by the provider from appearing after the user opted out.
+const PUSH_PREFERENCE_CACHE = 'phd-atlas-push-preference-v1'
+const PUSH_PREFERENCE_URL = '/__phd-atlas-push-preference__'
 const IS_DEVELOPMENT_WORKER = new URL(self.location.href).searchParams.has('dev')
 const ASSET_MANIFEST_URL = '/asset-manifest.json'
 const MAX_MANIFEST_ASSETS = 600
@@ -122,7 +126,10 @@ self.addEventListener('activate', (event) => {
     await caches.keys()
       .then((keys) => Promise.all(
         keys
-          .filter((key) => key.startsWith('phd-atlas-') && key !== SHELL_CACHE && key !== RUNTIME_CACHE)
+          .filter((key) => key.startsWith('phd-atlas-')
+            && key !== SHELL_CACHE
+            && key !== RUNTIME_CACHE
+            && key !== PUSH_PREFERENCE_CACHE)
           .map((key) => caches.delete(key)),
       ))
       .then(() => self.clients.claim())
@@ -136,7 +143,28 @@ self.addEventListener('message', (event) => {
   if (event.data?.type === 'REQUEST_OFFLINE_SYNC') {
     event.waitUntil(notifyClientsToSync())
   }
+  if (event.data?.type === 'SET_PUSH_NOTIFICATIONS_ENABLED') {
+    event.waitUntil(setPushNotificationsEnabled(event.data.enabled !== false))
+  }
 })
+
+async function setPushNotificationsEnabled(enabled) {
+  const cache = await caches.open(PUSH_PREFERENCE_CACHE)
+  await cache.put(PUSH_PREFERENCE_URL, new Response(JSON.stringify({ enabled: Boolean(enabled) }), {
+    headers: { 'content-type': 'application/json' },
+  }))
+}
+
+async function pushNotificationsEnabled() {
+  const response = await caches.match(PUSH_PREFERENCE_URL)
+  if (!response) return true
+  try {
+    const preference = await response.json()
+    return preference?.enabled !== false
+  } catch {
+    return true
+  }
+}
 
 async function notifyClientsToSync() {
   const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
@@ -159,6 +187,7 @@ function pushDestination(data) {
 }
 
 async function handlePushNotification(notification) {
+  if (!(await pushNotificationsEnabled())) return
   const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
   const visibleClient = clients.find((client) => client.visibilityState === 'visible' && client.focused)
     || clients.find((client) => client.visibilityState === 'visible')

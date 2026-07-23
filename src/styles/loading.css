@@ -59,7 +59,6 @@
 
 .content-flow-enter {
   animation: surface-flow-in var(--duration-page-fast) var(--ease-fluid) both;
-  will-change: transform, opacity;
 }
 
 .launch-screen,

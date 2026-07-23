@@ -11,8 +11,11 @@ import {
   requirementsStats,
 } from './discover-requirements.js'
 import { computeAdvancedDiscoverStats } from './discover-stats.js'
+import { isGenericProgramLabel } from './discover-source-grounding.js'
+import { dedupeDiscoverProgrammeRecords } from './discover-program-identity.js'
 
 const CURRENT_YEAR = new Date().getFullYear()
+export const MAX_DISCOVER_PERSISTED_PROGRAMS = 500
 
 export const DISCOVER_REGIONS = [
   { key: 'US', label: 'United States', short: 'US', color: '#0F4D92', order: 1 },
@@ -23,6 +26,7 @@ export const DISCOVER_REGIONS = [
   { key: 'HK', label: 'Hong Kong', short: 'HK', color: '#3775BA', order: 6 },
   { key: 'CN', label: 'China', short: 'CN', color: '#C2410C', order: 7 },
   { key: 'AU', label: 'Australia', short: 'AU', color: '#059669', order: 8 },
+  { key: 'OTHER', label: 'Global / other regions', short: 'Global', color: '#64748B', order: 9 },
 ]
 
 const INTEREST_AREAS = {
@@ -1028,6 +1032,35 @@ export const DISCOVER_PROGRAMS = [
   },
 ]
 
+const BUILTIN_FIXTURE_PROGRAM_IDS = new Set(DISCOVER_PROGRAMS.map((program) => program.id))
+const BUILTIN_FIXTURE_PI_IDS = new Set(DISCOVER_PROGRAMS.flatMap((program) => (
+  (program.pis || []).map((advisor) => advisor.id)
+)))
+
+/**
+ * The bundled catalogue is a UI/test fixture, never user decision evidence.
+ * Match stable fixture identities and explicit legacy markers rather than
+ * names such as "Example University", which a user could legitimately type.
+ */
+export function isBuiltInDiscoverFixtureProgram(raw) {
+  if (!raw || typeof raw !== 'object') return false
+  if (raw.provenance === 'official_catalog' || raw.catalogSource === 'builtin') return true
+  if (BUILTIN_FIXTURE_PROGRAM_IDS.has(String(raw.id || ''))) return true
+  return (Array.isArray(raw.pis) ? raw.pis : []).some((advisor) => (
+    BUILTIN_FIXTURE_PI_IDS.has(String(advisor?.id || ''))
+  ))
+}
+
+/**
+ * Collapse only strong programme identities. This is intentionally separate
+ * from storage normalization so an explicit user-authored row is never
+ * deleted merely because a verified research row supersedes it in the ranked
+ * decision view.
+ */
+export function dedupeDiscoverDecisionPrograms(programs) {
+  return dedupeDiscoverProgrammeRecords(programs)
+}
+
 export function getDiscoverCatalogMeta() {
   return {
     title: 'PhD Program Discover',
@@ -1115,6 +1148,27 @@ export function normalizeCustomProgram(raw, { source = 'custom' } = {}) {
   const stipendUSD = raw.stipendUSD == null || raw.stipendUSD === ''
     ? null
     : Number(raw.stipendUSD)
+  const inferredProvenance = source === 'ai'
+    || raw.catalogSource === 'ai'
+    || /^suggested_/i.test(id)
+    || /AI[- ](?:suggested|research|catalog)/i.test(`${raw.stipendBasis || ''} ${raw.stipendNotes || ''}`)
+    ? 'ai'
+    : 'manual'
+  const provenance = ['manual', 'ai', 'official_catalog'].includes(raw.provenance)
+    ? raw.provenance
+    : inferredProvenance
+  const rawVerification = raw.verification && typeof raw.verification === 'object' ? raw.verification : {}
+  const verification = {
+    status: ['verified', 'partial', 'unverified'].includes(rawVerification.status)
+      ? rawVerification.status
+      : 'unverified',
+    checkedAt: typeof rawVerification.checkedAt === 'string' ? rawVerification.checkedAt.slice(0, 40) : null,
+    officialSourceCount: clamp(rawVerification.officialSourceCount, 0, 20, 0),
+    advisorSourceCount: clamp(rawVerification.advisorSourceCount, 0, 20, 0),
+    issues: Array.isArray(rawVerification.issues)
+      ? rawVerification.issues.map((item) => String(item || '').slice(0, 240)).filter(Boolean).slice(0, 12)
+      : [],
+  }
   return {
     id,
     region,
@@ -1137,7 +1191,7 @@ export function normalizeCustomProgram(raw, { source = 'custom' } = {}) {
     deadlineAndTests: String(raw.deadlineAndTests || '—').slice(0, 400),
     deadlineIso: /^\d{4}-\d{2}-\d{2}$/.test(String(raw.deadlineIso || ''))
       ? String(raw.deadlineIso)
-      : nextDeadline(12, 15),
+      : '',
     applicationRestrictions: String(raw.applicationRestrictions || '').slice(0, 500),
     researchFocus: String(raw.researchFocus || '').slice(0, 2000),
     wetDryIntegration: String(raw.wetDryIntegration || 'unknown').slice(0, 80),
@@ -1146,6 +1200,38 @@ export function normalizeCustomProgram(raw, { source = 'custom' } = {}) {
     siblingPrograms: String(raw.siblingPrograms || '').slice(0, 300),
     sources: Array.isArray(raw.sources)
       ? raw.sources.map((item) => String(item).slice(0, 500)).filter(Boolean).slice(0, 20)
+      : [],
+    collectedAt: typeof raw.collectedAt === 'string' ? raw.collectedAt.slice(0, 40) : null,
+    tuitionLocal: String(raw.tuitionLocal || '').slice(0, 240),
+    tuitionNotes: String(raw.tuitionNotes || '').slice(0, 1200),
+    rankingYear: Number.isInteger(Number(raw.rankingYear)) ? Number(raw.rankingYear) : null,
+    qsWorldRank: Number.isInteger(Number(raw.qsWorldRank)) ? Number(raw.qsWorldRank) : null,
+    qsSubjectRank: Number.isInteger(Number(raw.qsSubjectRank)) ? Number(raw.qsSubjectRank) : null,
+    qsSubjectName: String(raw.qsSubjectName || '').slice(0, 160),
+    theWorldRank: Number.isInteger(Number(raw.theWorldRank)) ? Number(raw.theWorldRank) : null,
+    theSubjectRank: Number.isInteger(Number(raw.theSubjectRank)) ? Number(raw.theSubjectRank) : null,
+    theSubjectName: String(raw.theSubjectName || '').slice(0, 160),
+    rankingSources: Array.isArray(raw.rankingSources)
+      ? raw.rankingSources.map((item) => String(item).slice(0, 500)).filter((item) => /^https:\/\//i.test(item)).slice(0, 8)
+      : [],
+    factSources: Object.fromEntries([
+      'deadline', 'funding', 'tuition', 'restrictions', 'international',
+      'outcomes', 'admissionsBackgrounds', 'degreeStructure', 'applicationRoute',
+    ].map((key) => {
+      const value = String(raw.factSources?.[key] || '').slice(0, 500)
+      return [key, /^https:\/\//i.test(value) ? value : '']
+    })),
+    scholarships: Array.isArray(raw.scholarships)
+      ? raw.scholarships.map((item) => ({
+          name: String(item?.name || '').slice(0, 240),
+          provider: String(item?.provider || '').slice(0, 240),
+          amount: String(item?.amount || '').slice(0, 200),
+          eligibility: String(item?.eligibility || '').slice(0, 1200),
+          deadline: String(item?.deadline || '').slice(0, 120),
+          url: String(item?.url || '').slice(0, 500),
+          profileFit: String(item?.profileFit || '').slice(0, 1200),
+          verifiedAt: typeof item?.verifiedAt === 'string' ? item.verifiedAt.slice(0, 40) : null,
+        })).filter((item) => item.name && /^https:\/\//i.test(item.url)).slice(0, 12)
       : [],
     tags: Array.isArray(raw.tags)
       ? raw.tags.map((item) => String(item).slice(0, 60)).filter(Boolean).slice(0, 20)
@@ -1157,12 +1243,16 @@ export function normalizeCustomProgram(raw, { source = 'custom' } = {}) {
     colIndex: Math.max(0.4, Math.min(2.5, Number(raw.colIndex) || 1)),
     pis,
     catalogSource: source,
+    provenance,
+    verification,
     requirements: normalizeRequirements(raw.requirements, {
       id,
+      provenance,
+      factSources: raw.factSources,
       multiApply: ['multi', 'single', 'unknown'].includes(raw.multiApply) ? raw.multiApply : 'unknown',
       deadlineIso: /^\d{4}-\d{2}-\d{2}$/.test(String(raw.deadlineIso || ''))
         ? String(raw.deadlineIso)
-        : nextDeadline(12, 15),
+        : '',
       deadlineAndTests: String(raw.deadlineAndTests || ''),
       applicationRestrictions: String(raw.applicationRestrictions || ''),
       applicationRoute: String(raw.applicationRoute || ''),
@@ -1171,11 +1261,12 @@ export function normalizeCustomProgram(raw, { source = 'custom' } = {}) {
   }
 }
 
-export function normalizeCustomPrograms(list, { source = 'custom', max = 80 } = {}) {
+export function normalizeCustomPrograms(list, { source = 'custom', max = 160 } = {}) {
   if (!Array.isArray(list)) return []
   const out = []
   const seen = new Set()
   for (const item of list) {
+    if (isBuiltInDiscoverFixtureProgram(item)) continue
     const program = normalizeCustomProgram(item, { source })
     if (!program || seen.has(program.id)) continue
     seen.add(program.id)
@@ -1207,7 +1298,7 @@ export function getActivePrograms(state = defaultDiscoverState()) {
   const source = ['builtin', 'custom', 'merged'].includes(state.catalogSource)
     ? state.catalogSource
     : 'merged'
-  const custom = normalizeCustomPrograms(state.customPrograms, { source: 'custom' })
+  const custom = normalizeCustomPrograms(state.customPrograms, { source: 'custom', max: MAX_DISCOVER_PERSISTED_PROGRAMS })
   let programs = []
   if (source === 'custom') {
     programs = custom
@@ -1219,6 +1310,24 @@ export function getActivePrograms(state = defaultDiscoverState()) {
     for (const item of custom) map.set(item.id, { ...item, catalogSource: item.catalogSource || 'custom' })
     programs = Array.from(map.values())
   }
+
+  // Once a live official-source run has completed, the research result is a
+  // decision set. Do not let legacy demo rows, imported placeholders, or old
+  // unsourced AI suggestions look like part of that result. They remain stored
+  // (and can be revisited from data management), but are never ranked or shown
+  // as a verified Discover recommendation.
+  if (state.officialResearchOnly) {
+    programs = programs.filter((program) => (
+      program.provenance === 'ai'
+      && !isBuiltInDiscoverFixtureProgram(program)
+      && !isGenericProgramLabel(program.program)
+      && program.sources?.some((sourceUrl) => /^https:\/\//i.test(sourceUrl))
+      && ['verified', 'partial'].includes(program.verification?.status)
+      && Number(program.verification?.officialSourceCount || 0) > 0
+    ))
+  }
+
+  programs = dedupeDiscoverDecisionPrograms(programs)
 
   const enrichments = normalizeAiEnrichments(state.aiEnrichments)
   return attachRequirementsToPrograms(programs).map((program) => {
@@ -1309,7 +1418,7 @@ export function parseCatalogUpload(body) {
 const DEFAULT_INTAKE = {
   field: '',
   subfields: [],
-  regions: ['US', 'UK', 'EU', 'CA'],
+  regions: ['US', 'UK', 'EU', 'CA', 'SG', 'HK', 'CN', 'AU', 'OTHER'],
   stipendFloor: 35000,
   currency: 'USD',
   nPrograms: 20,
@@ -1343,6 +1452,7 @@ export function defaultDiscoverState() {
       seedPrograms: [],
     },
     intakeCompleted: false,
+    deletedProgramIds: [],
     hiddenProgramIds: [],
     hiddenPiIds: [],
     watchedProgramIds: [],
@@ -1353,14 +1463,17 @@ export function defaultDiscoverState() {
     lastResearchAt: null,
     lastMatchIds: [],
     researchRuns: 0,
-    /** builtin | custom | merged */
-    catalogSource: 'merged',
+    /** Built-in rows are UI fixtures only; users start from verified research. */
+    catalogSource: 'custom',
+    officialResearchOnly: true,
     /** User-uploaded / AI-suggested programs (stable ids). */
     customPrograms: [],
     /** AI enrichment overlays keyed by program id. */
     aiEnrichments: {},
     lastAiResearchAt: null,
     preferredAiKeyId: null,
+    preferredAiKeyIds: [],
+    researchJob: null,
   }
 }
 
@@ -1378,6 +1491,285 @@ function clamp(n, min, max, fallback) {
   return Math.max(min, Math.min(max, Math.round(value)))
 }
 
+function normalizeResearchJob(value) {
+  if (!value || typeof value !== 'object') return null
+  const status = ['queued', 'running', 'completed', 'failed'].includes(value.status) ? value.status : null
+  const id = String(value.id || '').trim().slice(0, 100)
+  const queuedAt = typeof value.queuedAt === 'string' ? value.queuedAt.slice(0, 40) : ''
+  if (!status || !id || !queuedAt) return null
+  return {
+    id,
+    status,
+    queuedAt,
+    startedAt: typeof value.startedAt === 'string' ? value.startedAt.slice(0, 40) : null,
+    completedAt: typeof value.completedAt === 'string' ? value.completedAt.slice(0, 40) : null,
+    message: typeof value.message === 'string' ? value.message.slice(0, 600) : null,
+    errorCode: typeof value.errorCode === 'string' ? value.errorCode.slice(0, 80) : null,
+    sourceCount: clamp(value.sourceCount, 0, 500, 0),
+    keyIds: asStringArray(value.keyIds, 12),
+    teamId: typeof value.teamId === 'string' ? value.teamId.slice(0, 128) : null,
+    targetUserId: typeof value.targetUserId === 'string' ? value.targetUserId.slice(0, 128) : null,
+    requestedByUserId: typeof value.requestedByUserId === 'string' ? value.requestedByUserId.slice(0, 128) : null,
+    request: value.request && typeof value.request === 'object' ? {
+      useAi: value.request.useAi !== false,
+      acceptSuggestions: value.request.acceptSuggestions !== false,
+      notify: value.request.notify !== false,
+      keyIds: asStringArray(value.request.keyIds, 12),
+    } : null,
+  }
+}
+
+const DISCOVER_SOURCE_PAGE_TYPES = new Set(['advisor', 'program', 'admissions', 'funding', 'research', 'homepage'])
+const DISCOVER_SOURCE_PAGE_LIMIT = 180
+const DISCOVER_SOURCE_EVIDENCE_TYPES = new Set(['program', 'admissions', 'funding', 'research'])
+const DISCOVER_SOURCE_EVIDENCE_DECLARATIONS = new Set([
+  'advisor',
+  'advisors',
+  'admission',
+  'admissions',
+  'department',
+  'departments',
+  'doctoral',
+  'doctorate',
+  'dphil',
+  'faculty',
+  'funding',
+  'lab',
+  'labs',
+  'laboratory',
+  'phd',
+  'program',
+  'programme',
+  'programs',
+  'programmes',
+  'research',
+])
+
+function normalizeDiscoverSourceUrl(value) {
+  try {
+    const url = new URL(String(value || ''))
+    if (url.protocol !== 'https:') return null
+    url.hash = ''
+    return url.toString().slice(0, 500)
+  } catch {
+    return null
+  }
+}
+
+function normalizeDiscoverSourcePage(value) {
+  if (!value || typeof value !== 'object') return null
+  const url = normalizeDiscoverSourceUrl(value.url)
+  if (!url) return null
+  return {
+    url,
+    title: typeof value.title === 'string' ? value.title.slice(0, 240) : null,
+    label: typeof value.label === 'string' ? value.label.slice(0, 240) : null,
+    types: asStringArray(value.types, 8).filter((type) => DISCOVER_SOURCE_PAGE_TYPES.has(type)),
+    discoveredFrom: asStringArray(value.discoveredFrom, 12)
+      .map(normalizeDiscoverSourceUrl)
+      .filter(Boolean),
+    fetched: Boolean(value.fetched),
+    individualAdvisor: Boolean(value.individualAdvisor),
+    declaredKinds: asStringArray(value.declaredKinds, 8),
+    promptInjectionSuspected: Boolean(value.promptInjectionSuspected),
+  }
+}
+
+function mergeDiscoverSourcePage(left, right) {
+  const mergeStrings = (leftValues, rightValues, max) => (
+    [...new Set([...(leftValues || []), ...(rightValues || [])])].slice(0, max)
+  )
+  return {
+    ...left,
+    title: left.title || right.title,
+    label: left.label || right.label,
+    types: mergeStrings(left.types, right.types, 8),
+    discoveredFrom: mergeStrings(left.discoveredFrom, right.discoveredFrom, 12),
+    fetched: left.fetched || right.fetched,
+    individualAdvisor: left.individualAdvisor || right.individualAdvisor,
+    declaredKinds: mergeStrings(left.declaredKinds, right.declaredKinds, 8),
+    // Contamination is fail-closed across duplicate observations of a URL.
+    promptInjectionSuspected: left.promptInjectionSuspected || right.promptInjectionSuspected,
+  }
+}
+
+function discoverSourcePageRetentionTier(page) {
+  if (!page.fetched) return 0
+  // Keep contaminated fetched pages ahead of unfetched candidates for audit,
+  // but never let their claimed types/declarations earn evidence priority.
+  if (page.promptInjectionSuspected) return 1
+  const declaredEvidence = page.declaredKinds.some((kind) => (
+    DISCOVER_SOURCE_EVIDENCE_DECLARATIONS.has(String(kind || '').trim().toLowerCase())
+  ))
+  if (page.individualAdvisor || declaredEvidence) return 4
+  const typedEvidence = page.types.some((type) => DISCOVER_SOURCE_EVIDENCE_TYPES.has(type))
+  return typedEvidence ? 3 : 2
+}
+
+function normalizeDiscoverSourcePages(values) {
+  const pagesByUrl = new Map()
+  for (const rawPage of Array.isArray(values) ? values : []) {
+    const page = normalizeDiscoverSourcePage(rawPage)
+    if (!page) continue
+    const existing = pagesByUrl.get(page.url)
+    if (existing) {
+      existing.page = mergeDiscoverSourcePage(existing.page, page)
+      continue
+    }
+    pagesByUrl.set(page.url, { page, order: pagesByUrl.size })
+  }
+  return [...pagesByUrl.values()]
+    .sort((left, right) => (
+      discoverSourcePageRetentionTier(right.page) - discoverSourcePageRetentionTier(left.page)
+      || left.order - right.order
+    ))
+    .slice(0, DISCOVER_SOURCE_PAGE_LIMIT)
+    .map(({ page }) => page)
+}
+
+/**
+ * Kept outside the normal Discover state so catalog polling stays light. This
+ * is the durable, exportable JSON index of official site pages found by the
+ * background worker.
+ */
+function normalizeScholarlyEvidence(value) {
+  if (!value || typeof value !== 'object') return null
+  const institutionRaw = value.institution && typeof value.institution === 'object' ? value.institution : null
+  const institution = institutionRaw ? {
+    openAlexId: normalizeDiscoverSourceUrl(institutionRaw.openAlexId),
+    rorId: normalizeDiscoverSourceUrl(institutionRaw.rorId),
+    displayName: String(institutionRaw.displayName || '').slice(0, 220),
+    homepageUrl: normalizeDiscoverSourceUrl(institutionRaw.homepageUrl),
+    domains: Array.isArray(institutionRaw.domains)
+      ? institutionRaw.domains.map((item) => String(item || '').toLowerCase().slice(0, 160)).filter(Boolean).slice(0, 8)
+      : [],
+  } : null
+  const candidateResearchers = []
+  for (const raw of Array.isArray(value.candidateResearchers) ? value.candidateResearchers : []) {
+    if (!raw || typeof raw !== 'object') continue
+    const openAlexId = normalizeDiscoverSourceUrl(raw.openAlexId)
+    const name = String(raw.name || '').trim().slice(0, 180)
+    if (!openAlexId || !name) continue
+    candidateResearchers.push({
+      openAlexId,
+      name,
+      orcid: normalizeDiscoverSourceUrl(raw.orcid),
+      profileUrl: normalizeDiscoverSourceUrl(raw.profileUrl) || openAlexId,
+      score: clamp(raw.score, 0, 100000, 0),
+      matchedQueries: Array.isArray(raw.matchedQueries)
+        ? raw.matchedQueries.map((item) => String(item || '').slice(0, 120)).filter(Boolean).slice(0, 4)
+        : [],
+      recentWorks: (Array.isArray(raw.recentWorks) ? raw.recentWorks : []).map((work) => ({
+        title: String(work?.title || '').slice(0, 300),
+        year: clamp(work?.year, 1900, 2200, 0) || null,
+        citedByCount: clamp(work?.citedByCount, 0, 10000000, 0),
+        source: normalizeDiscoverSourceUrl(work?.source),
+        matchedQuery: String(work?.matchedQuery || '').slice(0, 120),
+      })).filter((work) => work.title && work.source).slice(0, 5),
+    })
+    if (candidateResearchers.length >= 15) break
+  }
+  return {
+    provider: value.provider === 'openalex+ror' ? value.provider : 'openalex+ror',
+    queriedAt: typeof value.queriedAt === 'string' ? value.queriedAt.slice(0, 40) : null,
+    query: String(value.query || '').slice(0, 300),
+    status: value.status === 'ok' ? 'ok' : 'unavailable',
+    error: value.status === 'ok' ? null : String(value.error || '').slice(0, 160),
+    institution,
+    candidateResearchers,
+  }
+}
+
+export function normalizeDiscoverSourceIndex(value) {
+  if (!value || typeof value !== 'object') return null
+  const schools = []
+  for (const rawSchool of Array.isArray(value.schools) ? value.schools : []) {
+    if (!rawSchool || typeof rawSchool !== 'object') continue
+    const officialUrl = normalizeDiscoverSourceUrl(rawSchool.officialUrl)
+    const school = String(rawSchool.school || '').trim().slice(0, 220)
+    if (!officialUrl || !school) continue
+    const pages = normalizeDiscoverSourcePages(rawSchool.pages)
+    const entry = {
+      school,
+      region: String(rawSchool.region || '').slice(0, 32),
+      officialUrl,
+      allowedHosts: (Array.isArray(rawSchool.allowedHosts) ? rawSchool.allowedHosts : [])
+        .map((host) => String(host || '').trim().toLowerCase().replace(/^www\./, ''))
+        .filter((host) => /^[a-z0-9.-]+$/.test(host))
+        .slice(0, 40),
+      collectedAt: typeof rawSchool.collectedAt === 'string' ? rawSchool.collectedAt.slice(0, 40) : null,
+      crawlStatus: ['ok', 'robots', 'blocked', 'unavailable', 'invalid-source'].includes(rawSchool.crawlStatus) ? rawSchool.crawlStatus : 'unavailable',
+      health: rawSchool.health && typeof rawSchool.health === 'object' ? {
+        status: ['ok', 'robots', 'blocked', 'unavailable', 'invalid-source'].includes(rawSchool.health.status)
+          ? rawSchool.health.status
+          : 'unavailable',
+        attemptedAt: typeof rawSchool.health.attemptedAt === 'string' ? rawSchool.health.attemptedAt.slice(0, 40) : null,
+        declaredSeedCount: clamp(rawSchool.health.declaredSeedCount, 0, 40, 0),
+        sitemapCount: clamp(rawSchool.health.sitemapCount, 0, 40, 0),
+        fetchedPageCount: clamp(rawSchool.health.fetchedPageCount, 0, 40, 0),
+        candidatePageCount: clamp(rawSchool.health.candidatePageCount, 0, 500, 0),
+        httpFailures: Array.isArray(rawSchool.health.httpFailures)
+          ? rawSchool.health.httpFailures.map(Number).filter((status) => Number.isInteger(status) && status >= 100 && status <= 599).slice(0, 12)
+          : [],
+      } : null,
+      fetchedPageCount: clamp(rawSchool.fetchedPageCount, 0, 24, 0),
+      candidatePageCount: clamp(rawSchool.candidatePageCount, 0, 180, pages.length),
+      pages,
+      scholarlyEvidence: normalizeScholarlyEvidence(rawSchool.scholarlyEvidence),
+    }
+    for (const type of ['advisor', 'program', 'admissions', 'funding', 'research']) {
+      entry[`${type}Pages`] = pages.filter((page) => page.types.includes(type))
+    }
+    schools.push(entry)
+    if (schools.length >= 250) break
+  }
+  return {
+    schemaVersion: value.schemaVersion === 2 ? 2 : 1,
+    generatedAt: typeof value.generatedAt === 'string' ? value.generatedAt.slice(0, 40) : null,
+    sourceCount: schools.length,
+    schools,
+    adapterCoverage: value.adapterCoverage && typeof value.adapterCoverage === 'object' ? {
+      passed: Boolean(value.adapterCoverage.passed),
+      requiredSchoolCount: clamp(value.adapterCoverage.requiredSchoolCount, 0, 1000, 100),
+      registrySchoolCount: clamp(value.adapterCoverage.registrySchoolCount, 0, 1000, 0),
+      coveredSchoolCount: clamp(value.adapterCoverage.coveredSchoolCount, 0, 1000, 0),
+      fullyTypedSchoolCount: clamp(value.adapterCoverage.fullyTypedSchoolCount, 0, 1000, 0),
+      seedCount: clamp(value.adapterCoverage.seedCount, 0, 100000, 0),
+    } : null,
+    opportunitySources: (Array.isArray(value.opportunitySources) ? value.opportunitySources : [])
+      .map((source) => ({
+        name: String(source?.name || '').slice(0, 160),
+        url: normalizeDiscoverSourceUrl(source?.url),
+        authority: 'lead-only',
+        status: ['ok', 'partial', 'blocked', 'unavailable', 'robots', 'invalid-source'].includes(source?.status) ? source.status : 'unavailable',
+        checkedAt: typeof source?.checkedAt === 'string' ? source.checkedAt.slice(0, 40) : null,
+        fetchedPageCount: clamp(source?.fetchedPageCount, 0, 40, 0),
+        candidatePageCount: clamp(source?.candidatePageCount, 0, 500, 0),
+        httpFailures: Array.isArray(source?.httpFailures)
+          ? source.httpFailures.map(Number).filter((status) => Number.isInteger(status) && status >= 100 && status <= 599).slice(0, 12)
+          : [],
+      }))
+      .filter((source) => source.name && source.url)
+      .slice(0, 40),
+    quality: value.quality && typeof value.quality === 'object' ? {
+      passed: Boolean(value.quality.passed),
+      coveragePassed: value.quality.coveragePassed !== false,
+      checkedAt: typeof value.quality.checkedAt === 'string' ? value.quality.checkedAt.slice(0, 40) : null,
+      failures: asStringArray(value.quality.failures, 12),
+      warnings: asStringArray(value.quality.warnings, 12),
+      successfulSchoolCrawls: clamp(value.quality.successfulSchoolCrawls, 0, 500, 0),
+      indexedAdvisorPages: clamp(value.quality.indexedAdvisorPages, 0, 100000, 0),
+      aiProgramCount: clamp(value.quality.aiProgramCount, 0, 1000, 0),
+      sourcedProgramCount: clamp(value.quality.sourcedProgramCount, 0, 1000, 0),
+      officialProgramCoverage: clamp(value.quality.officialProgramCoverage, 0, 1, 0),
+      crossSchoolSourceViolations: clamp(value.quality.crossSchoolSourceViolations, 0, 100000, 0),
+      genericProgramRows: clamp(value.quality.genericProgramRows, 0, 1000, 0),
+      verifiedAdvisorProfiles: clamp(value.quality.verifiedAdvisorProfiles, 0, 100000, 0),
+      scholarlyInstitutionsResolved: clamp(value.quality.scholarlyInstitutionsResolved, 0, 500, 0),
+    } : null,
+  }
+}
+
 export function normalizeDiscoverState(raw) {
   const base = defaultDiscoverState()
   if (!raw || typeof raw !== 'object') return base
@@ -1386,6 +1778,30 @@ export function normalizeDiscoverState(raw) {
   const rising = ['strong', 'moderate', 'neutral'].includes(intakeRaw.risingStarBias)
     ? intakeRaw.risingStarBias
     : base.intake.risingStarBias
+  const hasLiveResearch = Number(raw.researchRuns || 0) > 0 || Boolean(raw.researchJob)
+  const deletedProgramIds = asStringArray(raw.deletedProgramIds, 500)
+  const deletedProgramIdSet = new Set(deletedProgramIds)
+  const normalizedCustomPrograms = normalizeCustomPrograms(raw.customPrograms, { max: MAX_DISCOVER_PERSISTED_PROGRAMS })
+  const durablePrograms = hasLiveResearch
+    ? normalizedCustomPrograms.filter((program) => (
+        program.provenance !== 'ai'
+        || (
+          !isGenericProgramLabel(program.program)
+          && program.sources?.some((sourceUrl) => /^https:\/\//i.test(sourceUrl))
+          && ['verified', 'partial'].includes(program.verification?.status)
+          && Number(program.verification?.officialSourceCount || 0) > 0
+        )
+      ))
+    : normalizedCustomPrograms
+  const durableCustomPrograms = [
+    ...dedupeDiscoverDecisionPrograms(durablePrograms.filter((program) => (
+      program.provenance === 'ai' && !deletedProgramIdSet.has(program.id)
+    ))),
+    ...durablePrograms.filter((program) => program.provenance !== 'ai' && !deletedProgramIdSet.has(program.id)),
+  ]
+    .sort((left, right) => String(right.collectedAt || right.verification?.checkedAt || '')
+      .localeCompare(String(left.collectedAt || left.verification?.checkedAt || '')))
+    .slice(0, MAX_DISCOVER_PERSISTED_PROGRAMS)
 
   return {
     version: 1,
@@ -1395,7 +1811,7 @@ export function normalizeDiscoverState(raw) {
       regions: asStringArray(intakeRaw.regions, 12),
       stipendFloor: clamp(intakeRaw.stipendFloor, 0, 200000, base.intake.stipendFloor),
       currency: String(intakeRaw.currency ?? 'USD').slice(0, 8) || 'USD',
-      nPrograms: clamp(intakeRaw.nPrograms, 5, 50, base.intake.nPrograms),
+      nPrograms: clamp(intakeRaw.nPrograms, 5, 120, base.intake.nPrograms),
       nPisPerProgram: clamp(intakeRaw.nPisPerProgram, 1, 20, base.intake.nPisPerProgram),
       piPreferences: asStringArray(intakeRaw.piPreferences, 12),
       risingStarBias: rising,
@@ -1407,6 +1823,7 @@ export function normalizeDiscoverState(raw) {
       seedPrograms: asStringArray(intakeRaw.seedPrograms, 30),
     },
     intakeCompleted: Boolean(raw.intakeCompleted),
+    deletedProgramIds,
     hiddenProgramIds: asStringArray(raw.hiddenProgramIds, 200),
     hiddenPiIds: asStringArray(raw.hiddenPiIds, 400),
     watchedProgramIds: asStringArray(raw.watchedProgramIds, 200),
@@ -1423,13 +1840,19 @@ export function normalizeDiscoverState(raw) {
     lastResearchAt: typeof raw.lastResearchAt === 'string' ? raw.lastResearchAt : null,
     lastMatchIds: asStringArray(raw.lastMatchIds, 50),
     researchRuns: clamp(raw.researchRuns, 0, 100000, 0),
-    catalogSource: ['builtin', 'custom', 'merged'].includes(raw.catalogSource)
-      ? raw.catalogSource
-      : base.catalogSource,
-    customPrograms: normalizeCustomPrograms(raw.customPrograms),
+    // Built-in rows are design fixtures, not decision evidence. Once a user has
+    // attempted live research, migrate the visible catalog to evidence-only
+    // custom rows so sample programs and "Example" advisors cannot reappear.
+    // Never expose the legacy sample catalogue or its "Example" advisors as
+    // decision data. The empty state remains until official-source rows exist.
+    catalogSource: 'custom',
+    officialResearchOnly: true,
+    customPrograms: durableCustomPrograms,
     aiEnrichments: normalizeAiEnrichments(raw.aiEnrichments),
     lastAiResearchAt: typeof raw.lastAiResearchAt === 'string' ? raw.lastAiResearchAt : null,
     preferredAiKeyId: typeof raw.preferredAiKeyId === 'string' ? raw.preferredAiKeyId.slice(0, 80) : null,
+    preferredAiKeyIds: asStringArray(raw.preferredAiKeyIds, 12),
+    researchJob: normalizeResearchJob(raw.researchJob),
   }
 }
 
@@ -1445,13 +1868,84 @@ function normalizeNotesMap(value, maxEntries) {
 }
 
 export function getUserDiscoverState(user) {
-  return normalizeDiscoverState(user?.settings?.discover)
+  const hasPersistedDiscover = Boolean(user?.settings?.discover && typeof user.settings.discover === 'object')
+  const state = normalizeDiscoverState(user?.settings?.discover)
+  return hasPersistedDiscover ? state : normalizeDiscoverState({
+    ...state,
+    catalogSource: 'custom',
+    officialResearchOnly: true,
+  })
 }
 
 export function setUserDiscoverState(user, nextState) {
   if (!user.settings || typeof user.settings !== 'object') user.settings = {}
   user.settings.discover = normalizeDiscoverState(nextState)
   return user.settings.discover
+}
+
+export function getUserDiscoverSourceIndex(user) {
+  return normalizeDiscoverSourceIndex(user?.settings?.discoverSourceIndex)
+}
+
+export function setUserDiscoverSourceIndex(user, index) {
+  if (!user.settings || typeof user.settings !== 'object') user.settings = {}
+  user.settings.discoverSourceIndex = normalizeDiscoverSourceIndex(index)
+  return user.settings.discoverSourceIndex
+}
+
+function mergeDiscoverSourcePages(current, previous) {
+  const merged = new Map()
+  for (const page of [...(current || []), ...(previous || [])]) {
+    if (!page?.url || merged.has(page.url)) continue
+    merged.set(page.url, page)
+  }
+  return [...merged.values()]
+}
+
+/**
+ * Keeps prior fetched evidence available when a new bounded run checks a
+ * different university slice. Current observations win for duplicate pages;
+ * older clean pages remain so retained results still resolve after restart.
+ */
+export function mergeDiscoverSourceIndexes(previousValue, currentValue) {
+  const previous = normalizeDiscoverSourceIndex(previousValue)
+  const current = normalizeDiscoverSourceIndex(currentValue)
+  if (!previous.schools.length) return current
+  if (!current.schools.length) return previous
+
+  const previousBySchool = new Map(previous.schools.map((school) => [school.school.toLowerCase(), school]))
+  const currentSchoolKeys = new Set(current.schools.map((school) => school.school.toLowerCase()))
+  const schools = current.schools.map((school) => {
+    const prior = previousBySchool.get(school.school.toLowerCase())
+    if (!prior) return school
+    return {
+      ...prior,
+      ...school,
+      allowedHosts: [...new Set([...(school.allowedHosts || []), ...(prior.allowedHosts || [])])],
+      pages: mergeDiscoverSourcePages(school.pages, prior.pages),
+      advisorPages: mergeDiscoverSourcePages(school.advisorPages, prior.advisorPages),
+      programPages: mergeDiscoverSourcePages(school.programPages, prior.programPages),
+      admissionsPages: mergeDiscoverSourcePages(school.admissionsPages, prior.admissionsPages),
+      fundingPages: mergeDiscoverSourcePages(school.fundingPages, prior.fundingPages),
+      researchPages: mergeDiscoverSourcePages(school.researchPages, prior.researchPages),
+      scholarlyEvidence: school.scholarlyEvidence || prior.scholarlyEvidence || null,
+    }
+  })
+  for (const school of previous.schools) {
+    if (!currentSchoolKeys.has(school.school.toLowerCase())) schools.push(school)
+  }
+
+  return normalizeDiscoverSourceIndex({
+    ...previous,
+    ...current,
+    generatedAt: current.generatedAt || previous.generatedAt,
+    schools,
+    adapterCoverage: current.adapterCoverage || previous.adapterCoverage,
+    opportunitySources: current.opportunitySources?.length
+      ? current.opportunitySources
+      : previous.opportunitySources,
+    quality: current.quality || previous.quality,
+  })
 }
 
 function textBlob(program) {
@@ -1740,7 +2234,7 @@ export function buildImportPayload(program, pi, { includeNotes = true, programNo
   const enriched = attachRequirements(program)
   const req = enriched.requirements
   const primary = (req?.deadlines || []).find((d) => d.date) || req?.deadlines?.[0]
-  const deadline = primary?.date || program.deadlineIso || nextDeadline(12, 15)
+  const deadline = primary?.date || program.deadlineIso || ''
   const researchParts = [
     program.researchFocus,
     pi?.research,
@@ -1763,6 +2257,11 @@ export function buildImportPayload(program, pi, { includeNotes = true, programNo
     req?.restrictions?.summary || program.applicationRestrictions,
     req?.route?.label ? `Route: ${req.route.label}` : program.applicationRoute,
     program.stipendLocal,
+    program.tuitionLocal ? `Tuition: ${program.tuitionLocal}` : '',
+    program.qsWorldRank ? `QS world rank: ${program.qsWorldRank}${program.rankingYear ? ` (${program.rankingYear})` : ''}` : '',
+    program.qsSubjectRank ? `QS subject rank: ${program.qsSubjectRank} · ${program.qsSubjectName || ''}` : '',
+    program.theWorldRank ? `THE world rank: ${program.theWorldRank}${program.rankingYear ? ` (${program.rankingYear})` : ''}` : '',
+    ...(program.scholarships || []).map((item) => `Scholarship: ${item.name} · ${item.amount || 'amount not stated'} · ${item.url}`),
     program.intlNotes,
     materialLines ? `Materials:\n${materialLines}` : '',
     testLines ? `Tests:\n${testLines}` : '',
@@ -1775,7 +2274,7 @@ export function buildImportPayload(program, pi, { includeNotes = true, programNo
   return {
     professor: professorName,
     professorChinese: '',
-    professorEmail: (pi?.email && pi.email.includes('@')) ? pi.email : `admissions+${program.id}@example.edu`,
+    professorEmail: (pi?.email && pi.email.includes('@')) ? pi.email : '',
     professorHomepage: pi?.url || program.website || '',
     university: program.school,
     country: program.country || 'United States',
@@ -1933,7 +2432,7 @@ export function buildAiResearchPrompt(state, ranked) {
   }
 }
 
-export function parseAiResearchResponse(text, ranked) {
+export function parseAiResearchResponse(text, ranked, { verified = false } = {}) {
   const cleaned = String(text || '')
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/i, '')
@@ -1975,12 +2474,13 @@ export function parseAiResearchResponse(text, ranked) {
   const suggestedPrograms = normalizeCustomPrograms(
     (parsed.suggestedPrograms || []).map((item) => ({
       ...item,
-      stipendConfidence: 'unknown',
-      stipendFoundOfficial: false,
-      stipendNotes: item?.stipendNotes || 'AI-suggested — verify all numbers on official pages.',
-      stipendBasis: item?.stipendBasis || 'AI research suggestion (unverified)',
+      collectedAt: item?.collectedAt || now,
+      stipendConfidence: verified ? item?.stipendConfidence : 'unknown',
+      stipendFoundOfficial: verified ? Boolean(item?.stipendFoundOfficial) : false,
+      stipendNotes: item?.stipendNotes || (verified ? 'Checked against the cited official source.' : 'AI-suggested — verify all numbers on official pages.'),
+      stipendBasis: item?.stipendBasis || (verified ? 'Official-source research' : 'AI research suggestion (unverified)'),
     })),
-    { source: 'ai', max: 3 },
+    { source: 'ai', max: 120 },
   )
 
   return {

@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { NotificationRecord } from '../../api/phdApi'
@@ -117,7 +117,7 @@ describe('NotificationCenter', () => {
     expect(handlers.onMarkRead).toHaveBeenCalledWith(['notif_unread'])
   })
 
-  it('plays a clear cascade before committing mark all as read', async () => {
+  it('plays a lightweight clear transition before committing mark all as read', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     const handlers = renderNotificationCenter()
@@ -130,9 +130,75 @@ describe('NotificationCenter', () => {
     expect(document.querySelector('.notification-center-dot.is-clearing')).not.toBeNull()
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(800)
+      await vi.advanceTimersByTimeAsync(320)
     })
     expect(handlers.onMarkAllRead).toHaveBeenCalledTimes(1)
+  })
+
+  it('enters bulk mode from Ctrl/Cmd selection without opening the notification', () => {
+    const handlers = renderNotificationCenter()
+    const item = screen.getByRole('button', { name: 'View details for Task due: Submit statement' })
+
+    fireEvent.click(item, { ctrlKey: true })
+
+    expect(screen.getByRole('button', { name: 'Done' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByLabelText('Select Task due: Submit statement')).toBeChecked()
+    expect(document.querySelector('.notification-center-selection-presence')).toHaveAttribute('data-present', 'true')
+    expect(handlers.onMarkRead).not.toHaveBeenCalled()
+  })
+
+  it('uses Shift to select the visible range from the latest bulk-selection anchor', () => {
+    renderNotificationCenter()
+    const first = screen.getByRole('button', { name: 'View details for Task due: Submit statement' })
+    const last = screen.getByRole('button', { name: 'View details for Maintenance window' })
+
+    fireEvent.click(first, { ctrlKey: true })
+    fireEvent.click(last, { shiftKey: true })
+
+    expect(screen.getByLabelText('Select Task due: Submit statement')).toBeChecked()
+    expect(screen.getByLabelText('Select New email from Professor Lee')).toBeChecked()
+    expect(screen.getByLabelText('Select Maintenance window')).toBeChecked()
+  })
+
+  it('opens bulk actions from the right-click menu for selected notifications', () => {
+    const handlers = renderNotificationCenter()
+    const unread = screen.getByRole('button', { name: 'View details for Task due: Submit statement' })
+    const read = screen.getByRole('button', { name: 'View details for New email from Professor Lee' })
+
+    fireEvent.click(unread, { ctrlKey: true })
+    fireEvent.click(read, { ctrlKey: true })
+    fireEvent.contextMenu(unread, { clientX: 220, clientY: 180 })
+
+    expect(screen.getByRole('menu', { name: '2 selected' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Mark read' })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: 'Mark unread' })).toBeEnabled()
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }))
+    expect(handlers.onArchive).toHaveBeenCalledWith(['notif_unread', 'notif_read'])
+  })
+
+  it('keeps the bulk right-click menu scoped to selected notifications', () => {
+    renderNotificationCenter()
+    const selected = screen.getByRole('button', { name: 'View details for Task due: Submit statement' })
+    const unselected = screen.getByRole('button', { name: 'View details for New email from Professor Lee' })
+
+    fireEvent.click(selected, { ctrlKey: true })
+    fireEvent.contextMenu(unselected, { clientX: 220, clientY: 180 })
+
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('closes the bulk context menu before closing the notification center on Escape', () => {
+    vi.useFakeTimers()
+    const handlers = renderNotificationCenter()
+    const selected = screen.getByRole('button', { name: 'View details for Task due: Submit statement' })
+
+    fireEvent.click(selected, { ctrlKey: true })
+    fireEvent.contextMenu(selected, { clientX: 220, clientY: 180 })
+    fireEvent.keyDown(document, { key: 'Escape' })
+    vi.advanceTimersByTime(240)
+
+    expect(handlers.onClose).not.toHaveBeenCalled()
   })
 
   it('marks selected read notifications as unread', async () => {
@@ -153,8 +219,10 @@ describe('NotificationCenter', () => {
     const presence = document.querySelector('.notification-center-selection-presence')
     expect(presence).toHaveAttribute('data-present', 'false')
     expect(presence).toHaveAttribute('inert')
+    expect(presence).toHaveClass('inline-presence-instant')
 
     await user.click(screen.getByRole('button', { name: 'Manage' }))
+    expect(screen.getByRole('button', { name: 'Done' }).querySelectorAll('.inline-presence-instant')).toHaveLength(2)
     await user.click(screen.getByLabelText('Select Task due: Submit statement'))
 
     expect(presence).toHaveAttribute('data-present', 'true')

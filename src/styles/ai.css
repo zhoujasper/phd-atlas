@@ -715,21 +715,21 @@
   max-width: 100%;
 }
 
-.ai-key-save-action,
-.ai-key-test-action {
-  min-height: 34px;
-  padding: 0 12px;
+.ai-key-form-actions > :is(.ai-key-save-action, .ai-key-test-action, .quiet-action) {
+  min-height: 30px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
 }
 
-.settings-lines button.ai-key-save-action,
-.settings-lines button.ai-key-test-action {
-  min-height: 34px !important;
-  height: auto !important;
+.settings-lines .ai-key-form-actions > :is(.ai-key-save-action, .ai-key-test-action, .quiet-action) {
+  min-height: 28px !important;
+  height: 28px !important;
   width: auto !important;
   max-width: 100%;
-  padding: 0 12px !important;
-  border-radius: var(--radius) !important;
+  padding: 0 10px !important;
+  border-radius: var(--radius-sm) !important;
   font-size: 12px !important;
   flex: 0 0 auto !important;
 }
@@ -1135,12 +1135,14 @@
 }
 
 .draft-composer .ai-draft-panel.open {
-  max-height: 1280px;
+  max-height: min(1800px, calc(100dvh - 112px));
   margin-left: 14px;
   border-left-color: var(--border);
   opacity: 1;
   pointer-events: auto;
   transform: translateX(0);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .ai-draft-head {
@@ -1402,6 +1404,298 @@
   font-weight: 600;
 }
 
+.ai-draft-grant-stack {
+  min-width: 0;
+}
+
+.ai-draft-grant-stack.expanded {
+  background: color-mix(in srgb, var(--accent) 3%, transparent);
+}
+
+.ai-draft-grant-stack .ai-draft-grant {
+  padding-right: 1px;
+}
+
+.ai-draft-grant em {
+  width: fit-content;
+  color: var(--accent);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.ai-profile-material-collapse,
+.ai-draft-extra-list-collapse {
+  width: 100%;
+  --collapsible-panel-y: -3px;
+}
+
+.ai-profile-material-picker {
+  display: grid;
+  gap: 8px;
+  padding: 0 0 10px 10px;
+}
+
+.ai-profile-material-picker-head,
+.ai-draft-section-head {
+  display: grid;
+  gap: 3px;
+}
+
+.ai-profile-material-picker-head > span,
+.ai-draft-section-head > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.ai-profile-material-picker-head small,
+.ai-draft-section-head small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.38;
+}
+
+.ai-profile-material-list,
+.ai-output-attachment-list {
+  display: grid;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.ai-profile-material-list {
+  max-height: 188px;
+}
+
+.ai-profile-material {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 42px;
+  padding: 7px 8px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.ai-profile-material + .ai-profile-material {
+  border-top: 1px solid var(--border);
+}
+
+.ai-profile-material:hover {
+  background: var(--surface-secondary);
+  color: var(--text);
+}
+
+.ai-profile-material.selected {
+  background: var(--accent-soft);
+}
+
+.ai-profile-material input,
+.ai-output-attachment input {
+  accent-color: var(--accent);
+}
+
+.ai-profile-material > span {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.ai-profile-material strong,
+.ai-profile-material small,
+.ai-output-attachment > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-profile-material strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ai-profile-material small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.ai-profile-material em {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.ai-profile-material-empty,
+.ai-output-attachment-empty {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.42;
+}
+
+.ai-draft-extra-attachments,
+.ai-draft-output-attachments {
+  display: grid;
+  gap: 8px;
+  margin: 14px 12px 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.ai-draft-extra-dropzone .file-dropzone {
+  min-height: 52px;
+  padding: 7px 8px;
+}
+
+.ai-draft-extra-dropzone .file-dropzone-copy > span,
+.ai-draft-extra-dropzone .file-dropzone-copy > small {
+  display: none;
+}
+
+.ai-draft-extra-dropzone .file-dropzone-browse {
+  padding: 4px 6px;
+  font-size: 10px;
+}
+
+.ai-draft-extra-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.ai-draft-extra-file {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  gap: 4px;
+  min-height: 26px;
+  padding: 3px 5px 3px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-tertiary);
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.ai-draft-extra-file > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-draft-extra-file button {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), transform var(--duration-press) var(--ease-out);
+}
+
+.ai-draft-extra-file button:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--danger);
+}
+
+.ai-draft-extra-file button:active:not(:disabled) {
+  transform: scale(var(--press-scale));
+}
+
+.ai-output-attachment-list {
+  max-height: 216px;
+}
+
+.ai-output-attachment-group {
+  display: grid;
+}
+
+.ai-output-attachment-group + .ai-output-attachment-group {
+  border-top: 1px solid var(--border);
+}
+
+.ai-output-attachment-group > span {
+  padding: 7px 8px 4px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ai-output-attachment {
+  display: grid;
+  grid-template-columns: auto 12px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-height: 31px;
+  padding: 5px 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.ai-output-attachment:hover {
+  background: var(--surface-secondary);
+  color: var(--text);
+}
+
+.ai-output-attachment.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.composer-ai-writing-slot {
+  display: block;
+  --inline-presence-width: 100%;
+}
+
+.composer-ai-writing-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 1px 0 -2px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.composer-ai-writing-status > i {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.composer-ai-writing-status > i i {
+  width: 3px;
+  height: 3px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+  animation: ai-thinking 850ms var(--ease-out) infinite alternate;
+}
+
+.composer-ai-writing-status > i i:nth-child(2) { animation-delay: 140ms; }
+.composer-ai-writing-status > i i:nth-child(3) { animation-delay: 280ms; }
+
+.tag-chip.ai-tool-attached {
+  animation: composer-ai-attachment-arrive var(--duration) var(--ease-spring) both;
+}
+
 .ai-draft-attachment-list {
   display: grid;
   margin-top: 7px;
@@ -1560,6 +1854,18 @@
   to { transform: translateY(-2px); opacity: 1; }
 }
 
+@keyframes composer-ai-attachment-arrive {
+  from {
+    transform: translateY(4px) scale(0.94);
+    opacity: 0;
+    background: var(--accent-soft);
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
 @media (max-width: 1120px) {
   .draft-composer.ai-inspector-open .draft-composer-workspace {
     grid-template-columns: 1fr;
@@ -1576,6 +1882,13 @@
   .composer-ai-trigger { font-size: 0; width: 28px; padding: 0; justify-content: center; }
   .composer-ai-trigger svg { width: 14px; height: 14px; }
   .correspondence-ai-reply-btn { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tag-chip.ai-tool-attached,
+  .composer-ai-writing-status > i i {
+    animation-duration: 0.01ms;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -25,7 +25,7 @@ import {
   X,
 } from 'lucide-react'
 import { UserAvatar } from './UserAvatar'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import type { NotificationRecord, NotificationType, TeamMember, TeamRole } from '../../api/phdApi'
 import { relativeTime } from '../../appModel'
 import type { ApplicationRecord } from '../../data/applications'
@@ -37,6 +37,7 @@ import { useModalA11y } from '../hooks/useModalA11y'
 import { ModalPortal } from './ModalPortal'
 import { Skeleton } from './Skeleton'
 import { InlinePresence } from './InlinePresence'
+import { ExplorerContextMenu, type ExplorerContextMenuState } from './ExplorerContextMenu'
 
 type Tx = (path: string, fallback?: string) => string
 type Format = (template: string, values: Record<string, string | number>) => string
@@ -60,6 +61,8 @@ const NOTIFICATION_ICONS: Record<NotificationType, typeof Bell> = {
   push_test: Bell,
   discover_match: Compass,
   discover_deadline: Calendar,
+  discover_research_complete: Compass,
+  discover_research_failed: Compass,
 }
 
 const TEAM_NOTIFICATION_TYPES = new Set<NotificationType>([
@@ -630,9 +633,8 @@ function prefersReducedMotion() {
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
-const MARK_ALL_CLEAR_STAGGER_MS = 28
-const MARK_ALL_CLEAR_ROW_MS = 420
-const MARK_ALL_CLEAR_BUFFER_MS = 24
+const MARK_ALL_CLEAR_ROW_MS = 220
+const MARK_ALL_CLEAR_BUFFER_MS = 20
 
 export function NotificationCenter({
   open,
@@ -666,10 +668,12 @@ export function NotificationCenter({
   const jumpTimerRef = useRef<number | null>(null)
   const markAllClearTimerRef = useRef<number | null>(null)
   const markAllSettleFrameRef = useRef<number | null>(null)
+  const selectionAnchorIdRef = useRef<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [activeId, setActiveId] = useState<string | null>(null)
   const [filter, setFilter] = useState<'all' | 'unread' | 'archived'>('all')
   const [editing, setEditing] = useState(false)
+  const [selectionContextMenu, setSelectionContextMenu] = useState<ExplorerContextMenuState | null>(null)
   const [isCompactViewport, setIsCompactViewport] = useState(isCompactNotificationViewport)
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false)
   const [exiting, setExiting] = useState(false)
@@ -693,7 +697,15 @@ export function NotificationCenter({
     }, getMotionDelay(120))
   }, [onClose])
 
-  const dialogRef = useModalA11y<HTMLElement>({ open, onClose: requestClose })
+  const requestModalClose = useCallback(() => {
+    if (selectionContextMenu) {
+      setSelectionContextMenu(null)
+      return
+    }
+    requestClose()
+  }, [requestClose, selectionContextMenu])
+
+  const dialogRef = useModalA11y<HTMLElement>({ open, onClose: requestModalClose })
   const hasUnread = notifications.some((item) => !item.readAt && !item.archivedAt)
   const unreadCount = notifications.filter((item) => !item.readAt && !item.archivedAt).length
   const filteredNotifications = useMemo(
@@ -727,15 +739,15 @@ export function NotificationCenter({
     : null
 
   useEffect(() => {
+    const dialogHeightAnimation = dialogHeightAnimationRef.current
     return () => {
       if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current)
       if (jumpTimerRef.current !== null) window.clearTimeout(jumpTimerRef.current)
       if (markAllClearTimerRef.current !== null) window.clearTimeout(markAllClearTimerRef.current)
       if (markAllSettleFrameRef.current !== null) window.cancelAnimationFrame(markAllSettleFrameRef.current)
-      const animation = dialogHeightAnimationRef.current
-      if (animation.frame !== null) window.cancelAnimationFrame(animation.frame)
-      if (animation.timeout !== null) window.clearTimeout(animation.timeout)
-      animation.removeTransitionEnd?.()
+      if (dialogHeightAnimation.frame !== null) window.cancelAnimationFrame(dialogHeightAnimation.frame)
+      if (dialogHeightAnimation.timeout !== null) window.clearTimeout(dialogHeightAnimation.timeout)
+      dialogHeightAnimation.removeTransitionEnd?.()
     }
   }, [])
 
@@ -757,24 +769,14 @@ export function NotificationCenter({
 
   useEffect(() => {
     if (!open) return
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        requestClose()
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [open, requestClose])
-
-  useEffect(() => {
-    if (!open) return
     setExiting(false)
     setJumpingId(null)
     setFilter('all')
     setEditing(false)
+    setSelectionContextMenu(null)
     setMobileDetailOpen(false)
     setSelectedIds(new Set())
+    selectionAnchorIdRef.current = null
     setClearingUnreadIds(new Set())
     setClearingAllUnread(false)
     if (markAllClearTimerRef.current !== null) {
@@ -807,6 +809,10 @@ export function NotificationCenter({
       return changed ? next : current
     })
   }, [visibleIds])
+
+  useEffect(() => {
+    if (!editing || selectedCount === 0) setSelectionContextMenu(null)
+  }, [editing, selectedCount])
 
   useLayoutEffect(() => {
     if (!open) {
@@ -858,7 +864,7 @@ export function NotificationCenter({
       dialog.style.height = `${targetHeight}px`
     })
     animation.timeout = window.setTimeout(settle, 360)
-  }, [dialogRef, editing, filter, filteredNotifications.length, loading, mobileDetailOpen, open, selectedCount, unreadCount])
+  }, [dialogRef, filter, filteredNotifications.length, loading, mobileDetailOpen, open])
 
   const runMarkAllRead = useCallback(() => {
     if (clearingAllUnread) return
@@ -871,44 +877,63 @@ export function NotificationCenter({
     if (prefersReducedMotion()) {
       onMarkAllRead()
       setSelectedIds(new Set())
+      selectionAnchorIdRef.current = null
       return
     }
 
-    // Finish the full cascade before the optimistic parent update. The local
-    // clearing state survives one painted frame after that update, so removing
-    // the unread dot and collapsing the toolbar cannot create a final snap.
+    // Keep a short, compositor-friendly acknowledgement before the optimistic
+    // update. Avoiding per-row height interpolation prevents long lists from
+    // repeatedly reflowing while their unread state is cleared.
     setClearingAllUnread(true)
     setClearingUnreadIds(new Set(unreadIds))
     setSelectedIds(new Set())
+    selectionAnchorIdRef.current = null
 
-    const staggerTail = Math.min(Math.max(unreadIds.length - 1, 0), 8) * MARK_ALL_CLEAR_STAGGER_MS
-    const delay = MARK_ALL_CLEAR_ROW_MS + MARK_ALL_CLEAR_BUFFER_MS + staggerTail
+    const delay = MARK_ALL_CLEAR_ROW_MS + MARK_ALL_CLEAR_BUFFER_MS
     if (markAllClearTimerRef.current !== null) window.clearTimeout(markAllClearTimerRef.current)
     markAllClearTimerRef.current = window.setTimeout(() => {
       markAllClearTimerRef.current = null
       onMarkAllRead()
       markAllSettleFrameRef.current = window.requestAnimationFrame(() => {
-        markAllSettleFrameRef.current = window.requestAnimationFrame(() => {
-          markAllSettleFrameRef.current = null
-          setClearingUnreadIds(new Set())
-          setClearingAllUnread(false)
-        })
+        markAllSettleFrameRef.current = null
+        setClearingUnreadIds(new Set())
+        setClearingAllUnread(false)
       })
     }, delay)
   }, [clearingAllUnread, notifications, onMarkAllRead])
 
   if (!open) return null
 
-  const toggleSelection = (id: string) => {
+  const selectNotification = (
+    id: string,
+    { shift = false, additive = false }: { shift?: boolean; additive?: boolean } = {},
+  ) => {
+    const anchorId = selectionAnchorIdRef.current
+    const anchorIndex = anchorId ? visibleIds.indexOf(anchorId) : -1
+    const targetIndex = visibleIds.indexOf(id)
+
+    setEditing(true)
     setSelectedIds((current) => {
-      const next = new Set(current)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
+      const next = additive ? new Set(current) : new Set<string>()
+      if (shift && anchorIndex >= 0 && targetIndex >= 0) {
+        const [start, end] = anchorIndex < targetIndex
+          ? [anchorIndex, targetIndex]
+          : [targetIndex, anchorIndex]
+        visibleIds.slice(start, end + 1).forEach((visibleId) => next.add(visibleId))
+      } else if (additive && next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
       return next
     })
+    selectionAnchorIdRef.current = id
   }
 
+  const toggleSelection = (id: string) => selectNotification(id, { additive: true })
+
   const toggleAll = () => {
+    selectionAnchorIdRef.current = allSelected ? null : visibleIds[0] ?? null
     setSelectedIds((current) => {
       const next = new Set(current)
       if (allSelected) {
@@ -920,7 +945,10 @@ export function NotificationCenter({
     })
   }
 
-  const clearSelection = () => setSelectedIds(new Set())
+  const clearSelection = () => {
+    selectionAnchorIdRef.current = null
+    setSelectedIds(new Set())
+  }
 
   const selectFilter = (nextFilter: 'all' | 'unread' | 'archived') => {
     setFilter(nextFilter)
@@ -930,6 +958,7 @@ export function NotificationCenter({
 
   const toggleEditing = () => {
     if (editing) clearSelection()
+    else selectionAnchorIdRef.current = null
     setEditing((current) => !current)
   }
 
@@ -942,11 +971,73 @@ export function NotificationCenter({
     clearSelection()
   }
 
+  const openSelectedNotificationsContextMenu = (
+    event: ReactMouseEvent<HTMLElement>,
+    item: NotificationRecord,
+  ) => {
+    if (!editing || selectedCount === 0 || !selectedIds.has(item.id)) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    setSelectionContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      title: format(tx('notifications.selectedCount'), { count: selectedCount }),
+      subtitle: tx('notifications.bulkHint'),
+      items: [
+        {
+          id: 'notification-mark-read',
+          label: tx('notifications.markRead'),
+          icon: <CheckCheck size={14} aria-hidden="true" />,
+          disabled: selectedUnreadCount === 0,
+          accessKey: 'r',
+          onSelect: () => runSelectedAction('read'),
+        },
+        {
+          id: 'notification-mark-unread',
+          label: tx('notifications.markUnread'),
+          icon: <MailOpen size={14} aria-hidden="true" />,
+          disabled: selectedReadCount === 0,
+          accessKey: 'u',
+          onSelect: () => runSelectedAction('unread'),
+        },
+        {
+          id: 'notification-archive',
+          label: tx('notifications.archive'),
+          icon: <Archive size={14} aria-hidden="true" />,
+          accessKey: 'a',
+          onSelect: () => runSelectedAction('archive'),
+        },
+        {
+          id: 'notification-clear-selection',
+          label: tx('notifications.clearSelection'),
+          icon: <X size={14} aria-hidden="true" />,
+          accessKey: 'x',
+          onSelect: clearSelection,
+        },
+      ],
+    })
+  }
+
   const openDetail = (item: NotificationRecord) => {
     setActiveId(item.id)
     if (!item.readAt && filter === 'unread') setFilter('all')
     if (isCompactViewport) setMobileDetailOpen(true)
     if (!item.readAt) onMarkRead([item.id])
+  }
+
+  const handleNotificationItemClick = (
+    item: NotificationRecord,
+    modifiers: { shift: boolean; additive: boolean },
+  ) => {
+    if (editing || modifiers.shift || modifiers.additive) {
+      selectNotification(item.id, {
+        shift: modifiers.shift,
+        additive: modifiers.additive || (editing && !modifiers.shift),
+      })
+      return
+    }
+    openDetail(item)
   }
 
   const jumpToNotification = (item: NotificationRecord) => {
@@ -965,6 +1056,7 @@ export function NotificationCenter({
   const detailIsInteractive = !isCompactViewport || mobileDetailOpen
 
   return (
+    <>
     <ModalPortal>
       <div className={`dialog-layer notification-center-layer ${exiting ? 'exiting' : ''}`} onClick={(event) => {
       if (event.target === event.currentTarget) requestClose()
@@ -1064,8 +1156,9 @@ export function NotificationCenter({
                 <InlinePresence
                   present={editing && selectedCount > 0}
                   className="notification-center-selection-presence"
-                  durationMs={360}
+                  durationMs={220}
                   parentGap="6px"
+                  layout="instant"
                 >
                   <span className="notification-center-selection-actions">
                     <span className="notification-center-selection-label">
@@ -1089,8 +1182,9 @@ export function NotificationCenter({
                 <InlinePresence
                   present={!editing && filter !== 'archived' && (hasUnread || clearingAllUnread)}
                   className="notification-center-read-all-presence"
-                  durationMs={340}
+                  durationMs={180}
                   parentGap="6px"
+                  layout="instant"
                 >
                   <button
                     type="button"
@@ -1109,10 +1203,10 @@ export function NotificationCenter({
                     onClick={toggleEditing}
                     aria-pressed={editing}
                   >
-                    <InlinePresence present={editing} parentGap="6px">
+                    <InlinePresence present={editing} durationMs={180} parentGap="6px" layout="instant">
                       <span className="notification-center-manage-label"><Check size={13} aria-hidden="true" />{tx('notifications.done')}</span>
                     </InlinePresence>
-                    <InlinePresence present={!editing} parentGap="6px">
+                    <InlinePresence present={!editing} durationMs={180} parentGap="6px" layout="instant">
                       <span className="notification-center-manage-label"><Pencil size={13} aria-hidden="true" />{tx('notifications.manage')}</span>
                     </InlinePresence>
                   </button>
@@ -1155,21 +1249,10 @@ export function NotificationCenter({
                 const isClearingUnread = clearingUnreadIds.has(item.id)
                 const copy = notificationDisplayText(item, tx, format)
                 const active = activeItem?.id === item.id
-                const clearIndex = isClearingUnread
-                  ? Math.min(
-                    filteredNotifications
-                      .filter((candidate) => clearingUnreadIds.has(candidate.id))
-                      .findIndex((candidate) => candidate.id === item.id),
-                    8,
-                  )
-                  : 0
                 return (
                   <li
                     key={item.id}
                     className={isClearingUnread ? 'is-clearing-unread-row' : undefined}
-                    style={isClearingUnread ? {
-                      ['--notification-clear-delay' as string]: `${Math.max(clearIndex, 0) * MARK_ALL_CLEAR_STAGGER_MS}ms`,
-                    } : undefined}
                   >
                     <div
                       className={[
@@ -1180,6 +1263,10 @@ export function NotificationCenter({
                         active ? 'active' : '',
                         editing ? 'is-editing' : '',
                       ].filter(Boolean).join(' ')}
+                      onMouseDown={(event) => {
+                        if (event.button === 2 && editing && selectedIds.has(item.id)) event.preventDefault()
+                      }}
+                      onContextMenu={(event) => openSelectedNotificationsContextMenu(event, item)}
                     >
                       <div
                         className="notification-center-select-slot"
@@ -1202,9 +1289,14 @@ export function NotificationCenter({
                       <button
                         type="button"
                         className="notification-center-open"
-                        onClick={() => openDetail(item)}
-                        aria-pressed={active}
-                        aria-label={format(tx('notifications.viewDetails'), { title: copy.title })}
+                        onClick={(event) => handleNotificationItemClick(item, {
+                          shift: event.shiftKey,
+                          additive: event.ctrlKey || event.metaKey,
+                        })}
+                        aria-pressed={editing ? selectedIds.has(item.id) : active}
+                        aria-label={editing
+                          ? undefined
+                          : format(tx('notifications.viewDetails'), { title: copy.title })}
                       >
                         <span className={`notification-center-icon type-${item.type}`} aria-hidden="true">
                           <Icon size={14} />
@@ -1275,5 +1367,7 @@ export function NotificationCenter({
       </section>
       </div>
     </ModalPortal>
+    <ExplorerContextMenu menu={selectionContextMenu} onClose={() => setSelectionContextMenu(null)} />
+    </>
   )
 }

@@ -331,7 +331,7 @@ export function toPdfBuffer(applications, { scope = 'all', language = 'en' } = {
       const cellWidth = (contentWidth - gap) / 2
       for (let index = 0; index < visibleRows.length; index += 2) {
         const pair = visibleRows.slice(index, index + 2)
-        const heights = pair.map(([label, value, options]) => {
+        const heights = pair.map(([_label, value, options]) => {
           const valueHeight = regular(9.3, colors.ink, value).heightOfString(value, { width: options?.wide ? contentWidth : cellWidth, lineGap: 2 })
           return 16 + valueHeight
         })

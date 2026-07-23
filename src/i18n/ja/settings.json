@@ -386,7 +386,11 @@
     "passkeyRenameCancel": "名前変更のキャンセル",
     "mailSyncBackgroundActive": "サーバーはバックグラウンドで同期しています。このページを安全に更新することも、離れることもできます。",
     "passkeyRenamePlaceholder": "デバイス名",
-    "passkeyRenamed": "パスキーの名前が変更されました。"
+    "passkeyRenamed": "パスキーの名前が変更されました。",
+    "emailNotificationsDesc": "最近の更新については、通知ごとに個別の電子メールを受け取るのではなく、1 つの結合された電子メールを受け取ります。",
+    "emailNotifications": "電子メール通知",
+    "shareProjectLinkType": "プロジェクトのプレビュー",
+    "shareUploadLinkType": "添付ファイルのアップロード"
   },
   "calendar": {
     "title": "カレンダーフィード",
@@ -400,6 +404,8 @@
     "regenerateHint": "再生成すると、新しいプライベート URL が作成され、古いサブスクリプション リンクが無効になります。",
     "regeneratedToast": "カレンダーの購読リンクが再生成されました。",
     "enable": "カレンダーフィードを有効にする",
+    "enabling": "カレンダーフィードを有効にしています…",
+    "statusEnabling": "有効化中",
     "enabledToast": "カレンダーフィードが有効になりました。",
     "notEnabled": "カレンダーフィードがオフになっています。有効にすると、期限やリマインダー用のプライベート iCal URL が作成されます。",
     "providerLinks": "カレンダーアプリのリンク",

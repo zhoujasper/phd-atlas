@@ -448,9 +448,60 @@ function mergeRequirements(base, override) {
   }
 }
 
+function unverifiedAiRequirements(requirements, program) {
+  if (program?.provenance !== 'ai') return requirements
+  const factSources = program?.factSources && typeof program.factSources === 'object'
+    ? program.factSources
+    : {}
+  const hasDeadline = Boolean(factSources.deadline)
+  const hasRestrictions = Boolean(factSources.restrictions)
+  const hasInternational = Boolean(factSources.international)
+  const hasAdmissionsBackgrounds = Boolean(factSources.admissionsBackgrounds)
+  const hasRoute = Boolean(factSources.applicationRoute)
+  const hasDegreeStructure = Boolean(factSources.degreeStructure)
+
+  return {
+    ...requirements,
+    deadlines: hasDeadline
+      ? requirements.deadlines
+      : [{
+          id: 'unknown',
+          label: 'Deadline',
+          date: null,
+          kind: 'application',
+          certainty: 'unknown',
+          notes: '',
+        }],
+    // Discover does not yet retain field-level evidence URLs for tests,
+    // materials, or application fees. Omitting them is safer than importing a
+    // plausible-looking US-style template into every application.
+    tests: [],
+    materials: [],
+    fees: fees(null, false, 'Not verified from a field-specific official source'),
+    restrictions: {
+      ...requirements.restrictions,
+      multiApply: hasRestrictions ? requirements.restrictions?.multiApply || 'unknown' : 'unknown',
+      supervisorContact: hasRestrictions ? requirements.restrictions?.supervisorContact || 'unknown' : 'unknown',
+      priorDegree: hasAdmissionsBackgrounds ? requirements.restrictions?.priorDegree || '' : '',
+      intlEligible: hasInternational ? requirements.restrictions?.intlEligible ?? null : null,
+      other: hasRestrictions ? requirements.restrictions?.other || [] : [],
+      summary: hasRestrictions ? requirements.restrictions?.summary || '' : '',
+    },
+    route: hasRoute
+      ? requirements.route
+      : route('unknown', 'Verify on official program page', ['Check official program page']),
+    degreeMilestones: hasDegreeStructure ? requirements.degreeMilestones : [],
+    verified: {
+      deadlines: hasDeadline,
+      restrictions: hasRestrictions || hasInternational || hasAdmissionsBackgrounds,
+      fees: false,
+    },
+  }
+}
+
 export function normalizeRequirements(raw, program = {}) {
   if (raw && typeof raw === 'object' && Array.isArray(raw.deadlines)) {
-    return mergeRequirements(defaultFromProgram(program), {
+    return unverifiedAiRequirements(mergeRequirements(defaultFromProgram(program), {
       deadlines: raw.deadlines.map((d, i) => ({
         id: String(d.id || `ddl_${i}`).slice(0, 40),
         label: String(d.label || 'Deadline').slice(0, 120),
@@ -481,10 +532,10 @@ export function normalizeRequirements(raw, program = {}) {
       route: raw.route,
       degreeMilestones: raw.degreeMilestones,
       verified: raw.verified,
-    })
+    }), program)
   }
   const base = defaultFromProgram(program)
-  return mergeRequirements(base, OVERRIDES[program.id])
+  return unverifiedAiRequirements(mergeRequirements(base, OVERRIDES[program.id]), program)
 }
 
 export function attachRequirements(program) {

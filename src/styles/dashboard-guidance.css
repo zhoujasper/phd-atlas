@@ -1,0 +1,306 @@
+.dashboard-panel-guidance {
+  overflow: hidden;
+}
+
+.dashboard-guidance-intro {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dashboard-guidance-intro > span {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.dashboard-guidance-intro p {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: right;
+}
+
+.dashboard-guidance-list {
+  display: grid;
+}
+
+.dashboard-guidance-member + .dashboard-guidance-member {
+  border-top: 1px solid var(--border);
+}
+
+.dashboard-guidance-main {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto 30px;
+  align-items: center;
+  gap: 10px;
+  min-height: 64px;
+  padding: 10px 0;
+}
+
+.dashboard-guidance-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+}
+
+.dashboard-guidance-identity {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: default;
+}
+
+.dashboard-guidance-identity[aria-controls] {
+  cursor: pointer;
+}
+
+.dashboard-guidance-identity strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-guidance-identity span {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-guidance-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dashboard-guidance-actions a {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 590;
+  text-decoration: none;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    transform var(--duration-press) var(--ease-out);
+}
+
+.dashboard-guidance-actions a:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-secondary);
+  color: var(--text);
+}
+
+.dashboard-guidance-actions a:active,
+.dashboard-guidance-detail-toggle:active {
+  transform: scale(0.97);
+}
+
+.dashboard-guidance-actions a:focus-visible,
+.dashboard-guidance-identity:focus-visible,
+.dashboard-guidance-detail-toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.dashboard-guidance-detail-toggle {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    transform var(--duration-press) var(--ease-out);
+}
+
+.dashboard-guidance-detail-toggle:hover {
+  background: var(--surface-secondary);
+  color: var(--text);
+}
+
+.dashboard-guidance-detail-toggle svg {
+  transition: transform var(--duration) var(--ease-out);
+}
+
+.dashboard-guidance-detail-toggle[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+
+.dashboard-guidance-detail {
+  --collapsible-panel-y: -2px;
+}
+
+.dashboard-guidance-detail-inner {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin-left: 50px;
+  padding: 0 0 14px;
+}
+
+.dashboard-guidance-detail-inner > span {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 2px 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.dashboard-guidance-detail-inner svg {
+  grid-row: 1 / span 2;
+  margin-top: 1px;
+  color: var(--text-tertiary);
+}
+
+.dashboard-guidance-detail-inner small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.dashboard-guidance-detail-inner strong {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.dashboard-guidance-support {
+  grid-column: 1 / -1;
+}
+
+.dashboard-guidance-empty {
+  min-height: 92px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px;
+  text-align: left;
+}
+
+.dashboard-guidance-empty .empty-state-icon {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.dashboard-guidance-empty div {
+  display: grid;
+  gap: 3px;
+}
+
+.dashboard-guidance-empty strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.dashboard-guidance-empty p {
+  max-width: 480px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@media (max-width: 820px) {
+  .dashboard-guidance-intro {
+    display: grid;
+    gap: 4px;
+  }
+
+  .dashboard-guidance-intro p {
+    text-align: left;
+  }
+
+  .dashboard-guidance-main {
+    grid-template-columns: 40px minmax(0, 1fr) 36px;
+    gap: 8px;
+    padding: 12px 0;
+  }
+
+  .dashboard-guidance-actions {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .dashboard-guidance-detail-toggle {
+    grid-column: 3;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .dashboard-guidance-actions a {
+    min-height: 40px;
+    border-radius: var(--radius);
+  }
+
+  .dashboard-guidance-detail-toggle {
+    width: 36px;
+    height: 36px;
+  }
+
+  .dashboard-guidance-detail-inner {
+    grid-template-columns: 1fr;
+    margin-left: 0;
+  }
+
+  .dashboard-guidance-support {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 480px) {
+  .dashboard-guidance-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-guidance-actions a:last-child:nth-child(3) {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-guidance-actions a,
+  .dashboard-guidance-detail-toggle,
+  .dashboard-guidance-detail-toggle svg {
+    transition-duration: 0.01ms !important;
+  }
+}

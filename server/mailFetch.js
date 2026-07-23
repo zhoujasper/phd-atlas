@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
@@ -165,6 +166,12 @@ function attachmentMetadata(parsedAttachments = [], sourceId) {
       fileSize: Number(attachment.size ?? attachment.content?.length ?? 0),
       mimeType: attachment.contentType || 'application/octet-stream',
       source: 'mail',
+      // Kept only until the mail-sync layer places it in the encrypted upload
+      // vault. `messageToCommunicationInput` deliberately strips this field
+      // so raw mail bytes never enter application JSON.
+      content: Buffer.isBuffer(attachment.content)
+        ? Buffer.from(attachment.content)
+        : Buffer.from(attachment.content ?? ''),
     })
   }
   return { attachments, blocked }
@@ -662,7 +669,7 @@ export function messageToCommunicationInput(message, language = 'en') {
       ...normalizeMailAddressList(message.ccAddresses ?? message.cc),
       ...normalizeMailAddressList(message.bccAddresses ?? message.bcc),
     ]),
-    attachments: message.attachments ?? [],
+    attachments: (message.attachments ?? []).map(({ content: _content, ...attachment }) => attachment),
   }
 }
 

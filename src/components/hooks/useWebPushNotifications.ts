@@ -70,6 +70,19 @@ async function existingRegistration() {
   return navigator.serviceWorker.getRegistration()
 }
 
+/**
+ * The browser can still wake a service worker for a push already accepted by
+ * its provider. Persisting this local opt-out lets the worker discard that
+ * final in-flight event instead of showing a notification after the user has
+ * turned the channel off.
+ */
+async function setServiceWorkerPushPreference(enabled: boolean) {
+  if (!pushIsSupported()) return
+  const registration = await existingRegistration().catch(() => undefined)
+  const worker = navigator.serviceWorker.controller ?? registration?.active
+  worker?.postMessage?.({ type: 'SET_PUSH_NOTIFICATIONS_ENABLED', enabled })
+}
+
 async function readyRegistration() {
   const registration = await existingRegistration()
   if (registration?.active) return registration
@@ -107,6 +120,7 @@ function waitForLoadingPaint() {
 
 export function useWebPushNotifications(
   token: string | undefined,
+  channelEnabled = true,
   onNotification?: (notification: NotificationRecord) => void,
 ) {
   const [status, setStatus] = useState<WebPushNotificationStatus>(statusForPermission)
@@ -148,11 +162,11 @@ export function useWebPushNotifications(
   }, [token])
 
   const syncExistingSubscription = useCallback(async () => {
-    if (!token || !pushIsSupported() || Notification.permission !== 'granted') return false
+    if (!channelEnabled || !token || !pushIsSupported() || Notification.permission !== 'granted') return false
     const registration = await existingRegistration()
     if (!registration?.active) return false
     return Boolean(await registerCurrentSubscription(registration, { createIfMissing: false }))
-  }, [registerCurrentSubscription, token])
+  }, [channelEnabled, registerCurrentSubscription, token])
 
   useEffect(() => {
     if (!pushIsSupported()) {
@@ -160,12 +174,18 @@ export function useWebPushNotifications(
       return undefined
     }
 
+    void setServiceWorkerPushPreference(channelEnabled)
+
     const receivePush = (event: MessageEvent<PushMessage>) => {
-      if (event.data?.type === 'PUSH_NOTIFICATION' && event.data.notification) {
+      if (channelEnabled && event.data?.type === 'PUSH_NOTIFICATION' && event.data.notification) {
         onNotificationRef.current?.(event.data.notification)
       }
     }
     const resync = () => {
+      if (!channelEnabled) {
+        if (!actionInFlightRef.current) setStatus(statusForPermission())
+        return
+      }
       void syncExistingSubscription()
         .then((synced) => {
           if (actionInFlightRef.current) return
@@ -183,7 +203,7 @@ export function useWebPushNotifications(
       navigator.serviceWorker.removeEventListener('message', receivePush)
       navigator.serviceWorker.removeEventListener('controllerchange', resync)
     }
-  }, [syncExistingSubscription])
+  }, [channelEnabled, syncExistingSubscription])
 
   const enable = useCallback(async () => {
     if (!token || !pushIsSupported()) {
@@ -204,6 +224,7 @@ export function useWebPushNotifications(
       }
       const registration = await readyRegistration()
       await registerCurrentSubscription(registration)
+      await setServiceWorkerPushPreference(true)
       setStatus('enabled')
       return 'granted' as const
     } catch {
@@ -220,6 +241,8 @@ export function useWebPushNotifications(
     actionInFlightRef.current = true
     setStatus('disabling')
     try {
+      // Suppress queued provider deliveries before waiting on network cleanup.
+      await setServiceWorkerPushPreference(false)
       await waitForLoadingPaint()
       const registration = await existingRegistration()
       const subscription = registration ? await registration.pushManager.getSubscription() : null

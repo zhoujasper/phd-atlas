@@ -21,7 +21,8 @@
       "duration": "Durata",
       "permission": "Autorizzazione",
       "scope": "Ambito",
-      "actions": "Azioni"
+      "actions": "Azioni",
+      "subject": "Elemento condiviso"
     },
     "permission": {
       "view": "Visualizza",
@@ -44,7 +45,8 @@
     "sectionsTitle": "Pagine condivise",
     "scope": {
       "all": "Tutte le pagine",
-      "count": "{count} pagine"
+      "count": "{count} pagine",
+      "upload": "Caricamento allegati"
     },
     "sections": {
       "overview": "Panoramica",

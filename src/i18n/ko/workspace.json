@@ -63,7 +63,8 @@
     "emptyDescription": "첫 지원서를 만든 다음 여기에서 각 단계로 진행하세요.",
     "priorityValue": "P{value}",
     "moveToStatus": "{status}로 이동",
-    "showMore": "{count} 더보기"
+    "showMore": "{count} 더보기",
+    "moveTo": "다음으로 이동"
   },
   "explorer": {
     "selectedCount": "{count} 선택됨",

@@ -93,6 +93,8 @@
     "adminNotificationMailbox": "Admin-Benachrichtigungspostfach",
     "receiveAt": "Erhalten Sie unter",
     "receiveEmails": "E-Mails empfangen",
+    "emailNotifications": "E-Mail-Benachrichtigungen",
+    "emailNotificationsDesc": "Erhalten Sie eine kombinierte E-Mail für aktuelle Updates anstelle einer separaten E-Mail für jede Benachrichtigung.",
     "primaryRecovery": "Primäre Erholung",
     "notify": "Benachrichtigen",
     "makePrimary": "Machen Sie primär",
@@ -386,7 +388,9 @@
     "mailSyncBackgroundActive": "Der Server synchronisiert sich im Hintergrund. Sie können diese Seite bedenkenlos aktualisieren oder verlassen.",
     "testEmailRecipient": "Testen Sie die E-Mail-Adresse des Empfängers",
     "testingIncomingMail": "Verbindung wird getestet…",
-    "passkeyRenamed": "Passkey umbenannt."
+    "passkeyRenamed": "Passkey umbenannt.",
+    "shareProjectLinkType": "Projektvorschau",
+    "shareUploadLinkType": "Anhang hochladen"
   },
   "calendar": {
     "title": "Kalender-Feed",
@@ -400,6 +404,8 @@
     "regenerateHint": "Durch die Neugenerierung wird eine neue private URL erstellt und der alte Abonnementlink deaktiviert.",
     "regeneratedToast": "Der Link zum Kalenderabonnement wurde neu generiert.",
     "enable": "Aktivieren Sie den Kalender-Feed",
+    "enabling": "Kalender-Feed wird aktiviert…",
+    "statusEnabling": "Wird aktiviert",
     "enabledToast": "Kalender-Feed aktiviert.",
     "notEnabled": "Der Kalender-Feed ist deaktiviert. Aktivieren Sie es, um eine private iCal-URL für Ihre Fristen und Erinnerungen zu erstellen.",
     "providerLinks": "Links zur Kalender-App",

@@ -4,7 +4,7 @@ export type Screen = 'dashboard' | 'workspace' | 'discover' | 'profile' | 'setti
 /** Which nav/data context is active for team roles that have both a personal workspace and
  * a team system to manage or participate in. */
 export type InterfaceMode = 'personal' | 'team'
-export type TeamSection = 'overview' | 'applications' | 'members' | 'resources' | 'audit' | 'settings'
+export type TeamSection = 'overview' | 'applications' | 'members' | 'resources' | 'discover' | 'audit' | 'settings'
 export type DetailTab = 'dossier' | 'materials' | 'mail' | 'funding' | 'timeline' | 'review'
 export type ReviewCommentTargetTab = DetailTab
 export type ToastTone = 'success' | 'error' | 'info' | 'warning'

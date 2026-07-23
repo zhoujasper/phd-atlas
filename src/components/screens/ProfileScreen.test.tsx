@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AuthSession, ProfileAsset, ProfilePreset, UserSettingsPatch } from '../../api/phdApi'
 import { getDict, registerLanguage, t, tpl, type LangDict } from '../../i18n'
 import englishProfile from '../../i18n/en/profile.json'
@@ -9,6 +9,10 @@ import { I18nContext } from '../hooks/useI18n'
 import { ProfileScreen } from './ProfileScreen'
 
 registerLanguage('en', englishProfile as LangDict, 'profile')
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 const session: AuthSession = {
   token: 'profile-test-token',
@@ -52,6 +56,7 @@ function renderProfile(
         onRenameFile={vi.fn()}
         onDeleteFile={vi.fn()}
         onDownloadFile={vi.fn()}
+        onLoadFile={vi.fn(async () => new Blob(['preview']))}
         onCreateShare={vi.fn()}
         onRevokeShare={vi.fn()}
         onUpdateSettings={onUpdateSettings}
@@ -61,6 +66,24 @@ function renderProfile(
 }
 
 describe('ProfileScreen presets', () => {
+  it('switches smoothly between grouped cards and the compact snippet list', async () => {
+    const user = userEvent.setup()
+    const assets: ProfileAsset[] = [
+      { id: 'view-cv', name: 'General CV', kind: 'CV', description: 'Academic CV.', attachments: [] },
+      { id: 'view-sop', name: 'Core SOP', kind: 'SOP', description: 'Reusable statement.', attachments: [] },
+    ]
+    const view = renderProfile(vi.fn(), undefined, assets)
+
+    expect(view.container.querySelector('.profile-library-view.is-cards')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'List view' }))
+
+    expect(view.container.querySelector('.profile-library-view.is-list')).toBeInTheDocument()
+    expect(view.container.querySelectorAll('.profile-snippet-list-row')).toHaveLength(2)
+
+    await user.click(screen.getByRole('button', { name: 'Card view' }))
+    expect(view.container.querySelector('.profile-library-view.is-cards')).toBeInTheDocument()
+  })
+
   it('keeps a confirmed single material mounted with a collapsing exit class', () => {
     const asset: ProfileAsset = {
       id: 'statement-delete',
@@ -120,6 +143,34 @@ describe('ProfileScreen presets', () => {
     expect(screen.getByText('My project portfolio pack', { selector: '.profile-preset-card strong' })).toBeInTheDocument()
   })
 
+  it('offers custom presets from the Add snippet template picker', async () => {
+    const user = userEvent.setup()
+    const customPreset: ProfilePreset = {
+      id: 'portfolio-template',
+      kind: 'Other',
+      nameEn: 'Fieldwork portfolio',
+      nameZh: '田野作品集',
+      descriptionEn: 'Selected fieldwork, evidence, and project context.',
+      descriptionZh: '精选田野工作、证明材料与项目背景。',
+      contentEn: 'Start with the fieldwork project that most directly supports this application.',
+      contentZh: '从最能支持本次申请的田野项目开始。',
+      icon: 'briefcase',
+      color: 'teal',
+      builtIn: false,
+    }
+    renderProfile(vi.fn(), [customPreset])
+
+    await user.click(screen.getAllByRole('button', { name: /add snippet/i })[0])
+    const dialog = await screen.findByRole('dialog', { name: /add snippet/i }, { timeout: 5000 })
+    const template = within(dialog).getByRole('button', { name: 'Fieldwork portfolio' })
+
+    await user.click(template)
+
+    expect(template).toHaveClass('active')
+    expect(within(dialog).getByLabelText('Name')).toHaveValue('Fieldwork portfolio')
+    expect(within(dialog).getByText('Start with the fieldwork project that most directly supports this application.')).toBeInTheDocument()
+  })
+
   it('automatically stacks same-type materials and expands them as equal item cards', async () => {
     const user = userEvent.setup()
     const assets: ProfileAsset[] = [
@@ -155,12 +206,15 @@ describe('ProfileScreen presets', () => {
     let front = getFront()
     const expandedCards = stack.nextElementSibling as HTMLElement
     expect(front).toBeInTheDocument()
+    expect(front).toHaveClass('snippet-stack-card-layout')
     expect(expandedCards).toBeInTheDocument()
     expect(expandedCards).toHaveClass('snippet-stack-flow')
     expect(front).not.toContainElement(expandedCards)
 
     const stackButton = screen.getByRole('button', { name: /expand group: CV \/ Resume/i })
     expect(stackButton).toHaveAttribute('aria-expanded', 'false')
+    const familyCount = within(front).getByText('2 items')
+    expect(familyCount).not.toHaveAttribute('aria-hidden')
     const currentMaterialButton = within(front).getByRole('button', { name: /open material:/i })
     const currentMaterialLabel = currentMaterialButton.getAttribute('aria-label')
 
@@ -240,6 +294,8 @@ describe('ProfileScreen presets', () => {
     await user.click(stackButton)
 
     expect(stackButton).toHaveAttribute('aria-expanded', 'true')
+    expect(within(getFront()).getByText('2 items')).toHaveAttribute('aria-hidden', 'true')
+    expect(within(expandedCards).queryByText('2 items')).not.toBeInTheDocument()
     expect(front).toHaveAttribute('aria-hidden', 'false')
     expect(expandedCards).toHaveClass('open')
     expect(stack.querySelector(':scope > .is-deck-incoming')).not.toBeInTheDocument()
@@ -247,6 +303,7 @@ describe('ProfileScreen presets', () => {
     expect(screen.getByRole('button', { name: 'Edit snippet: Robotics CV' })).toBeInTheDocument()
     const cards = [...expandedCards.querySelectorAll<HTMLElement>('.snippet-stack-version')]
     expect(cards).toHaveLength(1)
+    expect(cards[0]).toHaveClass('snippet-stack-card-layout')
     expect(stack.style.getPropertyValue('--snippet-stack-expanded-width')).toBe('476px')
     expect(cards[0]?.style.getPropertyValue('--snippet-version-index')).toBe('1')
     expect(cards[0]?.style.getPropertyValue('--snippet-version-origin-x')).toBe('-244px')
@@ -273,65 +330,143 @@ describe('ProfileScreen presets', () => {
     expect(animationCancel).toHaveBeenCalled()
   })
 
-  it('queues repeated desktop wheel turns without flashing back to a settled card between turns', async () => {
-    const assets: ProfileAsset[] = [
-      {
-        id: 'cv-one',
-        name: 'First CV',
-        kind: 'CV',
-        description: 'First version.',
-        attachments: [],
-        updatedAt: '2026-07-16T00:00:00.000Z',
-      },
-      {
-        id: 'cv-two',
-        name: 'Second CV',
-        kind: 'CV',
-        description: 'Second version.',
-        attachments: [],
-        updatedAt: '2026-07-17T00:00:00.000Z',
-      },
-      {
-        id: 'cv-three',
-        name: 'Third CV',
-        kind: 'CV',
-        description: 'Third version.',
-        attachments: [],
-        updatedAt: '2026-07-18T00:00:00.000Z',
-      },
-    ]
+  it('chains continuous wheel input through one buffered turn and animates only visible deck cards', async () => {
+    const assets: ProfileAsset[] = Array.from({ length: 7 }, (_, index) => ({
+      id: `cv-${index + 1}`,
+      name: `CV ${index + 1}`,
+      kind: 'CV',
+      description: `Version ${index + 1}.`,
+      attachments: [],
+      updatedAt: `2026-07-${String(10 + index).padStart(2, '0')}T00:00:00.000Z`,
+    }))
 
     const view = renderProfile(vi.fn(), undefined, assets)
     const stack = view.container.querySelector('.snippet-stack.has-stack') as HTMLElement
-    const front = stack.querySelector(':scope > .snippet-stack-front') as HTMLElement
-    const updatePlaybackRate = vi.fn()
+    const getFront = () => stack.querySelector<HTMLElement>(':scope > .snippet-stack-front') as HTMLElement
+    const front = getFront()
+    const getAnimations = vi.fn(() => [])
     stack.querySelectorAll<HTMLElement>('.snippet-stack-deck-card').forEach((card) => {
       Object.defineProperty(card, 'getAnimations', {
         configurable: true,
-        value: () => [{ updatePlaybackRate }],
+        value: getAnimations,
       })
     })
 
-    fireEvent.wheel(front, { deltaY: 80 })
-    fireEvent.wheel(front, { deltaY: 80 })
+    fireEvent.wheel(front, { deltaY: 12 })
+    fireEvent.wheel(front, { deltaY: 12 })
+    fireEvent.wheel(front, { deltaY: 12 })
+    expect(stack).not.toHaveClass('is-turning')
+
+    fireEvent.wheel(front, { deltaY: 12 })
     expect(stack).toHaveClass('is-turning-forward')
-    expect(updatePlaybackRate).toHaveBeenCalledWith(440 / 180)
+    const firstIncoming = stack.querySelector('.is-deck-incoming') as HTMLElement
+    const firstOutgoingId = stack.querySelector('.is-deck-outgoing')?.getAttribute('data-asset-id')
+    expect(firstIncoming).toBeInTheDocument()
+    expect(stack.querySelectorAll('.is-deck-active-turn')).toHaveLength(5)
+    expect(stack.querySelectorAll('.is-deck-dormant')).toHaveLength(2)
+
+    // A sustained, non-decaying stream requests another turn while the first is
+    // active. Further input is intentionally coalesced into the same one-slot
+    // buffer, so releasing the wheel never replays a long delayed queue.
+    for (let index = 0; index < 20; index += 1) {
+      fireEvent.wheel(front, { deltaY: 12 })
+    }
+
+    expect(stack.querySelector('.is-deck-outgoing')).toHaveAttribute('data-asset-id', firstOutgoingId)
+    expect(stack.querySelector('.is-deck-incoming')).toBe(firstIncoming)
+    expect(getAnimations).not.toHaveBeenCalled()
+
+    fireEvent.animationEnd(stack.querySelector('.is-deck-outgoing') as HTMLElement)
+    await waitFor(() => {
+      expect(stack).toHaveClass('is-turning-forward')
+      expect(stack.querySelector('.is-deck-incoming')).not.toBe(firstIncoming)
+    })
+    const secondIncoming = stack.querySelector('.is-deck-incoming') as HTMLElement
+    fireEvent.animationEnd(stack.querySelector('.is-deck-outgoing') as HTMLElement)
 
     await waitFor(() => {
-      const settledFront = stack.querySelector<HTMLElement>(
-        ':scope > .snippet-stack-front',
-      )
-      expect(settledFront).toBeInTheDocument()
-      expect(within(settledFront as HTMLElement).getByRole('button', { name: /open material: First CV/i })).toBeInTheDocument()
+      expect(getFront()).toBe(secondIncoming)
       expect(stack).not.toHaveClass('is-turning')
-    }, { timeout: 1800 })
+    })
+  })
 
-    view.unmount()
-    const returnedView = renderProfile(vi.fn(), undefined, assets)
-    const returnedStack = returnedView.container.querySelector('.snippet-stack.has-stack') as HTMLElement
-    const returnedFront = returnedStack.querySelector(':scope > .snippet-stack-front') as HTMLElement
-    fireEvent.wheel(returnedFront, { deltaY: 80 })
-    expect(returnedStack).toHaveClass('is-turning-forward')
+  it('does not turn again for the decaying tail of a wheel gesture', async () => {
+    const assets: ProfileAsset[] = [
+      { id: 'cv-one', name: 'First CV', kind: 'CV', description: 'First.', attachments: [] },
+      { id: 'cv-two', name: 'Second CV', kind: 'CV', description: 'Second.', attachments: [] },
+      { id: 'cv-three', name: 'Third CV', kind: 'CV', description: 'Third.', attachments: [] },
+    ]
+    const view = renderProfile(vi.fn(), undefined, assets)
+    const stack = view.container.querySelector('.snippet-stack.has-stack') as HTMLElement
+    const getFront = () => stack.querySelector<HTMLElement>(':scope > .snippet-stack-front') as HTMLElement
+    const firstFront = getFront()
+
+    fireEvent.wheel(firstFront, { deltaY: 60 })
+    const firstIncoming = stack.querySelector('.is-deck-incoming') as HTMLElement
+    expect(stack).toHaveClass('is-turning-forward')
+
+    for (const deltaY of [42, 30, 20, 10, 4]) {
+      fireEvent.wheel(firstFront, { deltaY })
+    }
+    fireEvent.animationEnd(stack.querySelector('.is-deck-outgoing') as HTMLElement)
+
+    await waitFor(() => {
+      expect(getFront()).toBe(firstIncoming)
+      expect(stack).not.toHaveClass('is-turning')
+    })
+  })
+
+  it('captures wheel input only while a collapsed material family can turn', async () => {
+    const user = userEvent.setup()
+    const assets: ProfileAsset[] = [
+      { id: 'cv-one', name: 'First CV', kind: 'CV', description: 'First.', attachments: [] },
+      { id: 'cv-two', name: 'Second CV', kind: 'CV', description: 'Second.', attachments: [] },
+    ]
+    const view = renderProfile(vi.fn(), undefined, assets)
+    const stack = view.container.querySelector('.snippet-stack.has-stack') as HTMLElement
+    const front = stack.querySelector(':scope > .snippet-stack-front') as HTMLElement
+    const dispatchWheel = (target: Element, init: WheelEventInit) => {
+      const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, ...init })
+      fireEvent(target, event)
+      return event
+    }
+
+    expect(dispatchWheel(front, { deltaY: 80, ctrlKey: true }).defaultPrevented).toBe(false)
+    expect(dispatchWheel(front, { deltaY: 0 }).defaultPrevented).toBe(false)
+    expect(stack).not.toHaveClass('is-turning')
+
+    await user.click(screen.getByRole('button', { name: /expand group: CV \/ Resume/i }))
+    expect(dispatchWheel(front, { deltaY: 80 }).defaultPrevented).toBe(false)
+    expect(stack).not.toHaveClass('is-turning')
+
+    await user.click(screen.getByRole('button', { name: /collapse group: CV \/ Resume/i }))
+    expect(dispatchWheel(front, { deltaY: 80 }).defaultPrevented).toBe(true)
+    expect(stack).toHaveClass('is-turning')
+  })
+
+  it('settles a wheel turn immediately when reduced motion is requested', () => {
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+      matches: query === '(prefers-reduced-motion: reduce)',
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })))
+    const assets: ProfileAsset[] = [
+      { id: 'cv-one', name: 'First CV', kind: 'CV', description: 'First.', attachments: [] },
+      { id: 'cv-two', name: 'Second CV', kind: 'CV', description: 'Second.', attachments: [] },
+    ]
+    const view = renderProfile(vi.fn(), undefined, assets)
+    const stack = view.container.querySelector('.snippet-stack.has-stack') as HTMLElement
+    const front = stack.querySelector(':scope > .snippet-stack-front') as HTMLElement
+
+    fireEvent.wheel(front, { deltaY: 80 })
+
+    expect(stack).not.toHaveClass('is-turning')
+    expect(stack.querySelector(':scope > .snippet-stack-front')).not.toBe(front)
   })
 
   it('places insert-phrase controls and preview before attachments in the editor', async () => {

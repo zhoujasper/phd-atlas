@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
-import { phdApi, type AiKey } from '../../api/phdApi'
+import { phdApi, type AiKey, type DiscoverResearchScope } from '../../api/phdApi'
 import type { ApplicationRecord } from '../../data/applications'
 import { normalizeErrorMessage } from '../../errorMessages'
 import type {
@@ -14,6 +14,7 @@ import type {
   DiscoverIntake,
   DiscoverRankerWeights,
   DiscoverResearchPayload,
+  DiscoverResearchStartPayload,
   DiscoverUserState,
   RequirementFilterState,
   ScoredDiscoverPi,
@@ -25,7 +26,11 @@ import {
   programMatchesRequirementFilters,
 } from '../../data/discover'
 import { useI18n } from '../hooks/useI18n'
-import { DiscoverResearchSheet } from '../shared/DiscoverResearchSheet'
+import {
+  DiscoverResearchSheet,
+  type DiscoverResearchSubmissionPhase,
+} from '../shared/DiscoverResearchSheet'
+import { ConfirmDialog } from '../shared/ConfirmDialog'
 import {
   DiscoverWorkspace,
   type DiscoverProgramSort,
@@ -40,6 +45,10 @@ function toggleInList(list: string[], id: string) {
 function deadlineValue(program: ScoredDiscoverProgram) {
   const dated = program.requirements?.deadlines?.filter((deadline) => deadline.date).map((deadline) => deadline.date as string).sort()
   return dated?.[0] || program.deadlineIso || '9999-12-31'
+}
+
+function collectedValue(program: ScoredDiscoverProgram) {
+  return program.collectedAt || program.verification?.checkedAt || ''
 }
 
 function weightedScore(program: ScoredDiscoverProgram, weights: DiscoverRankerWeights) {
@@ -64,18 +73,36 @@ export function DiscoverScreen({
   onImported,
   onNotify,
   deferProgressiveReveal = false,
+  teamScope,
+  teamTargetOptions = [],
+  onTeamTargetChange,
+  onExitTeamTarget,
+  onConfigureAiKeys,
+  realtimeConnected = false,
+  realtimeRevision = 0,
 }: {
   token: string
   applications: ApplicationRecord[]
   onImported: (application: ApplicationRecord) => void
   onNotify: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
   deferProgressiveReveal?: boolean
+  teamScope?: DiscoverResearchScope
+  teamTargetOptions?: Array<{ id: string; name: string; email?: string; avatarUrl?: string | null; count?: number }>
+  onTeamTargetChange?: (userId: string) => void
+  onExitTeamTarget?: () => void
+  onConfigureAiKeys: () => void
+  realtimeConnected?: boolean
+  realtimeRevision?: number
 }) {
   const { tx, lang } = useI18n()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [researching, setResearching] = useState(false)
+  const [researchSubmissionPhase, setResearchSubmissionPhase] = useState<DiscoverResearchSubmissionPhase>('idle')
+  const [researchSubmissionError, setResearchSubmissionError] = useState<string | null>(null)
   const [importingId, setImportingId] = useState<string | null>(null)
+  const [pendingDeleteProgramIds, setPendingDeleteProgramIds] = useState<string[] | null>(null)
+  const [deletingProgramIds, setDeletingProgramIds] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [meta, setMeta] = useState<DiscoverCatalogMeta | null>(null)
   const [state, setState] = useState<DiscoverUserState | null>(null)
@@ -83,6 +110,19 @@ export function DiscoverScreen({
   const [programs, setPrograms] = useState<ScoredDiscoverProgram[]>([])
   const [pis, setPis] = useState<ScoredDiscoverPi[]>([])
   const [aiKeys, setAiKeys] = useState<AiKey[]>([])
+  const activeTeamTarget = useMemo(() => {
+    if (!teamScope?.targetUserId) return null
+    return teamTargetOptions.find((student) => student.id === teamScope.targetUserId) ?? {
+      id: teamScope.targetUserId,
+      name: tx('team.memberFallback', 'Student'),
+      count: applications.length,
+    }
+  }, [applications.length, teamScope?.targetUserId, teamTargetOptions, tx])
+  const teamContext = useMemo(() => (
+    activeTeamTarget && onExitTeamTarget
+      ? { ...activeTeamTarget, onBack: onExitTeamTarget }
+      : undefined
+  ), [activeTeamTarget, onExitTeamTarget])
 
   const [mode, setMode] = useState<DiscoverWorkspaceMode>('programs')
   const [modeDirection, setModeDirection] = useState<'forward' | 'backward'>('forward')
@@ -99,7 +139,7 @@ export function DiscoverScreen({
   const [minHIndex, setMinHIndex] = useState(0)
   const [reqFilters, setReqFilters] = useState<RequirementFilterState>({ ...DEFAULT_REQUIREMENT_FILTERS })
   const [rankerDraft, setRankerDraft] = useState<DiscoverRankerWeights>({ ...DEFAULT_RANKER })
-  const [programSort, setProgramSort] = useState<DiscoverProgramSort>('match')
+  const [programSort, setProgramSort] = useState<DiscoverProgramSort>('collectedAt')
   const [sortDirection, setSortDirection] = useState<DiscoverSortDirection>('desc')
 
   const [selectedProgramId, setSelectedProgramId] = useState<string | null>(null)
@@ -116,10 +156,10 @@ export function DiscoverScreen({
 
   const [intakeDraft, setIntakeDraft] = useState<DiscoverIntake | null>(null)
   const [useApplicationSeeds, setUseApplicationSeeds] = useState(false)
-  const [useAi, setUseAi] = useState(false)
-  const [selectedKeyId, setSelectedKeyId] = useState('')
+  const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>([])
+  const usableAiKeys = useMemo(() => aiKeys.filter((key) => key.secretSet), [aiKeys])
 
-  const applyPayload = useCallback((payload: DiscoverCatalogPayload | DiscoverResearchPayload) => {
+  const applyPayload = useCallback((payload: DiscoverCatalogPayload | DiscoverResearchPayload | DiscoverResearchStartPayload) => {
     if ('meta' in payload) setMeta(payload.meta)
     stateRef.current = payload.state
     setState(payload.state)
@@ -129,7 +169,10 @@ export function DiscoverScreen({
     setIntakeDraft(payload.state.intake)
     setProgramNoteDrafts(payload.state.programNotes)
     setPiNoteDrafts(payload.state.piNotes)
-    if (payload.state.preferredAiKeyId) setSelectedKeyId(payload.state.preferredAiKeyId)
+    const preferredKeyIds = payload.state.preferredAiKeyIds?.length
+      ? payload.state.preferredAiKeyIds
+      : (payload.state.preferredAiKeyId ? [payload.state.preferredAiKeyId] : [])
+    if (preferredKeyIds.length) setSelectedKeyIds(preferredKeyIds)
   }, [])
 
   const load = useCallback(async () => {
@@ -137,31 +180,79 @@ export function DiscoverScreen({
     setError(null)
     try {
       const [payload, keys] = await Promise.all([
-        phdApi.getDiscoverCatalog(token),
+        phdApi.getDiscoverCatalog(token, teamScope),
         phdApi.listAiKeys(token).catch(() => [] as AiKey[]),
       ])
       applyPayload(payload)
       setAiKeys(keys)
-      const preferred = payload.state.preferredAiKeyId
-      if (preferred && keys.some((key) => key.id === preferred)) {
-        setSelectedKeyId(preferred)
-        setUseAi(true)
-      } else if (keys[0]) {
-        setSelectedKeyId(keys[0].id)
+      const preferred = payload.state.preferredAiKeyIds?.length
+        ? payload.state.preferredAiKeyIds
+        : (payload.state.preferredAiKeyId ? [payload.state.preferredAiKeyId] : [])
+      const usableKeys = keys.filter((key) => key.secretSet)
+      const selected = preferred.filter((id) => usableKeys.some((key) => key.id === id))
+      if (selected.length) {
+        setSelectedKeyIds(selected)
+      } else if (usableKeys[0]) {
+        setSelectedKeyIds([usableKeys[0].id])
+      } else {
+        setSelectedKeyIds([])
       }
     } catch (reason) {
       setError(normalizeErrorMessage(reason, lang, tx('discover.loadError')))
     } finally {
       setLoading(false)
     }
-  }, [applyPayload, lang, token, tx])
+  }, [applyPayload, lang, teamScope, token, tx])
 
   useEffect(() => { void load() }, [load])
+
+  const announcedResearchJobRef = useRef<string | null>(null)
+  const researchJobId = state?.researchJob?.id
+  const researchJobStatus = state?.researchJob?.status
+  const refreshResearchState = useCallback(async () => {
+    try {
+      const payload = await phdApi.getDiscoverCatalog(token, teamScope)
+      applyPayload(payload)
+      const nextJob = payload.state.researchJob
+      if (!nextJob) return
+      const marker = `${nextJob.id}:${nextJob.status}`
+      if (nextJob.status === 'completed' && announcedResearchJobRef.current !== marker) {
+        announcedResearchJobRef.current = marker
+        onNotify(tx('discover.researchCompletedToast', 'Research is complete. Your Discover results were refreshed.'), 'success')
+      } else if (nextJob.status === 'failed' && announcedResearchJobRef.current !== marker) {
+        announcedResearchJobRef.current = marker
+        onNotify(tx('discover.researchFailedToast', 'Research did not finish. Your previous results were kept.'), 'error')
+      }
+    } catch {
+      // Realtime refresh is an optimization. A transient failure must not turn
+      // a healthy server-side job into a client-visible failure.
+    }
+  }, [applyPayload, onNotify, teamScope, token, tx])
+
+  useEffect(() => {
+    if (realtimeRevision <= 0) return
+    void refreshResearchState()
+  }, [realtimeRevision, refreshResearchState])
+
+  useEffect(() => {
+    if (
+      realtimeConnected
+      || !researchJobId
+      || !researchJobStatus
+      || !['queued', 'running'].includes(researchJobStatus)
+    ) return undefined
+    const initialTimer = window.setTimeout(() => { void refreshResearchState() }, 8_000)
+    const fallbackTimer = window.setInterval(() => { void refreshResearchState() }, 60_000)
+    return () => {
+      window.clearTimeout(initialTimer)
+      window.clearInterval(fallbackTimer)
+    }
+  }, [realtimeConnected, refreshResearchState, researchJobId, researchJobStatus])
 
   const saveState = useCallback(async (patch: Partial<DiscoverUserState>, toast = false) => {
     setSaving(true)
     try {
-      const payload = await phdApi.updateDiscoverState(token, patch)
+      const payload = await phdApi.updateDiscoverState(token, patch, teamScope)
       applyPayload(payload)
       if (toast) onNotify(tx('discover.savedToast'), 'success')
     } catch (reason) {
@@ -169,7 +260,7 @@ export function DiscoverScreen({
     } finally {
       setSaving(false)
     }
-  }, [applyPayload, lang, onNotify, token, tx])
+  }, [applyPayload, lang, onNotify, teamScope, token, tx])
 
   const toggleLocalListState = useCallback((
     key: 'watchedProgramIds' | 'hiddenProgramIds' | 'hiddenPiIds',
@@ -187,7 +278,7 @@ export function DiscoverScreen({
     setState(nextState)
     applyEntityState(enabled)
 
-    void phdApi.updateDiscoverState(token, { [key]: nextIds }).catch((reason) => {
+    void phdApi.updateDiscoverState(token, { [key]: nextIds }, teamScope).catch((reason) => {
       const latest = stateRef.current
       if (latest && latest[key].includes(id) === enabled) {
         const rollbackIds = toggleInList(latest[key], id)
@@ -198,7 +289,7 @@ export function DiscoverScreen({
       }
       onNotify(normalizeErrorMessage(reason, lang, tx('discover.loadError')), 'error')
     })
-  }, [lang, onNotify, token, tx])
+  }, [lang, onNotify, teamScope, token, tx])
 
   const toggleProgramWatch = useCallback((id: string) => {
     toggleLocalListState('watchedProgramIds', id, (watched) => {
@@ -220,7 +311,20 @@ export function DiscoverScreen({
 
   const runResearch = useCallback(async () => {
     if (!intakeDraft) return
+    const validKeyIds = selectedKeyIds.filter((id) => usableAiKeys.some((key) => key.id === id))
+    const [primaryKeyId, ...verifierKeyIds] = validKeyIds
+    if (!primaryKeyId) {
+      setResearchSheetOpen(true)
+      setResearchSubmissionPhase('idle')
+      onNotify(tx('discover.selectAiKeyRequired', 'Select at least one AI research model.'), 'warning')
+      return
+    }
+    const researchKeyIds: [string, ...string[]] = [primaryKeyId, ...verifierKeyIds]
+    setResearchSubmissionError(null)
+    setResearchSubmissionPhase('saving')
     setResearching(true)
+    setProgramSort('collectedAt')
+    setSortDirection('desc')
     try {
       const applicationSeeds = useApplicationSeeds
         ? applications.map((application) => `${application.school.name} — ${application.program}`)
@@ -234,25 +338,60 @@ export function DiscoverScreen({
         intakeCompleted: true,
         ranker: rankerDraft,
         interestPicks: state?.interestPicks,
-        preferredAiKeyId: selectedKeyId || null,
-      })
+        preferredAiKeyId: primaryKeyId,
+        preferredAiKeyIds: researchKeyIds,
+      }, teamScope)
+      setResearchSubmissionPhase('validating')
       const payload = await phdApi.runDiscoverResearch(token, {
         notify: true,
-        useAi: useAi && Boolean(selectedKeyId),
-        keyId: selectedKeyId || undefined,
+        useAi: true,
+        keyId: primaryKeyId,
+        keyIds: researchKeyIds,
+        ...(teamScope || {}),
         acceptSuggestions: true,
       })
       applyPayload(payload)
-      setResearchSheetOpen(false)
-      onNotify(tx('discover.researchUpdatedToast', 'Research updated and verified.'), 'success')
+      setResearchSubmissionPhase('queued')
+      onNotify(tx('discover.researchQueuedToast', 'Research is running in the background. We will refresh this page and notify you when it finishes.'), 'info')
     } catch (reason) {
-      onNotify(normalizeErrorMessage(reason, lang, tx('discover.loadError')), 'error')
+      const message = normalizeErrorMessage(reason, lang, tx('discover.loadError'))
+      setResearchSubmissionPhase('idle')
+      setResearchSubmissionError(message)
+      onNotify(message, 'error')
     } finally {
       setResearching(false)
     }
-  }, [applications, applyPayload, intakeDraft, lang, onNotify, rankerDraft, selectedKeyId, state?.interestPicks, token, tx, useAi, useApplicationSeeds])
+  }, [applications, applyPayload, intakeDraft, lang, onNotify, rankerDraft, selectedKeyIds, state?.interestPicks, teamScope, token, tx, usableAiKeys, useApplicationSeeds])
+
+  const deletePrograms = useCallback(async (ids: string[]) => {
+    const uniqueIds = [...new Set(ids)].filter(Boolean)
+    if (!uniqueIds.length) return
+    setDeletingProgramIds(uniqueIds)
+    try {
+      const payload = await phdApi.deleteDiscoverPrograms(token, {
+        ids: uniqueIds,
+        ...(teamScope || {}),
+      })
+      applyPayload(payload)
+      setCompareIds((current) => current.filter((id) => !uniqueIds.includes(id)))
+      setSelectedProgramId((current) => current && uniqueIds.includes(current) ? null : current)
+      onNotify(
+        tx('discover.programsDeletedToast', 'Deleted {count} program results.')
+          .replace('{count}', String(uniqueIds.length)),
+        'success',
+      )
+    } catch (reason) {
+      onNotify(normalizeErrorMessage(reason, lang, tx('discover.loadError')), 'error')
+    } finally {
+      setDeletingProgramIds([])
+    }
+  }, [applyPayload, lang, onNotify, teamScope, token, tx])
 
   const importProgram = useCallback(async (programId: string, piId?: string | null) => {
+    if (teamScope) {
+      onNotify(tx('discover.teamImportUnavailable', 'Team Discover keeps research separate; create the student application from the team workspace.'), 'info')
+      return
+    }
     const key = piId ? `${programId}:${piId}` : programId
     setImportingId(key)
     try {
@@ -264,7 +403,7 @@ export function DiscoverScreen({
     } finally {
       setImportingId(null)
     }
-  }, [lang, onImported, onNotify, token, tx])
+  }, [lang, onImported, onNotify, teamScope, token, tx])
 
   const scoreByProgramId = useMemo(() => Object.fromEntries(programs.map((program) => [program.id, weightedScore(program, rankerDraft)])), [programs, rankerDraft])
 
@@ -294,6 +433,7 @@ export function DiscoverScreen({
       if (programSort === 'funding') return direction * ((left.stipendUSD ?? -1) - (right.stipendUSD ?? -1))
       if (programSort === 'deadline') return direction * deadlineValue(left).localeCompare(deadlineValue(right))
       if (programSort === 'advisors') return direction * ((left.fittingPiCount ?? left.pis.length) - (right.fittingPiCount ?? right.pis.length))
+      if (programSort === 'collectedAt') return direction * collectedValue(left).localeCompare(collectedValue(right))
       return direction * ((scoreByProgramId[left.id] ?? left.matchScore) - (scoreByProgramId[right.id] ?? right.matchScore))
     })
   }, [deferredQuery, hedgeFilter, meetFloorOnly, minMatch, minStipend, programSort, programs, regionFilters, reqFilters, scoreByProgramId, showHidden, sortDirection, watchedOnly])
@@ -316,6 +456,14 @@ export function DiscoverScreen({
   }, [filteredPrograms, programs, selectedProgramId])
   const selectedPi = useMemo(() => pis.find((pi) => pi.id === selectedPiId) || filteredPis[0] || null, [filteredPis, pis, selectedPiId])
   const comparePrograms = useMemo(() => compareIds.map((id) => programs.find((program) => program.id === id)).filter((program): program is ScoredDiscoverProgram => Boolean(program)), [compareIds, programs])
+  useEffect(() => {
+    const availableIds = new Set(programs.map((program) => program.id))
+    setCompareIds((current) => {
+      const next = current.filter((id) => availableIds.has(id))
+      return next.length === current.length ? current : next
+    })
+    setSelectedProgramId((current) => current && availableIds.has(current) ? current : null)
+  }, [programs])
 
   const activeFilterCount = useMemo(() => {
     const requirementCount = Object.entries(reqFilters).filter(([key, value]) => key === 'deadlineWithinDays' ? Number(value) > 0 : Boolean(value)).length
@@ -404,6 +552,8 @@ export function DiscoverScreen({
       if (current.length >= 4) { onNotify(tx('discover.compareLimit', 'You can compare up to four programs.'), 'warning'); return current }
       return [...current, id]
     }),
+    clearCompare: () => setCompareIds([]),
+    requestDeletePrograms: (ids: string[]) => setPendingDeleteProgramIds([...new Set(ids)].filter(Boolean)),
     toggleWatch: toggleProgramWatch,
     toggleProgramHidden,
     togglePiHidden,
@@ -456,10 +606,12 @@ export function DiscoverScreen({
         programNoteDrafts={programNoteDrafts}
         piNoteDrafts={piNoteDrafts}
         importingId={importingId}
-        researching={researching}
+        deletingProgramIds={deletingProgramIds}
+        researching={researching || ['queued', 'running'].includes(state.researchJob?.status || '')}
         saving={saving}
         hiddenProgramCount={programs.filter((program) => program.hidden).length}
         hiddenPiCount={pis.filter((pi) => pi.hidden).length}
+        teamContext={teamContext}
         actions={actions}
       />
 
@@ -469,16 +621,45 @@ export function DiscoverScreen({
         draft={intakeDraft}
         applications={applications}
         useApplicationSeeds={useApplicationSeeds}
-        useAi={useAi}
-        aiKeys={aiKeys}
-        selectedKeyId={selectedKeyId}
+        aiKeys={usableAiKeys}
+        selectedKeyIds={selectedKeyIds}
+        teamTargetUserId={teamScope?.targetUserId}
+        teamTargetOptions={teamTargetOptions}
         researching={researching}
-        onClose={() => setResearchSheetOpen(false)}
+        submissionPhase={researchSubmissionPhase}
+        submissionError={researchSubmissionError}
+        onClose={() => {
+          setResearchSheetOpen(false)
+          setResearchSubmissionPhase('idle')
+          setResearchSubmissionError(null)
+        }}
         onDraftChange={setIntakeDraft}
         onUseApplicationSeedsChange={setUseApplicationSeeds}
-        onUseAiChange={setUseAi}
-        onSelectedKeyChange={setSelectedKeyId}
+        onSelectedKeyIdsChange={setSelectedKeyIds}
+        onTeamTargetChange={onTeamTargetChange}
+        onConfigureAiKeys={onConfigureAiKeys}
         onSubmit={() => void runResearch()}
+      />
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteProgramIds?.length)}
+        title={tx('discover.deleteProgramsTitle', 'Delete program results?')}
+        message={tx(
+          pendingDeleteProgramIds?.length === 1
+            ? 'discover.deleteProgramMessage'
+            : 'discover.deleteProgramsMessage',
+          pendingDeleteProgramIds?.length === 1
+            ? 'This removes the selected result from Discover. It will not affect an application you already created.'
+            : 'This removes {count} selected results from Discover. Applications you already created are not affected.',
+        ).replace('{count}', String(pendingDeleteProgramIds?.length || 0))}
+        confirmLabel={tx('discover.deleteSelected', 'Delete')}
+        variant="danger"
+        onConfirm={() => {
+          const ids = pendingDeleteProgramIds || []
+          setPendingDeleteProgramIds(null)
+          void deletePrograms(ids)
+        }}
+        onCancel={() => setPendingDeleteProgramIds(null)}
       />
     </div>
   )

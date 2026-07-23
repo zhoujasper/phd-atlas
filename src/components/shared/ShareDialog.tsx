@@ -19,8 +19,8 @@ import {
   TableCell,
   TableColGroup,
   TableHeaderCell,
-  useTableColumnMenu,
 } from './TableColumnChrome'
+import { useTableColumnMenu } from './useTableColumnMenu'
 import type { TableColumnDef } from './useTableColumns'
 import {
   normalizeSharePermission,

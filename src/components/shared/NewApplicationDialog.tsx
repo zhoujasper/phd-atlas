@@ -15,6 +15,7 @@ export type NewApplicationStudentOption = {
   id: string
   name: string
   email?: string
+  avatarUrl?: string | null
   advisorName?: string | null
   count?: number
 }

@@ -4,6 +4,17 @@
   "confirm": "Xác nhận",
   "cancel": "Hủy",
   "done": "Xong",
+  "filePreview": {
+    "preview": "Xem trước tệp",
+    "document": "Tài liệu",
+    "spreadsheet": "Bảng tính",
+    "presentation": "Bản trình bày",
+    "unavailable": "Không thể xem trước tệp này ở đây",
+    "downloadHint": "Hãy tải xuống để mở bằng ứng dụng gốc.",
+    "slideCount": "Trang chiếu {current}/{total}",
+    "sheets": "Trang tính của sổ làm việc",
+    "renderError": "Không thể hiển thị bố cục gốc"
+  },
   "noResults": "Không có kết quả",
   "search": "Tìm kiếm",
   "sort": "Sắp xếp",
@@ -74,6 +85,7 @@
     "RATE_LIMITED": "Quá nhiều yêu cầu. Vui lòng đợi một lát và thử lại.",
     "NETWORK_ERROR": "Kết nối mạng không thành công. Hãy kiểm tra kết nối của bạn và thử lại.",
     "REQUEST_FAILED": "Yêu cầu không thành công. Vui lòng thử lại.",
+    "DATABASE_TARGET_NOT_EMPTY": "Cơ sở dữ liệu đã chọn đã chứa một không gian làm việc PhD Atlas. Thiết lập ban đầu sẽ không ghi đè; hãy chọn cơ sở dữ liệu trống hoặc di chuyển từ bản cài đặt hiện có.",
     "SERVER_ERROR": "Lỗi máy chủ không mong muốn. Vui lòng thử lại sau.",
     "TOKEN_EXPIRED": "Phiên của bạn đã hết hạn. Vui lòng đăng nhập lại.",
     "UNAUTHORIZED": "Cần phải đăng nhập.",
@@ -110,6 +122,7 @@
     "TEAM_STORAGE_QUOTA_EXCEEDED": "Bộ nhớ của nhóm đã đầy. Trước tiên, hãy yêu cầu quản trị viên hệ thống tăng hạn ngạch hoặc xóa tệp.",
     "TEAM_TRANSFER_NOT_AVAILABLE": "Hiện không thể di chuyển hồ sơ đăng ký tuyển sinh này giữa các không gian làm việc của cá nhân và tổ chức.",
     "TEAM_TRANSFER_NOT_FOUND": "Không tìm thấy yêu cầu chuyển nhóm đang chờ xử lý.",
+    "TEAM_TRANSFER_PENDING_LIMIT": "Bạn đã đạt giới hạn hồ sơ đang chờ nhóm phê duyệt. Hãy xử lý một hồ sơ trước khi gửi hồ sơ mới.",
     "TEAM_TRANSFER_STUDENT_REQUIRED": "Chỉ những tài khoản sinh viên đang hoạt động trong tổ chức mới có thể di chuyển hồ sơ đăng ký tuyển sinh vào hoặc ra.",
     "SHARE_LIMIT_REACHED": "Liên kết chia sẻ đang hoạt động được giới hạn ở mức {limit}. Nâng cấp lên Pro hoặc yêu cầu quản trị viên tăng giới hạn.",
     "SHARE_CREATE_LIMIT_REACHED": "Bạn đã đạt đến giới hạn tạo trọn đời là {limit} liên kết chia sẻ. Nâng cấp lên Pro hoặc yêu cầu quản trị viên tăng giới hạn.",
@@ -188,10 +201,18 @@
     "UNSAFE_ATTACHMENT": "Tệp đính kèm này không thể được chấp nhận một cách an toàn. Hãy kiểm tra loại và nội dung của nó rồi thử lại.",
     "UNTRUSTED_HOST": "Địa chỉ máy chủ PhD Atlas này không đáng tin cậy.",
     "TEAM_SHARE_LIMIT_REACHED": "Nhóm đã đạt đến giới hạn {limit} liên kết chia sẻ hoạt động. Hãy yêu cầu quản trị viên hệ thống nâng cao nó.",
-    "INVALID_UPDATE_PACKAGE": "This is not a supported PhD Atlas update package.",
-    "UPDATE_INTEGRITY_FAILED": "The update package failed its integrity check. Download it again from the official Release.",
-    "UPDATE_APPLY_FAILED": "The update failed and the previous runtime was restored.",
-    "SETUP_ALREADY_COMPLETED": "Initial setup has already been completed. Sign in with the administrator account."
+    "INVALID_UPDATE_PACKAGE": "Đây không phải là gói cập nhật PhD Atlas được hỗ trợ.",
+    "UPDATE_INTEGRITY_FAILED": "Gói cập nhật không kiểm tra được tính toàn vẹn của nó. Tải xuống lại từ Bản phát hành chính thức.",
+    "UPDATE_APPLY_FAILED": "Cập nhật không thành công và thời gian chạy trước đó đã được khôi phục.",
+    "SETUP_ALREADY_COMPLETED": "Thiết lập ban đầu đã được hoàn thành. Đăng nhập bằng tài khoản quản trị viên.",
+    "TEAM_DISCOVER_FORBIDDEN": "Chỉ chủ sở hữu nhóm và giáo viên mới có thể chạy nghiên cứu nhóm.",
+    "TEAM_DISCOVER_KEY_FORBIDDEN": "Nghiên cứu nhóm chỉ có thể dùng khóa của nhóm đã chọn.",
+    "TEAM_DISCOVER_TARGET_FORBIDDEN": "Bạn chỉ có thể nghiên cứu cho một sinh viên đang hoạt động được phân công.",
+    "TEAM_DISCOVER_TARGET_REQUIRED": "Hãy chọn cả nhóm và sinh viên được phân công cho nghiên cứu nhóm.",
+    "DISCOVER_ADVISOR_EMAIL_REQUIRED": "Giảng viên hướng dẫn được chọn không có địa chỉ email đã xác minh.",
+    "DISCOVER_ADVISOR_NOT_VERIFIED": "Cần có hồ sơ và email thực của giảng viên hướng dẫn trước khi có thể thêm chương trình này vào hồ sơ ứng tuyển.",
+    "DISCOVER_PROGRAM_NOT_VERIFIED": "Chương trình này thiếu nguồn chính thức đã xác minh hoặc hạn nộp hồ sơ hiện tại. Hãy làm mới nghiên cứu trước khi nhập.",
+    "MAIL_ATTACHMENT_TOO_LARGE": "Một tệp đính kèm quá lớn để thêm vào email."
   },
   "apiErrorFields": {
     "captchaAnswer": "câu trả lời xác minh",
@@ -586,7 +607,9 @@
         "team_message": "Lời nhắn của đội",
         "team_update": "Cập nhật đội",
         "membership_update": "Tư cách thành viên",
-        "admin_announcement": "Thông báo"
+        "admin_announcement": "Thông báo",
+        "discover_research_complete": "Nghiên cứu Discover",
+        "discover_research_failed": "Nghiên cứu Discover"
       },
       "tab": {
         "dossier": "Hồ sơ ứng tuyển",

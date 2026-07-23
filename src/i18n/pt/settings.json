@@ -98,6 +98,8 @@
     "adminNotificationMailbox": "Caixa de correio de notificação do administrador",
     "receiveAt": "Receba em",
     "receiveEmails": "Receber e-mails",
+    "emailNotifications": "Notificações por e-mail",
+    "emailNotificationsDesc": "Receba um único e-mail com as atualizações recentes, em vez de um e-mail separado para cada notificação.",
     "primaryRecovery": "Recuperação primária",
     "notify": "Notificar",
     "makePrimary": "Tornar primário",
@@ -386,7 +388,9 @@
     "passkeyRenamePlaceholder": "Nome do dispositivo",
     "passkeyRenameCancel": "Cancelar renomeação",
     "testingIncomingMail": "Testando conexão…",
-    "mailSyncBackgroundActive": "O servidor está sincronizando em segundo plano. Você pode atualizar ou sair desta página com segurança."
+    "mailSyncBackgroundActive": "O servidor está sincronizando em segundo plano. Você pode atualizar ou sair desta página com segurança.",
+    "shareProjectLinkType": "Prévia do projeto",
+    "shareUploadLinkType": "Envio de anexos"
   },
   "calendar": {
     "title": "Feed de calendário",
@@ -400,6 +404,8 @@
     "regenerateHint": "A regeneração cria um novo URL privado e desativa o link de assinatura antigo.",
     "regeneratedToast": "Link de assinatura do calendário regenerado.",
     "enable": "Ativar feed de calendário",
+    "enabling": "Ativando o feed de calendário…",
+    "statusEnabling": "Ativando",
     "enabledToast": "Feed de calendário ativado.",
     "notEnabled": "O feed do calendário está desativado. Habilite-o para criar um URL iCal privado para seus prazos e lembretes.",
     "providerLinks": "Links do aplicativo Agenda",

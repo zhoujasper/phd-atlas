@@ -21,7 +21,8 @@
       "duration": "Duración",
       "permission": "Permiso",
       "scope": "Alcance",
-      "actions": "Comportamiento"
+      "actions": "Comportamiento",
+      "subject": "Elemento compartido"
     },
     "permission": {
       "view": "Vista",
@@ -44,7 +45,8 @@
     "sectionsTitle": "Paginas compartidas",
     "scope": {
       "all": "Todas las páginas",
-      "count": "{count} páginas"
+      "count": "{count} páginas",
+      "upload": "Carga de adjuntos"
     },
     "sections": {
       "overview": "Descripción general",

@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, Pencil, Plus, ReceiptText, Save, Trash2, Undo2, X } from 'lucide-react'
+import { AlertTriangle, BadgePercent, CheckCircle2, Pencil, Plus, ReceiptText, Save, Trash2, Undo2, X } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { formatCount, localeForLanguage } from '../../i18n'
 import { useI18n } from '../hooks/useI18n'
@@ -385,38 +385,40 @@ export default function FeeTracker(props: FeeTrackerProps) {
                       size="small"
                     />
                   </label>
-                  <label className="fee-edit-toggle">
-                    <input
-                      type="checkbox"
-                      checked={rowDraft.paid}
-                      onChange={function (event) {
-                        const paid = event.target.checked
-                        setEditDraft({
-                          ...rowDraft,
-                          paid,
-                          paidDate: paid ? rowDraft.paidDate || new Date().toISOString().slice(0, 10) : '',
-                          waived: paid ? false : rowDraft.waived,
-                        })
-                      }}
-                    />
+                  <button
+                    type="button"
+                    className={`fee-state-toggle fee-paid-toggle${rowDraft.paid ? ' is-active' : ''}`}
+                    aria-pressed={rowDraft.paid}
+                    onClick={function () {
+                      const paid = !rowDraft.paid
+                      setEditDraft({
+                        ...rowDraft,
+                        paid,
+                        paidDate: paid ? rowDraft.paidDate || new Date().toISOString().slice(0, 10) : '',
+                        waived: paid ? false : rowDraft.waived,
+                      })
+                    }}
+                  >
+                    <CheckCircle2 size={14} aria-hidden="true" />
                     <span>{tx('fees.paid', 'Paid')}</span>
-                  </label>
-                  <label className="fee-edit-toggle">
-                    <input
-                      type="checkbox"
-                      checked={rowDraft.waived}
-                      onChange={function (event) {
-                        const nextWaived = event.target.checked
-                        setEditDraft({
-                          ...rowDraft,
-                          waived: nextWaived,
-                          paid: nextWaived ? false : rowDraft.paid,
-                          paidDate: nextWaived ? '' : rowDraft.paidDate,
-                        })
-                      }}
-                    />
+                  </button>
+                  <button
+                    type="button"
+                    className={`fee-state-toggle fee-waiver-toggle${rowDraft.waived ? ' is-active' : ''}`}
+                    aria-pressed={rowDraft.waived}
+                    onClick={function () {
+                      const nextWaived = !rowDraft.waived
+                      setEditDraft({
+                        ...rowDraft,
+                        waived: nextWaived,
+                        paid: nextWaived ? false : rowDraft.paid,
+                        paidDate: nextWaived ? '' : rowDraft.paidDate,
+                      })
+                    }}
+                  >
+                    <BadgePercent size={14} aria-hidden="true" />
                     <span>{tx('fees.waivedLabel', 'Waived')}</span>
-                  </label>
+                  </button>
                   <CollapsiblePanel
                     open={rowDraft.paid && !rowDraft.waived}
                     keepMounted
@@ -459,18 +461,30 @@ export default function FeeTracker(props: FeeTrackerProps) {
       </div>
 
       <CollapsiblePanel open={adding} keepMounted className="fee-add-collapse" innerClassName="fee-add-collapse-inner" openMs={380} closeMs={320}>
-        <div className="fee-add-form">
-          <input type="number" placeholder={tx('fees.amountPlaceholder', 'Amount')} value={amount} onChange={function (e) { setAmount(e.target.value) }} className="settings-input" min="0.01" max="10000" step="0.01" />
+        <form
+          className="fee-add-form"
+          onSubmit={function (event) {
+            event.preventDefault()
+            handleAdd()
+          }}
+        >
+          <input type="number" placeholder={tx('fees.amountPlaceholder', 'Amount')} value={amount} onChange={function (e) { setAmount(e.target.value) }} className="settings-input fee-add-amount" min="0.01" max="10000" step="0.01" />
           <Select value={currency} options={currencyOptions} onChange={setCurrency} ariaLabel={tx('fees.currency', 'Currency')} size="small" />
-          <label className="fee-waived-label">
-            <input type="checkbox" checked={waived} onChange={function (e) { setWaived(e.target.checked) }} /> {tx('fees.waivedLabel', 'Waived')}
-          </label>
-          <input type="text" placeholder={tx('fees.notesPlaceholder', 'Notes (optional)')} value={notes} onChange={function (e) { setNotes(e.target.value) }} className="settings-input" />
+          <button
+            type="button"
+            className={`fee-state-toggle fee-waiver-toggle${waived ? ' is-active' : ''}`}
+            aria-pressed={waived}
+            onClick={function () { setWaived((current) => !current) }}
+          >
+            <BadgePercent size={14} aria-hidden="true" />
+            <span>{tx('fees.waivedLabel', 'Waived')}</span>
+          </button>
+          <input type="text" placeholder={tx('fees.notesPlaceholder', 'Notes (optional)')} value={notes} onChange={function (e) { setNotes(e.target.value) }} className="settings-input fee-add-notes" maxLength={500} />
           <div className="fee-add-actions">
             <button type="button" className="quiet-action" onClick={function () { setAdding(false) }}>{tx('fees.cancel', 'Cancel')}</button>
-            <button type="button" className="primary-action" onClick={handleAdd}>{tx('fees.addFee', 'Add Fee')}</button>
+            <button type="submit" className="primary-action">{tx('fees.addFee', 'Add Fee')}</button>
           </div>
-        </div>
+        </form>
       </CollapsiblePanel>
       <InlinePresence present={!adding}>
         <button type="button" className="secondary-action fee-add-trigger" onClick={function () {

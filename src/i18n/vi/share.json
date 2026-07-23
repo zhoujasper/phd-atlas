@@ -21,7 +21,8 @@
       "duration": "Thời lượng",
       "permission": "Giấy phép",
       "scope": "Phạm vi",
-      "actions": "Hành động"
+      "actions": "Hành động",
+      "subject": "Mục được chia sẻ"
     },
     "permission": {
       "view": "Xem",
@@ -44,7 +45,8 @@
     "sectionsTitle": "Trang được chia sẻ",
     "scope": {
       "all": "Tất cả các trang",
-      "count": "{count} trang"
+      "count": "{count} trang",
+      "upload": "Tải lên tệp đính kèm"
     },
     "sections": {
       "overview": "Tổng quan",

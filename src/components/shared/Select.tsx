@@ -1,4 +1,4 @@
-import { ChevronDown, Check, Lock } from 'lucide-react'
+import { ChevronDown, Check, Lock, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { useState, useRef, useEffect, useCallback, useMemo, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { getMotionDelay } from '../hooks/useAnimatedClose'
@@ -12,6 +12,19 @@ export type SelectOption<T extends string = string> = {
   disabled?: boolean
   locked?: boolean
   actionLabel?: string
+  /** User-created options expose quiet rename/delete actions in creatable selects. */
+  custom?: boolean
+}
+
+export type SelectCreateConfig<T extends string = string> = {
+  label: string
+  placeholder: string
+  createAriaLabel: string
+  renameAriaLabel: string
+  deleteAriaLabel: string
+  onCreate: (value: T) => void
+  onRename?: (value: T, nextValue: T) => void
+  onDelete?: (value: T) => void
 }
 
 export function Select<T extends string = string>({
@@ -24,6 +37,7 @@ export function Select<T extends string = string>({
   disabled = false,
   searchable = false,
   onLockedOptionClick,
+  create,
 }: {
   value: T
   options: readonly SelectOption<T>[]
@@ -34,17 +48,22 @@ export function Select<T extends string = string>({
   disabled?: boolean
   searchable?: boolean
   onLockedOptionClick?: (option: SelectOption<T>) => void
+  create?: SelectCreateConfig<T>
 }) {
   const { tx } = useI18n()
   const [open, setOpen] = useState(false)
   const [exiting, setExiting] = useState(false)
   const [highlightIndex, setHighlightIndex] = useState(-1)
   const [search, setSearch] = useState('')
+  const [editMode, setEditMode] = useState<'create' | 'rename' | null>(null)
+  const [editingOption, setEditingOption] = useState<SelectOption<T> | null>(null)
+  const [editValue, setEditValue] = useState('')
   const [dropdownStyle, setDropdownStyle] = useState<CSSProperties>({ visibility: 'hidden' })
   const containerRef = useRef<HTMLDivElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+  const editRef = useRef<HTMLInputElement>(null)
   const positionFrameRef = useRef<number | null>(null)
   const closeTimerRef = useRef<number | null>(null)
   const ignoreOutsideUntilRef = useRef(0)
@@ -118,6 +137,9 @@ export function Select<T extends string = string>({
       setExiting(false)
       setHighlightIndex(-1)
       setSearch('')
+      setEditMode(null)
+      setEditingOption(null)
+      setEditValue('')
     }, getMotionDelay(150))
   }, [clearCloseTimer, exiting, open])
 
@@ -129,6 +151,9 @@ export function Select<T extends string = string>({
     setExiting(false)
     setOpen(true)
     setSearch('')
+    setEditMode(null)
+    setEditingOption(null)
+    setEditValue('')
     const idx = filteredOptions.findIndex((o) => o.value === value)
     setHighlightIndex(idx >= 0 && isOptionNavigable(filteredOptions[idx]) ? idx : firstNavigableIndex)
     window.requestAnimationFrame(() => setDropdownStyle(getDropdownPosition()))
@@ -174,6 +199,15 @@ export function Select<T extends string = string>({
   }, [open, searchable])
 
   useEffect(() => {
+    if (!open || !editMode) return
+    const frame = window.requestAnimationFrame(() => {
+      editRef.current?.focus()
+      editRef.current?.select()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [editMode, open])
+
+  useEffect(() => {
     if (!open) return
     setHighlightIndex(firstNavigableIndex)
   }, [firstNavigableIndex, open, search])
@@ -197,6 +231,7 @@ export function Select<T extends string = string>({
   useEffect(() => {
     if (!open) return
     function handleKey(e: KeyboardEvent) {
+      if (editMode) return
       switch (e.key) {
         case 'Escape':
           e.preventDefault()
@@ -227,7 +262,7 @@ export function Select<T extends string = string>({
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [open, close, filteredOptions, highlightIndex, onChange, nextNavigableIndex, onLockedOptionClick])
+  }, [open, close, editMode, filteredOptions, highlightIndex, onChange, nextNavigableIndex, onLockedOptionClick])
 
   // Scroll highlighted item into view
   useEffect(() => {
@@ -246,6 +281,34 @@ export function Select<T extends string = string>({
     }
     if (option.disabled) return
     onChange(option.value as T)
+    close()
+  }
+
+  const beginCreate = () => {
+    setEditMode('create')
+    setEditingOption(null)
+    setEditValue(search.trim())
+  }
+
+  const beginRename = (option: SelectOption<T>) => {
+    setEditMode('rename')
+    setEditingOption(option)
+    setEditValue(option.label)
+  }
+
+  const cancelEdit = () => {
+    setEditMode(null)
+    setEditingOption(null)
+    setEditValue('')
+    window.requestAnimationFrame(() => searchRef.current?.focus())
+  }
+
+  const commitEdit = () => {
+    if (!create) return
+    const nextValue = editValue.trim() as T
+    if (!nextValue) return
+    if (editMode === 'rename' && editingOption) create.onRename?.(editingOption.value, nextValue)
+    else create.onCreate(nextValue)
     close()
   }
 
@@ -323,9 +386,8 @@ export function Select<T extends string = string>({
               const isDisabled = Boolean(option.disabled)
               const isLockedAction = Boolean(isDisabled && option.locked && onLockedOptionClick)
 
-              return (
+              const optionButton = (
                 <button
-                  key={String(option.value)}
                   type="button"
                   role="option"
                   aria-selected={isSelected}
@@ -361,8 +423,73 @@ export function Select<T extends string = string>({
                   )}
                 </button>
               )
+              if (!option.custom || !create || (!create.onRename && !create.onDelete)) {
+                return <div key={String(option.value)} className="custom-select-option-row">{optionButton}</div>
+              }
+              return (
+                <div key={String(option.value)} className="custom-select-option-row custom">
+                  {optionButton}
+                  <span className="custom-select-option-actions">
+                    {create.onRename ? (
+                      <button
+                        type="button"
+                        onClick={(event) => { event.stopPropagation(); beginRename(option) }}
+                        title={create.renameAriaLabel}
+                        aria-label={`${create.renameAriaLabel}: ${option.label}`}
+                      >
+                        <Pencil size={12} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                    {create.onDelete ? (
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={(event) => { event.stopPropagation(); create.onDelete?.(option.value) }}
+                        title={create.deleteAriaLabel}
+                        aria-label={`${create.deleteAriaLabel}: ${option.label}`}
+                      >
+                        <Trash2 size={12} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                  </span>
+                </div>
+              )
             })}
+            {create ? (
+              <button type="button" className="custom-select-create-option" onClick={beginCreate}>
+                <Plus size={14} aria-hidden="true" />
+                <span>{create.label}</span>
+              </button>
+            ) : null}
           </div>
+          {create && editMode ? (
+            <div className="custom-select-create-panel">
+              <input
+                ref={editRef}
+                value={editValue}
+                placeholder={create.placeholder}
+                aria-label={editMode === 'rename' ? create.renameAriaLabel : create.createAriaLabel}
+                onChange={(event) => setEditValue(event.target.value)}
+                onKeyDown={(event) => {
+                  event.stopPropagation()
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    commitEdit()
+                  }
+                  if (event.key === 'Escape') {
+                    event.preventDefault()
+                    cancelEdit()
+                  }
+                }}
+              />
+              <button type="button" onClick={cancelEdit} aria-label={tx('close')} title={tx('close')}>
+                <X size={14} aria-hidden="true" />
+              </button>
+              <button type="button" className="confirm" disabled={!editValue.trim()} onClick={commitEdit} aria-label={tx('save')} title={tx('save')}>
+                <Check size={14} aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
         </div>,
         document.body,
       )}

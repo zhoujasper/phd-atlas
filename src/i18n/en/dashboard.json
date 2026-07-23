@@ -102,6 +102,23 @@
     "priorityValue": "Priority {value}",
     "dayShort": "{count}d",
     "noTimeline": "No timeline events yet.",
-    "noMaterials": "No checklist items yet."
+    "noMaterials": "No checklist items yet.",
+    "guidanceTitle": "My guidance team",
+    "guidanceSubtitle": "Your assigned contacts in {team}.",
+    "guidanceEmptyTitle": "No guidance contact is assigned yet.",
+    "guidanceEmptyDesc": "Your organization administrator can assign a teacher from the Members workspace.",
+    "guidanceRoleOwner": "Institution administrator",
+    "guidanceRoleTeacher": "Teacher",
+    "guidanceEmail": "Email {name}",
+    "guidanceEmailShort": "Email",
+    "guidanceCall": "Call {name}",
+    "guidanceCallShort": "Call",
+    "guidanceWebsite": "Open {name}’s website",
+    "guidanceWebsiteShort": "Website",
+    "guidanceHideDetails": "Hide details for {name}",
+    "guidanceShowDetails": "Show details for {name}",
+    "guidanceOffice": "Office",
+    "guidanceAvailability": "Availability",
+    "guidanceSupport": "How I can help"
   }
 }

@@ -20,6 +20,9 @@ const UpgradeProScreen = lazy(() =>
 const TeamInviteScreen = lazy(() =>
   import('./components/screens/TeamInviteScreen').then((m) => ({ default: m.TeamInviteScreen })),
 )
+const TeamJoinScreen = lazy(() =>
+  import('./components/screens/TeamJoinScreen').then((m) => ({ default: m.TeamJoinScreen })),
+)
 
 function RouteFallback() {
   // Route-shaped skeleton while the main app chunk loads — message is language-agnostic
@@ -34,6 +37,7 @@ export function RootRoutes() {
   const isResetRoute = window.location.pathname.startsWith('/reset-password/')
   const isUpgradeRoute = ['/upgrade-pro', '/pro', '/membership'].includes(window.location.pathname)
   const isTeamInviteRoute = !PUBLIC_EDITION && window.location.pathname.startsWith('/team/accept-invite/')
+  const isTeamJoinRoute = !PUBLIC_EDITION && window.location.pathname.startsWith('/team/join/')
 
   return (
     <Suspense fallback={<RouteFallback />}>
@@ -48,6 +52,10 @@ export function RootRoutes() {
       ) : isTeamInviteRoute ? (
         <StandaloneProviders>
           <TeamInviteScreen token={decodeURIComponent(window.location.pathname.split('/team/accept-invite/')[1] ?? '')} />
+        </StandaloneProviders>
+      ) : isTeamJoinRoute ? (
+        <StandaloneProviders>
+          <TeamJoinScreen code={decodeURIComponent(window.location.pathname.split('/team/join/')[1] ?? '')} />
         </StandaloneProviders>
       ) : isUpgradeRoute ? (
         <StandaloneProviders>

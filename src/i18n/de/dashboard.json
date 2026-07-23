@@ -102,6 +102,23 @@
     "openDiscover": "Entdecken Sie Programme",
     "discoverCta": "Öffnen Sie Entdecken",
     "discoverSubtitle": "Durchsuchen Sie PhD-Programme und -Berater, ordnen Sie sie nach Eignung, importieren Sie sie in Anwendungen und erhalten Sie Übereinstimmungsbenachrichtigungen.",
-    "discoverTitle": "Finden Sie Ihr nächstes Programm"
+    "discoverTitle": "Finden Sie Ihr nächstes Programm",
+    "guidanceTitle": "Mein Betreuungsteam",
+    "guidanceSubtitle": "Ihre zugewiesenen Kontakte bei {team}.",
+    "guidanceEmptyTitle": "Noch keine Betreuungsperson zugewiesen.",
+    "guidanceEmptyDesc": "Die Organisationsverwaltung kann Ihnen im Mitgliederbereich eine Lehrkraft zuweisen.",
+    "guidanceRoleOwner": "Organisationsverwaltung",
+    "guidanceRoleTeacher": "Lehrkraft",
+    "guidanceEmail": "E-Mail an {name}",
+    "guidanceEmailShort": "E-Mail",
+    "guidanceCall": "{name} anrufen",
+    "guidanceCallShort": "Anrufen",
+    "guidanceWebsite": "Website von {name} öffnen",
+    "guidanceWebsiteShort": "Website",
+    "guidanceHideDetails": "Details zu {name} ausblenden",
+    "guidanceShowDetails": "Details zu {name} anzeigen",
+    "guidanceOffice": "Büro",
+    "guidanceAvailability": "Erreichbarkeit",
+    "guidanceSupport": "Dabei kann ich helfen"
   }
 }

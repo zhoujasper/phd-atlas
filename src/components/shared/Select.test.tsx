@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Select } from './Select'
@@ -53,5 +53,78 @@ describe('Select', () => {
       width: '160px',
     })
     rectSpy.mockRestore()
+  })
+
+  it('creates a searchable custom option from the trailing action', async () => {
+    const user = userEvent.setup()
+    const onCreate = vi.fn()
+
+    render(
+      <Select
+        value="one"
+        options={[
+          { value: 'one', label: 'One' },
+          { value: 'two', label: 'Two' },
+        ]}
+        onChange={vi.fn()}
+        searchable
+        create={{
+          label: 'Add custom option',
+          placeholder: 'Option name',
+          createAriaLabel: 'Create option',
+          renameAriaLabel: 'Rename option',
+          deleteAriaLabel: 'Delete option',
+          onCreate,
+        }}
+      />,
+    )
+
+    await user.click(screen.getByRole('button'))
+    await user.click(screen.getByRole('button', { name: 'Add custom option' }))
+    const input = screen.getByRole('textbox', { name: 'Create option' })
+    await user.type(input, 'My option{enter}')
+
+    expect(onCreate).toHaveBeenCalledWith('My option')
+  })
+
+  it('exposes rename and delete controls only for custom options', async () => {
+    const user = userEvent.setup()
+    const onRename = vi.fn()
+    const onDelete = vi.fn()
+
+    render(
+      <Select
+        value="custom"
+        options={[
+          { value: 'built-in', label: 'Built in' },
+          { value: 'custom', label: 'Custom value', custom: true },
+        ]}
+        onChange={vi.fn()}
+        create={{
+          label: 'Add custom option',
+          placeholder: 'Option name',
+          createAriaLabel: 'Create option',
+          renameAriaLabel: 'Rename option',
+          deleteAriaLabel: 'Delete option',
+          onCreate: vi.fn(),
+          onRename,
+          onDelete,
+        }}
+      />,
+    )
+
+    await user.click(screen.getByRole('button'))
+    expect(screen.queryByRole('button', { name: /Rename option: Built in/ })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Rename option: Custom value' }))
+    const renameInput = screen.getByRole('textbox', { name: 'Rename option' })
+    await user.clear(renameInput)
+    await user.type(renameInput, 'Renamed{enter}')
+    expect(onRename).toHaveBeenCalledWith('custom', 'Renamed')
+
+    await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument())
+    await user.click(screen.getByRole('button'))
+    await user.click(screen.getByRole('button', { name: 'Delete option: Custom value' }))
+    expect(onDelete).toHaveBeenCalledWith('custom')
   })
 })

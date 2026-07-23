@@ -21,7 +21,8 @@
       "duration": "지속",
       "permission": "허가",
       "scope": "범위",
-      "actions": "행위"
+      "actions": "행위",
+      "subject": "공유 항목"
     },
     "permission": {
       "view": "보다",
@@ -44,7 +45,8 @@
     "sectionsTitle": "공유 페이지",
     "scope": {
       "all": "모든 페이지",
-      "count": "{count} 페이지"
+      "count": "{count} 페이지",
+      "upload": "첨부 파일 업로드"
     },
     "sections": {
       "overview": "개요",

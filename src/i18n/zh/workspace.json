@@ -62,6 +62,7 @@
     "emptyTitle": "看板暂无申请",
     "emptyDescription": "新建第一条申请，之后即可在这里按阶段推进。",
     "priorityValue": "优先级 {value}",
+    "moveTo": "移动到",
     "moveToStatus": "移动到{status}",
     "showMore": "再显示 {count} 个"
   },

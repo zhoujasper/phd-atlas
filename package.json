@@ -1,7 +1,7 @@
 {
   "name": "phd-atlas",
   "private": true,
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "type": "module",
   "scripts": {
     "dev": "npm run dev:full",
@@ -16,10 +16,13 @@
     "preview": "vite preview",
     "start": "node tools/start-server.mjs",
     "build:update-package": "node tools/build-update-package.mjs",
+    "verify:discover-adapters": "node tools/verify-discover-school-adapters.mjs",
+    "verify:discover-adapters:live": "node tools/verify-discover-school-adapters.mjs --live",
     "seed:stress": "node tools/seed-stress-applications.mjs",
     "qa:stress": "node tools/qa-stress.mjs"
   },
   "dependencies": {
+    "@aiden0z/pptx-renderer": "^1.2.4",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
@@ -39,6 +42,7 @@
     "compression": "^1.8.1",
     "concurrently": "^9.2.1",
     "cors": "^2.8.5",
+    "docx-preview": "^0.3.6",
     "express": "^5.2.1",
     "helmet": "^8.1.0",
     "imapflow": "^1.4.3",
@@ -47,13 +51,18 @@
     "lucide-react": "^1.22.0",
     "mailparser": "^3.9.12",
     "morgan": "^1.10.1",
+    "mssql": "^11.0.1",
     "multer": "^2.0.2",
+    "mysql2": "^3.23.1",
     "nodemailer": "^9.0.3",
     "pdfkit": "^0.17.2",
+    "pg": "^8.22.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "tar-fs": "^2.1.5",
     "web-push": "^3.6.7",
+    "ws": "^8.21.1",
+    "xlsx": "^0.18.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -66,6 +75,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "esbuild": "0.28.1",
     "jsdom": "^29.1.1",
     "oxlint": "^1.69.0",
     "typescript": "~6.0.2",

@@ -106,7 +106,8 @@ export function evaluateNotificationsForUser(applications, todayStr) {
 
 /** A notification is emailed only if the user has at least one verified, notify-enabled receive address. */
 export function shouldEmailNotifications(user) {
-  return (user.settings?.receiveEmails ?? []).some((email) => email.notify && email.verified)
+  return user.settings?.emailNotificationsEnabled !== false
+    && (user.settings?.receiveEmails ?? []).some((email) => email.notify && email.verified)
 }
 
 export function localizeNotificationCandidate(candidate, lang = 'en') {

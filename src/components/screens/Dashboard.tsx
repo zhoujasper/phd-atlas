@@ -21,17 +21,21 @@ import {
   ChevronLeft,
   ChevronRight,
   Circle,
+  Clock3,
   Compass,
   Copy,
   Download,
   ExternalLink,
   FileText,
   FolderOpen,
+  Globe2,
   GraduationCap,
   History,
   LayoutGrid,
   Mail,
+  MapPin,
   PieChart,
+  Phone,
   Plus,
   TrendingUp,
   Users,
@@ -49,6 +53,7 @@ import { useI18n } from '../hooks/useI18n'
 import { getMotionDelay } from '../hooks/useAnimatedClose'
 import { CollapsiblePanel } from '../shared/CollapsiblePanel'
 import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/ExplorerContextMenu'
+import { safeExternalHttpUrl, safeMailtoHref, safeTelHref } from '../../safeLinks'
 
 const statusOrder: ApplicationStatus[] = [
   'Draft', 'Preparing', 'Submitted', 'Interview', 'Accepted', 'Rejected', 'Waitlist',
@@ -56,7 +61,7 @@ const statusOrder: ApplicationStatus[] = [
 
 type StatusViewMode = 'bars' | 'donut' | 'grid'
 type StatSwitchDirection = 'left' | 'right' | 'none'
-type DashboardPanelKey = 'byStudent' | 'priority' | 'tasks' | 'recentOpened' | 'status' | 'deadlines' | 'materials'
+type DashboardPanelKey = 'guidance' | 'byStudent' | 'priority' | 'tasks' | 'recentOpened' | 'status' | 'deadlines' | 'materials'
 
 const statusViewModes: StatusViewMode[] = ['bars', 'donut', 'grid']
 
@@ -75,6 +80,26 @@ export type DashboardJumpTarget = {
   targetId: string
   fallbackText?: string[]
   expand?: { kind: 'material' | 'task'; id: string } | { kind: 'scholarship'; id: string }
+}
+
+export type DashboardGuidanceMember = {
+  id: string
+  name: string
+  avatarUrl?: string
+  role: 'owner' | 'admin'
+  title?: string
+  department?: string
+  email?: string
+  phone?: string
+  office?: string
+  website?: string
+  availability?: string
+  bio?: string
+}
+
+export type DashboardGuidanceTeam = {
+  teamName: string
+  members: DashboardGuidanceMember[]
 }
 
 const dossierJumpTarget: DashboardJumpTarget = { tab: 'dossier', targetId: 'dossier-config-card' }
@@ -205,6 +230,7 @@ function isMaterialComplete(status: string) {
 }
 
 const dashboardPanelDefaults: Record<DashboardPanelKey, boolean> = {
+  guidance: true,
   byStudent: true,
   priority: true,
   tasks: true,
@@ -285,6 +311,7 @@ export function Dashboard({
   onPatchScholarshipMaterialStatus,
   onNew,
   onOpenDiscover,
+  guidanceTeam,
   ownerNames,
   ownerDirectory,
   ownerAvatars,
@@ -319,6 +346,8 @@ export function Dashboard({
   onNew?: () => void
   /** Personal dashboard only — opens the Discover program finder. */
   onOpenDiscover?: () => void
+  /** Student-only, permission-scoped organization contacts shown on the personal dashboard. */
+  guidanceTeam?: DashboardGuidanceTeam
   // applicationId -> owner display name, populated only when this Dashboard is showing the
   // team-scoped list (multiple owners); absent in the personal dashboard.
   ownerNames?: Record<string, string>
@@ -338,6 +367,7 @@ export function Dashboard({
   const [statusViewMode, setStatusViewMode] = useState<StatusViewMode>('donut')
   const [statusViewDirection, setStatusViewDirection] = useState<StatSwitchDirection>('none')
   const [openPanels, setOpenPanels] = useState<Record<DashboardPanelKey, boolean>>(dashboardPanelDefaults)
+  const [expandedGuidanceMemberId, setExpandedGuidanceMemberId] = useState<string | null>(null)
   const [contextMenu, setContextMenu] = useState<ExplorerContextMenuState | null>(null)
   const [deadlineDetailed, setDeadlineDetailed] = useState(loadDeadlineDetailMode)
   const [deadlineVisibleCount, setDeadlineVisibleCount] = useState(DASHBOARD_DEADLINE_INITIAL_COUNT)
@@ -1911,6 +1941,159 @@ export function Dashboard({
     </DashboardPanel>
   ) : null
 
+  const renderGuidancePanel = () => {
+    if (!guidanceTeam) return null
+
+    return (
+      <DashboardPanel
+        panelKey="guidance"
+        title={tx('dashboard.guidanceTitle', 'My guidance team')}
+        icon={<Users size={16} aria-hidden="true" />}
+        open={openPanels.guidance}
+        onToggle={toggleDashboardPanel}
+        headerExtra={<span className="stat-count-badge">{guidanceTeam.members.length}</span>}
+      >
+        <div className="dashboard-guidance-intro">
+          <span>{guidanceTeam.teamName}</span>
+          <p>{format(tx('dashboard.guidanceSubtitle', 'Your assigned contacts in {team}.'), {
+            team: guidanceTeam.teamName,
+          })}</p>
+        </div>
+        {guidanceTeam.members.length === 0 ? (
+          <div className="dashboard-guidance-empty">
+            <span className="empty-state-icon" aria-hidden="true"><Users size={18} /></span>
+            <div>
+              <strong>{tx('dashboard.guidanceEmptyTitle', 'No guidance contact is assigned yet.')}</strong>
+              <p>{tx('dashboard.guidanceEmptyDesc', 'Your organization administrator can assign a teacher from the Members workspace.')}</p>
+            </div>
+          </div>
+        ) : (
+          <div className="dashboard-guidance-list">
+            {guidanceTeam.members.map((member) => {
+              const roleLabel = member.role === 'owner'
+                ? tx('dashboard.guidanceRoleOwner', 'Institution administrator')
+                : tx('dashboard.guidanceRoleTeacher', 'Teacher')
+              const detailId = `dashboard-guidance-${member.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+              const expanded = expandedGuidanceMemberId === member.id
+              const emailHref = member.email ? safeMailtoHref(member.email) : ''
+              const phoneHref = member.phone ? safeTelHref(member.phone) : ''
+              const websiteHref = member.website ? safeExternalHttpUrl(member.website) : ''
+              const hasDetails = Boolean(member.office || member.availability || member.bio)
+
+              return (
+                <article key={member.id} className={`dashboard-guidance-member${expanded ? ' is-expanded' : ''}`}>
+                  <div className="dashboard-guidance-main">
+                    <UserAvatar
+                      avatarUrl={member.avatarUrl}
+                      name={member.name}
+                      className="dashboard-guidance-avatar"
+                    />
+                    {hasDetails ? (
+                      <button
+                        type="button"
+                        className="dashboard-guidance-identity"
+                        onClick={() => setExpandedGuidanceMemberId(expanded ? null : member.id)}
+                        aria-expanded={expanded}
+                        aria-controls={detailId}
+                      >
+                        <strong>{member.name}</strong>
+                        <span>{[member.title || roleLabel, member.department].filter(Boolean).join(' · ')}</span>
+                      </button>
+                    ) : (
+                      <div className="dashboard-guidance-identity">
+                        <strong>{member.name}</strong>
+                        <span>{[member.title || roleLabel, member.department].filter(Boolean).join(' · ')}</span>
+                      </div>
+                    )}
+                    <div className="dashboard-guidance-actions">
+                      {emailHref ? (
+                        <a
+                          href={emailHref}
+                          aria-label={format(tx('dashboard.guidanceEmail', 'Email {name}'), { name: member.name })}
+                        >
+                          <Mail size={14} aria-hidden="true" />
+                          <span>{tx('dashboard.guidanceEmailShort', 'Email')}</span>
+                        </a>
+                      ) : null}
+                      {phoneHref ? (
+                        <a
+                          href={phoneHref}
+                          aria-label={format(tx('dashboard.guidanceCall', 'Call {name}'), { name: member.name })}
+                        >
+                          <Phone size={14} aria-hidden="true" />
+                          <span>{tx('dashboard.guidanceCallShort', 'Call')}</span>
+                        </a>
+                      ) : null}
+                      {websiteHref ? (
+                        <a
+                          href={websiteHref}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          aria-label={format(tx('dashboard.guidanceWebsite', 'Open {name}’s website'), { name: member.name })}
+                        >
+                          <Globe2 size={14} aria-hidden="true" />
+                          <span>{tx('dashboard.guidanceWebsiteShort', 'Website')}</span>
+                        </a>
+                      ) : null}
+                    </div>
+                    {hasDetails ? (
+                      <button
+                        type="button"
+                        className="dashboard-guidance-detail-toggle"
+                        onClick={() => setExpandedGuidanceMemberId(expanded ? null : member.id)}
+                        aria-expanded={expanded}
+                        aria-controls={detailId}
+                        aria-label={format(
+                          tx(
+                            expanded ? 'dashboard.guidanceHideDetails' : 'dashboard.guidanceShowDetails',
+                            expanded ? 'Hide details for {name}' : 'Show details for {name}',
+                          ),
+                          { name: member.name },
+                        )}
+                      >
+                        <ChevronDown size={15} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                  </div>
+                  {hasDetails ? (
+                    <CollapsiblePanel
+                      open={expanded}
+                      id={detailId}
+                      className="dashboard-guidance-detail"
+                      innerClassName="dashboard-guidance-detail-inner"
+                    >
+                      {member.office ? (
+                        <span>
+                          <MapPin size={14} aria-hidden="true" />
+                          <small>{tx('dashboard.guidanceOffice', 'Office')}</small>
+                          <strong>{member.office}</strong>
+                        </span>
+                      ) : null}
+                      {member.availability ? (
+                        <span>
+                          <Clock3 size={14} aria-hidden="true" />
+                          <small>{tx('dashboard.guidanceAvailability', 'Availability')}</small>
+                          <strong>{member.availability}</strong>
+                        </span>
+                      ) : null}
+                      {member.bio ? (
+                        <span className="dashboard-guidance-support">
+                          <Users size={14} aria-hidden="true" />
+                          <small>{tx('dashboard.guidanceSupport', 'How I can help')}</small>
+                          <strong>{member.bio}</strong>
+                        </span>
+                      ) : null}
+                    </CollapsiblePanel>
+                  ) : null}
+                </article>
+              )
+            })}
+          </div>
+        )}
+      </DashboardPanel>
+    )
+  }
+
   return (
     <section className="dashboard" aria-label={tx('dashboard.title')} data-tour="dashboard-overview">
       <header className="dashboard-header" data-tour="dashboard-header">
@@ -1942,6 +2125,8 @@ export function Dashboard({
         >
           {renderApplicationSnapshot()}
         </section>
+
+        {renderGuidancePanel()}
 
         <div
           className="dashboard-triple-row dashboard-focus-row"

@@ -62,6 +62,7 @@
     "emptyTitle": "No applications on the board",
     "emptyDescription": "Create your first application, then move it through each stage here.",
     "priorityValue": "P{value}",
+    "moveTo": "Move to",
     "moveToStatus": "Move to {status}",
     "showMore": "Show {count} more"
   },

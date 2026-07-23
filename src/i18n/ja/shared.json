@@ -4,6 +4,17 @@
   "confirm": "確認する",
   "cancel": "キャンセル",
   "done": "終わり",
+  "filePreview": {
+    "preview": "ファイルプレビュー",
+    "document": "文書",
+    "spreadsheet": "スプレッドシート",
+    "presentation": "プレゼンテーション",
+    "unavailable": "このファイルはここではプレビューできません",
+    "downloadHint": "ネイティブアプリで開くにはダウンロードしてください。",
+    "slideCount": "{current} / {total} 枚目",
+    "sheets": "ワークブックのシート",
+    "renderError": "元のレイアウトをレンダリングできませんでした"
+  },
   "noResults": "結果はありません",
   "search": "検索",
   "sort": "選別",
@@ -86,6 +97,7 @@
     "RATE_LIMITED": "リクエストが多すぎます。しばらく待ってから、もう一度試してください。",
     "NETWORK_ERROR": "ネットワーク接続に失敗しました。接続を確認して、もう一度試してください。",
     "REQUEST_FAILED": "リクエストは失敗しました。もう一度試してください。",
+    "DATABASE_TARGET_NOT_EMPTY": "選択したデータベースには既に PhD Atlas ワークスペースがあります。初期設定では上書きしません。空のデータベースを選ぶか、既存のインストール環境から移行してください。",
     "SERVER_ERROR": "予期しないサーバーエラー。後でもう一度試してください。",
     "SERVER_UNAVAILABLE": "PhD Atlas サーバーは利用できません。完全なサービスが実行されていることを確認してから、再試行してください。",
     "TOKEN_EXPIRED": "セッションの有効期限が切れました。再度サインインしてください。",
@@ -126,6 +138,7 @@
     "TEAM_STORAGE_QUOTA_EXCEEDED": "チームのストレージがいっぱいです。システム管理者にクォータを増やすか、最初にファイルを削除するように依頼してください。",
     "TEAM_TRANSFER_NOT_AVAILABLE": "現時点では、このアプリケーションを個人ワークスペースと組織ワークスペース間で移動することはできません。",
     "TEAM_TRANSFER_NOT_FOUND": "保留中のチーム転送リクエストが見つかりませんでした。",
+    "TEAM_TRANSFER_PENDING_LIMIT": "チーム承認待ちの申請が上限に達しています。いずれかを処理してから、新しい申請を送信してください。",
     "TEAM_TRANSFER_STUDENT_REQUIRED": "組織内のアクティブな学生アカウントのみがアプリケーションを移動または移動できます。",
     "SHARE_LIMIT_REACHED": "アクティブな共有リンクの上限は {limit} です。 Pro にアップグレードするか、管理者に制限を引き上げるよう依頼してください。",
     "SHARE_CREATE_LIMIT_REACHED": "{limit} 共有リンクの生涯作成制限に達しました。 Pro にアップグレードするか、管理者に制限を引き上げるよう依頼してください。",
@@ -200,10 +213,18 @@
     "TEAM_SHARE_LIMIT_REACHED": "チームは、アクティブな共有リンクの制限である {limit} に達しました。システム管理者にこの値を上げるように依頼してください。",
     "UNSAFE_ATTACHMENT": "この添付ファイルは安全に受け付けられませんでした。種類と内容を確認して、再度実行してください。",
     "UNTRUSTED_HOST": "この PhD Atlas サーバー アドレスは信頼できません。",
-    "INVALID_UPDATE_PACKAGE": "This is not a supported PhD Atlas update package.",
-    "UPDATE_INTEGRITY_FAILED": "The update package failed its integrity check. Download it again from the official Release.",
-    "UPDATE_APPLY_FAILED": "The update failed and the previous runtime was restored.",
-    "SETUP_ALREADY_COMPLETED": "Initial setup has already been completed. Sign in with the administrator account."
+    "INVALID_UPDATE_PACKAGE": "これはサポートされている PhD Atlas 更新パッケージではありません。",
+    "UPDATE_INTEGRITY_FAILED": "更新パッケージは整合性チェックに失敗しました。公式リリースから再度ダウンロードしてください。",
+    "UPDATE_APPLY_FAILED": "更新は失敗し、以前のランタイムが復元されました。",
+    "SETUP_ALREADY_COMPLETED": "初期設定はすでに完了しています。管理者アカウントでサインインします。",
+    "TEAM_DISCOVER_FORBIDDEN": "チーム探索を実行できるのはチーム所有者と教員のみです。",
+    "TEAM_DISCOVER_KEY_FORBIDDEN": "チーム探索では、選択したチームのキーのみ使用できます。",
+    "TEAM_DISCOVER_TARGET_FORBIDDEN": "割り当てられたアクティブな学生のみ調査できます。",
+    "TEAM_DISCOVER_TARGET_REQUIRED": "チーム探索では、チームと割り当てられた学生の両方を選択してください。",
+    "DISCOVER_ADVISOR_EMAIL_REQUIRED": "選択した指導教員には確認済みのメールアドレスがありません。",
+    "DISCOVER_ADVISOR_NOT_VERIFIED": "このプログラムを出願に追加する前に、有効な指導教員プロフィールとメールアドレスが必要です。",
+    "DISCOVER_PROGRAM_NOT_VERIFIED": "このプログラムには確認済みの公式ソースまたは現在の出願締切がありません。インポート前に調査を更新してください。",
+    "MAIL_ATTACHMENT_TOO_LARGE": "添付ファイルのサイズが大きすぎるため、メールに追加できません。"
   },
   "apiErrorFields": {
     "captchaAnswer": "確認の答え",
@@ -598,7 +619,9 @@
         "team_message": "チームメッセージ",
         "team_update": "チームの最新情報",
         "membership_update": "メンバーシップ",
-        "admin_announcement": "発表"
+        "admin_announcement": "発表",
+        "discover_research_complete": "Discover の調査",
+        "discover_research_failed": "Discover の調査"
       },
       "tab": {
         "dossier": "関係書類",

@@ -83,6 +83,39 @@ export type DiscoverProgram = {
   fitRationale: string
   siblingPrograms: string
   sources: string[]
+  /** Time at which the live evidence behind this row was last collected. */
+  collectedAt?: string | null
+  tuitionLocal?: string
+  tuitionNotes?: string
+  rankingYear?: number | null
+  qsWorldRank?: number | null
+  qsSubjectRank?: number | null
+  qsSubjectName?: string
+  theWorldRank?: number | null
+  theSubjectRank?: number | null
+  theSubjectName?: string
+  rankingSources?: string[]
+  factSources?: {
+    deadline: string
+    funding: string
+    tuition: string
+    restrictions: string
+    international: string
+    outcomes: string
+    admissionsBackgrounds: string
+    degreeStructure: string
+    applicationRoute: string
+  }
+  scholarships?: Array<{
+    name: string
+    provider: string
+    amount: string
+    eligibility: string
+    deadline: string
+    url: string
+    profileFit: string
+    verifiedAt: string | null
+  }>
   tags: string[]
   multiApply: 'multi' | 'single' | 'unknown'
   careerOutcomes: string
@@ -90,6 +123,14 @@ export type DiscoverProgram = {
   intlNotes: string
   colIndex: number
   pis: DiscoverPi[]
+  provenance?: 'manual' | 'ai' | 'official_catalog'
+  verification?: {
+    status: 'verified' | 'partial' | 'unverified'
+    checkedAt: string | null
+    officialSourceCount: number
+    advisorSourceCount: number
+    issues: string[]
+  }
   /** Structured deadlines, tests, materials, fees, restrictions, route. */
   requirements?: DiscoverRequirements
 }
@@ -132,10 +173,147 @@ export type DiscoverAiEnrichment = {
   updatedAt?: string | null
 }
 
+export type DiscoverResearchJobStatus = 'queued' | 'running' | 'completed' | 'failed'
+
+/** Persisted job state lets Discover recover after the side sheet is closed. */
+export type DiscoverResearchJob = {
+  id: string
+  status: DiscoverResearchJobStatus
+  queuedAt: string
+  startedAt?: string | null
+  completedAt?: string | null
+  message?: string | null
+  errorCode?: string | null
+  sourceCount?: number
+  keyIds?: string[]
+  teamId?: string | null
+  targetUserId?: string | null
+  requestedByUserId?: string | null
+  request?: {
+    useAi: boolean
+    acceptSuggestions: boolean
+    notify: boolean
+    keyIds: string[]
+  } | null
+}
+
+export type DiscoverSourcePageType = 'advisor' | 'program' | 'admissions' | 'funding' | 'research' | 'homepage'
+
+/** Durable audit record from a bounded, robots-respecting official-site crawl. */
+export type DiscoverSourcePage = {
+  url: string
+  title: string | null
+  label: string | null
+  types: DiscoverSourcePageType[]
+  discoveredFrom: string[]
+  fetched: boolean
+  individualAdvisor: boolean
+  declaredKinds: string[]
+  promptInjectionSuspected: boolean
+}
+
+export type DiscoverSourceIndexSchool = {
+  school: string
+  region: string
+  officialUrl: string
+  allowedHosts: string[]
+  collectedAt: string | null
+  crawlStatus: 'ok' | 'robots' | 'blocked' | 'unavailable' | 'invalid-source'
+  health: {
+    status: 'ok' | 'robots' | 'blocked' | 'unavailable' | 'invalid-source'
+    attemptedAt: string | null
+    declaredSeedCount: number
+    sitemapCount: number
+    fetchedPageCount: number
+    candidatePageCount: number
+    httpFailures: number[]
+  } | null
+  fetchedPageCount: number
+  candidatePageCount: number
+  pages: DiscoverSourcePage[]
+  advisorPages: DiscoverSourcePage[]
+  programPages: DiscoverSourcePage[]
+  admissionsPages: DiscoverSourcePage[]
+  fundingPages: DiscoverSourcePage[]
+  researchPages: DiscoverSourcePage[]
+  scholarlyEvidence: {
+    provider: 'openalex+ror'
+    queriedAt: string | null
+    query: string
+    status: 'ok' | 'unavailable'
+    error: string | null
+    institution: {
+      openAlexId: string | null
+      rorId: string | null
+      displayName: string
+      homepageUrl: string | null
+      domains: string[]
+    } | null
+    candidateResearchers: Array<{
+      openAlexId: string
+      name: string
+      orcid: string | null
+      profileUrl: string
+      score: number
+      matchedQueries: string[]
+      recentWorks: Array<{
+        title: string
+        year: number | null
+        citedByCount: number
+        source: string
+        matchedQuery: string
+      }>
+    }>
+  } | null
+}
+
+export type DiscoverSourceIndex = {
+  schemaVersion: 1 | 2
+  generatedAt: string | null
+  sourceCount: number
+  schools: DiscoverSourceIndexSchool[]
+  adapterCoverage: {
+    passed: boolean
+    requiredSchoolCount: number
+    registrySchoolCount: number
+    coveredSchoolCount: number
+    fullyTypedSchoolCount: number
+    seedCount: number
+  } | null
+  opportunitySources?: Array<{
+    name: string
+    url: string
+    authority: 'lead-only'
+    status: 'ok' | 'partial' | 'blocked' | 'unavailable' | 'robots' | 'invalid-source'
+    checkedAt: string | null
+    fetchedPageCount: number
+    candidatePageCount: number
+    httpFailures: number[]
+  }>
+  quality: {
+    passed: boolean
+    coveragePassed: boolean
+    checkedAt: string | null
+    failures: string[]
+    warnings: string[]
+    successfulSchoolCrawls: number
+    indexedAdvisorPages: number
+    aiProgramCount: number
+    sourcedProgramCount: number
+    officialProgramCoverage: number
+    crossSchoolSourceViolations: number
+    genericProgramRows: number
+    verifiedAdvisorProfiles: number
+    scholarlyInstitutionsResolved: number
+  } | null
+}
+
 export type DiscoverUserState = {
   version: 1
   intake: DiscoverIntake
   intakeCompleted: boolean
+  /** Server-owned tombstones keep explicitly deleted results from returning after an in-flight run. */
+  deletedProgramIds: string[]
   hiddenProgramIds: string[]
   hiddenPiIds: string[]
   watchedProgramIds: string[]
@@ -147,10 +325,13 @@ export type DiscoverUserState = {
   lastMatchIds: string[]
   researchRuns: number
   catalogSource?: DiscoverCatalogSource
+  officialResearchOnly?: boolean
   customPrograms?: DiscoverProgram[]
   aiEnrichments?: Record<string, DiscoverAiEnrichment>
   lastAiResearchAt?: string | null
   preferredAiKeyId?: string | null
+  preferredAiKeyIds?: string[]
+  researchJob: DiscoverResearchJob | null
 }
 
 export type DiscoverCatalogMeta = {
@@ -344,6 +525,10 @@ export type DiscoverResearchPayload = {
   ranked: ScoredDiscoverProgram[]
 }
 
+export type DiscoverResearchStartPayload = Omit<DiscoverCatalogPayload, 'meta'> & {
+  job: DiscoverResearchJob
+}
+
 export type DiscoverEnrichmentChange = {
   id: string
   target: string
@@ -383,7 +568,7 @@ export const DEFAULT_RANKER: DiscoverRankerWeights = {
 export const DEFAULT_INTAKE: DiscoverIntake = {
   field: '',
   subfields: [],
-  regions: ['US', 'UK', 'EU', 'CA'],
+  regions: ['US', 'UK', 'EU', 'CA', 'SG', 'HK', 'CN', 'AU', 'OTHER'],
   stipendFloor: 35000,
   currency: 'USD',
   nPrograms: 20,
@@ -402,6 +587,7 @@ export function defaultDiscoverState(): DiscoverUserState {
     version: 1,
     intake: { ...DEFAULT_INTAKE },
     intakeCompleted: false,
+    deletedProgramIds: [],
     hiddenProgramIds: [],
     hiddenPiIds: [],
     watchedProgramIds: [],
@@ -412,11 +598,14 @@ export function defaultDiscoverState(): DiscoverUserState {
     lastResearchAt: null,
     lastMatchIds: [],
     researchRuns: 0,
-    catalogSource: 'merged',
+    catalogSource: 'custom',
+    officialResearchOnly: true,
     customPrograms: [],
     aiEnrichments: {},
     lastAiResearchAt: null,
     preferredAiKeyId: null,
+    preferredAiKeyIds: [],
+    researchJob: null,
   }
 }
 

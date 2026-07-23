@@ -102,6 +102,23 @@
     "openDiscover": "Descubra programas",
     "discoverTitle": "Encontre seu próximo programa",
     "discoverCta": "Abra a descoberta",
-    "discoverSubtitle": "Navegue por programas e orientadores de doutorado, classifique por adequação, importe para aplicativos e receba notificações de correspondência."
+    "discoverSubtitle": "Navegue por programas e orientadores de doutorado, classifique por adequação, importe para aplicativos e receba notificações de correspondência.",
+    "guidanceTitle": "Minha equipe de orientação",
+    "guidanceSubtitle": "Seus contatos designados em {team}.",
+    "guidanceEmptyTitle": "Ainda não há um contato de orientação designado.",
+    "guidanceEmptyDesc": "A administração da organização pode designar um orientador na área Membros.",
+    "guidanceRoleOwner": "Administração da organização",
+    "guidanceRoleTeacher": "Orientador",
+    "guidanceEmail": "Enviar e-mail para {name}",
+    "guidanceEmailShort": "E-mail",
+    "guidanceCall": "Ligar para {name}",
+    "guidanceCallShort": "Ligar",
+    "guidanceWebsite": "Abrir o site de {name}",
+    "guidanceWebsiteShort": "Site",
+    "guidanceHideDetails": "Ocultar detalhes de {name}",
+    "guidanceShowDetails": "Mostrar detalhes de {name}",
+    "guidanceOffice": "Gabinete",
+    "guidanceAvailability": "Disponibilidade",
+    "guidanceSupport": "Como posso ajudar"
   }
 }

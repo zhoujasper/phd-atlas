@@ -19,7 +19,7 @@
     "uploadHubSubtitle": "Upload each required file. Limits and allowed types are listed per item so nothing is ambiguous.",
     "uploadHubProgress": "{done} of {total} items have files",
     "uploadHubEmpty": "No upload targets on this link",
-    "uploadHubEmptyHint": "The applicant did not include checklist or task pages that accept files.",
+    "uploadHubEmptyHint": "The applicant has not marked any checklist items or tasks for shared upload.",
     "uploadItemRequired": "Required",
     "uploadItemOptional": "Optional",
     "uploadItemHasFiles": "Files received",

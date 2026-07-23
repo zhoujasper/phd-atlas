@@ -1,65 +1,217 @@
-name: Publish beta container image
+name: Validate and publish main container
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
-  group: container-${{ github.workflow }}-${{ github.ref }}
+  group: phd-atlas-container-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
   cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: zhoujasper/phd-atlas
 
 jobs:
-  build-and-publish:
+  validate-pull-request:
+    if: github.repository == 'zhoujasper/phd-atlas' && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    permissions:
+      contents: read
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Validate pull request
+        run: |
+          npm ci
+          npm run lint
+          npm run i18n:check
+          npx tsc --noEmit
+          npm test
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build both architectures without publishing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish-main:
+    if: github.repository == 'zhoujasper/phd-atlas' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Validate source
+        run: |
+          npm ci
+          npm run lint
+          npm run i18n:check
+          npx tsc --noEmit
+          npm test
+
+      - name: Define candidate and immutable SHA tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "CANDIDATE_TAG=candidate-main-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "SHORT_SHA=${GITHUB_SHA:0:12}"
+          } >> "$GITHUB_ENV"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Generate image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          flavor: |
-            latest=false
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=raw,value=beta,enable={{is_default_branch}}
-            type=sha,format=short,prefix=sha-
-
-      - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
+      - name: Log in for candidate publication
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish image
+      - name: Build and publish a candidate image
+        id: candidate
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.CANDIDATE_TAG }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=main
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Remove registry credentials before validation
+        shell: bash
+        run: docker logout "$REGISTRY"
+
+      - name: Verify anonymous candidate manifest
+        shell: bash
+        env:
+          CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error title=Missing candidate digest::Buildx did not return a canonical manifest digest."
+            exit 1
+          fi
+          manifest_path="$RUNNER_TEMP/phd-atlas-main-candidate-manifest.json"
+          docker buildx imagetools inspect \
+            --raw "${REGISTRY}/${IMAGE_NAME}@${CANDIDATE_DIGEST}" > "$manifest_path"
+          MANIFEST_PATH="$manifest_path" node <<'NODE'
+          const fs = require('node:fs')
+          const manifest = JSON.parse(fs.readFileSync(process.env.MANIFEST_PATH, 'utf8'))
+          const platforms = new Set(
+            (manifest.manifests || []).map((entry) =>
+              `${entry.platform?.os || ''}/${entry.platform?.architecture || ''}`,
+            ),
+          )
+          for (const expected of ['linux/amd64', 'linux/arm64']) {
+            if (!platforms.has(expected)) {
+              throw new Error(`Candidate image is missing ${expected}. Found: ${[...platforms].join(', ')}`)
+            }
+          }
+          NODE
+
+      - name: Smoke test candidate on amd64 and arm64
+        shell: bash
+        env:
+          CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: |
+          bash tools/smoke-container-image.sh \
+            "${REGISTRY}/${IMAGE_NAME}@${CANDIDATE_DIGEST}" \
+            main-candidate
+
+      - name: Log in to promote validated tags
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote the candidate to main and immutable SHA
+        shell: bash
+        env:
+          CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: |
+          set -euo pipefail
+          sha_ref="${REGISTRY}/${IMAGE_NAME}:sha-${SHORT_SHA}"
+          if output="$(docker buildx imagetools inspect "$sha_ref" 2>/dev/null)"; then
+            existing_digest="$(printf '%s\n' "$output" | awk '$1 == "Digest:" { print $2; exit }')"
+            if [[ "$existing_digest" != "$CANDIDATE_DIGEST" ]]; then
+              echo "::error title=Immutable SHA tag mismatch::Refusing to overwrite $sha_ref."
+              exit 1
+            fi
+          fi
+          docker buildx imagetools create \
+            --tag "${REGISTRY}/${IMAGE_NAME}:main" \
+            --tag "$sha_ref" \
+            "${REGISTRY}/${IMAGE_NAME}@${CANDIDATE_DIGEST}"
+          docker logout "$REGISTRY"
+
+      - name: Verify anonymous promoted tags
+        shell: bash
+        env:
+          CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for ref in \
+            "${REGISTRY}/${IMAGE_NAME}:main" \
+            "${REGISTRY}/${IMAGE_NAME}:sha-${SHORT_SHA}"; do
+            resolved_digest="$(
+              docker buildx imagetools inspect "$ref" \
+                | awk '$1 == "Digest:" { print $2; exit }'
+            )"
+            if [[ "$resolved_digest" != "$CANDIDATE_DIGEST" ]]; then
+              echo "::error title=Promoted tag digest mismatch::$ref does not resolve to the validated candidate."
+              exit 1
+            fi
+          done
+
+      - name: Smoke test promoted main on amd64 and arm64
+        shell: bash
+        run: |
+          bash tools/smoke-container-image.sh \
+            "${REGISTRY}/${IMAGE_NAME}:main" \
+            main

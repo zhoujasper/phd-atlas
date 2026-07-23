@@ -19,6 +19,8 @@ export type InlinePresenceProps = {
   durationMs?: number
   /** Compensates for a flex/grid parent gap while the item collapses to zero. */
   parentGap?: string
+  /** Skips width measurement when a busy surface should only animate on the compositor. */
+  layout?: 'measured' | 'instant'
 }
 
 /**
@@ -26,7 +28,8 @@ export type InlinePresenceProps = {
  *
  * Keeping the child mounted gives it an exit frame. Measuring its intrinsic
  * width lets the wrapper interpolate layout, so siblings are pushed smoothly
- * instead of jumping after an opacity-only animation.
+ * instead of jumping after an opacity-only animation. Busy surfaces can opt
+ * into instant layout, keeping only the compositor-friendly content motion.
  */
 export function InlinePresence({
   present,
@@ -35,11 +38,14 @@ export function InlinePresence({
   innerClassName,
   durationMs = 380,
   parentGap = '0px',
+  layout = 'measured',
 }: InlinePresenceProps) {
   const rootRef = useRef<HTMLSpanElement>(null)
   const innerRef = useRef<HTMLSpanElement>(null)
 
   useLayoutEffect(() => {
+    if (layout === 'instant') return undefined
+
     const root = rootRef.current
     const inner = innerRef.current
     if (!root || !inner) return undefined
@@ -68,7 +74,7 @@ export function InlinePresence({
       window.cancelAnimationFrame(frame)
       observer.disconnect()
     }
-  }, [children])
+  }, [children, layout])
 
   const style = {
     '--inline-presence-duration': `${durationMs}ms`,
@@ -78,7 +84,7 @@ export function InlinePresence({
   return (
     <span
       ref={rootRef}
-      className={clsx('inline-presence', className)}
+      className={clsx('inline-presence', layout === 'instant' && 'inline-presence-instant', className)}
       data-present={present ? 'true' : 'false'}
       aria-hidden={!present}
       inert={present ? undefined : true}

@@ -28,6 +28,7 @@ export type TeamScreenProps = {
   onTestAiKey?: (id: string) => Promise<{ latencyMs: number; model?: string }>
   onResetAiKeyUsage?: (id: string) => Promise<void> | void
   onNotify?: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
+  onOpenTeamDiscover?: (studentUserId: string) => void
 }
 
 export function TeamScreen(_props: TeamScreenProps) {

@@ -1,4 +1,4 @@
-name: Release update package
+name: Release update package and container
 
 on:
   push:
@@ -6,54 +6,563 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: phd-atlas-public-release
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: zhoujasper/phd-atlas
 
 jobs:
-  release:
+  mssql-release-gate:
+    if: github.repository == 'zhoujasper/phd-atlas'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 25
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-      - name: Set release version
+      - name: Install smoke-test dependencies
+        run: npm ci
+      - name: Verify Microsoft SQL Server 2022 adapter
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Release tag must use vMAJOR.MINOR.PATCH." >&2
+          set -euo pipefail
+          container_name="phd-atlas-mssql-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          sa_password="PhD!$(openssl rand -hex 24)Aa1"
+          schema_name="phd_atlas_smoke_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          echo "::add-mask::$sa_password"
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [ "$status" -ne 0 ]; then
+              docker logs --tail 200 "$container_name" 2>&1 || true
+            fi
+            docker rm --force --volumes "$container_name" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+          docker run --detach \
+            --name "$container_name" \
+            --env ACCEPT_EULA=Y \
+            --env MSSQL_SA_PASSWORD="$sa_password" \
+            --publish 127.0.0.1::1433 \
+            mcr.microsoft.com/mssql/server:2022-latest >/dev/null
+          published_address="$(docker port "$container_name" 1433/tcp | tail -n 1)"
+          published_port="${published_address##*:}"
+          if ! [[ "$published_port" =~ ^[0-9]+$ ]]; then
+            echo "::error title=MSSQL smoke setup failed::Could not resolve the published SQL Server port."
             exit 1
           fi
-          npm version "$version" --no-git-tag-version --allow-same-version
+          export PHD_ATLAS_RUN_EXTERNAL_DB_SMOKE=1
+          export PHD_ATLAS_SMOKE_DB_ENGINE=mssql
+          export PHD_ATLAS_SMOKE_DB_HOST=127.0.0.1
+          export PHD_ATLAS_SMOKE_DB_PORT="$published_port"
+          export PHD_ATLAS_SMOKE_DB_NAME=master
+          export PHD_ATLAS_SMOKE_DB_USER=sa
+          export PHD_ATLAS_SMOKE_DB_PASSWORD="$sa_password"
+          export PHD_ATLAS_SMOKE_DB_SCHEMA="$schema_name"
+          export PHD_ATLAS_SMOKE_DB_SSL=false
+          export PHD_ATLAS_SMOKE_READY_TIMEOUT_MS=300000
+          node tools/smoke-external-database.mjs
+
+  release:
+    needs: mssql-release-gate
+    if: github.repository == 'zhoujasper/phd-atlas'
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Check out the tagged public source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Verify release tag and freeze build time
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -e "const value = JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version; if (typeof value !== 'string' || !value) process.exit(1); process.stdout.write(value)")"
+          if ! node -e 'const pattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/; if (!pattern.test(process.argv[1])) process.exit(1)' "$package_version"; then
+            echo "::error title=Invalid package version::package.json version '$package_version' is not a supported SemVer value."
+            exit 1
+          fi
+          if [[ "$package_version" == *+* ]]; then
+            echo "::error title=Unsupported container version::Public release versions cannot contain SemVer build metadata because OCI tags cannot represent '+' without collisions."
+            exit 1
+          fi
+          expected_tag="v${package_version}"
+          if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
+            echo "::error title=Release tag/version mismatch::Expected tag '$expected_tag' from package.json, received '$GITHUB_REF_NAME'."
+            exit 1
+          fi
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          if ! [[ "$source_date_epoch" =~ ^[0-9]+$ ]]; then
+            echo "::error title=Missing source timestamp::Could not derive SOURCE_DATE_EPOCH from the tagged commit."
+            exit 1
+          fi
+          {
+            echo "PACKAGE_VERSION=$package_version"
+            echo "SOURCE_DATE_EPOCH=$source_date_epoch"
+            echo "CANDIDATE_TAG=candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          } >> "$GITHUB_ENV"
+
       - name: Verify source
         run: |
           npm ci
+          npm run lint
           npm run i18n:check
           npx tsc --noEmit
           npm test
-      - name: Build and exercise update package
+
+      - name: Build and reproduce the update package
         shell: bash
         run: |
+          set -euo pipefail
           npm run build:update-package
-          package_path="$(find storage/update-packages -maxdepth 1 -type f -name '*.tar.gz' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          package_path="storage/update-packages/phd-atlas-update-${PACKAGE_VERSION}-release.tar.gz"
+          if [ ! -f "$package_path" ] || [ ! -f "${package_path}.sha256" ]; then
+            echo "::error title=Missing update assets::The deterministic update package or checksum was not produced."
+            exit 1
+          fi
+          first_package="$RUNNER_TEMP/$(basename "$package_path").first"
+          first_checksum="${first_package}.sha256"
+          cp "$package_path" "$first_package"
+          cp "${package_path}.sha256" "$first_checksum"
+          npm run build:update-package
+          cmp --silent "$first_package" "$package_path"
+          cmp --silent "$first_checksum" "${package_path}.sha256"
           node tools/verify-update-package.mjs "$package_path"
-          sha256sum "$package_path" > "${package_path}.sha256"
+          (
+            cd "$(dirname "$package_path")"
+            sha256sum --check "$(basename "$package_path").sha256"
+          )
           echo "PACKAGE_PATH=$package_path" >> "$GITHUB_ENV"
-      - name: Publish GitHub Release
+
+      - name: Prepare an idempotent Draft Release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          prerelease=()
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-            prerelease+=(--prerelease)
+          set -euo pipefail
+          package_name="$(basename "$PACKAGE_PATH")"
+          checksum_name="${package_name}.sha256"
+          version_prefix="phd-atlas-update-${PACKAGE_VERSION}-"
+          expected_prerelease=false
+          channel_args=()
+          if [[ "${PACKAGE_VERSION%%+*}" == *-* ]]; then
+            expected_prerelease=true
+            channel_args+=(--prerelease)
           fi
-          gh release create "$GITHUB_REF_NAME" \
-            "$PACKAGE_PATH" \
-            "${PACKAGE_PATH}.sha256" \
-            --verify-tag \
-            --generate-notes \
-            "${prerelease[@]}" \
-            --title "PhD Atlas $GITHUB_REF_NAME"
+
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              "$PACKAGE_PATH" \
+              "${PACKAGE_PATH}.sha256" \
+              --draft \
+              --verify-tag \
+              --generate-notes \
+              "${channel_args[@]}" \
+              --title "PhD Atlas $GITHUB_REF_NAME"
+          fi
+
+          release_json="$RUNNER_TEMP/phd-atlas-release-before.json"
+          gh release view "$GITHUB_REF_NAME" --json assets,isDraft,isPrerelease,tagName > "$release_json"
+          actual_tag="$(jq -r '.tagName' "$release_json")"
+          actual_prerelease="$(jq -r '.isPrerelease' "$release_json")"
+          is_draft="$(jq -r '.isDraft' "$release_json")"
+          if [[ "$actual_tag" != "$GITHUB_REF_NAME" || "$actual_prerelease" != "$expected_prerelease" ]]; then
+            echo "::error title=Release metadata mismatch::Existing Release tag or prerelease channel differs from the canonical package version."
+            exit 1
+          fi
+
+          unexpected_assets="$(jq -r \
+            --arg prefix "$version_prefix" \
+            --arg package "$package_name" \
+            --arg checksum "$checksum_name" \
+            '.assets[].name | select(startswith($prefix) and . != $package and . != $checksum)' \
+            "$release_json")"
+          if [[ -n "$unexpected_assets" ]]; then
+            echo "::error title=Unexpected release assets::Refusing to remove or overwrite existing version assets: $unexpected_assets"
+            exit 1
+          fi
+
+          for asset_name in "$package_name" "$checksum_name"; do
+            asset_count="$(jq -r --arg name "$asset_name" '[.assets[] | select(.name == $name)] | length' "$release_json")"
+            if [[ "$asset_count" -gt 1 ]]; then
+              echo "::error title=Duplicate release asset::Release contains more than one '$asset_name'."
+              exit 1
+            fi
+            if [[ "$asset_count" -eq 0 ]]; then
+              if [[ "$is_draft" != true ]]; then
+                echo "::error title=Published Release is incomplete::Refusing to mutate a public Release that is missing '$asset_name'."
+                exit 1
+              fi
+              if [[ "$asset_name" == "$package_name" ]]; then
+                gh release upload "$GITHUB_REF_NAME" "$PACKAGE_PATH"
+              else
+                gh release upload "$GITHUB_REF_NAME" "${PACKAGE_PATH}.sha256"
+              fi
+            fi
+          done
+
+          remote_dir="$RUNNER_TEMP/phd-atlas-release-assets-before"
+          mkdir -p "$remote_dir"
+          gh release download "$GITHUB_REF_NAME" --pattern "$package_name" --dir "$remote_dir"
+          gh release download "$GITHUB_REF_NAME" --pattern "$checksum_name" --dir "$remote_dir"
+          if ! cmp --silent "$PACKAGE_PATH" "$remote_dir/$package_name"; then
+            echo "::error title=Immutable release asset mismatch::The existing update package differs from this tagged source."
+            exit 1
+          fi
+          if ! cmp --silent "${PACKAGE_PATH}.sha256" "$remote_dir/$checksum_name"; then
+            echo "::error title=Immutable checksum mismatch::The existing checksum differs from this tagged source."
+            exit 1
+          fi
+          (
+            cd "$remote_dir"
+            sha256sum --check "$checksum_name"
+          )
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Inspect immutable public version tags
+        id: existing_image
+        shell: bash
+        run: |
+          set -euo pipefail
+          inspect_digest() {
+            local output digest
+            if ! output="$(docker buildx imagetools inspect "$1" 2>/dev/null)"; then
+              return 1
+            fi
+            digest="$(printf '%s\n' "$output" | awk '$1 == "Digest:" { print $2; exit }')"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+            printf '%s' "$digest"
+          }
+          version_ref="${REGISTRY}/${IMAGE_NAME}:${PACKAGE_VERSION}"
+          tag_ref="${REGISTRY}/${IMAGE_NAME}:v${PACKAGE_VERSION}"
+          version_digest=""
+          tag_digest=""
+          version_digest="$(inspect_digest "$version_ref" || true)"
+          tag_digest="$(inspect_digest "$tag_ref" || true)"
+          if [[ -z "$version_digest" && -z "$tag_digest" ]]; then
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -z "$version_digest" || -z "$tag_digest" ]]; then
+            echo "::error title=Partial immutable image publication::Exactly one canonical version tag exists. Refusing an ambiguous repair."
+            exit 1
+          fi
+          if [[ "$version_digest" != "$tag_digest" ]]; then
+            echo "::error title=Immutable image mismatch::The canonical version tags resolve to different digests."
+            exit 1
+          fi
+          echo "reuse=true" >> "$GITHUB_OUTPUT"
+          echo "digest=$version_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Log in for candidate publication
+        if: steps.existing_image.outputs.reuse != 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish the candidate image
+        if: steps.existing_image.outputs.reuse != 'true'
+        id: candidate
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.CANDIDATE_TAG }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.PACKAGE_VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Remove registry credentials before validation
+        if: steps.existing_image.outputs.reuse != 'true'
+        shell: bash
+        run: docker logout "$REGISTRY"
+
+      - name: Select the image digest to validate
+        shell: bash
+        env:
+          REUSE_IMAGE: ${{ steps.existing_image.outputs.reuse }}
+          EXISTING_DIGEST: ${{ steps.existing_image.outputs.digest }}
+          CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ "$REUSE_IMAGE" == true ]]; then
+            release_digest="$EXISTING_DIGEST"
+          else
+            release_digest="$CANDIDATE_DIGEST"
+          fi
+          if ! [[ "$release_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error title=Missing image digest::No canonical multi-architecture image digest is available."
+            exit 1
+          fi
+          echo "RELEASE_IMAGE_DIGEST=$release_digest" >> "$GITHUB_ENV"
+
+      - name: Verify the anonymous candidate manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_path="$RUNNER_TEMP/phd-atlas-candidate-manifest.json"
+          docker buildx imagetools inspect \
+            --raw "${REGISTRY}/${IMAGE_NAME}@${RELEASE_IMAGE_DIGEST}" > "$manifest_path"
+          MANIFEST_PATH="$manifest_path" node <<'NODE'
+          const fs = require('node:fs')
+          const manifest = JSON.parse(fs.readFileSync(process.env.MANIFEST_PATH, 'utf8'))
+          const platforms = new Set(
+            (manifest.manifests || []).map((entry) =>
+              `${entry.platform?.os || ''}/${entry.platform?.architecture || ''}`,
+            ),
+          )
+          for (const expected of ['linux/amd64', 'linux/arm64']) {
+            if (!platforms.has(expected)) {
+              throw new Error(`Candidate image is missing ${expected}. Found: ${[...platforms].join(', ')}`)
+            }
+          }
+          NODE
+
+      - name: Smoke test candidate on amd64 and arm64
+        shell: bash
+        run: |
+          bash tools/smoke-container-image.sh \
+            "${REGISTRY}/${IMAGE_NAME}@${RELEASE_IMAGE_DIGEST}" \
+            candidate
+
+      - name: Log in to promote immutable version tags
+        if: steps.existing_image.outputs.reuse != 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote the validated digest to immutable version tags
+        if: steps.existing_image.outputs.reuse != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ref in \
+            "${REGISTRY}/${IMAGE_NAME}:v${PACKAGE_VERSION}" \
+            "${REGISTRY}/${IMAGE_NAME}:${PACKAGE_VERSION}"; do
+            if docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
+              echo "::error title=Immutable version tag appeared concurrently::Refusing to overwrite '$ref'."
+              exit 1
+            fi
+          done
+          docker buildx imagetools create \
+            --tag "${REGISTRY}/${IMAGE_NAME}:v${PACKAGE_VERSION}" \
+            --tag "${REGISTRY}/${IMAGE_NAME}:${PACKAGE_VERSION}" \
+            "${REGISTRY}/${IMAGE_NAME}@${RELEASE_IMAGE_DIGEST}"
+
+      - name: Remove promotion credentials
+        if: steps.existing_image.outputs.reuse != 'true'
+        shell: bash
+        run: docker logout "$REGISTRY"
+
+      - name: Verify anonymous immutable tags and platforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          inspect_digest() {
+            local output digest
+            output="$(docker buildx imagetools inspect "$1")"
+            digest="$(printf '%s\n' "$output" | awk '$1 == "Digest:" { print $2; exit }')"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+            printf '%s' "$digest"
+          }
+          for ref in \
+            "${REGISTRY}/${IMAGE_NAME}:v${PACKAGE_VERSION}" \
+            "${REGISTRY}/${IMAGE_NAME}:${PACKAGE_VERSION}"; do
+            resolved_digest="$(inspect_digest "$ref")"
+            if [[ "$resolved_digest" != "$RELEASE_IMAGE_DIGEST" ]]; then
+              echo "::error title=Canonical image digest mismatch::$ref resolves to $resolved_digest instead of $RELEASE_IMAGE_DIGEST."
+              exit 1
+            fi
+          done
+          manifest_path="$RUNNER_TEMP/phd-atlas-official-manifest.json"
+          docker buildx imagetools inspect \
+            --raw "${REGISTRY}/${IMAGE_NAME}:${PACKAGE_VERSION}" > "$manifest_path"
+          MANIFEST_PATH="$manifest_path" node <<'NODE'
+          const fs = require('node:fs')
+          const manifest = JSON.parse(fs.readFileSync(process.env.MANIFEST_PATH, 'utf8'))
+          const platforms = new Set(
+            (manifest.manifests || []).map((entry) =>
+              `${entry.platform?.os || ''}/${entry.platform?.architecture || ''}`,
+            ),
+          )
+          for (const expected of ['linux/amd64', 'linux/arm64']) {
+            if (!platforms.has(expected)) {
+              throw new Error(`Official image is missing ${expected}. Found: ${[...platforms].join(', ')}`)
+            }
+          }
+          NODE
+
+      - name: Smoke test the official version tag on amd64 and arm64
+        shell: bash
+        run: |
+          bash tools/smoke-container-image.sh \
+            "${REGISTRY}/${IMAGE_NAME}:${PACKAGE_VERSION}" \
+            official
+
+      - name: Decide whether this version may move the beta channel
+        id: beta_channel
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs'
+          import { execFileSync } from 'node:child_process'
+          import { compareSemanticVersions } from './server/systemUpdate.js'
+
+          const current = process.env.PACKAGE_VERSION
+          const prerelease = current.includes('-') ? current.slice(current.indexOf('-') + 1) : ''
+          const isBeta = prerelease.split('.')[0] === 'beta'
+          const tags = execFileSync('git', ['tag', '--list', 'v*'], { encoding: 'utf8' })
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .map((tag) => tag.slice(1))
+          const betaVersions = tags.filter((version) => {
+            const value = version.includes('-') ? version.slice(version.indexOf('-') + 1) : ''
+            return value.split('.')[0] === 'beta'
+          })
+          const higherBeta = isBeta
+            ? betaVersions.find((version) => compareSemanticVersions(version, current) > 0)
+            : undefined
+          const promote = isBeta && !higherBeta
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `promote=${promote}\n`)
+          console.log(
+            promote
+              ? `${current} is the highest tagged beta and may move :beta.`
+              : higherBeta
+                ? `Skipping :beta because the higher ${higherBeta} tag already exists.`
+                : `${current} is not a beta-channel version.`,
+          )
+          NODE
+
+      - name: Log in to promote the beta channel
+        if: steps.beta_channel.outputs.promote == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote the validated digest to beta
+        if: steps.beta_channel.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${REGISTRY}/${IMAGE_NAME}:beta" \
+            "${REGISTRY}/${IMAGE_NAME}@${RELEASE_IMAGE_DIGEST}"
+          docker logout "$REGISTRY"
+          resolved_digest="$(
+            docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:beta" \
+              | awk '$1 == "Digest:" { print $2; exit }'
+          )"
+          if [[ "$resolved_digest" != "$RELEASE_IMAGE_DIGEST" ]]; then
+            echo "::error title=Beta channel digest mismatch::Anonymous :beta does not resolve to the validated release digest."
+            exit 1
+          fi
+
+      - name: Revalidate assets and publish the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="$(basename "$PACKAGE_PATH")"
+          checksum_name="${package_name}.sha256"
+          version_prefix="phd-atlas-update-${PACKAGE_VERSION}-"
+          expected_prerelease=false
+          publish_args=(--prerelease=false)
+          if [[ "${PACKAGE_VERSION%%+*}" == *-* ]]; then
+            expected_prerelease=true
+            publish_args=(--prerelease)
+          fi
+
+          release_json="$RUNNER_TEMP/phd-atlas-release-final-draft.json"
+          gh release view "$GITHUB_REF_NAME" --json assets,isDraft,isPrerelease,tagName > "$release_json"
+          RELEASE_JSON="$release_json" \
+          EXPECTED_PACKAGE_NAME="$package_name" \
+          EXPECTED_CHECKSUM_NAME="$checksum_name" \
+          EXPECTED_PRERELEASE="$expected_prerelease" \
+          VERSION_PREFIX="$version_prefix" \
+          node <<'NODE'
+          const fs = require('node:fs')
+          const payload = JSON.parse(fs.readFileSync(process.env.RELEASE_JSON, 'utf8'))
+          if (
+            payload.tagName !== process.env.GITHUB_REF_NAME
+            || String(payload.isPrerelease) !== process.env.EXPECTED_PRERELEASE
+          ) {
+            throw new Error('Release metadata does not match its canonical SemVer tag/channel.')
+          }
+          const names = (payload.assets || []).map((asset) => asset.name)
+          const versionNames = names.filter((name) => name.startsWith(process.env.VERSION_PREFIX))
+          const expected = [process.env.EXPECTED_PACKAGE_NAME, process.env.EXPECTED_CHECKSUM_NAME].sort()
+          if (
+            versionNames.length !== 2
+            || JSON.stringify([...versionNames].sort()) !== JSON.stringify(expected)
+          ) {
+            throw new Error(`Release must contain exactly one immutable package/checksum pair. Found: ${names.join(', ')}`)
+          }
+          NODE
+
+          remote_dir="$RUNNER_TEMP/phd-atlas-release-assets-final"
+          mkdir -p "$remote_dir"
+          gh release download "$GITHUB_REF_NAME" --pattern "$package_name" --dir "$remote_dir"
+          gh release download "$GITHUB_REF_NAME" --pattern "$checksum_name" --dir "$remote_dir"
+          cmp --silent "$PACKAGE_PATH" "$remote_dir/$package_name"
+          cmp --silent "${PACKAGE_PATH}.sha256" "$remote_dir/$checksum_name"
+          (
+            cd "$remote_dir"
+            sha256sum --check "$checksum_name"
+          )
+
+          if [[ "$(jq -r '.isDraft' "$release_json")" == true ]]; then
+            gh release edit "$GITHUB_REF_NAME" \
+              "${publish_args[@]}" \
+              --draft=false \
+              --title "PhD Atlas $GITHUB_REF_NAME"
+          fi
+
+          published_json="$RUNNER_TEMP/phd-atlas-release-published.json"
+          gh release view "$GITHUB_REF_NAME" --json assets,isDraft,isPrerelease,tagName > "$published_json"
+          if [[ "$(jq -r '.isDraft' "$published_json")" != false ]]; then
+            echo "::error title=Release publication failed::The verified Release is still a draft."
+            exit 1
+          fi
+          echo "Published $GITHUB_REF_NAME only after its update package and public multi-architecture container passed all gates."

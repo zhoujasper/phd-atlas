@@ -38,8 +38,8 @@ function record(name, status, details = {}) {
 async function runStep(name, fn) {
   const startedAt = Date.now()
   try {
-    const details = await fn()
-    record(name, 'pass', { durationMs: Date.now() - startedAt, ...(details ?? {}) })
+    const { skip = false, ...details } = (await fn()) ?? {}
+    record(name, skip ? 'skip' : 'pass', { durationMs: Date.now() - startedAt, ...details })
   } catch (error) {
     const details = {
       durationMs: Date.now() - startedAt,
@@ -709,6 +709,15 @@ try {
   })
 
   await runStep('settings patch and incoming socket check', async () => {
+    const [mailAccount] = mailAccountsFromEnv()
+    if (options.skipMail || !mailAccount) {
+      return {
+        skip: true,
+        message: options.skipMail
+          ? 'Skipped by --skip-mail'
+          : 'No PHD_ATLAS_MAIL*_USER/PASS environment variables were provided',
+      }
+    }
     await request(baseUrl, '/api/settings', {
       token: adminToken,
       method: 'PATCH',

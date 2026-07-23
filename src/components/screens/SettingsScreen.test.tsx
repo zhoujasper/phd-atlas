@@ -149,6 +149,151 @@ async function renderPushSettings(webPushStatus: WebPushNotificationStatus) {
   return { user: userEvent.setup(), onEnableWebPush, onDisableWebPush, onTestWebPush }
 }
 
+describe('SettingsScreen notification delivery preferences', () => {
+  it('lets the user turn batched email notifications off without changing the receiving mailbox', async () => {
+    const { user, onUpdateSettings } = await renderSettings()
+    await user.click(screen.getByRole('button', { name: /Receive emails/ }))
+
+    await user.click(screen.getByRole('switch', { name: 'Email notifications' }))
+
+    expect(onUpdateSettings).toHaveBeenCalledWith({ emailNotificationsEnabled: false })
+  })
+})
+
+describe('SettingsScreen share scope editor', () => {
+  it('lets an existing share link update its selected pages from the scope chip', async () => {
+    await preloadLanguage('en', ['settings', 'share'])
+    const onUpdateShare = vi.fn()
+    render(
+      <I18nContext.Provider value={{ lang: 'en', t: getDict('en'), format: tpl, tx: (path, fallback) => t('en', path, fallback) }}>
+        <SettingsScreen
+          session={session()}
+          allShares={[{
+            applicationId: 'application_1',
+            applicationName: 'Example application',
+            share: {
+              id: 'share_1',
+              token: 'scope-test-token',
+              createdAt: '2026-07-21T09:00:00.000Z',
+              expiresAt: '2026-07-28T09:00:00.000Z',
+              permission: 'view',
+              sections: ['overview', 'materials'],
+            },
+          }]}
+          onLanguage={vi.fn()}
+          onHighContrast={vi.fn()}
+          onDeleteAccount={vi.fn()}
+          onUpdateShare={onUpdateShare}
+        />
+      </I18nContext.Provider>,
+    )
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: 'Shared pages: 2 pages' }))
+    const picker = screen.getByRole('dialog', { name: 'Shared pages' })
+    await user.click(within(picker).getByRole('button', { name: 'Tasks' }))
+    await user.click(within(picker).getByRole('button', { name: 'Save' }))
+
+    expect(onUpdateShare).toHaveBeenCalledWith(
+      'application_1',
+      'share_1',
+      '2026-07-28T09:00:00.000Z',
+      'view',
+      ['overview', 'materials', 'tasks'],
+    )
+  })
+
+  it('lists and revokes attachment-upload links from the same manager', async () => {
+    await preloadLanguage('en', ['settings', 'share'])
+    const onRevokeAssetShare = vi.fn()
+    render(
+      <I18nContext.Provider value={{ lang: 'en', t: getDict('en'), format: tpl, tx: (path, fallback) => t('en', path, fallback) }}>
+        <SettingsScreen
+          session={session()}
+          allShares={[{
+            kind: 'asset-upload',
+            assetId: 'asset_1',
+            assetName: 'Reference letter',
+            share: {
+              id: 'asset_share_1',
+              token: 'upload-test-token',
+              url: '/asset-upload/upload-test-token',
+              createdAt: '2026-07-21T09:00:00.000Z',
+              expiresAt: '2026-07-28T09:00:00.000Z',
+            },
+          }]}
+          onLanguage={vi.fn()}
+          onHighContrast={vi.fn()}
+          onDeleteAccount={vi.fn()}
+          onRevokeAssetShare={onRevokeAssetShare}
+        />
+      </I18nContext.Provider>,
+    )
+    const user = userEvent.setup()
+
+    expect(screen.getByText('Reference letter')).toBeInTheDocument()
+    expect(screen.getAllByText('Attachment upload')).toHaveLength(2)
+    expect(screen.getByText('/asset-upload/upload-test-token')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Revoke share link' }))
+    const dialog = screen.getByRole('alertdialog', { name: 'Revoke share link' })
+    await user.click(within(dialog).getByRole('button', { name: 'Revoke share link' }))
+
+    await waitFor(() => {
+      expect(onRevokeAssetShare).toHaveBeenCalledWith('asset_1', 'asset_share_1')
+    })
+  })
+})
+
+describe('SettingsScreen calendar feed', () => {
+  it('shows an immediate loading state while the first private subscription link is created', async () => {
+    await preloadLanguage('en', ['settings'])
+    let resolveUpdate!: () => void
+    const updatePromise = new Promise<void>((resolve) => {
+      resolveUpdate = resolve
+    })
+    const onUpdateSettings = vi.fn(() => updatePromise)
+
+    render(
+      <I18nContext.Provider value={{ lang: 'en', t: getDict('en'), format: tpl, tx: (path, fallback) => t('en', path, fallback) }}>
+        <SettingsScreen
+          session={session()}
+          onLanguage={vi.fn()}
+          onHighContrast={vi.fn()}
+          onDeleteAccount={vi.fn()}
+          onUpdateSettings={onUpdateSettings}
+        />
+      </I18nContext.Provider>,
+    )
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: 'Enable Calendar Feed' }))
+
+    const calendarCard = document.querySelector('.calendar-feed-card') as HTMLElement
+    const pendingButton = within(calendarCard).getByRole('button', { name: 'Enabling calendar feed…' })
+    expect(calendarCard).toHaveAttribute('aria-busy', 'true')
+    expect(within(calendarCard).getByRole('status')).toHaveTextContent('Enabling')
+    expect(pendingButton).toBeDisabled()
+    expect(pendingButton).toHaveAttribute('aria-busy', 'true')
+    expect(pendingButton.querySelector('.spin-icon')).toBeInTheDocument()
+    expect(onUpdateSettings).toHaveBeenCalledTimes(1)
+    expect(onUpdateSettings).toHaveBeenCalledWith(
+      { generateCalendarToken: true },
+      'Calendar feed enabled.',
+    )
+
+    await act(async () => {
+      resolveUpdate()
+      await updatePromise
+    })
+
+    await waitFor(() => {
+      expect(within(calendarCard).getByRole('button', { name: 'Enable Calendar Feed' })).toBeEnabled()
+      expect(calendarCard).not.toHaveAttribute('aria-busy')
+    })
+  })
+})
+
 describe('SettingsScreen section navigation', () => {
   it('keeps mobile utilities in their intended settings hierarchy', async () => {
     await preloadLanguage('en', ['settings'])

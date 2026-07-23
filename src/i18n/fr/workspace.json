@@ -63,7 +63,8 @@
     "emptyDescription": "Créez votre première candidature, puis faites-la progresser ici à chaque étape.",
     "priorityValue": "P{value}",
     "moveToStatus": "Déplacer vers {status}",
-    "showMore": "Afficher {count} plus"
+    "showMore": "Afficher {count} plus",
+    "moveTo": "Déplacer vers"
   },
   "explorer": {
     "selectedCount": "{count} sélectionné",

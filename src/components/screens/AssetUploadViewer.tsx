@@ -11,6 +11,7 @@ import {
 import { useI18n } from '../hooks/useI18n'
 import { FileDropzone } from '../shared/FileDropzone'
 import { LaunchScreen } from '../shared/LaunchScreen'
+import { StandalonePreferences } from '../shared/StandalonePreferences'
 
 export function AssetUploadViewer({ token }: { token: string }) {
   const { tx, format, lang } = useI18n()
@@ -77,7 +78,10 @@ export function AssetUploadViewer({ token }: { token: string }) {
 
   return (
     <main className="share-viewer route-content-reveal">
-      <header className="share-header">
+      <header className="share-header asset-upload-header">
+        <div className="asset-upload-preferences">
+          <StandalonePreferences />
+        </div>
         <UploadCloud size={28} aria-hidden="true" />
         <h1>{tx('assetUpload.title')}</h1>
         <p>{tx('assetUpload.subtitle')}</p>

@@ -9,11 +9,66 @@ import {
   setManualOfflineMode,
 } from './connectivity'
 
+class TestHealthSocket {
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSING = 2
+  static CLOSED = 3
+  static instances: TestHealthSocket[] = []
+
+  readyState = TestHealthSocket.CONNECTING
+  onmessage: ((event: MessageEvent) => void) | null = null
+  onclose: (() => void) | null = null
+  onerror: (() => void) | null = null
+  readonly url: string
+
+  constructor(url: string) {
+    this.url = url
+    TestHealthSocket.instances.push(this)
+  }
+
+  open() {
+    this.readyState = TestHealthSocket.OPEN
+  }
+
+  message(payload: unknown) {
+    this.onmessage?.({ data: JSON.stringify(payload) } as MessageEvent)
+  }
+
+  fail() {
+    this.readyState = TestHealthSocket.CLOSED
+    this.onerror?.()
+    this.onclose?.()
+  }
+
+  close() {
+    if (this.readyState === TestHealthSocket.CLOSED) return
+    this.readyState = TestHealthSocket.CLOSED
+    this.onclose?.()
+  }
+}
+
+function latestSocket() {
+  const socket = TestHealthSocket.instances.at(-1)
+  if (!socket) throw new Error('Expected a health WebSocket')
+  return socket
+}
+
+async function connectHealthSocket(options: { force?: boolean } = {}) {
+  const pending = probeServerConnectivity(options)
+  const socket = latestSocket()
+  socket.open()
+  socket.message({ type: 'ready', ok: true })
+  return pending
+}
+
 describe('connectivity state', () => {
   beforeEach(() => {
+    TestHealthSocket.instances = []
+    vi.stubGlobal('WebSocket', TestHealthSocket)
     Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
     Object.defineProperty(navigator, 'connection', { configurable: true, value: undefined })
-    setManualOfflineMode(false)
+    resetConnectivityForTests()
     reportApiReachable(80)
   })
 
@@ -51,50 +106,47 @@ describe('connectivity state', () => {
     expect(connectivityUnavailable()).toBe(false)
   })
 
-  it('measures the real health endpoint instead of trusting navigator.onLine', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 })))
+  it('uses one health WebSocket instead of repeated /api/health fetches', async () => {
+    const result = await connectHealthSocket({ force: true })
 
-    const result = await probeServerConnectivity({ force: true })
-
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringMatching(/^\/api\/health\?connectivity=/),
-      expect.objectContaining({ cache: 'no-store', credentials: 'same-origin' }),
-    )
+    expect(TestHealthSocket.instances).toHaveLength(1)
+    expect(latestSocket().url).toMatch(/^ws:\/\/localhost(?::\d+)?\/api\/health\/ws$/)
     expect(result.serverReachable).toBe(true)
     expect(result.mode).toBe('online')
   })
 
-  it('coalesces concurrent background health probes', async () => {
+  it('coalesces concurrent health checks behind one socket connection', async () => {
     resetConnectivityForTests()
-    let resolveResponse!: (response: Response) => void
-    const response = new Promise<Response>((resolve) => { resolveResponse = resolve })
-    vi.stubGlobal('fetch', vi.fn().mockReturnValue(response))
-
     const first = probeServerConnectivity()
     const second = probeServerConnectivity()
-    resolveResponse(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+
+    expect(TestHealthSocket.instances).toHaveLength(1)
+    latestSocket().open()
+    latestSocket().message({ type: 'ready', ok: true })
 
     await expect(Promise.all([first, second])).resolves.toHaveLength(2)
-    expect(fetch).toHaveBeenCalledTimes(1)
   })
 
-  it('reuses a fresh background result while allowing an explicit forced retry', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }))
-    vi.stubGlobal('fetch', fetchMock)
+  it('replaces the socket for an explicit forced retry without leaving the old socket authoritative', async () => {
+    await connectHealthSocket({ force: true })
+    const oldSocket = latestSocket()
 
-    await probeServerConnectivity()
-    expect(fetchMock).not.toHaveBeenCalled()
+    const forced = probeServerConnectivity({ force: true })
+    const newSocket = latestSocket()
+    expect(newSocket).not.toBe(oldSocket)
+    oldSocket.fail()
+    newSocket.open()
+    newSocket.message({ type: 'ready', ok: true })
 
-    await probeServerConnectivity({ force: true })
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await expect(forced).resolves.toMatchObject({ serverReachable: true, mode: 'online' })
+    expect(getConnectivitySnapshot().consecutiveFailures).toBe(0)
   })
 
-  it('treats a synthetic gateway response as an unavailable Atlas server', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 502 })))
+  it('marks the server unavailable when the health socket closes before readiness', async () => {
+    const pending = probeServerConnectivity({ force: true })
+    latestSocket().fail()
 
-    const result = await probeServerConnectivity({ force: true })
-
-    expect(result).toMatchObject({
+    await expect(pending).resolves.toMatchObject({
       mode: 'server-unreachable',
       browserOnline: true,
       serverReachable: false,
@@ -113,15 +165,12 @@ describe('connectivity state', () => {
     })
   })
 
-  it('rejects a successful HTML shell as proof that the Atlas API is healthy', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<!doctype html>', {
-      status: 200,
-      headers: { 'Content-Type': 'text/html' },
-    })))
+  it('rejects malformed health socket events instead of treating a proxy response as Atlas', async () => {
+    const pending = probeServerConnectivity({ force: true })
+    latestSocket().open()
+    latestSocket().message({ ok: true, type: 'unexpected' })
 
-    await expect(probeServerConnectivity({ force: true })).resolves.toMatchObject({
-      mode: 'server-unreachable',
-      serverReachable: false,
-    })
+    expect(latestSocket().readyState).toBe(TestHealthSocket.CLOSED)
+    await expect(pending).resolves.toMatchObject({ serverReachable: false })
   })
 })

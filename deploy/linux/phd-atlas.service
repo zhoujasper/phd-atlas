@@ -14,11 +14,16 @@ Restart=on-failure
 RestartSec=5
 TimeoutStopSec=35
 KillSignal=SIGTERM
+# The short-lived detached update helper must survive the main process exit.
+# start-server.mjs waits on its durable lock before the supervisor relaunches.
+KillMode=process
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/phd-atlas/storage
+# Admin update packages atomically replace the managed runtime and node_modules;
+# application data remains under storage/.
+ReadWritePaths=/opt/phd-atlas
 
 [Install]
 WantedBy=multi-user.target

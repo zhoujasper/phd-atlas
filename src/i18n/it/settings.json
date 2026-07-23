@@ -98,6 +98,8 @@
     "adminNotificationMailbox": "Casella di posta per le notifiche dell'amministratore",
     "receiveAt": "Ricevi a",
     "receiveEmails": "Ricevi email",
+    "emailNotifications": "Notifiche email",
+    "emailNotificationsDesc": "Ricevi un'unica email con gli aggiornamenti recenti invece di un'email separata per ogni notifica.",
     "primaryRecovery": "Recupero primario",
     "notify": "Notifica",
     "makePrimary": "Rendi primario",
@@ -386,7 +388,9 @@
     "passkeyRenamePlaceholder": "Nome del dispositivo",
     "testEmailRecipient": "Testare l'e-mail del destinatario",
     "passkeyRenameCancel": "Annulla la ridenominazione",
-    "passkeyRenamed": "Chiave di accesso rinominata."
+    "passkeyRenamed": "Chiave di accesso rinominata.",
+    "shareProjectLinkType": "Anteprima del progetto",
+    "shareUploadLinkType": "Caricamento allegati"
   },
   "calendar": {
     "title": "Alimentazione calendario",
@@ -400,6 +404,8 @@
     "regenerateHint": "La rigenerazione crea un nuovo URL privato e disabilita il vecchio collegamento di abbonamento.",
     "regeneratedToast": "Link di iscrizione al calendario rigenerato.",
     "enable": "Abilita feed calendario",
+    "enabling": "Attivazione del feed calendario…",
+    "statusEnabling": "Attivazione",
     "enabledToast": "Feed calendario abilitato.",
     "notEnabled": "Il feed del calendario è disattivato. Abilitalo per creare un URL iCal privato per scadenze e promemoria.",
     "providerLinks": "Collegamenti all'app Calendario",

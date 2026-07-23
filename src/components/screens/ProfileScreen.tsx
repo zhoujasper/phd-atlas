@@ -15,7 +15,6 @@ import {
 import {
   Fragment,
   lazy,
-  Suspense,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -54,6 +53,14 @@ import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/Ex
 import { ProfilePresetEditorDialog, type ProfilePresetEditorValue } from '../shared/ProfilePresetEditorDialog'
 import { ProfilePresetIcon } from '../shared/ProfilePresetIcon'
 import { InfoTooltip } from '../shared/InfoTooltip'
+import { LibraryViewSwitch, type LibraryViewMode } from '../shared/LibraryViewSwitch'
+import { LazyOverlayBoundary } from '../shared/LazyOverlayBoundary'
+import {
+  consumeStackedCardWheelDelta,
+  normalizeStackedCardWheelDelta,
+  STACKED_CARD_WHEEL_IDLE_MS,
+  type StackedCardWheelState,
+} from '../shared/stackedCardWheel'
 import type { ShareExpiry } from '../shared/shareOptions'
 import { AiProfilePanel } from '../shared/AiProfilePanel'
 
@@ -103,15 +110,15 @@ const PROFILE_STACK_GAP = 28
 const PROFILE_STACK_MOBILE_CARD_HEIGHT = 224
 const PROFILE_STACK_MOBILE_GAP = 16
 const PROFILE_STACK_COLLAPSED_OFFSET = 8
-const PROFILE_STACK_TURN_DURATION = 440
-const PROFILE_STACK_GESTURE_DURATION = 380
+const PROFILE_STACK_TURN_DURATION = 280
+const PROFILE_STACK_GESTURE_DURATION = 260
 const PROFILE_STACK_RAPID_TURN_DURATION = 180
 const PROFILE_STACK_LAYOUT_DURATION = 560
 const PROFILE_STACK_VERSION_CLOSE_DURATION = 440
 const PROFILE_STACK_VERSION_CLOSE_STAGGER = 32
 const PROFILE_STACK_MAX_STAGGERED_VERSIONS = 12
-const PROFILE_STACK_SETTLE_BUFFER = 40
-const PROFILE_STACK_MAX_QUEUED_TURNS = 10
+const PROFILE_STACK_SETTLE_BUFFER = 32
+const PROFILE_STACK_MAX_QUEUED_TURNS = 1
 
 const profileStackDepthStyle = (
   depth: number,
@@ -168,6 +175,7 @@ export function ProfileScreen({
   onRenameFile,
   onDeleteFile,
   onDownloadFile,
+  onLoadFile,
   onCreateShare,
   onRevokeShare,
   onUpdateSettings,
@@ -185,6 +193,7 @@ export function ProfileScreen({
   onRenameFile: (assetId: string, fileId: string, fileName: string) => void
   onDeleteFile: (assetId: string, fileId: string) => void
   onDownloadFile: (fileId: string, fileName: string) => void
+  onLoadFile: (fileId: string) => Promise<Blob>
   onCreateShare: (assetId: string, expiry: ShareExpiry, note: string) => void
   onRevokeShare: (assetId: string, shareId: string) => void
   onUpdateSettings: (patch: UserSettingsPatch, message?: string) => void
@@ -194,11 +203,15 @@ export function ProfileScreen({
 }) {
   const { tx, lang, format } = useI18n()
   const contentLanguages = useMemo(
-    () => contentLanguagesFromSettings(session.user.settings),
+    () => contentLanguagesFromSettings({
+      contentLanguagePrimary: session.user.settings.contentLanguagePrimary,
+      contentLanguageSecondary: session.user.settings.contentLanguageSecondary,
+    }),
     [session.user.settings.contentLanguagePrimary, session.user.settings.contentLanguageSecondary],
   )
   useContentLanguagePacks(contentLanguages)
   const [query, setQuery] = useState('')
+  const [libraryView, setLibraryView] = useState<LibraryViewMode>('cards')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [openShareOnEdit, setOpenShareOnEdit] = useState(false)
@@ -224,17 +237,13 @@ export function ProfileScreen({
   const [familyTurns, setFamilyTurns] = useState<Map<string, FamilyCardTurn>>(() => new Map())
   const familyStackRefs = useRef(new Map<string, HTMLElement>())
   const familyFrontRefs = useRef(new Map<string, HTMLDivElement>())
-  const familyWheelStateRef = useRef(new Map<string, {
-    delta: number
+  const familyWheelStateRef = useRef(new Map<string, StackedCardWheelState & {
     releaseTimer?: number
-    lastEventAt?: number
-    lastDirection?: 1 | -1
   }>())
   const familySwipeStateRef = useRef(new Map<string, FamilySwipeState>())
   const familyBrowseLocksRef = useRef(new Set<string>())
   const familyTurnQueuesRef = useRef(new Map<string, QueuedFamilyCardTurn[]>())
   const familyQueuedTurnFramesRef = useRef(new Map<string, number>())
-  const familyTurnAccelerationFramesRef = useRef(new Map<string, number>())
   const swipeClickSuppressionsRef = useRef(new Map<string, number>())
   const familyTurnTimersRef = useRef(new Map<string, number>())
   const familyTurnSettlersRef = useRef(new Map<string, () => void>())
@@ -312,8 +321,6 @@ export function ProfileScreen({
     familyTurnQueuesRef.current.clear()
     familyQueuedTurnFramesRef.current.forEach((frame) => window.cancelAnimationFrame(frame))
     familyQueuedTurnFramesRef.current.clear()
-    familyTurnAccelerationFramesRef.current.forEach((frame) => window.cancelAnimationFrame(frame))
-    familyTurnAccelerationFramesRef.current.clear()
     swipeClickSuppressionsRef.current.clear()
     familyLayoutAnimationsRef.current.forEach((animation) => animation.cancel())
     familyLayoutAnimationsRef.current = []
@@ -357,43 +364,6 @@ export function ProfileScreen({
       }
       if (queuedTurns.length) familyTurnQueuesRef.current.set(familyId, queuedTurns)
       else familyTurnQueuesRef.current.delete(familyId)
-      const settleCurrentTurn = familyTurnSettlersRef.current.get(familyId)
-      if (settleCurrentTurn && !prefersReducedMotion()) {
-        // Accelerate the animations that are already running instead of changing
-        // animation-duration through React, which can restart CSS animation and flash.
-        const stack = familyStackRefs.current.get(familyId)
-        const shortenSettleTimer = () => {
-          const activeTimer = familyTurnTimersRef.current.get(familyId)
-          if (activeTimer !== undefined) window.clearTimeout(activeTimer)
-          familyTurnTimersRef.current.set(familyId, window.setTimeout(
-            settleCurrentTurn,
-            PROFILE_STACK_RAPID_TURN_DURATION + PROFILE_STACK_SETTLE_BUFFER,
-          ))
-        }
-        const accelerateRunningAnimations = () => {
-          let accelerated = false
-          stack?.querySelectorAll<HTMLElement>('.snippet-stack-deck-card').forEach((card) => {
-            if (typeof card.getAnimations !== 'function') return
-            card.getAnimations().forEach((animation) => {
-              accelerated = true
-              animation.updatePlaybackRate(PROFILE_STACK_TURN_DURATION / PROFILE_STACK_RAPID_TURN_DURATION)
-            })
-          })
-          return accelerated
-        }
-        if (accelerateRunningAnimations()) {
-          shortenSettleTimer()
-        } else if (!familyTurnAccelerationFramesRef.current.has(familyId)) {
-          // A second wheel event can arrive before React has committed the first
-          // turning class. Retry after that commit instead of settling a 440ms
-          // animation at 180ms and producing a snap on an immediate page return.
-          const frame = window.requestAnimationFrame(() => {
-            familyTurnAccelerationFramesRef.current.delete(familyId)
-            if (familyBrowseLocksRef.current.has(familyId) && accelerateRunningAnimations()) shortenSettleTimer()
-          })
-          familyTurnAccelerationFramesRef.current.set(familyId, frame)
-        }
-      }
       return true
     }
 
@@ -409,12 +379,6 @@ export function ProfileScreen({
       : rapid
         ? PROFILE_STACK_RAPID_TURN_DURATION
         : PROFILE_STACK_TURN_DURATION
-    const front = familyFrontRefs.current.get(familyId)
-    front?.parentElement?.querySelectorAll<HTMLElement>('.snippet-stack-deck-card').forEach((card) => {
-      const currentStyle = window.getComputedStyle(card)
-      if (currentStyle.transform !== 'none') card.style.setProperty('--snippet-deck-turn-from', currentStyle.transform)
-      card.style.setProperty('--snippet-deck-turn-opacity-from', currentStyle.opacity)
-    })
     setFamilyTurns((current) => {
       const next = new Map(current)
       next.set(familyId, {
@@ -428,7 +392,12 @@ export function ProfileScreen({
 
     const previousTimer = familyTurnTimersRef.current.get(familyId)
     if (previousTimer !== undefined) window.clearTimeout(previousTimer)
+    let settled = false
     const settleTurn = () => {
+      if (settled) return
+      settled = true
+      const activeTimer = familyTurnTimersRef.current.get(familyId)
+      if (activeTimer !== undefined) window.clearTimeout(activeTimer)
       const settledFront = familyFrontRefs.current.get(familyId)
       settledFront?.parentElement?.querySelectorAll<HTMLElement>('.snippet-stack-deck-card').forEach((card) => {
         card.style.removeProperty('--snippet-deck-turn-from')
@@ -448,9 +417,6 @@ export function ProfileScreen({
       familyTurnTimersRef.current.delete(familyId)
       familyTurnSettlersRef.current.delete(familyId)
       familyBrowseLocksRef.current.delete(familyId)
-      const accelerationFrame = familyTurnAccelerationFramesRef.current.get(familyId)
-      if (accelerationFrame !== undefined) window.cancelAnimationFrame(accelerationFrame)
-      familyTurnAccelerationFramesRef.current.delete(familyId)
 
       const queuedTurns = familyTurnQueuesRef.current.get(familyId)
       const queuedTurn = queuedTurns?.shift()
@@ -488,38 +454,22 @@ export function ProfileScreen({
     event.preventDefault()
     const wheelState = familyWheelStateRef.current.get(familyId) ?? { delta: 0 }
     const eventAt = event.timeStamp > 0 ? event.timeStamp : performance.now()
-    const rapid = wheelState.lastEventAt !== undefined && eventAt - wheelState.lastEventAt < 130
-    wheelState.lastEventAt = eventAt
     if (wheelState.releaseTimer !== undefined) window.clearTimeout(wheelState.releaseTimer)
     wheelState.releaseTimer = window.setTimeout(() => {
       familyWheelStateRef.current.set(familyId, { delta: 0 })
-    }, PROFILE_STACK_TURN_DURATION)
+    }, STACKED_CARD_WHEEL_IDLE_MS)
 
-    const pageSize = Math.max(event.currentTarget instanceof HTMLElement ? event.currentTarget.clientHeight : 0, 278)
-    const normalizedDelta = event.deltaY * (event.deltaMode === WheelEvent.DOM_DELTA_LINE
-      ? 16
-      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
-        ? pageSize
-        : 1)
-    const inputDirection: 1 | -1 = normalizedDelta > 0 ? 1 : -1
-    if (wheelState.lastDirection && wheelState.lastDirection !== inputDirection) wheelState.delta = 0
-    wheelState.lastDirection = inputDirection
-    // Keep every event relative and bounded: high-resolution trackpads retain their
-    // fine-grained motion while a single large mouse-wheel delta cannot skip a deck.
-    wheelState.delta += Math.max(-120, Math.min(120, normalizedDelta))
-
-    if (Math.abs(wheelState.delta) < 36) {
-      familyWheelStateRef.current.set(familyId, wheelState)
-      return
-    }
-
-    const direction = wheelState.delta > 0 ? 1 : -1
-    // One physical wheel event should produce at most one card turn (mouse wheels
-    // commonly report 80-120px per notch). Keep the remainder so a continuous
-    // trackpad stream can immediately enqueue the following turn without a dead zone.
-    wheelState.delta -= direction * 36
+    const pageSize = Math.max(
+      event.currentTarget instanceof HTMLElement ? event.currentTarget.clientHeight : 0,
+      278,
+    )
+    const direction = consumeStackedCardWheelDelta(
+      wheelState,
+      normalizeStackedCardWheelDelta(event.deltaY, event.deltaMode, pageSize),
+      eventAt,
+    )
     familyWheelStateRef.current.set(familyId, wheelState)
-    cycleFamilyVersion(familyId, versions, direction, false, rapid)
+    if (direction) cycleFamilyVersion(familyId, versions, direction)
   }
 
   const resetFamilySwipeVisual = (familyId: string, settle = false, preserveTurnOrigin = false) => {
@@ -532,8 +482,7 @@ export function ProfileScreen({
     front.parentElement?.querySelectorAll<HTMLElement>('.snippet-stack-deck-card').forEach((card) => {
       if (preserveTurnOrigin) {
         // The swipe frame is already inline, so preserve it without another forced
-        // style calculation at pointer release. cycleFamilyVersion has a computed
-        // fallback for non-swipe turns.
+        // style calculation at pointer release. Wheel turns start from CSS poses.
         if (card.style.transform) card.style.setProperty('--snippet-deck-turn-from', card.style.transform)
         if (card.style.opacity) card.style.setProperty('--snippet-deck-turn-opacity-from', card.style.opacity)
       } else {
@@ -785,7 +734,7 @@ export function ProfileScreen({
     versionNumber?: number
     isPrimary?: boolean
   }) => {
-    void loadSnippetEditorDialog()
+    void loadSnippetEditorDialog().catch(() => undefined)
     setEditingId(null)
     setSnippetSeed(seed ?? null)
     setOpenShareOnEdit(false)
@@ -793,7 +742,7 @@ export function ProfileScreen({
   }
 
   const openEdit = (asset: ProfileAsset, options?: { share?: boolean }) => {
-    void loadSnippetEditorDialog()
+    void loadSnippetEditorDialog().catch(() => undefined)
     setEditingId(asset.id)
     setSnippetSeed(null)
     setOpenShareOnEdit(Boolean(options?.share))
@@ -875,7 +824,7 @@ export function ProfileScreen({
     return () => window.clearTimeout(timer)
   }, [exitingPresetId])
   const openPhraseSettings = () => {
-    void loadSnippetPhraseSettingsDialog()
+    void loadSnippetPhraseSettingsDialog().catch(() => undefined)
     setPhraseSettingsOpen(true)
   }
   const closeContextMenu = () => setContextMenu(null)
@@ -1002,6 +951,15 @@ export function ProfileScreen({
             </p>
           </div>
           <div className="profile-section-head-actions">
+            <LibraryViewSwitch
+              value={libraryView}
+              onChange={setLibraryView}
+              label={tx('profile.viewModeLabel')}
+              cardLabel={tx('profile.cardView')}
+              listLabel={tx('profile.listView')}
+              transitionScope="profile"
+              controlsId="profile-library-view"
+            />
             <button
               type="button"
               className="icon-action"
@@ -1010,7 +968,7 @@ export function ProfileScreen({
             >
               <Settings size={14} aria-hidden="true" />
             </button>
-            <span className="profile-count-badge">{families.length}</span>
+            <span className="profile-count-badge">{filtered.length}</span>
           </div>
         </div>
 
@@ -1023,7 +981,8 @@ export function ProfileScreen({
               <Plus size={14} aria-hidden="true" /> {tx('profile.addSnippet')}
             </button>
           </div>
-        ) : (
+        ) : libraryView === 'cards' ? (
+          <div id="profile-library-view" key="profile-library-cards" className="profile-library-view is-cards">
           <div className="snippet-grid snippet-stack-grid">
             {families.map((family, familyIndex) => {
               const open = expandedFamilies.has(family.familyId)
@@ -1078,6 +1037,14 @@ export function ProfileScreen({
                     ['--snippet-stack-expanded-width' as string]: `${expandedStackWidth}px`,
                     ['--snippet-stack-turn-duration' as string]: `${turn?.durationMs ?? PROFILE_STACK_TURN_DURATION}ms`,
                   }}
+                  onAnimationEnd={(event) => {
+                    if (
+                      event.target instanceof HTMLElement
+                      && event.target.classList.contains('is-deck-outgoing')
+                    ) {
+                      familyTurnSettlersRef.current.get(family.familyId)?.()
+                    }
+                  }}
                 >
                   {/* Real, keyed cards stay mounted at every deck depth. Their animation
                       endpoint exactly matches the next resting depth, so React never has
@@ -1112,8 +1079,11 @@ export function ProfileScreen({
                         }}
                         className={clsx(
                           'snippet-card',
+                          'snippet-stack-card-layout',
                           isActive && 'snippet-stack-front',
                           multi && 'snippet-stack-deck-card',
+                          multi && depth > 3 && (!turn || targetDepth > 3) && 'is-deck-dormant',
+                          turn && (depth <= 3 || targetDepth <= 3) && 'is-deck-active-turn',
                           turn && depth === 0 && 'is-deck-outgoing',
                           turn && depth !== 0 && targetDepth === 0 && 'is-deck-incoming',
                           turn && depth !== 0 && targetDepth !== 0 && 'is-deck-shifting',
@@ -1163,7 +1133,7 @@ export function ProfileScreen({
                           <div className="snippet-card-info">
                             <div className="snippet-card-title-row">
                               <strong>{display.kind}</strong>
-                              <span>
+                              <span className="snippet-family-count" aria-hidden={open || undefined}>
                                 {format(
                                   tx(family.versionCount === 1 ? 'profile.groupItemCountOne' : 'profile.groupItemCount'),
                                   { count: family.versionCount },
@@ -1254,6 +1224,7 @@ export function ProfileScreen({
                                 className={clsx(
                                   'snippet-stack-version',
                                   'snippet-stack-flow-version',
+                                  'snippet-stack-card-layout',
                                   removingAssetIds?.has(version.id) && 'is-removing',
                                 )}
                                 style={{
@@ -1279,7 +1250,6 @@ export function ProfileScreen({
                                   <div className="snippet-card-info">
                                     <div className="snippet-card-title-row">
                                       <strong>{display.kind}</strong>
-                                      <span>{format(tx('profile.groupItemCount'), { count: family.versionCount })}</span>
                                     </div>
                                     <p className="snippet-card-description">{display.name}</p>
                                     <div className="snippet-card-detail-list">
@@ -1339,6 +1309,89 @@ export function ProfileScreen({
               <Plus size={20} aria-hidden="true" />
               <span>{tx('profile.addSnippet')}</span>
             </button>
+          </div>
+          </div>
+        ) : (
+          <div id="profile-library-view" key="profile-library-list" className="profile-library-view is-list">
+            <div className="profile-snippet-list" role="list">
+              {filtered.map(({ raw: asset, display }, assetIndex) => {
+                const appearance = profilePresetPresentation(asset.kind)
+                const updatedDate = asset.updatedAt ? new Date(asset.updatedAt) : null
+                const updatedAt = updatedDate && !Number.isNaN(updatedDate.getTime())
+                  ? new Intl.DateTimeFormat(localeForLanguage(lang), { month: 'short', day: 'numeric' }).format(updatedDate)
+                  : ''
+                const attachmentCount = asset.attachments?.length ?? 0
+                return (
+                  <article
+                    key={asset.id}
+                    className={clsx(
+                      'profile-snippet-list-row',
+                      removingAssetIds?.has(asset.id) && 'is-removing',
+                    )}
+                    role="listitem"
+                    style={{ ['--profile-list-index' as string]: String(Math.min(assetIndex, 10)) }}
+                    onContextMenu={(event) => openSnippetContextMenu(event, asset, display)}
+                  >
+                    <button
+                      type="button"
+                      className="profile-snippet-list-main"
+                      onClick={() => openEdit(asset)}
+                      aria-label={`${tx('profile.openSnippet')}: ${display.name}`}
+                    >
+                      <ProfilePresetIcon
+                        icon={asset.icon ?? appearance.icon}
+                        color={asset.color ?? appearance.color}
+                        className="profile-snippet-list-icon"
+                      />
+                      <span className="profile-snippet-list-copy">
+                        <span className="profile-snippet-list-title">
+                          <strong>{display.name}</strong>
+                          <b>{display.kind}</b>
+                        </span>
+                        {display.description ? <em>{display.description.replace(/\s+/g, ' ')}</em> : null}
+                        <small>
+                          {attachmentCount > 0 ? (
+                            <span>
+                              <Paperclip size={11} aria-hidden="true" />
+                              {format(tx(attachmentCount === 1 ? 'profile.attachmentCount' : 'profile.attachmentCountPlural'), { count: attachmentCount })}
+                            </span>
+                          ) : asset.uploadReserved ? (
+                            <span><UploadCloud size={11} aria-hidden="true" />{tx('profile.uploadReserved')}</span>
+                          ) : (
+                            <span><Paperclip size={11} aria-hidden="true" />{tx('profile.noAttachments')}</span>
+                          )}
+                          {updatedAt ? <span>{format(tx('profile.updatedAt'), { date: updatedAt })}</span> : null}
+                        </small>
+                      </span>
+                    </button>
+                    <div className="profile-snippet-list-actions">
+                      <button type="button" className="icon-action" title={tx('profile.editSnippet')} onClick={() => openEdit(asset)}>
+                        <Pencil size={13} aria-hidden="true" />
+                      </button>
+                      <button type="button" className="icon-action" title={tx('profile.shareUpload')} onClick={() => openEdit(asset, { share: true })}>
+                        <ExternalLink size={13} aria-hidden="true" />
+                      </button>
+                      {attachmentCount > 0 ? (
+                        <button
+                          type="button"
+                          className="icon-action"
+                          title={tx('profile.downloadFirstAttachment')}
+                          onClick={() => {
+                            const attachment = asset.attachments?.[0]
+                            if (attachment) onDownloadFile(attachment.fileId, attachment.fileName)
+                          }}
+                        >
+                          <Download size={13} aria-hidden="true" />
+                        </button>
+                      ) : null}
+                      <button type="button" className="icon-action" title={tx('profile.deleteSnippet')} onClick={() => onDeleteAsset(asset)}>
+                        <Trash2 size={13} aria-hidden="true" />
+                      </button>
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
           </div>
         )}
       </section>
@@ -1425,7 +1478,7 @@ export function ProfileScreen({
       )}
 
       {dialogOpen ? (
-        <Suspense fallback={null}>
+        <LazyOverlayBoundary namespaces={['core', 'shared', 'profile']}>
           <SnippetEditorDialog
             open
             asset={editingAsset}
@@ -1442,6 +1495,7 @@ export function ProfileScreen({
             initialVersionNumber={snippetSeed?.versionNumber}
             initialIsPrimary={snippetSeed?.isPrimary}
             fromPreset={Boolean(snippetSeed?.fromPreset)}
+            profilePresets={personalPresets}
             initialShowShare={openShareOnEdit}
             contentLanguages={contentLanguages}
             globalPhrase={{
@@ -1461,10 +1515,11 @@ export function ProfileScreen({
             onRenameFile={onRenameFile}
             onDeleteFile={onDeleteFile}
             onDownloadFile={onDownloadFile}
+            onLoadFile={onLoadFile}
             onCreateShare={onCreateShare}
             onRevokeShare={onRevokeShare}
           />
-        </Suspense>
+        </LazyOverlayBoundary>
       ) : null}
 
       {presetEditorOpen ? (
@@ -1491,7 +1546,7 @@ export function ProfileScreen({
       />
 
       {phraseSettingsOpen ? (
-        <Suspense fallback={null}>
+        <LazyOverlayBoundary namespaces={['core', 'shared', 'profile']}>
           <SnippetPhraseSettingsDialog
             open
             contentLanguages={contentLanguages}
@@ -1504,7 +1559,7 @@ export function ProfileScreen({
             onClose={() => setPhraseSettingsOpen(false)}
             onSave={(patch) => onUpdateSettings(patch)}
           />
-        </Suspense>
+        </LazyOverlayBoundary>
       ) : null}
       <ExplorerContextMenu menu={contextMenu} onClose={closeContextMenu} />
     </section>

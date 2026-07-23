@@ -7,7 +7,8 @@ import englishShare from '../../i18n/en/share.json'
 import englishShareViewer from '../../i18n/en/shareViewer.json'
 import { getDict, registerLanguage, t as translate, tpl } from '../../i18n'
 import { I18nContext } from '../hooks/useI18n'
-import { ShareViewer, shareSectionsToDetailTabs, sharedPayloadToApplication } from './ShareViewer'
+import { ShareViewer } from './ShareViewer'
+import { shareSectionsToDetailTabs, sharedPayloadToApplication } from './shareViewerModel'
 
 beforeAll(() => {
   registerLanguage('en', englishDossier, 'dossier')
@@ -17,6 +18,7 @@ beforeAll(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 function sharedPayload(section: 'materials' | 'tasks'): SharedApplicationPayload {
@@ -34,10 +36,10 @@ function sharedPayload(section: 'materials' | 'tasks'): SharedApplicationPayload
     status: 'Preparing',
     deadline: '2026-12-01',
     materials: section === 'materials'
-      ? [{ id: 'material-1', name: 'Research proposal', type: 'Document', status: 'Draft', details: 'PDF preferred' }]
+      ? [{ id: 'material-1', name: 'Research proposal', type: 'Document', status: 'Draft', details: 'PDF preferred', uploadReserved: true }]
       : [],
     tasks: section === 'tasks'
-      ? [{ id: 'task-1', title: 'Confirm references', due: '2026-11-01', done: false, details: 'Attach reference list' }]
+      ? [{ id: 'task-1', title: 'Confirm references', due: '2026-11-01', done: false, details: 'Attach reference list', uploadReserved: true }]
       : [],
   }
 }
@@ -114,6 +116,27 @@ describe('ShareViewer upload hub', () => {
     expect(document.querySelector('.file-dropzone')).toBeInTheDocument()
     expect(document.querySelector('.share-upload-item-limits')).toBeInTheDocument()
   })
+
+  it('shows only materials and tasks reserved for shared upload', async () => {
+    renderViewer({
+      ...sharedPayload('materials'),
+      sections: ['materials', 'tasks'],
+      materials: [
+        { id: 'material-reserved', name: 'Reserved proposal', type: 'Document', status: 'Draft', uploadReserved: true },
+        { id: 'material-private', name: 'Private CV', type: 'Document', status: 'Ready', uploadReserved: false },
+      ],
+      tasks: [
+        { id: 'task-reserved', title: 'Reserved reference list', due: '2026-11-01', done: false, uploadReserved: true },
+        { id: 'task-private', title: 'Private follow-up', due: '2026-11-02', done: false, uploadReserved: false },
+      ],
+    })
+
+    expect(await screen.findByText('Reserved proposal')).toBeInTheDocument()
+    expect(screen.getByText('Reserved reference list')).toBeInTheDocument()
+    expect(screen.queryByText('Private CV')).not.toBeInTheDocument()
+    expect(screen.queryByText('Private follow-up')).not.toBeInTheDocument()
+    expect(document.querySelectorAll('.share-upload-item')).toHaveLength(2)
+  })
 })
 
 describe('ShareViewer dossier workspace', () => {
@@ -145,5 +168,19 @@ describe('ShareViewer dossier workspace', () => {
     expect(document.querySelector('.share-upload-mode')).not.toBeInTheDocument()
     expect(document.querySelector('.dossier-readonly-banner')).not.toBeInTheDocument()
     expect(document.querySelector('.share-permission-chip.is-edit')).toBeInTheDocument()
+  })
+
+  it('removes the inspector from compact view-only shared links', async () => {
+    vi.stubGlobal('matchMedia', vi.fn().mockImplementation(() => ({
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })))
+    renderViewer(fullViewPayload())
+
+    await waitFor(() => {
+      expect(document.querySelector('.share-workspace')).toBeInTheDocument()
+    })
+    expect(document.querySelector('.inspector-pane')).not.toBeInTheDocument()
   })
 })

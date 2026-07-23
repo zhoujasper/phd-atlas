@@ -347,6 +347,38 @@ describe('phdApi session token tracking', () => {
     expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('X-Phd-Client-Id')).toBeTruthy()
   })
 
+  it('routes team student profile edits and deletes through the scoped member endpoint', async () => {
+    const updated = {
+      id: 'asset_student_1',
+      ownerId: 'student_1',
+      name: 'Updated research statement',
+      kind: 'Research',
+      description: 'Updated content',
+      attachments: [],
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(envelope(updated))
+      .mockResolvedValueOnce(envelope({ id: updated.id }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await phdApi.updateTeamMemberProfileAsset(
+      'teacher-token',
+      'team_1',
+      'student_1',
+      updated.id,
+      { name: updated.name, description: updated.description },
+    )
+    await phdApi.deleteTeamMemberProfileAsset('teacher-token', 'team_1', 'student_1', updated.id)
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/teams/team_1/members/student_1/profile-assets/asset_student_1')
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      method: 'PATCH',
+      body: JSON.stringify({ name: updated.name, description: updated.description }),
+    })
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/teams/team_1/members/student_1/profile-assets/asset_student_1')
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: 'DELETE' })
+  })
+
   it('parses authenticated realtime invalidation frames from a fetch stream', async () => {
     const frames = [
       'event: connected\ndata: {"type":"connected","scopes":[],"revision":0,"at":"2026-07-20T00:00:00.000Z"}\n\n',
@@ -422,18 +454,53 @@ describe('phdApi session token tracking', () => {
   it('lets the browser set multipart headers for upload requests', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(envelope({
       received: true,
-      fileName: 'update.zip',
+      fileName: 'update.tar.gz',
       size: 1,
-      storedAs: 'system-update.zip',
+      storedAs: 'system-update.tar.gz',
       message: 'ok',
     }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await phdApi.uploadSystemUpdate('upload-token', new File(['x'], 'update.zip'))
+    await phdApi.uploadSystemUpdate('upload-token', new File(['x'], 'update.tar.gz'))
 
     const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers)
     expect(headers.get('Authorization')).toBe('Bearer upload-token')
     expect(headers.get('Content-Type')).toBeNull()
+  })
+
+  it('checks and installs only the selected server-owned GitHub Release tag', async () => {
+    const check = {
+      currentVersion: '0.1.0-beta.1',
+      updateAvailable: true,
+      release: {
+        version: '0.1.0-beta.2',
+        tagName: 'v0.1.0-beta.2',
+      },
+      checkedAt: '2026-07-23T12:00:00.000Z',
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(envelope(check))
+      .mockResolvedValueOnce(envelope({
+        received: true,
+        fileName: 'phd-atlas-update-0.1.0-beta.2.tar.gz',
+        size: 1024,
+        storedAs: 'phd-atlas-update-0.1.0-beta.2.tar.gz',
+        version: '0.1.0-beta.2',
+        verified: true,
+        restartScheduled: true,
+        message: 'ok',
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(phdApi.checkSystemUpdate('admin-token')).resolves.toEqual(check)
+    await phdApi.installReleaseUpdate('admin-token', 'v0.1.0-beta.2')
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/admin/system-update/check')
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/admin/system-update/install-release')
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: 'POST' })
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      tagName: 'v0.1.0-beta.2',
+    })
   })
 
   it('sends every selected attachment in one multipart request', async () => {
@@ -531,6 +598,57 @@ describe('phdApi session token tracking', () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       delivery: 'research@example.com',
       source: 'system',
+    })
+  })
+
+  it('starts Discover research with an explicit AI key and team student scope', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(envelope({ job: { id: 'research-1' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await phdApi.runDiscoverResearch('discover-token', {
+      notify: true,
+      useAi: true,
+      keyId: 'key-primary',
+      keyIds: ['key-primary', 'key-verifier'],
+      teamId: 'team-1',
+      targetUserId: 'student-1',
+      acceptSuggestions: true,
+    })
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/discover/research/start')
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      notify: true,
+      useAi: true,
+      keyId: 'key-primary',
+      keyIds: ['key-primary', 'key-verifier'],
+      teamId: 'team-1',
+      targetUserId: 'student-1',
+      acceptSuggestions: true,
+    })
+  })
+
+  it('deletes Discover program results with the active team student scope', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(envelope({
+      state: {},
+      programs: [],
+      pis: [],
+      stats: {},
+      ranked: [],
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await phdApi.deleteDiscoverPrograms('discover-token', {
+      ids: ['program-1', 'program-2'],
+      teamId: 'team-1',
+      targetUserId: 'student-1',
+    })
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/discover/programs/delete')
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'POST' })
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      ids: ['program-1', 'program-2'],
+      teamId: 'team-1',
+      targetUserId: 'student-1',
     })
   })
 

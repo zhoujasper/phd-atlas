@@ -20,16 +20,35 @@ import {
   getRuntimeCryptoConfig,
   isEncryptedPayload,
   normalizeAlgorithm,
-  reencryptSecret,
   setRuntimeCryptoConfig,
 } from './crypto.js'
 import {
+  EXTERNAL_STATE_MAGIC,
+  decodeBackupPayload,
+  decodeExternalStatePayload,
+  encodeBackupPayload as encodeBackupEnvelope,
+  encodeExternalStatePayload as encodeExternalEnvelope,
+} from './durableEnvelope.js'
+import {
   plainSqliteExists,
   sealSqliteFile,
+  sealSqliteBuffer,
   sealedPathFor,
   sealedSqliteExists,
-  unsealSqliteFile,
+  unsealSqliteBuffer,
 } from './sqliteSeal.js'
+import {
+  assertExternalDatabaseTargetEmpty,
+  createExternalDatabaseSqlDump,
+  defaultSqlitePath,
+  isExternalDatabaseConfiguration,
+  persistDatabaseConfiguration,
+  publicDatabaseConfiguration,
+  readExternalDatabaseState,
+  readPersistedDatabaseConfiguration,
+  verifyDatabaseConnection,
+  writeExternalDatabaseState,
+} from './databaseConnection.js'
 import {
   DEFAULT_ADMIN_EMAIL,
   DEFAULT_ADMIN_PASSWORD,
@@ -39,6 +58,10 @@ import {
   seedProfileAssets,
 } from './seed-data.js'
 import { PUBLIC_EDITION } from './edition.js'
+import {
+  isTeacherAssignedToStudent,
+  normalizeTeamTeacherGroups,
+} from './teamRelationships.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -94,22 +117,43 @@ export function runWithAuditContext(context, fn) {
 export const storageRoot = path.join(projectRoot, 'storage')
 export const uploadRoot = path.join(storageRoot, 'uploads')
 export const backupRoot = path.join(storageRoot, 'backups')
-export const databasePath = path.join(storageRoot, 'phd-atlas.sqlite')
-export const sealedDatabasePath = sealedPathFor(databasePath)
+export let databasePath = defaultSqlitePath
+export let sealedDatabasePath = sealedPathFor(databasePath)
 
 let db
+let pendingDatabaseImage = null
+let databaseRunsInMemory = false
 let storageReadyPromise = null
+let storageInitialized = false
 let sharedStoreCache = null
 let sharedStoreDataVersion = null
-/** @type {{ encryptionAtRest: boolean, encryptionAlgorithm: string, encryptionPasswordEnabled: boolean, encryptionPasswordSalt: string, sqliteEncryption: boolean } | null} */
+/** @type {{ encryptionAtRest: boolean, encryptionAlgorithm: string, encryptionPasswordEnabled: boolean, encryptionPasswordSalt: string, passwordBinding: string, sqliteEncryption: boolean } | null} */
 let activeEncryptionPolicy = null
 let sealAfterWriteTimer = null
 const storeBaselineSymbol = Symbol('phd-atlas-store-baseline')
 const backupInfoCache = new Map()
 let backupListCache = null
-let backupListCacheDirectoryMtimeMs = null
+let backupListCacheDirectoryStamp = null
 let backupListCacheGeneration = 0
 let backupListScan = null
+let activeDatabaseConfiguration = { type: 'sqlite', sqlitePath: databasePath }
+let externalSyncTimer = null
+let externalSyncPromise = null
+let suppressExternalSync = false
+const PUBLIC_SETUP_PENDING_STATE = 'pending-v1'
+const PUBLIC_SETUP_COMPLETE_STATE = 'complete-v1'
+
+function sqliteImageForMemory(image) {
+  const normalized = Buffer.from(image)
+  if (normalized.subarray(0, 16).toString('utf8') === 'SQLite format 3\0') {
+    // Serialized WAL databases retain WAL read/write header flags. Anonymous
+    // in-memory handles have no sidecar path, so switch the copy to rollback
+    // semantics before opening it and then select MEMORY journal mode below.
+    normalized[18] = 1
+    normalized[19] = 1
+  }
+  return normalized
+}
 
 function invalidateSharedStoreCache() {
   sharedStoreCache = null
@@ -351,6 +395,10 @@ function normalizeUserSettings(user) {
     receiveEmails: normalizedReceiveEmails.length > 0
       ? normalizedReceiveEmails
       : [{ address: receiveAt, isPrimary: true, notify: true, verified: true }],
+    // Existing accounts keep their established delivery behaviour until they
+    // make an explicit choice in Settings.
+    emailNotificationsEnabled: settings.emailNotificationsEnabled !== false,
+    browserNotificationsEnabled: settings.browserNotificationsEnabled !== false,
     membershipPlan,
     personalMembershipPlan: isAdmin
       ? 'pro'
@@ -541,6 +589,362 @@ function closeOpenDatabase() {
   invalidateSharedStoreCache()
 }
 
+function setActiveSqlitePath(nextPath) {
+  databasePath = path.resolve(nextPath || defaultSqlitePath)
+  sealedDatabasePath = sealedPathFor(databasePath)
+}
+
+function currentDatabaseAdapter() {
+  return activeDatabaseConfiguration?.type ?? 'sqlite'
+}
+
+export function getDatabaseConfiguration() {
+  return publicDatabaseConfiguration(activeDatabaseConfiguration)
+}
+
+async function writeSnapshotFile(target, payload) {
+  await fs.mkdir(path.dirname(target), { recursive: true })
+  const temporary = `${target}.tmp-${process.pid}-${Date.now()}`
+  await fs.writeFile(temporary, payload)
+  await fs.rename(temporary, target)
+}
+
+async function removePlainSqliteArtifacts() {
+  const targets = [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]
+  await Promise.all(targets.map(async (target) => {
+    try {
+      await fs.rm(target, { force: true })
+    } catch (error) {
+      // Windows refuses unlink while an older server process still owns the
+      // handle. The authenticated in-memory/sealed image is already complete;
+      // leave the old file untouched and retry on the next write or restart.
+      if (error?.code === 'EBUSY' || error?.code === 'EPERM') return
+      throw error
+    }
+  }))
+}
+
+async function directoryHasRecoveryFile(directory, predicate = () => true) {
+  try {
+    return (await fs.readdir(directory, { withFileTypes: true }))
+      .some((entry) => entry.isFile() && predicate(entry.name))
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false
+    throw error
+  }
+}
+
+async function hasWorkspaceRecoveryArtifacts() {
+  const [uploads, backups, checkpoints, pushJournal] = await Promise.all([
+    directoryHasRecoveryFile(uploadRoot),
+    directoryHasRecoveryFile(backupRoot, (name) => name.endsWith('.tar.gz')),
+    directoryHasRecoveryFile(path.join(storageRoot, 'discover-research-jobs'), (name) => name.endsWith('.json')),
+    fs.stat(path.join(storageRoot, 'browser-push-batches.journal'))
+      .then((stat) => stat.isFile() && stat.size > 0)
+      .catch((error) => {
+        if (error?.code === 'ENOENT') return false
+        throw error
+      }),
+  ])
+  return uploads || backups || checkpoints || pushJournal
+}
+
+export function shouldRefuseEmptyWorkspaceSeed({
+  hadPlainDatabase = false,
+  hadSealedDatabase = false,
+  hasRecoveryArtifacts = false,
+  validPublicSetupPending = false,
+  nodeEnv = process.env.NODE_ENV,
+} = {}) {
+  if (nodeEnv === 'test') return false
+  if (validPublicSetupPending) return false
+  return Boolean(hadPlainDatabase || hadSealedDatabase || hasRecoveryArtifacts)
+}
+
+export function isValidPublicSetupPendingWorkspace({
+  publicEdition = PUBLIC_EDITION,
+  meta = null,
+  userCount = 0,
+  applicationCount = 0,
+  profileAssetCount = 0,
+  teamCount = 0,
+  hasSystemSettings = false,
+  hadSealedDatabase = false,
+  hasRecoveryArtifacts = false,
+} = {}) {
+  return Boolean(
+    publicEdition
+    && meta?.publicSetupState === PUBLIC_SETUP_PENDING_STATE
+    && Number(userCount) === 0
+    && Number(applicationCount) === 0
+    && Number(profileAssetCount) === 0
+    && Number(teamCount) === 0
+    && hasSystemSettings
+    && !hadSealedDatabase
+    && !hasRecoveryArtifacts
+  )
+}
+
+export function markPublicSetupComplete(store) {
+  store.meta = {
+    ...(store.meta ?? {}),
+    publicSetupState: PUBLIC_SETUP_COMPLETE_STATE,
+  }
+  return store
+}
+
+async function recoverOrCleanInterruptedSqliteSeals() {
+  const directory = path.dirname(sealedDatabasePath)
+  const prefixes = [
+    `${path.basename(sealedDatabasePath)}.tmp-`,
+    `${path.basename(sealedDatabasePath)}.previous-`,
+  ]
+  let candidates = []
+  try {
+    candidates = (await fs.readdir(directory, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && prefixes.some((prefix) => entry.name.startsWith(prefix)))
+      .map((entry) => path.join(directory, entry.name))
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
+  if (!candidates.length) return
+  const hasSealedDatabase = await sealedSqliteExists(sealedDatabasePath)
+  const sealedMtimeMs = hasSealedDatabase
+    ? (await fs.stat(sealedDatabasePath)).mtimeMs
+    : Number.NEGATIVE_INFINITY
+  const newest = (await Promise.all(candidates.map(async (target) => ({
+    target,
+    mtimeMs: (await fs.stat(target)).mtimeMs,
+  })))).sort((left, right) => right.mtimeMs - left.mtimeMs)
+  for (const candidate of newest) {
+    if (candidate.mtimeMs <= sealedMtimeMs) break
+    try {
+      const authenticatedImage = await unsealSqliteBuffer(candidate.target, deriveSqliteKey())
+      await sealSqliteBuffer(
+        authenticatedImage,
+        sealedDatabasePath,
+        deriveSqliteKey(),
+        activeEncryptionPolicy.encryptionAlgorithm,
+      )
+      break
+    } catch {
+      // Try the next newer authenticated temporary snapshot.
+    }
+  }
+  await Promise.all(candidates.map((target) => fs.rm(target, { force: true }).catch(() => undefined)))
+}
+
+export function encodeExternalStatePayload(payload, policy = activeEncryptionPolicy) {
+  return encodeExternalEnvelope(payload, policy)
+}
+
+function encodeBackupPayload(payload, policy = activeEncryptionPolicy) {
+  return encodeBackupEnvelope(payload, policy)
+}
+
+function backupEncryptionPolicyForSettings(settings) {
+  return {
+    encryptionAtRest: Boolean(settings?.encryptionAtRest),
+    encryptionAlgorithm: normalizeAlgorithm(settings?.encryptionAlgorithm),
+    passwordBinding: settings?.encryptionPasswordEnabled ? String(settings.encryptionPasswordHash || '') : '',
+  }
+}
+
+async function rewriteBackupEncryption(policy) {
+  await fs.mkdir(backupRoot, { recursive: true })
+  const entries = await fs.readdir(backupRoot, { withFileTypes: true })
+  for (const entry of entries) {
+    if (!entry.isFile() || !isBackupArchiveName(entry.name) || entry.name.endsWith('.meta')) continue
+    const target = path.join(backupRoot, entry.name)
+    const current = await fs.readFile(target)
+    const { plain, encrypted, profile } = decodeBackupPayload(current)
+    const wantsEncryption = Boolean(policy?.encryptionAtRest)
+    if (!wantsEncryption && !encrypted) continue
+    if (
+      wantsEncryption
+      && encrypted
+      && profile?.algorithm === policy.encryptionAlgorithm
+      && profile?.passwordBinding === String(policy.passwordBinding || '')
+    ) continue
+    const next = encodeBackupPayload(plain, policy)
+    await writeSnapshotFile(target, next)
+  }
+  invalidateBackupListCache()
+}
+
+async function captureLocalDatabaseSnapshot() {
+  if (databaseRunsInMemory && db) return db.serialize()
+  await fs.mkdir(storageRoot, { recursive: true })
+  const snapshotPath = path.join(storageRoot, `.database-snapshot-${process.pid}-${Date.now()}.sqlite`)
+  try {
+    await getDb().backup(snapshotPath)
+    return await fs.readFile(snapshotPath)
+  } finally {
+    await fs.rm(snapshotPath, { force: true }).catch(() => undefined)
+  }
+}
+
+async function synchronizeExternalDatabase({ force = false } = {}) {
+  if (!isExternalDatabaseConfiguration(activeDatabaseConfiguration) || suppressExternalSync) return null
+  if (externalSyncPromise && !force) return externalSyncPromise
+  const sync = (async () => {
+    const payload = await captureLocalDatabaseSnapshot()
+    const revision = Number(sharedStoreCache?.meta?.revision ?? 0)
+    const durablePayload = encodeExternalStatePayload(payload)
+    await writeExternalDatabaseState(activeDatabaseConfiguration, durablePayload, revision, nowStamp())
+    return { bytes: durablePayload.length, revision }
+  })()
+  externalSyncPromise = sync
+  try {
+    return await sync
+  } finally {
+    if (externalSyncPromise === sync) externalSyncPromise = null
+  }
+}
+
+function scheduleExternalDatabaseSync() {
+  if (!storageInitialized || !isExternalDatabaseConfiguration(activeDatabaseConfiguration) || suppressExternalSync) return
+  if (externalSyncTimer) return
+  externalSyncTimer = setTimeout(() => {
+    externalSyncTimer = null
+    void synchronizeExternalDatabase().catch((error) => {
+      console.error('[storage] Failed to synchronize the external database:', error)
+    })
+  }, 80)
+  externalSyncTimer.unref?.()
+}
+
+async function prepareConfiguredDatabaseSource() {
+  // Test workers must never open the live workspace database or its persisted
+  // external-database configuration. Besides leaking fixtures between suites,
+  // a route test could otherwise replace a real encrypted AI credential when
+  // its seeded snapshot is written back.
+  const persisted = process.env.NODE_ENV === 'test'
+    ? null
+    : await readPersistedDatabaseConfiguration()
+  const next = persisted ?? { type: 'sqlite', sqlitePath: defaultSqlitePath }
+  activeDatabaseConfiguration = next
+  if (!isExternalDatabaseConfiguration(next)) {
+    setActiveSqlitePath(next.sqlitePath)
+    return
+  }
+
+  // The selected server is the durable source. A local SQLite file remains a
+  // compatibility cache for the current SQL layer and is refreshed before the
+  // cache is opened, so a restart never silently falls back to stale local data.
+  setActiveSqlitePath(defaultSqlitePath)
+  const remote = await readExternalDatabaseState(next)
+  if (!remote?.payload?.length) {
+    const error = new Error('The selected database does not contain PhD Atlas data yet.')
+    error.code = 'DATABASE_STATE_MISSING'
+    error.status = 409
+    throw error
+  }
+  closeOpenDatabase()
+  const encryptedRemote = remote.payload.subarray(0, EXTERNAL_STATE_MAGIC.length).equals(EXTERNAL_STATE_MAGIC)
+  const remoteImage = decodeExternalStatePayload(remote.payload)
+  if (encryptedRemote) {
+    pendingDatabaseImage = sqliteImageForMemory(remoteImage)
+    databaseRunsInMemory = true
+    await removePlainSqliteArtifacts()
+  } else {
+    databaseRunsInMemory = false
+    await writeSnapshotFile(databasePath, remoteImage)
+  }
+  await Promise.all([
+    fs.rm(`${databasePath}-wal`, { force: true }),
+    fs.rm(`${databasePath}-shm`, { force: true }),
+  ])
+  invalidateSharedStoreCache()
+}
+
+/** Validate a candidate without changing the active data source. */
+export async function testDatabaseConfiguration(input, options = {}) {
+  const persisted = await readPersistedDatabaseConfiguration()
+  const candidate = { ...(input ?? {}) }
+  if (
+    isExternalDatabaseConfiguration(candidate)
+    && !candidate.password
+    && persisted?.type === candidate.type
+    && persisted.host === candidate.host
+    && String(persisted.port) === String(candidate.port ?? persisted.port)
+    && persisted.database === candidate.database
+    && persisted.username === candidate.username
+  ) {
+    candidate.password = persisted.password
+  }
+  const verified = await verifyDatabaseConnection(candidate, options)
+  if (options.requireEmptyState && isExternalDatabaseConfiguration(candidate)) {
+    await assertExternalDatabaseTargetEmpty(candidate)
+  }
+  return verified
+}
+
+/**
+ * Migrate the current consistent workspace snapshot to the selected engine, then
+ * persist the source selector. The selector is written only after the target has
+ * accepted the snapshot, so a bad connection cannot strand an installation.
+ */
+export async function configureDatabaseConfiguration(input, options = {}) {
+  await ensureStorage()
+  const persisted = await readPersistedDatabaseConfiguration()
+  const candidateInput = { ...(input ?? {}) }
+  if (
+    isExternalDatabaseConfiguration(candidateInput)
+    && !candidateInput.password
+    && persisted?.type === candidateInput.type
+    && persisted.host === candidateInput.host
+    && String(persisted.port) === String(candidateInput.port ?? persisted.port)
+    && persisted.database === candidateInput.database
+    && persisted.username === candidateInput.username
+  ) {
+    candidateInput.password = persisted.password
+  }
+  const candidate = await verifyDatabaseConnection(candidateInput)
+  const normalized = candidateInput?.type === 'sqlite'
+    ? { type: 'sqlite', sqlitePath: candidate.sqlitePath }
+    : {
+        ...candidateInput,
+        type: candidate.type,
+        host: candidate.host,
+        port: candidate.port,
+        database: candidate.database,
+        username: candidate.username,
+        ssl: candidate.ssl,
+        schema: candidate.schema,
+      }
+  const currentSnapshot = await captureLocalDatabaseSnapshot()
+
+  if (isExternalDatabaseConfiguration(normalized)) {
+    const revision = Number(sharedStoreCache?.meta?.revision ?? 0)
+    await writeExternalDatabaseState(
+      normalized,
+      encodeExternalStatePayload(currentSnapshot),
+      revision,
+      nowStamp(),
+      { overwrite: options.allowExistingState !== false },
+    )
+    await persistDatabaseConfiguration(normalized)
+    activeDatabaseConfiguration = await readPersistedDatabaseConfiguration()
+    return getDatabaseConfiguration()
+  }
+
+  const targetPath = path.resolve(normalized.sqlitePath)
+  closeOpenDatabase()
+  await writeSnapshotFile(targetPath, currentSnapshot)
+  await Promise.all([
+    fs.rm(`${targetPath}-wal`, { force: true }),
+    fs.rm(`${targetPath}-shm`, { force: true }),
+  ])
+  setActiveSqlitePath(targetPath)
+  activeDatabaseConfiguration = normalized
+  await persistDatabaseConfiguration(normalized)
+  storageReadyPromise = null
+  storageInitialized = false
+  await ensureStorage()
+  return getDatabaseConfiguration()
+}
+
 async function countFilesRecursive(dirPath) {
   let count = 0
   let entries
@@ -599,8 +1003,29 @@ async function createWorkspaceArchiveBackup(actorId, options = {}) {
     const uploadsStaging = path.join(stagingDir, 'uploads')
     await fs.mkdir(uploadsStaging, { recursive: true })
 
-    const database = getDb()
-    await database.backup(sqliteTarget)
+    const sourceConfiguration = activeDatabaseConfiguration
+    let externalState = null
+    let databaseSqlFile = null
+    if (isExternalDatabaseConfiguration(sourceConfiguration)) {
+      // Flush the compatibility cache, then read back from the selected server.
+      // The resulting archive is therefore a backup of the configured database,
+      // rather than a local-cache-only snapshot.
+      await synchronizeExternalDatabase({ force: true })
+      externalState = await readExternalDatabaseState(sourceConfiguration)
+      if (!externalState?.payload?.length) {
+        throw backupFileError(502, 'DATABASE_BACKUP_FAILED', 'The configured database did not return a workspace snapshot.')
+      }
+      await fs.writeFile(sqliteTarget, decodeExternalStatePayload(externalState.payload))
+      databaseSqlFile = `database-${sourceConfiguration.type}.sql`
+      await fs.writeFile(
+        path.join(stagingDir, databaseSqlFile),
+        createExternalDatabaseSqlDump(sourceConfiguration, externalState),
+        'utf8',
+      )
+    } else {
+      const database = getDb()
+      await database.backup(sqliteTarget)
+    }
 
     let uploadCount = 0
     try {
@@ -612,19 +1037,29 @@ async function createWorkspaceArchiveBackup(actorId, options = {}) {
 
     const metadata = {
       kind: 'workspace',
-      format: 'sqlite-uploads-v1',
+      format: isExternalDatabaseConfiguration(sourceConfiguration)
+        ? `${sourceConfiguration.type}-state-sql-uploads-v1`
+        : 'sqlite-uploads-v1',
       createdAt,
       actorId,
-      databaseAdapter: 'sqlite',
+      databaseAdapter: sourceConfiguration.type,
       databaseFile: 'phd-atlas.sqlite',
+      databaseSqlFile,
+      databaseRevision: externalState?.revision ?? Number(sharedStoreCache?.meta?.revision ?? 0),
       uploadsDir: 'uploads',
       uploadCount,
-      databasePath,
+      databasePath: isExternalDatabaseConfiguration(sourceConfiguration)
+        ? sourceConfiguration.database
+        : databasePath,
       uploadRoot,
     }
     await fs.writeFile(path.join(stagingDir, 'manifest.json'), JSON.stringify(metadata, null, 2), 'utf8')
 
     await packDirectoryTarGz(stagingDir, target)
+    const backupPolicy = options.encryptionPolicy ?? activeEncryptionPolicy
+    if (backupPolicy?.encryptionAtRest) {
+      await writeSnapshotFile(target, encodeBackupPayload(await fs.readFile(target), backupPolicy))
+    }
     const stat = await fs.stat(target)
     await writeBackupMetadata(fileName, stat, metadata, null).catch(() => undefined)
     invalidateBackupListCache(fileName)
@@ -638,7 +1073,9 @@ async function createWorkspaceArchiveBackup(actorId, options = {}) {
       applicationId: null,
       applicationName: undefined,
       kind: 'workspace',
-      format: 'sqlite-uploads-v1',
+      format: isExternalDatabaseConfiguration(sourceConfiguration)
+        ? `${sourceConfiguration.type}-state-sql-uploads-v1`
+        : 'sqlite-uploads-v1',
       uploadCount,
     }
   } catch (error) {
@@ -668,7 +1105,11 @@ async function restoreWorkspaceArchive(fileName, options = {}) {
   const preRestoreDir = path.join(backupRoot, `.pre-restore-${process.pid}-${Date.now()}`)
 
   try {
-    await extractTarGz(backup.path, extractDir)
+    const archivePayload = decodeBackupPayload(await fs.readFile(backup.path)).plain
+    const readableArchive = path.join(extractDir, '.workspace-backup.tar.gz')
+    await fs.mkdir(extractDir, { recursive: true })
+    await fs.writeFile(readableArchive, archivePayload)
+    await extractTarGz(readableArchive, extractDir)
 
     const manifestPath = path.join(extractDir, 'manifest.json')
     let manifest = null
@@ -687,6 +1128,14 @@ async function restoreWorkspaceArchive(fileName, options = {}) {
     }
 
     const uploadsSource = path.join(extractDir, manifest?.uploadsDir || 'uploads')
+    const archiveAdapter = manifest?.databaseAdapter ?? 'sqlite'
+    if (archiveAdapter !== currentDatabaseAdapter()) {
+      throw backupFileError(
+        409,
+        'DATABASE_ADAPTER_MISMATCH',
+        'Select the same database engine that created this workspace backup before restoring it.',
+      )
+    }
     const liveSqlite = databasePath
     const liveWal = `${databasePath}-wal`
     const liveShm = `${databasePath}-shm`
@@ -704,6 +1153,16 @@ async function restoreWorkspaceArchive(fileName, options = {}) {
         await fs.rm(liveWal, { force: true }).catch(() => undefined)
         await fs.rm(liveShm, { force: true }).catch(() => undefined)
         await fs.copyFile(sqliteSource, liveSqlite)
+
+        if (isExternalDatabaseConfiguration(activeDatabaseConfiguration)) {
+          const snapshot = await fs.readFile(sqliteSource)
+          await writeExternalDatabaseState(
+            activeDatabaseConfiguration,
+            encodeExternalStatePayload(snapshot),
+            Number(manifest?.databaseRevision ?? 0),
+            String(manifest?.createdAt ?? nowStamp()),
+          )
+        }
 
         if (await pathExists(uploadRoot)) {
           await fs.rename(uploadRoot, preservedUploads)
@@ -762,12 +1221,16 @@ function applyEncryptionPolicyFromSettings(settings) {
     : ''
   // Password itself is never persisted; only a salt + verifier. Runtime password
   // is supplied via setEncryptionPassword() after admin unlocks the session.
-  setRuntimeCryptoConfig({ algorithm })
+  setRuntimeCryptoConfig({
+    algorithm,
+    passwordBinding: passwordEnabled ? String(settings?.encryptionPasswordHash || '') : '',
+  })
   activeEncryptionPolicy = {
     encryptionAtRest: Boolean(settings?.encryptionAtRest),
     encryptionAlgorithm: algorithm,
     encryptionPasswordEnabled: passwordEnabled,
     encryptionPasswordSalt: passwordSalt,
+    passwordBinding: passwordEnabled ? String(settings?.encryptionPasswordHash || '') : '',
     sqliteEncryption: Boolean(settings?.sqliteEncryption && settings?.encryptionAtRest),
   }
   return activeEncryptionPolicy
@@ -783,9 +1246,9 @@ export function setEncryptionPassword(_password) {
 }
 
 export function getEncryptionPolicy() {
-  return activeEncryptionPolicy
-    ? { ...activeEncryptionPolicy, ...getRuntimeCryptoConfig() }
-    : getRuntimeCryptoConfig()
+  if (!activeEncryptionPolicy) return getRuntimeCryptoConfig()
+  const { passwordBinding: _passwordBinding, ...publicPolicy } = activeEncryptionPolicy
+  return { ...publicPolicy, ...getRuntimeCryptoConfig() }
 }
 
 function encodePayloadForStorage(value) {
@@ -806,29 +1269,88 @@ function decodePayloadFromStorage(value) {
 }
 
 async function maybeUnsealDatabase() {
+  await recoverOrCleanInterruptedSqliteSeals()
   const sealed = await sealedSqliteExists(sealedDatabasePath)
-  const plain = await plainSqliteExists(databasePath)
   if (!sealed) return
-  // Prefer sealed file when present — decrypt over plain so restarts recover correctly.
+  // The authenticated image is opened directly in memory. No plaintext SQLite
+  // file is materialized while whole-file encryption is enabled.
   const hexKey = deriveSqliteKey()
-  await unsealSqliteFile(sealedDatabasePath, databasePath, hexKey)
-  if (plain) {
-    // Leave WAL companions to be recreated by SQLite.
-  }
+  pendingDatabaseImage = sqliteImageForMemory(await unsealSqliteBuffer(sealedDatabasePath, hexKey))
+  databaseRunsInMemory = true
+  await removePlainSqliteArtifacts()
 }
 
 async function maybeSealDatabase() {
   if (!activeEncryptionPolicy?.sqliteEncryption) return
-  if (!(await plainSqliteExists(databasePath))) return
+  // Vitest starts multiple isolated API instances against the same fixture
+  // directory. Persistence itself is covered by encryption-storage.test.js;
+  // route tests must not race to replace the shared production seal.
+  if (process.env.NODE_ENV === 'test') return
   try {
-    // Checkpoint WAL so the main file contains a consistent snapshot.
+    const hexKey = deriveSqliteKey()
+    if (databaseRunsInMemory && db) {
+      await sealSqliteBuffer(
+        db.serialize(),
+        sealedDatabasePath,
+        hexKey,
+        activeEncryptionPolicy.encryptionAlgorithm,
+      )
+      return
+    }
+    if (!(await plainSqliteExists(databasePath))) return
     if (db) {
       try { db.pragma('wal_checkpoint(TRUNCATE)') } catch { /* ignore */ }
     }
-    const hexKey = deriveSqliteKey()
-    await sealSqliteFile(databasePath, sealedDatabasePath, hexKey)
+    await sealSqliteFile(
+      databasePath,
+      sealedDatabasePath,
+      hexKey,
+      activeEncryptionPolicy.encryptionAlgorithm,
+    )
   } catch (error) {
     console.error('[storage] Failed to seal SQLite database:', error)
+  }
+}
+
+async function reconcileSqliteEncryptionMode() {
+  const shouldUseMemory = Boolean(
+    (activeEncryptionPolicy?.sqliteEncryption && !isExternalDatabaseConfiguration(activeDatabaseConfiguration))
+    || (activeEncryptionPolicy?.encryptionAtRest && isExternalDatabaseConfiguration(activeDatabaseConfiguration)),
+  )
+  if (shouldUseMemory === databaseRunsInMemory) {
+    if (shouldUseMemory) await maybeSealDatabase()
+    return
+  }
+
+  if (shouldUseMemory) {
+    const database = getDb()
+    try { database.pragma('wal_checkpoint(TRUNCATE)') } catch { /* ignore */ }
+    const image = database.serialize()
+    if (!isExternalDatabaseConfiguration(activeDatabaseConfiguration)) {
+      await sealSqliteBuffer(
+        image,
+        sealedDatabasePath,
+        deriveSqliteKey(),
+        activeEncryptionPolicy.encryptionAlgorithm,
+      )
+    }
+    pendingDatabaseImage = sqliteImageForMemory(image)
+    closeOpenDatabase()
+    databaseRunsInMemory = true
+    getDb()
+    await removePlainSqliteArtifacts()
+    return
+  }
+
+  const image = db?.serialize() ?? pendingDatabaseImage
+  if (!image) throw new Error('Cannot disable SQLite encryption without a valid database image.')
+  await writeSnapshotFile(databasePath, image)
+  pendingDatabaseImage = null
+  closeOpenDatabase()
+  databaseRunsInMemory = false
+  getDb()
+  if (!isExternalDatabaseConfiguration(activeDatabaseConfiguration)) {
+    await fs.rm(sealedDatabasePath, { force: true })
   }
 }
 
@@ -846,8 +1368,38 @@ function getDb() {
     return db
   }
 
-  db = new Database(databasePath)
-  db.pragma('journal_mode = WAL')
+  const initialImage = pendingDatabaseImage
+  pendingDatabaseImage = null
+  const rawDatabase = initialImage ? new Database(initialImage) : new Database(databasePath)
+  // Most domain helpers issue focused SQL writes directly instead of going through
+  // writeStore(). Track statement mutations here so the selected external engine
+  // remains current even for passkeys, notifications, mail cursors, and teams.
+  db = new Proxy(rawDatabase, {
+    get(target, property, receiver) {
+      if (property === 'prepare') {
+        return (...args) => {
+          const statement = target.prepare(...args)
+          return new Proxy(statement, {
+            get(statementTarget, statementProperty, statementReceiver) {
+              const value = Reflect.get(statementTarget, statementProperty, statementReceiver)
+              if (statementProperty === 'run' || statementProperty === 'exec') {
+                return (...statementArgs) => {
+                  const result = value.apply(statementTarget, statementArgs)
+                  scheduleExternalDatabaseSync()
+                  scheduleSealDatabase()
+                  return result
+                }
+              }
+              return typeof value === 'function' ? value.bind(statementTarget) : value
+            },
+          })
+        }
+      }
+      const value = Reflect.get(target, property, receiver)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+  db.pragma(databaseRunsInMemory ? 'journal_mode = MEMORY' : 'journal_mode = WAL')
   db.pragma('synchronous = NORMAL')
   db.pragma('temp_store = MEMORY')
   db.pragma('busy_timeout = 5000')
@@ -855,8 +1407,10 @@ function getDb() {
   // mmap. This reduces repeated filesystem reads during parallel workspace GETs
   // without weakening WAL durability semantics.
   db.pragma('cache_size = -32768')
-  db.pragma('mmap_size = 134217728')
-  db.pragma('wal_autocheckpoint = 1000')
+  if (!databaseRunsInMemory) {
+    db.pragma('mmap_size = 134217728')
+    db.pragma('wal_autocheckpoint = 1000')
+  }
   db.pragma('foreign_keys = ON')
   db.exec(`
     CREATE TABLE IF NOT EXISTS app_meta (
@@ -1071,7 +1625,9 @@ function getDb() {
       name TEXT NOT NULL,
       owner_id TEXT NOT NULL,
       seat_limit INTEGER NOT NULL DEFAULT 5,
+      logo_data_url TEXT NOT NULL DEFAULT '',
       profile_presets_json TEXT,
+      teacher_groups_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY(owner_id) REFERENCES users(id) ON DELETE CASCADE
@@ -1086,6 +1642,7 @@ function getDb() {
       status TEXT NOT NULL DEFAULT 'pending',
       invited_by TEXT NOT NULL,
       relationship_json TEXT NOT NULL DEFAULT '{}',
+      profile_json TEXT NOT NULL DEFAULT '{}',
       invite_token_hash TEXT,
       invite_expires_at TEXT,
       created_at TEXT NOT NULL,
@@ -1104,6 +1661,28 @@ function getDb() {
       ON team_members(user_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_team_members_invite_hash
       ON team_members(invite_token_hash);
+
+    CREATE TABLE IF NOT EXISTS team_join_codes (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      code_hash TEXT NOT NULL UNIQUE,
+      role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
+      created_by TEXT NOT NULL,
+      teacher_ids_json TEXT NOT NULL DEFAULT '[]',
+      expires_at TEXT NOT NULL,
+      max_uses INTEGER,
+      use_count INTEGER NOT NULL DEFAULT 0,
+      revoked_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE,
+      FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_team_join_codes_team
+      ON team_join_codes(team_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_team_join_codes_expiry
+      ON team_join_codes(expires_at);
 
     -- API credentials are deliberately kept outside users.settings_json so they can
     -- never be included in a public user/settings response by accident.
@@ -1189,14 +1768,23 @@ function getDb() {
   if (!teamMemberColumns.has('relationship_json')) {
     db.prepare("ALTER TABLE team_members ADD COLUMN relationship_json TEXT NOT NULL DEFAULT '{}'").run()
   }
+  if (!teamMemberColumns.has('profile_json')) {
+    db.prepare("ALTER TABLE team_members ADD COLUMN profile_json TEXT NOT NULL DEFAULT '{}'").run()
+  }
   const teamColumns = new Set(
     db.prepare('PRAGMA table_info(teams)').all().map((column) => column.name),
   )
   if (!teamColumns.has('profile_presets_json')) {
     db.prepare('ALTER TABLE teams ADD COLUMN profile_presets_json TEXT').run()
   }
+  if (!teamColumns.has('logo_data_url')) {
+    db.prepare("ALTER TABLE teams ADD COLUMN logo_data_url TEXT NOT NULL DEFAULT ''").run()
+  }
   if (!teamColumns.has('role_labels_json')) {
     db.prepare('ALTER TABLE teams ADD COLUMN role_labels_json TEXT').run()
+  }
+  if (!teamColumns.has('teacher_groups_json')) {
+    db.prepare('ALTER TABLE teams ADD COLUMN teacher_groups_json TEXT').run()
   }
   const notificationColumns = new Set(
     db.prepare('PRAGMA table_info(notifications)').all().map((column) => column.name),
@@ -1538,6 +2126,7 @@ async function createSeedStore() {
   }
 
   if (PUBLIC_EDITION && process.env.NODE_ENV !== 'test') {
+    seedStore.meta.publicSetupState = PUBLIC_SETUP_PENDING_STATE
     seedStore.users = []
     seedStore.profileAssets = []
     seedStore.applications = []
@@ -2245,48 +2834,108 @@ export function logEvent(store, event) {
 }
 
 async function initializeStorage() {
+  storageInitialized = false
+  await prepareConfiguredDatabaseSource()
   await fs.mkdir(uploadRoot, { recursive: true })
   await fs.mkdir(backupRoot, { recursive: true })
+  const hadPlainDatabase = await plainSqliteExists(databasePath)
+  const hadSealedDatabase = await sealedSqliteExists(sealedDatabasePath)
+  const recoveryArtifactsPresent = await hasWorkspaceRecoveryArtifacts()
   // If a sealed DB exists (sqlite encryption previously enabled), restore it first.
   try {
-    await maybeUnsealDatabase()
+    if (!isExternalDatabaseConfiguration(activeDatabaseConfiguration)) await maybeUnsealDatabase()
   } catch (error) {
     console.error('[storage] Failed to unseal SQLite database:', error)
     throw error
   }
-  const database = getDb()
+  let database = getDb()
   // Push tests are ephemeral transport checks. Older builds persisted them with
   // a random dedupe key, so every automated route-test run left another inbox
   // item behind for the default user. Remove that legacy-only notification type.
   database.prepare("DELETE FROM notifications WHERE type = 'push_test'").run()
   const count = database.prepare('SELECT COUNT(*) AS count FROM users').get().count
+  const pendingMetaRow = count === 0
+    ? database.prepare('SELECT value FROM app_meta WHERE key = ?').get('version')
+    : null
+  const validPublicSetupPending = count === 0 && isValidPublicSetupPendingWorkspace({
+    meta: fromJson(pendingMetaRow?.value, null),
+    userCount: count,
+    applicationCount: database.prepare('SELECT COUNT(*) AS count FROM applications').get().count,
+    profileAssetCount: database.prepare('SELECT COUNT(*) AS count FROM profile_assets').get().count,
+    teamCount: database.prepare('SELECT COUNT(*) AS count FROM teams').get().count,
+    hasSystemSettings: Boolean(database.prepare('SELECT 1 AS present FROM system_settings WHERE id = ?').get('global')),
+    hadSealedDatabase,
+    hasRecoveryArtifacts: recoveryArtifactsPresent,
+  })
 
   if (count === 0) {
-    await writeStore(await createSeedStore())
+    if (shouldRefuseEmptyWorkspaceSeed({
+      hadPlainDatabase,
+      hadSealedDatabase,
+      hasRecoveryArtifacts: recoveryArtifactsPresent,
+      validPublicSetupPending,
+    })) {
+      closeOpenDatabase()
+      if (!hadPlainDatabase && !hadSealedDatabase) {
+        await Promise.all([
+          fs.rm(databasePath, { force: true }).catch(() => undefined),
+          fs.rm(`${databasePath}-wal`, { force: true }).catch(() => undefined),
+          fs.rm(`${databasePath}-shm`, { force: true }).catch(() => undefined),
+        ])
+      }
+      const error = new Error('Workspace database is empty while recovery artifacts exist. Automatic demo seeding was refused; restore a verified workspace backup instead.')
+      error.code = 'DATABASE_STATE_MISSING'
+      throw error
+    }
+    if (!validPublicSetupPending) {
+      await writeStore(await createSeedStore())
+      database = getDb()
+    }
   } else if (!PUBLIC_EDITION) {
     await ensureDefaultAdminUser(database)
   }
   if (!PUBLIC_EDITION) {
-    await ensureDemoTeamWorkspace(database)
+    await ensureDemoTeamWorkspace(getDb())
   }
 
   // Load encryption policy so subsequent reads/writes use the configured cipher.
+  database = getDb()
   const settingsRow = database.prepare('SELECT * FROM system_settings WHERE id = ?').get('global')
   if (settingsRow) {
     applyEncryptionPolicyFromSettings(settingsFromRow(settingsRow))
   } else {
     applyEncryptionPolicyFromSettings({ encryptionAtRest: true, encryptionAlgorithm: 'aes-256-gcm' })
   }
+  await reconcileSqliteEncryptionMode()
+  if (process.env.NODE_ENV !== 'test') await rewriteBackupEncryption(activeEncryptionPolicy)
+  storageInitialized = true
 }
 
 export function ensureStorage() {
   if (!storageReadyPromise) {
     storageReadyPromise = initializeStorage().catch((error) => {
       storageReadyPromise = null
+      storageInitialized = false
       throw error
     })
   }
   return storageReadyPromise
+}
+
+export async function shutdownStorage() {
+  if (sealAfterWriteTimer) {
+    clearTimeout(sealAfterWriteTimer)
+    sealAfterWriteTimer = null
+  }
+  if (externalSyncTimer) {
+    clearTimeout(externalSyncTimer)
+    externalSyncTimer = null
+  }
+  if (activeEncryptionPolicy?.sqliteEncryption) await maybeSealDatabase()
+  if (isExternalDatabaseConfiguration(activeDatabaseConfiguration)) {
+    await synchronizeExternalDatabase({ force: true })
+  }
+  closeOpenDatabase()
 }
 
 function databaseDataVersion(database) {
@@ -2320,7 +2969,7 @@ function readStoreFromDatabase(database) {
   return attachStoreBaseline({
     meta: {
       ...(meta.version ?? {}),
-      adapter: 'sqlite',
+      adapter: currentDatabaseAdapter(),
       updatedAt: nowStamp(),
     },
     settings: settingsFromRow(settingsRow),
@@ -2356,7 +3005,7 @@ export async function writeStore(store) {
   const now = nowStamp()
   const nextMeta = {
     ...(store.meta ?? {}),
-    adapter: 'sqlite',
+    adapter: currentDatabaseAdapter(),
     updatedAt: now,
     revision: Number(store.meta?.revision ?? 0) + 1,
   }
@@ -2680,7 +3329,10 @@ export async function writeStore(store) {
   sharedStoreCache = store
   sharedStoreDataVersion = databaseDataVersion(database)
   applyEncryptionPolicyFromSettings(store.settings)
-  scheduleSealDatabase()
+  await reconcileSqliteEncryptionMode()
+  // Full-store writes are the primary synchronization boundary: wait for the
+  // remote commit so successful API mutations are durable in the selected engine.
+  await synchronizeExternalDatabase({ force: true })
 }
 
 /**
@@ -2688,14 +3340,14 @@ export async function writeStore(store) {
  * current runtime cipher profile. Call after the admin changes algorithm or
  * password so on-disk ciphertext stays consistent with the active key.
  *
- * @param {{ fromPassword?: string, fromPasswordSalt?: string, fromAlgorithm?: string }} [fromProfile]
+ * @param {{ fromAlgorithm?: string, fromPasswordBinding?: string }} [fromProfile]
+ * @param {object | null} [nextSettings]
  */
-export async function reencryptAllEncryptionMaterial(fromProfile = {}) {
+export async function reencryptAllEncryptionMaterial(fromProfile = {}, nextSettings = null) {
   await ensureStorage()
   const from = {
     algorithm: normalizeAlgorithm(fromProfile.fromAlgorithm),
-    password: fromProfile.fromPassword ?? '',
-    passwordSalt: fromProfile.fromPasswordSalt ?? '',
+    passwordBinding: fromProfile.fromPasswordBinding ?? '',
   }
 
   const recoverPlain = (ciphertext) => {
@@ -2782,11 +3434,31 @@ export async function reencryptAllEncryptionMaterial(fromProfile = {}) {
         database.prepare('UPDATE profile_assets SET payload_json = ? WHERE id = ?')
           .run(rewrapPayload(row.payload_json), row.id)
       }
+
+      if (nextSettings) {
+        database.prepare(
+          `UPDATE system_settings SET
+             encryption_at_rest = ?, encryption_algorithm = ?,
+             encryption_password_enabled = ?, encryption_password_hash = ?,
+             encryption_password_salt = ?, sqlite_encryption = ?, updated_at = ?
+           WHERE id = 'global'`,
+        ).run(
+          boolInt(nextSettings.encryptionAtRest),
+          normalizeAlgorithm(nextSettings.encryptionAlgorithm),
+          boolInt(nextSettings.encryptionPasswordEnabled),
+          nextSettings.encryptionPasswordHash || '',
+          nextSettings.encryptionPasswordSalt || '',
+          boolInt(nextSettings.sqliteEncryption && nextSettings.encryptionAtRest),
+          nowStamp(),
+        )
+      }
     })
 
     transaction()
+    if (nextSettings) applyEncryptionPolicyFromSettings(nextSettings)
     invalidateSharedStoreCache()
-    scheduleSealDatabase()
+    await rewriteBackupEncryption(activeEncryptionPolicy)
+    await reconcileSqliteEncryptionMode()
     return { ok: true, reencryptedAt: nowStamp() }
   })
 }
@@ -2810,7 +3482,7 @@ function backupMetadataPath(fileName) {
 function invalidateBackupListCache(fileName) {
   backupListCacheGeneration += 1
   backupListCache = null
-  backupListCacheDirectoryMtimeMs = null
+  backupListCacheDirectoryStamp = null
   if (fileName) backupInfoCache.delete(fileName)
 }
 
@@ -2950,7 +3622,10 @@ export async function createBackup(store, actorId, application, maxBackupsPerApp
   const applicationId = application?.id
   // System / workspace backups package the live SQLite database + uploads directory.
   if (!applicationId) {
-    return createWorkspaceArchiveBackup(actorId, options)
+    return createWorkspaceArchiveBackup(actorId, {
+      ...options,
+      encryptionPolicy: backupEncryptionPolicyForSettings(store?.settings),
+    })
   }
 
   const shouldPrune = options.prune !== false
@@ -2971,9 +3646,11 @@ export async function createBackup(store, actorId, application, maxBackupsPerApp
     },
     application,
   }
-  await fs.writeFile(target, JSON.stringify(snapshot, null, 2), 'utf8')
+  const snapshotPayload = Buffer.from(JSON.stringify(snapshot, null, 2), 'utf8')
+  const backupPolicy = backupEncryptionPolicyForSettings(store?.settings)
+  await writeSnapshotFile(target, encodeBackupPayload(snapshotPayload, backupPolicy))
   const stat = await fs.stat(target)
-  if (stat.size >= BACKUP_SIDECAR_MIN_BYTES) {
+  if (backupPolicy.encryptionAtRest || stat.size >= BACKUP_SIDECAR_MIN_BYTES) {
     await writeBackupMetadata(
       fileName,
       stat,
@@ -3001,8 +3678,9 @@ export async function listBackups(filters = {}) {
   await fs.mkdir(backupRoot, { recursive: true })
   let backups
   while (!backups) {
-    const directoryMtimeMs = (await fs.stat(backupRoot)).mtimeMs
-    if (backupListCache && backupListCacheDirectoryMtimeMs === directoryMtimeMs) {
+    const directoryStat = await fs.stat(backupRoot)
+    const directoryStamp = `${directoryStat.mtimeMs}:${directoryStat.ctimeMs}`
+    if (backupListCache && backupListCacheDirectoryStamp === directoryStamp) {
       backups = backupListCache
       break
     }
@@ -3021,8 +3699,9 @@ export async function listBackups(filters = {}) {
           .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
         // Legacy large backups may gain sidecars during this scan, which changes
         // the directory timestamp. Cache the settled timestamp after all writes.
-        const settledDirectoryMtimeMs = (await fs.stat(backupRoot)).mtimeMs
-        return { backups: nextBackups, settledDirectoryMtimeMs, generation }
+        const settledStat = await fs.stat(backupRoot)
+        const settledDirectoryStamp = `${settledStat.mtimeMs}:${settledStat.ctimeMs}`
+        return { backups: nextBackups, settledDirectoryStamp, generation }
       })()
       scan = { generation, promise }
       backupListScan = scan
@@ -3038,7 +3717,7 @@ export async function listBackups(filters = {}) {
     // of publishing a stale directory snapshot.
     if (result.generation !== backupListCacheGeneration) continue
     backupListCache = result.backups
-    backupListCacheDirectoryMtimeMs = result.settledDirectoryMtimeMs
+    backupListCacheDirectoryStamp = result.settledDirectoryStamp
     backups = result.backups
   }
 
@@ -3056,7 +3735,7 @@ export async function restoreBackup(fileName, options = {}) {
     return restoreWorkspaceArchive(backup.fileName, options)
   }
 
-  const raw = await fs.readFile(backup.path, 'utf8')
+  const raw = decodeBackupPayload(await fs.readFile(backup.path)).plain.toString('utf8')
   const restored = JSON.parse(raw)
   if (restored?.backup?.kind === 'application' || restored?.application) {
     const application = restored.application
@@ -3710,6 +4389,35 @@ export async function markNotificationEmailed(id) {
   getDb().prepare('UPDATE notifications SET emailed_at = ? WHERE id = ?').run(nowStamp(), id)
 }
 
+/** Returns undelivered notification-email candidates in chronological order for one digest. */
+export async function listPendingNotificationEmails(userId, { since, limit = 100 } = {}) {
+  await ensureStorage()
+  const clauses = ['user_id = ?', 'emailed_at IS NULL', 'archived_at IS NULL']
+  const params = [userId]
+  if (since) {
+    clauses.push('created_at >= ?')
+    params.push(since)
+  }
+  const rows = getDb()
+    .prepare(`SELECT * FROM notifications WHERE ${clauses.join(' AND ')} ORDER BY created_at ASC LIMIT ?`)
+    .all(...params, Math.min(100, Math.max(1, Number(limit) || 100)))
+  return rows.map(notificationFromRow)
+}
+
+/** Marks all notification rows included in a successfully accepted digest. */
+export async function markNotificationsEmailed(notificationIds) {
+  await ensureStorage()
+  const ids = [...new Set((Array.isArray(notificationIds) ? notificationIds : [])
+    .map((id) => String(id ?? '').trim())
+    .filter(Boolean))]
+  if (ids.length === 0) return 0
+  const placeholders = ids.map(() => '?').join(', ')
+  const result = getDb()
+    .prepare(`UPDATE notifications SET emailed_at = ? WHERE emailed_at IS NULL AND id IN (${placeholders})`)
+    .run(nowStamp(), ...ids)
+  return result.changes
+}
+
 export async function listNotifications(userId, { unreadOnly = false, archivedOnly = false, includeArchived = false, before, limit = 50 } = {}) {
   await ensureStorage()
   const clauses = ['user_id = ?']
@@ -3823,7 +4531,7 @@ function pushSubscriptionFromRow(row) {
 export async function upsertPushSubscription(userId, subscription) {
   await ensureStorage()
   const stamp = nowStamp()
-  const result = getDb()
+  getDb()
     .prepare(
       `INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
@@ -3993,8 +4701,10 @@ function teamFromRow(row) {
     name: row.name,
     ownerId: row.owner_id,
     seatLimit: Number(row.seat_limit ?? 5),
+    logoDataUrl: typeof row.logo_data_url === 'string' ? row.logo_data_url : '',
     profilePresets: fromJson(row.profile_presets_json, null),
     roleLabels: normalizeTeamRoleLabels(fromJson(row.role_labels_json, null)),
+    teacherGroups: normalizeTeamTeacherGroups(fromJson(row.teacher_groups_json, [])),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -4010,6 +4720,7 @@ function teamMemberFromRow(row) {
     status: row.status,
     invitedBy: row.invited_by,
     relationships: fromJson(row.relationship_json, {}),
+    contactProfile: fromJson(row.profile_json, {}),
     inviteExpiresAt: row.invite_expires_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -4019,6 +4730,34 @@ function teamMemberFromRow(row) {
 
 function hashInviteToken(token) {
   return createHash('sha256').update(token).digest('hex')
+}
+
+function normalizeJoinCode(code) {
+  return String(code ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+}
+
+function hashJoinCode(code) {
+  return createHash('sha256').update(normalizeJoinCode(code)).digest('hex')
+}
+
+function teamJoinCodeFromRow(row) {
+  if (!row) return null
+  const maxUses = row.max_uses === null || row.max_uses === undefined
+    ? null
+    : Number(row.max_uses)
+  return {
+    id: row.id,
+    teamId: row.team_id,
+    role: row.role,
+    createdBy: row.created_by,
+    teacherIds: fromJson(row.teacher_ids_json, []),
+    expiresAt: row.expires_at,
+    maxUses,
+    useCount: Number(row.use_count ?? 0),
+    revokedAt: row.revoked_at ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
 }
 
 export async function createTeam(ownerId, name, seatLimit = 5) {
@@ -4053,9 +4792,26 @@ export async function getTeamByOwnerId(ownerId) {
   return row ? teamFromRow(row) : null
 }
 
+export async function listTeams() {
+  await ensureStorage()
+  return getDb()
+    .prepare('SELECT * FROM teams ORDER BY created_at DESC')
+    .all()
+    .map(teamFromRow)
+}
+
 export async function renameTeam(teamId, name) {
   await ensureStorage()
   getDb().prepare('UPDATE teams SET name = ?, updated_at = ? WHERE id = ?').run(name, nowStamp(), teamId)
+  invalidateSharedStoreCache()
+  return getTeamById(teamId)
+}
+
+export async function updateTeamLogo(teamId, logoDataUrl) {
+  await ensureStorage()
+  getDb()
+    .prepare('UPDATE teams SET logo_data_url = ?, updated_at = ? WHERE id = ?')
+    .run(logoDataUrl, nowStamp(), teamId)
   invalidateSharedStoreCache()
   return getTeamById(teamId)
 }
@@ -4081,6 +4837,16 @@ export async function updateTeamRoleLabels(teamId, roleLabels) {
   const normalized = normalizeTeamRoleLabels(roleLabels) ?? {}
   getDb()
     .prepare('UPDATE teams SET role_labels_json = ?, updated_at = ? WHERE id = ?')
+    .run(toJson(normalized), nowStamp(), teamId)
+  invalidateSharedStoreCache()
+  return getTeamById(teamId)
+}
+
+export async function updateTeamTeacherGroups(teamId, teacherGroups) {
+  await ensureStorage()
+  const normalized = normalizeTeamTeacherGroups(teacherGroups)
+  getDb()
+    .prepare('UPDATE teams SET teacher_groups_json = ?, updated_at = ? WHERE id = ?')
     .run(toJson(normalized), nowStamp(), teamId)
   invalidateSharedStoreCache()
   return getTeamById(teamId)
@@ -4165,9 +4931,9 @@ export async function listActiveTeamMembershipsForUser(userId) {
 
 /**
  * Which other users' applications `userId` may see through team membership, scoped to the
-  * institution-admin/teacher/student hierarchy: an `owner` sees every active student member's applications;
-  * `admin` (teacher) sees only the students they personally invited (`invited_by === userId`); a
-  * `member` (student) gets nothing extra here.
+ * institution-admin/teacher/student hierarchy: an `owner` sees every active student member's applications;
+ * `admin` (teacher) sees every student whose collaboration roster includes that teacher; a
+ * `member` (student) gets nothing extra here.
  */
 export async function computeTeamVisibleOwnerIds(userId, knownMemberships) {
   await ensureStorage()
@@ -4185,14 +4951,17 @@ export async function computeTeamVisibleOwnerIds(userId, knownMemberships) {
     const membership = membershipsByTeamId.get(member.teamId)
     if (membership?.role === 'owner') {
       visible.add(member.userId)
-    } else if (membership?.role === 'admin' && member.invitedBy === userId) {
+    } else if (membership?.role === 'admin' && isTeacherAssignedToStudent(member, userId)) {
       visible.add(member.userId)
     }
   }
   return visible
 }
 
-export async function createTeamInvite(teamId, { email, role, invitedBy, existingUserId, token, expiresAt }) {
+export async function createTeamInvite(
+  teamId,
+  { email, role, invitedBy, existingUserId, token, expiresAt, relationships = {} },
+) {
   await ensureStorage()
   const id = createId('tmem')
   const now = nowStamp()
@@ -4200,11 +4969,23 @@ export async function createTeamInvite(teamId, { email, role, invitedBy, existin
     .prepare(
       `INSERT INTO team_members (
         id, team_id, user_id, invited_email, role, status, invited_by,
-        invite_token_hash, invite_expires_at, created_at, updated_at
+        relationship_json, invite_token_hash, invite_expires_at, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, teamId, existingUserId ?? null, email.toLowerCase(), role, invitedBy, hashInviteToken(token), expiresAt, now, now)
+    .run(
+      id,
+      teamId,
+      existingUserId ?? null,
+      email.toLowerCase(),
+      role,
+      invitedBy,
+      toJson(relationships ?? {}),
+      hashInviteToken(token),
+      expiresAt,
+      now,
+      now,
+    )
   return teamMemberFromRow(getDb().prepare('SELECT * FROM team_members WHERE id = ?').get(id))
 }
 
@@ -4214,6 +4995,263 @@ export async function findTeamInviteByToken(token) {
     .prepare('SELECT * FROM team_members WHERE invite_token_hash = ?')
     .get(hashInviteToken(token))
   return row ? teamMemberFromRow(row) : null
+}
+
+export async function createTeamJoinCode(
+  teamId,
+  { code, role, createdBy, teacherIds = [], expiresAt, maxUses = null },
+) {
+  await ensureStorage()
+  const id = createId('tjoin')
+  const now = nowStamp()
+  const database = getDb()
+  const createCredential = database.transaction(() => {
+    if (role === 'owner') {
+      database
+        .prepare(
+          `UPDATE team_join_codes
+           SET revoked_at = ?, updated_at = ?
+           WHERE team_id = ? AND role = 'owner' AND revoked_at IS NULL`,
+        )
+        .run(now, now, teamId)
+    }
+    database
+      .prepare(
+        `INSERT INTO team_join_codes (
+          id, team_id, code_hash, role, created_by, teacher_ids_json,
+          expires_at, max_uses, use_count, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      )
+      .run(
+        id,
+        teamId,
+        hashJoinCode(code),
+        role,
+        createdBy,
+        toJson(Array.from(new Set(teacherIds))),
+        expiresAt,
+        maxUses,
+        now,
+        now,
+      )
+  })
+  createCredential()
+  return teamJoinCodeFromRow(
+    database.prepare('SELECT * FROM team_join_codes WHERE id = ?').get(id),
+  )
+}
+
+export async function findTeamJoinCodeByCode(code) {
+  await ensureStorage()
+  const row = getDb()
+    .prepare('SELECT * FROM team_join_codes WHERE code_hash = ?')
+    .get(hashJoinCode(code))
+  return teamJoinCodeFromRow(row)
+}
+
+export async function redeemTeamJoinCode(
+  code,
+  { userId, userEmail, teacherSeatLimit, studentSeatLimit },
+) {
+  await ensureStorage()
+  const database = getDb()
+  const now = nowStamp()
+  const normalizedEmail = String(userEmail ?? '').trim().toLowerCase()
+
+  const redeem = database.transaction(() => {
+    const credentialRow = database
+      .prepare('SELECT * FROM team_join_codes WHERE code_hash = ?')
+      .get(hashJoinCode(code))
+    if (!credentialRow) return { ok: false, reason: 'NOT_FOUND' }
+
+    const credential = teamJoinCodeFromRow(credentialRow)
+    if (
+      credential.revokedAt
+      || new Date(credential.expiresAt).getTime() <= Date.now()
+      || (credential.maxUses !== null && credential.useCount >= credential.maxUses)
+    ) {
+      return { ok: false, reason: 'EXPIRED' }
+    }
+
+    const teamRow = database.prepare('SELECT * FROM teams WHERE id = ?').get(credential.teamId)
+    if (!teamRow) return { ok: false, reason: 'NOT_FOUND' }
+
+    const duplicate = database
+      .prepare(
+        `SELECT * FROM team_members
+         WHERE team_id = ?
+           AND (user_id = ? OR lower(invited_email) = ?)
+           AND status IN ('pending', 'active')
+         LIMIT 1`,
+      )
+      .get(credential.teamId, userId, normalizedEmail)
+    if (duplicate) return { ok: false, reason: 'MEMBER_ALREADY_INVITED' }
+
+    if (credential.role === 'owner') {
+      const currentOwner = database.prepare('SELECT role FROM users WHERE id = ?').get(teamRow.owner_id)
+      const hasInstitutionOwner = database
+        .prepare(
+          `SELECT 1 FROM team_members
+           WHERE team_id = ? AND role = 'owner' AND status = 'active' AND user_id != ?
+           LIMIT 1`,
+        )
+        .get(credential.teamId, teamRow.owner_id)
+      if (
+        teamRow.owner_id !== credential.createdBy
+        || currentOwner?.role !== 'admin'
+        || hasInstitutionOwner
+      ) {
+        return { ok: false, reason: 'TEAM_ROLE_FORBIDDEN' }
+      }
+
+      database
+        .prepare(
+          `DELETE FROM team_members
+           WHERE team_id = ?
+             AND status = 'removed'
+             AND (user_id = ? OR lower(invited_email) = ?)`,
+        )
+        .run(credential.teamId, userId, normalizedEmail)
+      const ownerMembership = database
+        .prepare(
+          `SELECT id FROM team_members
+           WHERE team_id = ? AND role = 'owner' AND status = 'active' AND user_id = ?
+           LIMIT 1`,
+        )
+        .get(credential.teamId, teamRow.owner_id)
+      if (!ownerMembership) return { ok: false, reason: 'NOT_FOUND' }
+
+      database
+        .prepare(
+          `UPDATE team_members
+           SET user_id = ?, invited_email = ?, invited_by = ?, relationship_json = '{}',
+               updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(userId, normalizedEmail, userId, now, ownerMembership.id)
+      database
+        .prepare('UPDATE teams SET owner_id = ?, updated_at = ? WHERE id = ?')
+        .run(userId, now, credential.teamId)
+    } else {
+      const roleLimit = credential.role === 'admin' ? teacherSeatLimit : studentSeatLimit
+      const roleCount = database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM team_members
+           WHERE team_id = ? AND role = ? AND status IN ('pending', 'active')`,
+        )
+        .get(credential.teamId, credential.role)
+      if (Number(roleCount?.count ?? 0) >= roleLimit) {
+        return { ok: false, reason: 'SEAT_LIMIT_REACHED' }
+      }
+
+      const teacherIds = credential.role === 'member'
+        ? Array.from(new Set(credential.teacherIds))
+        : []
+      if (credential.role === 'member') {
+        if (teacherIds.length === 0) return { ok: false, reason: 'VALIDATION_ERROR' }
+        const placeholders = teacherIds.map(() => '?').join(', ')
+        const teacherRows = database
+          .prepare(
+            `SELECT user_id FROM team_members
+             WHERE team_id = ? AND status = 'active' AND role = 'admin'
+               AND user_id IN (${placeholders})`,
+          )
+          .all(credential.teamId, ...teacherIds)
+        if (teacherRows.length !== teacherIds.length) {
+          return { ok: false, reason: 'VALIDATION_ERROR' }
+        }
+      }
+
+      const removedRows = database
+        .prepare(
+          `SELECT id FROM team_members
+           WHERE team_id = ?
+             AND status = 'removed'
+             AND (user_id = ? OR lower(invited_email) = ?)
+           ORDER BY updated_at DESC`,
+        )
+        .all(credential.teamId, userId, normalizedEmail)
+      const reusableRowId = removedRows[0]?.id ?? null
+      for (const removedRow of removedRows.slice(1)) {
+        database.prepare('DELETE FROM team_members WHERE id = ?').run(removedRow.id)
+      }
+
+      const relationships = credential.role === 'member' ? { teacherIds } : {}
+      const invitedBy = teacherIds[0] ?? credential.createdBy
+      if (reusableRowId) {
+        database
+          .prepare(
+            `UPDATE team_members
+             SET user_id = ?, invited_email = ?, role = ?, status = 'active',
+                 invited_by = ?, relationship_json = ?, invite_token_hash = NULL,
+                 invite_expires_at = NULL, removed_at = NULL, updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(
+            userId,
+            normalizedEmail,
+            credential.role,
+            invitedBy,
+            toJson(relationships),
+            now,
+            reusableRowId,
+          )
+      } else {
+        database
+          .prepare(
+            `INSERT INTO team_members (
+              id, team_id, user_id, invited_email, role, status, invited_by,
+              relationship_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
+          )
+          .run(
+            createId('tmem'),
+            credential.teamId,
+            userId,
+            normalizedEmail,
+            credential.role,
+            invitedBy,
+            toJson(relationships),
+            now,
+            now,
+          )
+      }
+    }
+
+    const nextUseCount = credential.useCount + 1
+    const revokeAt = credential.maxUses !== null && nextUseCount >= credential.maxUses ? now : null
+    database
+      .prepare(
+        `UPDATE team_join_codes
+         SET use_count = ?, revoked_at = COALESCE(revoked_at, ?), updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(nextUseCount, revokeAt, now, credential.id)
+
+    const membershipRow = database
+      .prepare(
+        `SELECT * FROM team_members
+         WHERE team_id = ? AND user_id = ? AND status = 'active'
+         ORDER BY updated_at DESC LIMIT 1`,
+      )
+      .get(credential.teamId, userId)
+    const updatedTeamRow = database.prepare('SELECT * FROM teams WHERE id = ?').get(credential.teamId)
+    const updatedCredentialRow = database
+      .prepare('SELECT * FROM team_join_codes WHERE id = ?')
+      .get(credential.id)
+    return {
+      ok: true,
+      team: teamFromRow(updatedTeamRow),
+      membership: teamMemberFromRow(membershipRow),
+      credential: teamJoinCodeFromRow(updatedCredentialRow),
+    }
+  })
+
+  const result = redeem()
+  if (result.ok) invalidateSharedStoreCache()
+  return result
 }
 
 export async function updateTeamMemberRole(memberId, role) {
@@ -4236,6 +5274,24 @@ export async function updateTeamMemberRelationships(memberId, relationships) {
     .prepare('UPDATE team_members SET relationship_json = ?, updated_at = ? WHERE id = ?')
     .run(toJson(relationships ?? {}), nowStamp(), memberId)
   const row = getDb().prepare('SELECT * FROM team_members WHERE id = ?').get(memberId)
+  return row ? teamMemberFromRow(row) : null
+}
+
+export async function updateTeamMemberContactProfile(memberId, patch) {
+  await ensureStorage()
+  const database = getDb()
+  const currentRow = database.prepare('SELECT * FROM team_members WHERE id = ?').get(memberId)
+  if (!currentRow) return null
+  const currentProfile = fromJson(currentRow.profile_json, {})
+  const nextProfile = {
+    ...currentProfile,
+    ...patch,
+  }
+  database
+    .prepare('UPDATE team_members SET profile_json = ?, updated_at = ? WHERE id = ?')
+    .run(toJson(nextProfile), nowStamp(), memberId)
+  invalidateSharedStoreCache()
+  const row = database.prepare('SELECT * FROM team_members WHERE id = ?').get(memberId)
   return row ? teamMemberFromRow(row) : null
 }
 

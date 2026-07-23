@@ -1121,6 +1121,13 @@
     white-space: nowrap;
   }
 
+  .notification-center-toolbar.is-editing .notification-center-manage {
+    min-width: 0;
+    min-height: 32px;
+    height: 32px;
+    padding-inline: 8px;
+  }
+
   .notification-center-read-all {
     width: 36px;
     padding: 0;
@@ -1138,6 +1145,9 @@
     grid-row: 2;
     width: 100%;
     margin: 0;
+    transition:
+      opacity var(--duration-fast) var(--ease-out),
+      transform var(--duration) var(--ease-out);
   }
 
   .notification-center-select-all-slot[aria-hidden='true'] {
@@ -2524,30 +2534,32 @@
   /* The add form remains a compact two-column control group instead of
      inheriting the old full-width, one-control-per-row mobile fallback. */
   .fee-add-form {
-    grid-template-columns: minmax(0, 1fr) 96px;
+    grid-template-columns: minmax(0, 1fr) max-content;
+    grid-template-areas:
+      "amount currency"
+      "notes notes"
+      "waiver actions";
     gap: 6px;
     padding: 7px;
   }
 
-  .fee-add-form > input[type='number'] {
-    grid-column: 1;
-    grid-row: 1;
+  .fee-add-form > .fee-add-amount {
+    grid-area: amount;
   }
 
   .fee-add-form > .custom-select-root {
-    grid-column: 2;
-    grid-row: 1;
+    grid-area: currency;
+    width: 96px;
     min-width: 0;
   }
 
-  .fee-add-form > input[type='text'] {
-    grid-column: 1;
-    grid-row: 2;
+  .fee-add-form > .fee-add-notes {
+    grid-area: notes;
   }
 
-  .fee-add-form > .fee-waived-label {
-    grid-column: 2;
-    grid-row: 2;
+  .fee-add-form > .fee-waiver-toggle {
+    grid-area: waiver;
+    justify-self: start;
   }
 
   .fee-add-form > input.settings-input,
@@ -2561,23 +2573,17 @@
     padding-inline: 9px;
   }
 
-  .fee-waived-label {
+  .fee-add-form > .fee-state-toggle {
     min-height: 32px;
-    gap: 5px;
-    padding-inline: 2px;
+    padding-inline: 9px;
     font-size: 12px;
   }
 
-  .fee-waived-label input {
-    width: 14px;
-    height: 14px !important;
-  }
-
   .fee-add-actions {
-    grid-column: 1 / -1;
-    justify-content: flex-start;
+    grid-area: actions;
+    justify-self: end;
+    justify-content: flex-end;
     gap: 6px;
-    padding-top: 0;
   }
 
   body .fee-add-actions > button {
@@ -2605,7 +2611,7 @@
     grid-column: 1 / -1;
   }
 
-  .fee-edit-toggle {
+  .fee-state-toggle {
     min-height: 34px;
   }
 
@@ -2884,11 +2890,11 @@
   @keyframes mobile-sheet-enter {
     from {
       opacity: 0;
-      transform: translate3d(0, 26px, 0) scale(0.99);
+      transform: translate3d(0, 14px, 0) scale(0.992);
     }
     to {
       opacity: 1;
-      transform: translate3d(0, 0, 0) scale(1);
+      transform: none;
     }
   }
 
@@ -2970,6 +2976,37 @@
   .profile-toolbar > .primary-action svg {
     width: 13px;
     height: 13px;
+  }
+
+  .profile-snippet-section .profile-section-head {
+    align-items: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .profile-snippet-section .profile-section-head-actions {
+    margin-left: auto;
+  }
+
+  .profile-snippet-list-main {
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .profile-snippet-list-copy > em {
+    display: none;
+  }
+
+  .profile-snippet-list-actions {
+    gap: 0;
+    padding-right: 6px;
+    opacity: 1;
+    transform: none;
+  }
+
+  .profile-snippet-list-actions .icon-action:nth-child(2),
+  .profile-snippet-list-actions .icon-action:nth-child(3) {
+    display: none;
   }
 
   .snippet-grid.snippet-stack-grid {
@@ -3090,30 +3127,30 @@
     padding: 10px;
   }
 
-  .snippet-stack .snippet-card-main {
+  .snippet-stack-card-layout .snippet-card-main {
     min-height: 164px;
   }
 
-  .snippet-stack .snippet-card-info {
+  .snippet-stack-card-layout .snippet-card-info {
     gap: 5px;
     padding-top: 12px;
   }
 
-  .snippet-stack .snippet-card-info strong {
+  .snippet-stack-card-layout .snippet-card-info strong {
     font-size: 13px;
   }
 
-  .snippet-stack .snippet-card-title-row {
+  .snippet-stack-card-layout .snippet-card-title-row {
     gap: 5px;
   }
 
-  .snippet-stack .snippet-card-title-row span {
+  .snippet-stack-card-layout .snippet-card-title-row span {
     padding-inline: 5px;
     font-size: 10px;
     letter-spacing: 0;
   }
 
-  .snippet-stack .snippet-card-detail-list span {
+  .snippet-stack-card-layout .snippet-card-detail-list span {
     font-size: 10px;
   }
 
@@ -3138,15 +3175,6 @@
     transform-origin: center top;
   }
 
-  .profile-preset-editor-title-row {
-    display: flex;
-    width: 100%;
-    margin-top: 4px;
-  }
-
-  .profile-preset-editor-section-head .eyebrow {
-    display: block;
-  }
 }
 
 @media (max-width: 480px) {
@@ -3179,6 +3207,28 @@
 }
 
 @media (max-width: 360px) {
+  .fee-add-form {
+    grid-template-areas:
+      "amount currency"
+      "notes notes"
+      "waiver waiver"
+      "actions actions";
+  }
+
+  .fee-add-form > .fee-waiver-toggle {
+    width: 100%;
+    justify-self: stretch;
+  }
+
+  .fee-add-actions {
+    width: 100%;
+  }
+
+  body .fee-add-actions > button {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+
   .atlas-rail {
     padding-inline: 4px;
   }

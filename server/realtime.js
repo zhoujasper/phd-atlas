@@ -10,6 +10,7 @@ export const REALTIME_SCOPES = Object.freeze([
   'notifications',
   'session',
   'ai-keys',
+  'discover',
 ])
 
 export function scopesForMutation(method, originalUrl) {
@@ -40,6 +41,7 @@ export function scopesForMutation(method, originalUrl) {
   }
   if (pathname.startsWith('/api/admin/notifications')) scopes.add('notifications')
   if (pathname.startsWith('/api/ai/keys')) scopes.add('ai-keys')
+  if (pathname.startsWith('/api/discover')) scopes.add('discover')
   if (
     pathname.startsWith('/api/settings')
     || pathname.startsWith('/api/account')

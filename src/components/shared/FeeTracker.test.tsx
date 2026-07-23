@@ -37,6 +37,7 @@ function renderFeeTracker(
   onUpdate: (feeId: string, patch: FeePatch) => void | Promise<void>,
   fees: Array<typeof paidFee | typeof unpaidFee> = [paidFee],
   onDelete = vi.fn(),
+  onAdd = vi.fn(),
 ) {
   return render(
     <I18nContext.Provider value={{
@@ -47,7 +48,7 @@ function renderFeeTracker(
     }}>
       <FeeTracker
         fees={fees}
-        onAdd={vi.fn()}
+        onAdd={onAdd}
         onUpdate={onUpdate}
         onDelete={onDelete}
       />
@@ -84,7 +85,7 @@ describe('FeeTracker editing', () => {
     const amount = within(fee!).getByRole('spinbutton', { name: 'Amount' })
     await user.clear(amount)
     await user.type(amount, '95')
-    await user.click(within(fee!).getByRole('checkbox', { name: 'Paid' }))
+    await user.click(within(fee!).getByRole('button', { name: 'Paid' }))
 
     const notes = within(fee!).getByRole('textbox', { name: 'Notes' })
     await user.clear(notes)
@@ -119,6 +120,30 @@ describe('FeeTracker editing', () => {
     expect(fee).not.toHaveClass('editing')
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it('uses a semantic waiver toggle and submits the compact add form', async () => {
+    const user = userEvent.setup()
+    const onAdd = vi.fn()
+    renderFeeTracker(vi.fn(async () => {}), [paidFee], vi.fn(), onAdd)
+
+    await user.click(screen.getByRole('button', { name: 'Add Fee' }))
+    const form = document.querySelector<HTMLFormElement>('.fee-add-form')!
+    const waiverToggle = within(form).getByRole('button', { name: 'Waived' })
+    expect(waiverToggle).toHaveAttribute('aria-pressed', 'false')
+
+    await user.click(waiverToggle)
+    expect(waiverToggle).toHaveAttribute('aria-pressed', 'true')
+    await user.type(within(form).getByPlaceholderText('Amount'), '75')
+    await user.type(within(form).getByPlaceholderText('Notes (optional)'), 'Department waiver')
+    await user.click(within(form).getByRole('button', { name: 'Add Fee' }))
+
+    expect(onAdd).toHaveBeenCalledWith({
+      amount: 75,
+      currency: 'USD',
+      waived: true,
+      notes: 'Department waiver',
+    })
   })
 
   it('prompts save / discard / cancel when closing with unsaved edits', async () => {

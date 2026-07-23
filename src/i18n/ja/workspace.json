@@ -63,7 +63,8 @@
     "emptyDescription": "最初の出願を作成し、ここで各段階へ進めましょう。",
     "priorityValue": "P{value}",
     "moveToStatus": "{status} に移動",
-    "showMore": "{count} もっと見る"
+    "showMore": "{count} もっと見る",
+    "moveTo": "移動先"
   },
   "explorer": {
     "selectedCount": "{count} が選択されました",

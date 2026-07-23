@@ -63,7 +63,8 @@
     "emptyDescription": "Tạo hồ sơ ứng tuyển đầu tiên, sau đó chuyển qua từng giai đoạn tại đây.",
     "priorityValue": "P{value}",
     "moveToStatus": "Chuyển tới {status}",
-    "showMore": "Hiển thị {count} thêm"
+    "showMore": "Hiển thị {count} thêm",
+    "moveTo": "Chuyển đến"
   },
   "explorer": {
     "selectedCount": "{count} đã chọn",
