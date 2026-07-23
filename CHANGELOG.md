@@ -49,6 +49,9 @@ the selected external database when applicable.
   `phd-atlas-update-<version>-release.tar.gz` package and matching
   `.sha256` sidecar, tests installation and rollback, and attaches the verified
   assets to the GitHub prerelease.
+- Multi-architecture container smoke tests now clear Docker's local
+  manifest-list cache between `linux/amd64` and `linux/arm64`, so both variants
+  are independently pulled and exercised before any public tag is promoted.
 
 ### Security
 

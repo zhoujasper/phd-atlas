@@ -41,6 +41,9 @@ PhD Atlas 公开版的所有重要变化都记录在此文件中。格式遵循
 - 公开 Release 自动化现在会构建名称确定的
   `phd-atlas-update-<version>-release.tar.gz` 及配套 `.sha256` 文件，测试安装
   与回滚流程，并将验证后的资产附加到 GitHub 预发布版本。
+- 多架构容器冒烟测试现在会在 `linux/amd64` 与 `linux/arm64` 之间清理
+  Docker 本地的多架构清单缓存，确保两个变体都被独立拉取和运行验证后，才会
+  提升任何公开标签。
 
 ### 安全
 

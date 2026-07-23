@@ -9,6 +9,9 @@ if [[ -z "$image_ref" ]]; then
 fi
 
 active_container=""
+remove_local_image() {
+  docker image rm --force "$image_ref" >/dev/null 2>&1 || true
+}
 cleanup() {
   status=$?
   trap - EXIT
@@ -18,6 +21,7 @@ cleanup() {
     fi
     docker rm --force --volumes "$active_container" >/dev/null 2>&1 || true
   fi
+  remove_local_image
   exit "$status"
 }
 trap cleanup EXIT
@@ -28,6 +32,11 @@ echo "::add-mask::$jwt_secret"
 echo "::add-mask::$settings_key"
 
 for architecture in amd64 arm64; do
+  # Docker's classic image store cannot keep two platform variants under the
+  # same manifest-list digest. Purge the previous variant before switching
+  # architectures so --pull always can materialize the requested platform.
+  remove_local_image
+
   run_id="${GITHUB_RUN_ID:-local}"
   run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
   active_container="phd-atlas-${image_label}-${architecture}-${run_id}-${run_attempt}"
@@ -96,6 +105,7 @@ NODE
 
   docker rm --force --volumes "$active_container" >/dev/null
   active_container=""
+  remove_local_image
   echo "Verified ${image_label} linux/${architecture}: healthy and awaiting one-time /admin setup."
 done
 
