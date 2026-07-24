@@ -12,7 +12,341 @@
 - HTTPS 反向代理（Nginx、Caddy、Traefik、IIS ARR）
 - 至少 1 GB 内存
 
-## Docker Compose
+---
+
+## 部署方案
+
+三种平台完整部署脚本：Windows、Linux、宝塔面板。
+
+### 方案一：Windows（CMD / PowerShell）
+
+#### CMD 批处理脚本（`deploy-phd-atlas.bat`）
+
+```batch
+@echo off
+chcp 65001 >nul
+echo ========================================
+echo   PhD Atlas - Windows Docker 部署
+echo ========================================
+echo.
+
+echo [1/6] 停止并删除旧容器...
+docker stop phd-atlas 2>nul
+docker rm phd-atlas 2>nul
+echo 完成.
+
+echo [2/6] 删除旧数据卷（清理数据）...
+docker volume rm phd-atlas-data 2>nul
+echo 完成.
+
+echo [3/6] 拉取最新镜像...
+docker pull ghcr.io/zhoujasper/phd-atlas:latest
+echo 完成.
+
+echo [4/6] 创建并启动容器...
+docker run --detach --name phd-atlas ^
+  --env DOMAIN="http://localhost:8080" ^
+  --env BASE_URL="http://localhost:8080" ^
+  --env CORS_ORIGIN="http://localhost:8080" ^
+  --env ALLOWED_HOSTS="localhost,localhost:8080,127.0.0.1" ^
+  --env NODE_ENV="development" ^
+  --env SECURE="false" ^
+  --env TRUST_PROXY="false" ^
+  --volume phd-atlas-data:/app/storage ^
+  --restart unless-stopped ^
+  --publish 127.0.0.1:8080:4317 ^
+  ghcr.io/zhoujasper/phd-atlas:latest
+echo 完成.
+
+echo [5/6] 等待容器启动...
+timeout /t 5 /nobreak >nul
+
+echo [6/6] 查看容器状态...
+docker ps | findstr phd-atlas
+
+echo.
+echo ========================================
+echo   ✅ 部署完成！
+echo   🌐 访问地址：http://localhost:8080/admin
+echo   ⚠️  首次访问需创建管理员账户
+echo   ⛔ 请使用 localhost，不要用 127.0.0.1
+echo ========================================
+echo.
+docker logs phd-atlas --tail 10
+echo.
+pause
+```
+
+#### PowerShell 脚本（`deploy-phd-atlas.ps1`）
+
+```powershell
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  PhD Atlas - Windows Docker 部署" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+
+Write-Host "[1/6] 停止并删除旧容器..." -ForegroundColor Yellow
+docker stop phd-atlas 2>$null
+docker rm phd-atlas 2>$null
+Write-Host "完成." -ForegroundColor Green
+
+Write-Host "[2/6] 删除旧数据卷..." -ForegroundColor Yellow
+docker volume rm phd-atlas-data 2>$null
+Write-Host "完成." -ForegroundColor Green
+
+Write-Host "[3/6] 拉取最新镜像..." -ForegroundColor Yellow
+docker pull ghcr.io/zhoujasper/phd-atlas:latest
+Write-Host "完成." -ForegroundColor Green
+
+Write-Host "[4/6] 创建并启动容器..." -ForegroundColor Yellow
+docker run --detach --name phd-atlas `
+  --env DOMAIN="http://localhost:8080" `
+  --env BASE_URL="http://localhost:8080" `
+  --env CORS_ORIGIN="http://localhost:8080" `
+  --env ALLOWED_HOSTS="localhost,localhost:8080,127.0.0.1" `
+  --env NODE_ENV="development" `
+  --env SECURE="false" `
+  --env TRUST_PROXY="false" `
+  --volume phd-atlas-data:/app/storage `
+  --restart unless-stopped `
+  --publish 127.0.0.1:8080:4317 `
+  ghcr.io/zhoujasper/phd-atlas:latest
+Write-Host "完成." -ForegroundColor Green
+
+Write-Host "[5/6] 等待容器启动..." -ForegroundColor Yellow
+Start-Sleep -Seconds 5
+
+Write-Host "[6/6] 查看容器状态..." -ForegroundColor Yellow
+docker ps | findstr phd-atlas
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  ✅ 部署完成！" -ForegroundColor Green
+Write-Host "  🌐 访问地址：http://localhost:8080/admin" -ForegroundColor Green
+Write-Host "  ⚠️  首次访问需创建管理员账户" -ForegroundColor Yellow
+Write-Host "  ⛔ 请使用 localhost，不要用 127.0.0.1" -ForegroundColor Red
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+docker logs phd-atlas --tail 10
+Read-Host "按 Enter 退出"
+```
+
+### 方案二：Linux / Ubuntu（Docker）
+
+#### 部署脚本（`deploy-phd-atlas.sh`）
+
+```bash
+#!/bin/bash
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+echo -e "${CYAN}========================================${NC}"
+echo -e "${CYAN}  PhD Atlas - Linux Docker 部署${NC}"
+echo -e "${CYAN}========================================${NC}"
+echo ""
+
+# 检查 Docker 是否安装
+if ! command -v docker &> /dev/null; then
+    echo -e "${RED}❌ Docker 未安装！${NC}"
+    echo "请先安装 Docker："
+    echo "  curl -fsSL https://get.docker.com | sudo sh"
+    echo "  sudo usermod -aG docker \$USER"
+    exit 1
+fi
+
+echo -e "${YELLOW}[1/7] 停止并删除旧容器...${NC}"
+sudo docker stop phd-atlas 2>/dev/null
+sudo docker rm phd-atlas 2>/dev/null
+echo -e "${GREEN}✅ 完成${NC}"
+
+echo -e "${YELLOW}[2/7] 删除旧数据卷...${NC}"
+sudo docker volume rm phd-atlas-data 2>/dev/null
+echo -e "${GREEN}✅ 完成${NC}"
+
+echo -e "${YELLOW}[3/7] 拉取最新镜像...${NC}"
+sudo docker pull ghcr.io/zhoujasper/phd-atlas:latest
+echo -e "${GREEN}✅ 完成${NC}"
+
+echo -e "${YELLOW}[4/7] 创建并启动容器...${NC}"
+sudo docker run --detach --name phd-atlas \
+  --env DOMAIN="http://localhost:8080" \
+  --env BASE_URL="http://localhost:8080" \
+  --env CORS_ORIGIN="http://localhost:8080" \
+  --env ALLOWED_HOSTS="localhost,localhost:8080,127.0.0.1" \
+  --env NODE_ENV="development" \
+  --env SECURE="false" \
+  --env TRUST_PROXY="false" \
+  --volume phd-atlas-data:/app/storage \
+  --restart unless-stopped \
+  --publish 127.0.0.1:8080:4317 \
+  ghcr.io/zhoujasper/phd-atlas:latest
+echo -e "${GREEN}✅ 完成${NC}"
+
+echo -e "${YELLOW}[5/7] 等待容器启动...${NC}"
+sleep 5
+
+echo -e "${YELLOW}[6/7] 查看容器状态...${NC}"
+sudo docker ps | grep phd-atlas
+
+echo -e "${YELLOW}[7/7] 查看启动日志...${NC}"
+sudo docker logs phd-atlas --tail 10
+
+echo ""
+echo -e "${CYAN}========================================${NC}"
+echo -e "${GREEN}✅ 部署完成！${NC}"
+echo -e "${GREEN}🌐 访问地址：http://localhost:8080/admin${NC}"
+echo -e "${YELLOW}⚠️  首次访问需创建管理员账户${NC}"
+echo -e "${RED}⛔ 请使用 localhost，不要用 127.0.0.1${NC}"
+echo -e "${CYAN}========================================${NC}"
+```
+
+#### 使用方式
+
+```bash
+# 1. 赋予执行权限
+chmod +x deploy-phd-atlas.sh
+
+# 2. 运行
+./deploy-phd-atlas.sh
+```
+
+#### 非 root 用户（Docker 已配置免 sudo）
+
+```bash
+#!/bin/bash
+# 如果 Docker 已配置非 root 用户，去掉 sudo
+
+docker run --detach --name phd-atlas \
+  --env DOMAIN="http://localhost:8080" \
+  --env BASE_URL="http://localhost:8080" \
+  --env CORS_ORIGIN="http://localhost:8080" \
+  --env ALLOWED_HOSTS="localhost,localhost:8080,127.0.0.1" \
+  --env NODE_ENV="development" \
+  --env SECURE="false" \
+  --env TRUST_PROXY="false" \
+  --volume phd-atlas-data:/app/storage \
+  --restart unless-stopped \
+  --publish 127.0.0.1:8080:4317 \
+  ghcr.io/zhoujasper/phd-atlas:latest
+```
+
+### 方案三：宝塔面板部署（Docker 方式）
+
+> 前提：宝塔面板已安装 **Docker 管理器** 或 **Docker** 应用。
+> 确保服务器已开放 **8080** 端口（或自定义端口）。
+
+#### 方法 A：宝塔 Docker 管理器（图形化）
+
+**步骤 1：拉取镜像**
+
+1. 登录宝塔面板
+2. 进入 **Docker** → **镜像管理**
+3. 点击 **获取镜像**
+4. 输入：`ghcr.io/zhoujasper/phd-atlas:latest`
+5. 点击 **拉取**
+
+**步骤 2：创建容器**
+
+1. 进入 **Docker** → **容器管理**
+2. 点击 **创建容器**
+3. 配置如下：
+
+| 配置项 | 值 |
+|--------|-----|
+| 容器名称 | `phd-atlas` |
+| 镜像 | `ghcr.io/zhoujasper/phd-atlas:latest` |
+| 端口映射 | `127.0.0.1:8080:4317` |
+| 重启策略 | `除非停止，否则始终重启` |
+
+4. **环境变量**（点击添加）：
+
+| 变量名 | 值 |
+|--------|-----|
+| `DOMAIN` | `http://你的域名或IP:8080` |
+| `BASE_URL` | `http://你的域名或IP:8080` |
+| `CORS_ORIGIN` | `http://你的域名或IP:8080` |
+| `ALLOWED_HOSTS` | `localhost,你的域名或IP` |
+| `NODE_ENV` | `development` |
+| `SECURE` | `false` |
+| `TRUST_PROXY` | `false` |
+
+5. **数据卷**（点击添加）：
+   - 容器目录：`/app/storage`
+   - 服务器目录：`/www/wwwroot/phd-atlas-data`（或自定义）
+
+6. 点击 **创建** 启动容器
+
+**步骤 3：访问**
+
+访问 `http://你的服务器IP:8080/admin` 完成初始化。
+
+#### 方法 B：宝塔面板 SSH 终端
+
+在宝塔面板的 **终端** 中执行：
+
+```bash
+# 1. 停止并删除旧容器（如有）
+docker stop phd-atlas 2>/dev/null
+docker rm phd-atlas 2>/dev/null
+
+# 2. 创建数据目录
+mkdir -p /www/wwwroot/phd-atlas-data
+
+# 3. 启动容器
+docker run --detach --name phd-atlas \
+  --env DOMAIN="http://你的服务器IP:8080" \
+  --env BASE_URL="http://你的服务器IP:8080" \
+  --env CORS_ORIGIN="http://你的服务器IP:8080" \
+  --env ALLOWED_HOSTS="localhost,127.0.0.1,你的服务器IP" \
+  --env NODE_ENV="production" \
+  --env SECURE="false" \
+  --env TRUST_PROXY="false" \
+  --volume /www/wwwroot/phd-atlas-data:/app/storage \
+  --restart unless-stopped \
+  --publish 127.0.0.1:8080:4317 \
+  ghcr.io/zhoujasper/phd-atlas:latest
+
+# 4. 查看状态
+docker ps | grep phd-atlas
+docker logs phd-atlas --tail 20
+```
+
+#### 方法 C：Docker Compose（宝塔支持）
+
+创建 `docker-compose.yml` 文件：
+
+```yaml
+version: '3.8'
+
+services:
+  phd-atlas:
+    image: ghcr.io/zhoujasper/phd-atlas:latest
+    container_name: phd-atlas
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:4317"
+    environment:
+      DOMAIN: "http://你的服务器IP:8080"
+      BASE_URL: "http://你的服务器IP:8080"
+      CORS_ORIGIN: "http://你的服务器IP:8080"
+      ALLOWED_HOSTS: "localhost,127.0.0.1,你的服务器IP"
+      NODE_ENV: "production"
+      SECURE: "false"
+      TRUST_PROXY: "false"
+    volumes:
+      - /www/wwwroot/phd-atlas-data:/app/storage
+```
+
+在宝塔 Docker 管理器中上传此文件并启动。
+
+---
+
+## Docker Compose（生产环境推荐）
 
 ```bash
 git clone https://github.com/zhoujasper/phd-atlas.git
@@ -47,12 +381,16 @@ docker compose ps
 
 ```dotenv
 PHD_ATLAS_IMAGE=ghcr.io/zhoujasper/phd-atlas:0.1.0-beta.2
+# 或 NJU 镜像站
+# PHD_ATLAS_IMAGE=ghcr.nju.edu.cn/zhoujasper/phd-atlas:0.1.0-beta.2
 ```
 
 或使用不可变引用：
 
 ```dotenv
 PHD_ATLAS_IMAGE=ghcr.io/zhoujasper/phd-atlas@sha256:<manifest-digest>
+# 或 NJU 镜像站
+# PHD_ATLAS_IMAGE=ghcr.nju.edu.cn/zhoujasper/phd-atlas@sha256:<manifest-digest>
 ```
 
 `latest` 和 `beta` 标签始终指向同一个最新的 Beta 版本。
@@ -196,10 +534,39 @@ Admin Release 包更新（beta.2+）：管理后台 → 系统信息 → 系统�
 
 > 只回滚运行时代码不恢复数据，旧代码可能无法读取新版本 Beta 数据。
 
+## 管理命令
+
+### Windows
+```cmd
+docker stop phd-atlas
+docker start phd-atlas
+docker restart phd-atlas
+docker logs phd-atlas --tail 50
+docker exec -it phd-atlas sh
+```
+
+### Linux / 宝塔
+```bash
+docker stop phd-atlas
+docker start phd-atlas
+docker restart phd-atlas
+docker logs phd-atlas --tail 50
+docker exec -it phd-atlas sh
+```
+
+## 注意事项
+
+1. **统一使用 localhost 或域名访问**，避免 403 错误
+2. **首次访问必须创建管理员账户**
+3. 如果使用域名，将 `DOMAIN` 改为 `http://你的域名:8080`
+4. 生产环境建议配置 HTTPS（使用 Nginx 反向代理）
+5. 数据保存在 Docker 卷中，备份时需备份卷或挂载目录
+6. `/admin` 初始化页支持亮色/暗色主题切换和语言切换（12 种语言）
+
 ## 验收检查
 
 - `/api/health` HTTPS 返回成功，WebSocket 以 101 完成升级
-- 全新安装显示 `/admin` 的初始化步骤
+- 全新安装显示 `/admin` 的初始化步骤，并带有主题和语言控制
 - 数据库通过连接测试并在重启后保持数据
 - 普通账户和管理员登录
 - 创建、编辑、删除、上传、下载、导出均正常

@@ -200,7 +200,11 @@ function waitForWorker(child) {
 
 export async function runContainerSupervisor(options = {}) {
   const projectRoot = path.resolve(options.projectRoot ?? defaultProjectRoot)
-  const storageRoot = path.resolve(options.storageRoot ?? path.join(projectRoot, 'storage'))
+  const storageRoot = path.resolve(
+    options.storageRoot
+    ?? process.env.PHD_ATLAS_STORAGE_ROOT
+    ?? path.join(projectRoot, 'storage'),
+  )
   const logger = options.logger ?? console
   const processRef = options.processRef ?? process
   const sleep = options.sleep ?? delay

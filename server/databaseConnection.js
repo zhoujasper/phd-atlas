@@ -11,7 +11,9 @@ import {
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const projectRoot = path.resolve(__dirname, '..')
-const storageRoot = path.join(projectRoot, 'storage')
+const storageRoot = process.env.PHD_ATLAS_STORAGE_ROOT
+  ? path.resolve(process.env.PHD_ATLAS_STORAGE_ROOT)
+  : path.join(projectRoot, 'storage')
 
 function defaultTestSqlitePath() {
   const worker = String(process.env.VITEST_POOL_ID || process.env.VITEST_WORKER_ID || process.pid)

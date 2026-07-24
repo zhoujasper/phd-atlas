@@ -10,7 +10,9 @@ import {
 
 const __filename = fileURLToPath(import.meta.url)
 const projectRoot = path.resolve(path.dirname(__filename), '..')
-const storageRoot = path.join(projectRoot, 'storage')
+const storageRoot = process.env.PHD_ATLAS_STORAGE_ROOT
+  ? path.resolve(process.env.PHD_ATLAS_STORAGE_ROOT)
+  : path.join(projectRoot, 'storage')
 const args = new Map()
 for (let index = 2; index < process.argv.length; index += 2) {
   args.set(process.argv[index], process.argv[index + 1])

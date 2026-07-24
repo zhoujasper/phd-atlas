@@ -393,6 +393,8 @@ export function AdminApp() {
             busy={busy}
             error={error}
             language={lang}
+            themeProvider={themeProvider}
+            changeLanguage={changeLanguage}
             onSubmit={handleInitialSetup}
           />
         </I18nContext.Provider>

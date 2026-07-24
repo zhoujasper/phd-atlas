@@ -5,6 +5,45 @@ section per version using the exact heading `## v<package.json version>`.
 Automation extracts only the matching section, so older notes remain immutable
 history while the next version can be prepared in the same file.
 
+## v0.1.0-beta.4
+
+**Prerelease — Beta / 预发布版本。** Back up the complete workspace before
+upgrading. This release adds theme toggle and language switching to the
+first-time setup wizard, comprehensive three-platform deployment scripts, and
+ships a streamlined 826 MB Docker image.
+
+### Highlights
+
+- **Theme & language on setup page.** The first-time `/admin` initialization
+  wizard now includes a light/dark theme toggle and a language switcher (12
+  languages), matching the controls on the admin login page.
+- **Three-platform deployment docs.** Self-contained, color-coded deployment
+  scripts for Windows CMD/PowerShell, Linux/Ubuntu, and BT Panel (three
+  methods: GUI, terminal, Docker Compose), each with management commands.
+- **Slim Docker image.** Multi-stage Alpine build with esbuild-bundled
+  entrypoint cuts the image from 1.14 GB to 826 MB.
+- **NJU mirror.** `ghcr.nju.edu.cn` documented as an alternative pull source.
+- **ESM compat fix.** `bootstrapSecrets.js` uses `fileURLToPath` instead of
+  `__filename`.
+- **Team features enabled.** Private source build includes the full team
+  command center.
+
+### 中文摘要
+
+- **初始化页面的主题和语言切换。** 首次 `/admin` 引导配置现在支持亮色/暗色
+  主题切换和 12 种语言切换。
+- **三平台部署文档。** 独立、带颜色标注的部署脚本，覆盖 Windows、Linux 和
+  宝塔面板三种环境。
+- **Docker 镜像瘦身。** 多阶段 Alpine 构建将镜像从 1.14 GB 缩减至 826 MB。
+- **NJU 镜像站文档**，方便国内用户加速拉取。
+- **ESM 兼容修复**，`bootstrapSecrets.js` 改用 `fileURLToPath`。
+- **Team 功能已启用**，私有源码构建包含完整团队协作中心。
+
+Full details / 完整记录:
+[English changelog](https://github.com/zhoujasper/phd-atlas/blob/v0.1.0-beta.4/CHANGELOG.md)
+·
+[简体中文更新日志](https://github.com/zhoujasper/phd-atlas/blob/v0.1.0-beta.4/CHANGELOG.zh-CN.md)
+
 ## v0.1.0-beta.3
 
 **Prerelease — Beta / 预发布版本。** Back up the complete workspace before

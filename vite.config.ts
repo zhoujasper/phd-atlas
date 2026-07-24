@@ -12,6 +12,7 @@ export default defineConfig({
     include: ['react', 'react-dom/client', 'lucide-react', 'clsx'],
   },
   build: {
+    sourcemap: false,
     manifest: 'asset-manifest.json',
     rollupOptions: {
       output: {

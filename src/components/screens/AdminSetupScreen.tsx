@@ -6,16 +6,21 @@ import {
   Copy,
   Database,
   KeyRound,
+  Languages,
   Lock,
   Mail,
+  Moon,
   RefreshCw,
   Server,
   ShieldCheck,
   Sparkles,
+  Sun,
   UserRound,
 } from 'lucide-react'
 import type { BootstrapSecrets, DatabaseEngine, InitialAdminSetupInput } from '../../api/phdApi'
 import { useI18n } from '../hooks/useI18n'
+import { type ThemeContextValue } from '../hooks/useTheme'
+import { languageOptions, type Language } from '../../i18n'
 import { Select } from '../shared/Select'
 import { SwitchControl } from '../shared/SwitchControl'
 
@@ -27,14 +32,19 @@ export function AdminSetupScreen({
   busy,
   error,
   language,
+  themeProvider,
+  changeLanguage,
   onSubmit,
 }: {
   busy: boolean
   error: string | null
   language: string
+  themeProvider: ThemeContextValue
+  changeLanguage: (lang: Language) => void
   onSubmit: (input: InitialAdminSetupInput) => Promise<void>
 }) {
   const { tx } = useI18n()
+  const languages = languageOptions()
   const [step, setStep] = useState<SetupStep>('account')
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -186,6 +196,22 @@ export function AdminSetupScreen({
 
   return (
     <main className="admin-setup-canvas route-content-reveal">
+      <div className="auth-preferences" aria-label={tx('preferences')}>
+        <div className="auth-language-control" title={tx('settings.language')}>
+          <Languages size={14} aria-hidden="true" />
+          <Select
+            value={language}
+            options={languages}
+            onChange={changeLanguage}
+            ariaLabel={tx('settings.language')}
+            size="small"
+            searchable={languages.length > 6}
+          />
+        </div>
+        <button type="button" className="icon-action" onClick={themeProvider.toggleTheme} title={themeProvider.theme === 'dark' ? tx('settings.light') : tx('settings.dark')} aria-label={themeProvider.theme === 'dark' ? tx('settings.light') : tx('settings.dark')}>
+          {themeProvider.theme === 'dark' ? <Sun size={15} aria-hidden="true" /> : <Moon size={15} aria-hidden="true" />}
+        </button>
+      </div>
       <section className="admin-setup-shell" aria-labelledby="admin-setup-title">
         <header className="admin-setup-hero">
           <span className="admin-setup-mark" aria-hidden="true">

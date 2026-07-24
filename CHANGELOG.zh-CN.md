@@ -8,13 +8,51 @@ PhD Atlas 公开版的所有重要变化都记录在此文件中。格式遵循
 
 ## [未发布]
 
+## [0.1.0-beta.4] - 2026-07-24
+
+### 新增
+
+- 首次 `/admin` 初始化页面支持亮色/暗色主题切换和语言切换（12 种语言），与
+  管理员登录页已有的控制项保持一致。
+- 三种平台 Docker 部署脚本全覆盖（Windows CMD/PowerShell、Linux/Ubuntu、
+  宝塔面板三种方式：图形界面、SSH 终端、Docker Compose）。每种平台提供
+  独立、带颜色标注、可直接复制使用的脚本及管理命令。
+
 ### 变更
 
-- 源码到公开版的交付现在由版本号驱动：`package.json` 版本未变化时，普通源码
-  推送不会修改公开仓库；版本升高时，会自动完成公开版导出与验证、主分支门禁、
-  源码/公开标签、更新包 Release 和 Docker 通道发布。
-- GitHub Release 的人工编写说明现在自动取自 `RELEASE_NOTES.md` 中匹配的
-  `## v<版本号>` 小节。
+- 部署文档（`DEPLOYMENT.md` 和 `DEPLOYMENT.zh-CN.md`）现在以三种部署方案
+  开篇，并包含宝塔面板分步配置表格。
+
+### 修复
+
+- `bootstrapSecrets.js` 中使用 `fileURLToPath` 替代 `__filename`，实现 ESM 兼容。
+- JWT 长度检查现在仅在生产模式下生效。
+- 安全相关 i18n 键和 `CONFIRMATION_REQUIRED` 错误信息已覆盖全部 12 种语言。
+
+### 性能
+
+- Docker 镜像从 1.14 GB 缩减至 826 MB（多阶段 Alpine 构建，esbuild 打包
+  入口，移除开发依赖和非 Linux 二进制文件）。
+- 新增 NJU 镜像站（`ghcr.nju.edu.cn`）文档，供 GitHub Container Registry
+  访问较慢地区的用户使用。
+
+## [0.1.0-beta.3] - 2026-07-24
+
+### 新增
+
+- Docker 一键部署：只需 `docker run --env DOMAIN=` 即可启动，JWT 和加密密钥
+  首次启动自动生成并持久化到 `storage/bootstrap-secrets.json`。
+- URL 自动推导：从单个 `DOMAIN` 变量自动推导 `BASE_URL`、`CORS_ORIGIN`、
+  `ALLOWED_HOSTS`。
+- Admin 初始化流程新增安全密钥步骤：引导流程中展示自动生成的密钥，支持
+  一键重新生成、复制按钮和破坏性操作的二次确认。
+
+### 变更
+
+- 安装和部署指南缩减至原来的 1/4，聚焦 Docker 一条命令上线，类似
+  Vaultwarden 风格。
+- 最小化 `.env.example`：仅需 `DOMAIN`，其余均为可选覆盖项。
+- `latest` Docker 标签现已与 `beta` 一同发布，指向同一个最新 Beta 版本。
 
 ## [0.1.0-beta.2] - 2026-07-23
 

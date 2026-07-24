@@ -4,6 +4,7 @@
   display: grid;
   place-items: center;
   padding: 32px;
+  position: relative;
   background:
     radial-gradient(circle at 50% -20%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 42%),
     var(--canvas);

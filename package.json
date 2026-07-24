@@ -1,7 +1,7 @@
 {
   "name": "phd-atlas",
   "private": true,
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "type": "module",
   "scripts": {
     "dev": "npm run dev:full",
@@ -41,7 +41,6 @@
     "better-sqlite3": "^12.11.1",
     "clsx": "^2.1.1",
     "compression": "^1.8.1",
-    "concurrently": "^9.2.1",
     "cors": "^2.8.5",
     "docx-preview": "^0.3.6",
     "express": "^5.2.1",
@@ -76,6 +75,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "concurrently": "^9.2.1",
     "esbuild": "0.28.1",
     "jsdom": "^29.1.1",
     "oxlint": "^1.69.0",

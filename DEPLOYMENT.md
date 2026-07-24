@@ -12,7 +12,341 @@ start, read [INSTALLATION.md](INSTALLATION.md) first.
 - HTTPS reverse proxy (Nginx, Caddy, Traefik, IIS ARR)
 - At least 1 GB RAM
 
-## Docker Compose
+---
+
+## Deployment plans
+
+Three-platform deployment scripts for Windows, Linux, and BT Panel.
+
+### Plan A: Windows (CMD / PowerShell)
+
+#### CMD batch script (`deploy-phd-atlas.bat`)
+
+```batch
+@echo off
+chcp 65001 >nul
+echo ========================================
+echo   PhD Atlas - Windows Docker Deploy
+echo ========================================
+echo.
+
+echo [1/6] Stopping and removing old container...
+docker stop phd-atlas 2>nul
+docker rm phd-atlas 2>nul
+echo Done.
+
+echo [2/6] Removing old data volume (clears data)...
+docker volume rm phd-atlas-data 2>nul
+echo Done.
+
+echo [3/6] Pulling latest image...
+docker pull ghcr.io/zhoujasper/phd-atlas:latest
+echo Done.
+
+echo [4/6] Creating and starting container...
+docker run --detach --name phd-atlas ^
+  --env DOMAIN="http://localhost:8080" ^
+  --env BASE_URL="http://localhost:8080" ^
+  --env CORS_ORIGIN="http://localhost:8080" ^
+  --env ALLOWED_HOSTS="localhost,localhost:8080,127.0.0.1" ^
+  --env NODE_ENV="development" ^
+  --env SECURE="false" ^
+  --env TRUST_PROXY="false" ^
+  --volume phd-atlas-data:/app/storage ^
+  --restart unless-stopped ^
+  --publish 127.0.0.1:8080:4317 ^
+  ghcr.io/zhoujasper/phd-atlas:latest
+echo Done.
+
+echo [5/6] Waiting for container to start...
+timeout /t 5 /nobreak >nul
+
+echo [6/6] Checking container status...
+docker ps | findstr phd-atlas
+
+echo.
+echo ========================================
+echo   Deploy complete!
+echo   Visit: http://localhost:8080/admin
+echo   First visit creates the admin account
+echo   Use localhost, not 127.0.0.1
+echo ========================================
+echo.
+docker logs phd-atlas --tail 10
+echo.
+pause
+```
+
+#### PowerShell script (`deploy-phd-atlas.ps1`)
+
+```powershell
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  PhD Atlas - Windows Docker Deploy" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+
+Write-Host "[1/6] Stopping and removing old container..." -ForegroundColor Yellow
+docker stop phd-atlas 2>$null
+docker rm phd-atlas 2>$null
+Write-Host "Done." -ForegroundColor Green
+
+Write-Host "[2/6] Removing old data volume..." -ForegroundColor Yellow
+docker volume rm phd-atlas-data 2>$null
+Write-Host "Done." -ForegroundColor Green
+
+Write-Host "[3/6] Pulling latest image..." -ForegroundColor Yellow
+docker pull ghcr.io/zhoujasper/phd-atlas:latest
+Write-Host "Done." -ForegroundColor Green
+
+Write-Host "[4/6] Creating and starting container..." -ForegroundColor Yellow
+docker run --detach --name phd-atlas `
+  --env DOMAIN="http://localhost:8080" `
+  --env BASE_URL="http://localhost:8080" `
+  --env CORS_ORIGIN="http://localhost:8080" `
+  --env ALLOWED_HOSTS="localhost,localhost:8080,127.0.0.1" `
+  --env NODE_ENV="development" `
+  --env SECURE="false" `
+  --env TRUST_PROXY="false" `
+  --volume phd-atlas-data:/app/storage `
+  --restart unless-stopped `
+  --publish 127.0.0.1:8080:4317 `
+  ghcr.io/zhoujasper/phd-atlas:latest
+Write-Host "Done." -ForegroundColor Green
+
+Write-Host "[5/6] Waiting for container to start..." -ForegroundColor Yellow
+Start-Sleep -Seconds 5
+
+Write-Host "[6/6] Checking container status..." -ForegroundColor Yellow
+docker ps | findstr phd-atlas
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  Deploy complete!" -ForegroundColor Green
+Write-Host "  Visit: http://localhost:8080/admin" -ForegroundColor Green
+Write-Host "  First visit creates the admin account" -ForegroundColor Yellow
+Write-Host "  Use localhost, not 127.0.0.1" -ForegroundColor Red
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+docker logs phd-atlas --tail 10
+Read-Host "Press Enter to exit"
+```
+
+### Plan B: Linux / Ubuntu (Docker)
+
+#### Deployment script (`deploy-phd-atlas.sh`)
+
+```bash
+#!/bin/bash
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+echo -e "${CYAN}========================================${NC}"
+echo -e "${CYAN}  PhD Atlas - Linux Docker Deploy${NC}"
+echo -e "${CYAN}========================================${NC}"
+echo ""
+
+# Check Docker installation
+if ! command -v docker &> /dev/null; then
+    echo -e "${RED}Docker not installed!${NC}"
+    echo "Install Docker first:"
+    echo "  curl -fsSL https://get.docker.com | sudo sh"
+    echo "  sudo usermod -aG docker \$USER"
+    exit 1
+fi
+
+echo -e "${YELLOW}[1/7] Stopping and removing old container...${NC}"
+sudo docker stop phd-atlas 2>/dev/null
+sudo docker rm phd-atlas 2>/dev/null
+echo -e "${GREEN}Done${NC}"
+
+echo -e "${YELLOW}[2/7] Removing old data volume...${NC}"
+sudo docker volume rm phd-atlas-data 2>/dev/null
+echo -e "${GREEN}Done${NC}"
+
+echo -e "${YELLOW}[3/7] Pulling latest image...${NC}"
+sudo docker pull ghcr.io/zhoujasper/phd-atlas:latest
+echo -e "${GREEN}Done${NC}"
+
+echo -e "${YELLOW}[4/7] Creating and starting container...${NC}"
+sudo docker run --detach --name phd-atlas \
+  --env DOMAIN="http://localhost:8080" \
+  --env BASE_URL="http://localhost:8080" \
+  --env CORS_ORIGIN="http://localhost:8080" \
+  --env ALLOWED_HOSTS="localhost,localhost:8080,127.0.0.1" \
+  --env NODE_ENV="development" \
+  --env SECURE="false" \
+  --env TRUST_PROXY="false" \
+  --volume phd-atlas-data:/app/storage \
+  --restart unless-stopped \
+  --publish 127.0.0.1:8080:4317 \
+  ghcr.io/zhoujasper/phd-atlas:latest
+echo -e "${GREEN}Done${NC}"
+
+echo -e "${YELLOW}[5/7] Waiting for container to start...${NC}"
+sleep 5
+
+echo -e "${YELLOW}[6/7] Checking container status...${NC}"
+sudo docker ps | grep phd-atlas
+
+echo -e "${YELLOW}[7/7] Viewing startup logs...${NC}"
+sudo docker logs phd-atlas --tail 10
+
+echo ""
+echo -e "${CYAN}========================================${NC}"
+echo -e "${GREEN}Deploy complete!${NC}"
+echo -e "${GREEN}Visit: http://localhost:8080/admin${NC}"
+echo -e "${YELLOW}First visit creates the admin account${NC}"
+echo -e "${RED}Use localhost, not 127.0.0.1${NC}"
+echo -e "${CYAN}========================================${NC}"
+```
+
+#### Usage
+
+```bash
+# 1. Make executable
+chmod +x deploy-phd-atlas.sh
+
+# 2. Run
+./deploy-phd-atlas.sh
+```
+
+#### Without sudo (non-root Docker user)
+
+```bash
+#!/bin/bash
+# If Docker is already configured for non-root users, omit sudo
+
+docker run --detach --name phd-atlas \
+  --env DOMAIN="http://localhost:8080" \
+  --env BASE_URL="http://localhost:8080" \
+  --env CORS_ORIGIN="http://localhost:8080" \
+  --env ALLOWED_HOSTS="localhost,localhost:8080,127.0.0.1" \
+  --env NODE_ENV="development" \
+  --env SECURE="false" \
+  --env TRUST_PROXY="false" \
+  --volume phd-atlas-data:/app/storage \
+  --restart unless-stopped \
+  --publish 127.0.0.1:8080:4317 \
+  ghcr.io/zhoujasper/phd-atlas:latest
+```
+
+### Plan C: BT Panel (Baota) — Docker
+
+> Requires **Docker Manager** or **Docker** app installed in BT Panel.
+> Make sure port **8080** (or your custom port) is open on the server.
+
+#### Method A: BT Docker Manager (GUI)
+
+**Step 1: Pull the image**
+
+1. Log in to BT Panel
+2. Go to **Docker** → **Image Management**
+3. Click **Pull Image**
+4. Enter: `ghcr.io/zhoujasper/phd-atlas:latest`
+5. Click **Pull**
+
+**Step 2: Create the container**
+
+1. Go to **Docker** → **Container Management**
+2. Click **Create Container**
+3. Configure as follows:
+
+| Setting | Value |
+|---------|-------|
+| Container name | `phd-atlas` |
+| Image | `ghcr.io/zhoujasper/phd-atlas:latest` |
+| Port mapping | `127.0.0.1:8080:4317` |
+| Restart policy | `Always restart unless stopped` |
+
+4. **Environment variables** (add each):
+
+| Variable | Value |
+|----------|-------|
+| `DOMAIN` | `http://your-domain-or-ip:8080` |
+| `BASE_URL` | `http://your-domain-or-ip:8080` |
+| `CORS_ORIGIN` | `http://your-domain-or-ip:8080` |
+| `ALLOWED_HOSTS` | `localhost,your-domain-or-ip` |
+| `NODE_ENV` | `development` |
+| `SECURE` | `false` |
+| `TRUST_PROXY` | `false` |
+
+5. **Volume** (add):
+   - Container path: `/app/storage`
+   - Host path: `/www/wwwroot/phd-atlas-data` (or custom)
+
+6. Click **Create** to start the container
+
+**Step 3: Access**
+
+Visit `http://your-server-ip:8080/admin` to complete setup.
+
+#### Method B: BT Panel SSH Terminal
+
+In the BT Panel **Terminal**:
+
+```bash
+# 1. Stop and remove old container (if exists)
+docker stop phd-atlas 2>/dev/null
+docker rm phd-atlas 2>/dev/null
+
+# 2. Create data directory
+mkdir -p /www/wwwroot/phd-atlas-data
+
+# 3. Start container
+docker run --detach --name phd-atlas \
+  --env DOMAIN="http://your-server-ip:8080" \
+  --env BASE_URL="http://your-server-ip:8080" \
+  --env CORS_ORIGIN="http://your-server-ip:8080" \
+  --env ALLOWED_HOSTS="localhost,127.0.0.1,your-server-ip" \
+  --env NODE_ENV="production" \
+  --env SECURE="false" \
+  --env TRUST_PROXY="false" \
+  --volume /www/wwwroot/phd-atlas-data:/app/storage \
+  --restart unless-stopped \
+  --publish 127.0.0.1:8080:4317 \
+  ghcr.io/zhoujasper/phd-atlas:latest
+
+# 4. Check status
+docker ps | grep phd-atlas
+docker logs phd-atlas --tail 20
+```
+
+#### Method C: Docker Compose (BT Panel supports this)
+
+Create a `docker-compose.yml` file:
+
+```yaml
+version: '3.8'
+
+services:
+  phd-atlas:
+    image: ghcr.io/zhoujasper/phd-atlas:latest
+    container_name: phd-atlas
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:4317"
+    environment:
+      DOMAIN: "http://your-server-ip:8080"
+      BASE_URL: "http://your-server-ip:8080"
+      CORS_ORIGIN: "http://your-server-ip:8080"
+      ALLOWED_HOSTS: "localhost,127.0.0.1,your-server-ip"
+      NODE_ENV: "production"
+      SECURE: "false"
+      TRUST_PROXY: "false"
+    volumes:
+      - /www/wwwroot/phd-atlas-data:/app/storage
+```
+
+Upload this file in BT Docker Manager and start it.
+
+---
+
+## Docker Compose (recommended for production)
 
 ```bash
 git clone https://github.com/zhoujasper/phd-atlas.git
@@ -47,12 +381,16 @@ docker compose ps
 
 ```dotenv
 PHD_ATLAS_IMAGE=ghcr.io/zhoujasper/phd-atlas:0.1.0-beta.2
+# Or NJU mirror
+# PHD_ATLAS_IMAGE=ghcr.nju.edu.cn/zhoujasper/phd-atlas:0.1.0-beta.2
 ```
 
 Or an immutable reference:
 
 ```dotenv
 PHD_ATLAS_IMAGE=ghcr.io/zhoujasper/phd-atlas@sha256:<manifest-digest>
+# Or NJU mirror
+# PHD_ATLAS_IMAGE=ghcr.nju.edu.cn/zhoujasper/phd-atlas@sha256:<manifest-digest>
 ```
 
 `latest` and `beta` always point to the same latest Beta release.
@@ -200,10 +538,40 @@ Stop the application and restore the following as one set:
 > Rolling back only runtime files without restoring data may leave newer Beta
 > data incompatible with older code.
 
+## Management commands
+
+### Windows
+```cmd
+docker stop phd-atlas
+docker start phd-atlas
+docker restart phd-atlas
+docker logs phd-atlas --tail 50
+docker exec -it phd-atlas sh
+```
+
+### Linux / BT Panel
+```bash
+docker stop phd-atlas
+docker start phd-atlas
+docker restart phd-atlas
+docker logs phd-atlas --tail 50
+docker exec -it phd-atlas sh
+```
+
+## Notes
+
+1. **Always use localhost or domain name** to avoid 403 errors
+2. **First visit must create an admin account**
+3. If using a domain, set `DOMAIN` to `http://your-domain:8080`
+4. Production deployments should configure HTTPS (Nginx reverse proxy)
+5. Data is stored in Docker volumes — back up the volume or mounted directory
+6. The `/admin` setup page supports light/dark theme toggle and language switching
+   (12 languages)
+
 ## Acceptance checks
 
 - `/api/health` returns success over public HTTPS, WebSocket upgrades with 101
-- A fresh installation shows the `/admin` setup steps
+- A fresh installation shows the `/admin` setup steps with theme and language controls
 - The selected database passes its connection test and survives a restart
 - Normal and administrator login work
 - Create, edit, delete, upload, download, and export all function

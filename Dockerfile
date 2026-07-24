@@ -1,14 +1,11 @@
-# syntax=docker/dockerfile:1.7
-
-FROM node:24-bookworm-slim AS build
+FROM node:24-alpine AS build
 ENV npm_config_nodedir=/usr/local
 WORKDIR /app
 
-# better-sqlite3 normally downloads a prebuilt binary. These packages provide
-# a reliable native-build fallback for the target architecture.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
+# Use faster mirrors for China-based builds (no-op elsewhere).
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
+# Native-build fallback for better-sqlite3 (usually downloads a prebuilt musl binary).
+RUN apk add --no-cache python3 make g++
 
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -29,21 +26,69 @@ RUN npm run build \
     --banner:js="import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" \
     --outfile=bootstrap/container-entrypoint.mjs \
   && npm prune --omit=dev \
-  && find server -type f -name '*.test.js' -delete
+  && npm cache clean --force \
+  && find server -type f -name '*.test.js' -delete \
+  # Strip non-Linux native binaries (per-platform Docker images don't need them)
+  && find node_modules -type f \( -name '*.dll' -o -name '*.dylib' -o -name '*.exe' \) -delete \
+  # Remove development-only files from production node_modules
+  && find node_modules -type f \( \
+    -name '*.map' -o \
+    -name '*.ts' -o \
+    -name '*.d.ts' -o \
+    -name '*.md' -o \
+    -name '*.markdown' -o \
+    -name '*.flow' -o \
+    -name '*.tsbuildinfo' -o \
+    -name '.eslintrc*' -o \
+    -name '.prettierrc*' -o \
+    -name 'tsconfig*.json' -o \
+    -name '*.yml' -o \
+    -name '*.yaml' -o \
+    -name 'Makefile' -o \
+    -name 'GNUmakefile' -o \
+    -name 'CMakeLists.txt' \
+  \) -delete \
+  && find node_modules -type d \( \
+    -name 'test' -o \
+    -name 'tests' -o \
+    -name '__tests__' -o \
+    -name 'testing' -o \
+    -name 'docs' -o \
+    -name 'doc' -o \
+    -name 'examples' -o \
+    -name 'example' -o \
+    -name 'benchmark' -o \
+    -name 'benchmarks' -o \
+    -name 'bench' -o \
+    -name 'spec' -o \
+    -name 'man' -o \
+    -name '.github' \
+  \) -prune -exec rm -rf {} + 2>/dev/null || true \
+  # Remove frontend-only packages from runtime node_modules.
+  # The Vite-built dist/ already contains all frontend code; these packages
+  # are never imported by server/ or tools/. DB drivers (mssql/mysql2/pg)
+  # are dynamically imported — do NOT remove them.
+  && rm -rf \
+    node_modules/react node_modules/react-dom node_modules/scheduler \
+    node_modules/lucide-react \
+    node_modules/lexical node_modules/@lexical \
+    node_modules/@dnd-kit \
+    node_modules/xlsx node_modules/echarts node_modules/jszip \
+    node_modules/clsx node_modules/docx-preview \
+    node_modules/@aiden0z node_modules/@simplewebauthn/browser \
+    2>/dev/null || true
 
-FROM node:24-bookworm-slim AS runtime
+FROM node:24-alpine AS runtime
 ENV NODE_ENV=production \
     PORT=4317 \
     PHD_ATLAS_PROJECT_ROOT=/app \
     npm_config_nodedir=/usr/local
 WORKDIR /app
 
-# Admin-installed Release packages run npm ci inside the runtime container.
-# Keep the native-build fallback available for Node/architecture combinations
-# where better-sqlite3 has no downloadable prebuilt binary.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
+# Admin in-app update → npm ci needs native-build fallback.
+# Alpine build deps are ~80 MB vs ~250 MB on Debian.
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories \
+  && apk add --no-cache python3 make g++
 
 COPY --from=build --chown=node:node /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules

@@ -6,7 +6,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(__dirname, '..')
 const root = process.env.NODE_ENV === 'test'
   ? path.join(projectRoot, 'logs', 'tmp', `discover-research-jobs-${process.pid}`)
-  : path.join(projectRoot, 'storage', 'discover-research-jobs')
+  : path.join(process.env.PHD_ATLAS_STORAGE_ROOT
+      ? path.resolve(process.env.PHD_ATLAS_STORAGE_ROOT)
+      : path.join(projectRoot, 'storage'), 'discover-research-jobs')
 
 const RETRYABLE_RENAME_CODES = new Set(['EACCES', 'EBUSY', 'EEXIST', 'EPERM'])
 export const DISCOVER_RESEARCH_PIPELINE_VERSION = 2

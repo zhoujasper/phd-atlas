@@ -23,7 +23,9 @@ export async function runServerWorker() {
   }
 
   const projectRoot = process.cwd()
-  const storageRoot = resolve(projectRoot, 'storage')
+  const storageRoot = process.env.PHD_ATLAS_STORAGE_ROOT
+    ? resolve(process.env.PHD_ATLAS_STORAGE_ROOT)
+    : resolve(projectRoot, 'storage')
   const installDependencies = (cwd) => installProductionDependencies(cwd)
   const recoverPendingBoot = () => recoverAbandonedPendingUpdateBoot({
     projectRoot,

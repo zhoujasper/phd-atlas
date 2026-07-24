@@ -114,7 +114,9 @@ export function runWithAuditContext(context, fn) {
   return auditContext.run(context, fn)
 }
 
-export const storageRoot = path.join(projectRoot, 'storage')
+export const storageRoot = process.env.PHD_ATLAS_STORAGE_ROOT
+  ? path.resolve(process.env.PHD_ATLAS_STORAGE_ROOT)
+  : path.join(projectRoot, 'storage')
 export const uploadRoot = path.join(storageRoot, 'uploads')
 export const backupRoot = path.join(storageRoot, 'backups')
 export let databasePath = defaultSqlitePath

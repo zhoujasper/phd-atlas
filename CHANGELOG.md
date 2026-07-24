@@ -8,14 +8,60 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0-beta.4] - 2026-07-24
+
+### Added
+
+- Theme toggle and language switching (12 languages) on the first-time `/admin`
+  setup page, matching the controls already available on the admin login screen.
+- Comprehensive three-platform Docker deployment scripts (Windows
+  CMD/PowerShell, Linux/Ubuntu, and BT Panel with three methods: GUI, terminal,
+  and Docker Compose). Each platform gets a self-contained, color-coded,
+  copy-paste script with management commands.
+
 ### Changed
 
-- Source-to-public delivery is now version-driven: ordinary source pushes leave
-  the public repository untouched while `package.json` remains unchanged; a
-  higher version triggers public export, validation, main-branch gates,
-  matching source/public tags, the update-package Release, and Docker channels.
-- Human-written GitHub Release descriptions now come from the matching
-  `## v<version>` section in `RELEASE_NOTES.md`.
+- Deployment documentation (`DEPLOYMENT.md` and `DEPLOYMENT.zh-CN.md`) now
+  leads with the three deployment plans and includes step-by-step BT Panel
+  configuration tables.
+
+### Fixed
+
+- `fileURLToPath` used instead of `__filename` in `bootstrapSecrets.js` for ESM
+  compatibility.
+- JWT length check now enforced only in production mode.
+- Security i18n keys and `CONFIRMATION_REQUIRED` error available in all 12
+  languages.
+
+### Performance
+
+- Docker image shrunk from 1.14 GB to 826 MB (multi-stage Alpine build with
+  esbuild-bundled entrypoint, stripped dev dependencies and non-Linux binaries).
+- NJU mirror (`ghcr.nju.edu.cn`) documented as an alternative pull source for
+  users in regions with slow GitHub Container Registry access.
+
+## [0.1.0-beta.3] - 2026-07-24
+
+### Added
+
+- One-command Docker deployment: a single `docker run` with `--env DOMAIN=`
+  is enough — JWT signing keys and data-encryption keys are auto-generated on
+  first boot and persisted to `storage/bootstrap-secrets.json`.
+- Auto-derived URL configuration: `BASE_URL`, `CORS_ORIGIN`, and
+  `ALLOWED_HOSTS` are derived from the single `DOMAIN` environment variable
+  when not set explicitly.
+- Security keys step in the `/admin` setup wizard: auto-generated keys are
+  displayed in the guided flow with a one-click regeneration option, copy
+  buttons, and destructive-action confirmation.
+
+### Changed
+
+- Installation and deployment guides are now ~1/4 of their previous length —
+  focused on the Docker happy path with a Vaultwarden-style one-liner.
+- Minimal `.env.example`: only `DOMAIN` is required; all other fields are
+  optional overrides.
+- `latest` Docker tag now published alongside `beta`, pointing to the same
+  latest Beta release.
 
 ## [0.1.0-beta.2] - 2026-07-23
 

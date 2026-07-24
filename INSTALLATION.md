@@ -8,6 +8,16 @@ tracking, reminders, exports, backups, and more.
 
 ## Docker (recommended)
 
+Pull the image, then run:
+
+```bash
+# GitHub Container Registry（原始）
+docker pull ghcr.io/zhoujasper/phd-atlas:latest
+
+# 或 NJU 镜像站
+docker pull ghcr.nju.edu.cn/zhoujasper/phd-atlas:latest
+```
+
 ```bash
 docker run --detach --name phd-atlas \
   --env DOMAIN="https://phd.example.com" \
@@ -16,6 +26,9 @@ docker run --detach --name phd-atlas \
   --publish 127.0.0.1:8000:4317 \
   ghcr.io/zhoujasper/phd-atlas:latest
 ```
+
+> 如果从 NJU 镜像站拉取，将 `docker run` 中的镜像名换成
+> `ghcr.nju.edu.cn/zhoujasper/phd-atlas:latest` 即可。
 
 That's it. Replace `DOMAIN` with your own HTTPS domain. Everything else is
 handled automatically:
@@ -101,6 +114,8 @@ docker restart phd-atlas
 
 # Update to the latest beta image
 docker pull ghcr.io/zhoujasper/phd-atlas:latest
+# 或从 NJU 镜像站拉取：
+# docker pull ghcr.nju.edu.cn/zhoujasper/phd-atlas:latest
 docker stop phd-atlas && docker rm phd-atlas
 # Then re-run the same docker run command
 ```

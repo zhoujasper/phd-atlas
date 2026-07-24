@@ -7,7 +7,9 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = path.resolve(
   process.env.PHD_ATLAS_PROJECT_ROOT || path.resolve(scriptDir, '..')
 )
-const STORAGE_ROOT = path.join(PROJECT_ROOT, 'storage')
+const STORAGE_ROOT = process.env.PHD_ATLAS_STORAGE_ROOT
+  ? path.resolve(process.env.PHD_ATLAS_STORAGE_ROOT)
+  : path.join(PROJECT_ROOT, 'storage')
 const SECRETS_PATH = path.join(STORAGE_ROOT, 'bootstrap-secrets.json')
 
 /**

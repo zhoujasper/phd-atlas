@@ -81,6 +81,7 @@ import {
   saveMailFetchState,
   resetMailFetchState,
   shutdownStorage,
+  storageRoot,
   summarizeUserApplications,
   today,
   uploadRoot,
@@ -13915,7 +13916,7 @@ export function createApp() {
   const systemUpdateUpload = multer({
     storage: multer.diskStorage({
       destination: (_request, _file, callback) => {
-        const incomingRoot = path.join(projectRoot, 'storage', 'update-incoming')
+        const incomingRoot = path.join(storageRoot, 'update-incoming')
         import('node:fs/promises')
           .then((fs) => fs.mkdir(incomingRoot, { recursive: true }))
           .then(() => callback(null, incomingRoot), callback)
@@ -13963,7 +13964,7 @@ export function createApp() {
     size,
     expectedVersion = '',
   }) {
-    const updateStorageRoot = path.join(projectRoot, 'storage')
+    const updateStorageRoot = storageRoot
     const validationRoot = path.join(updateStorageRoot, 'update-validation')
     let validated
     try {
@@ -14012,7 +14013,7 @@ export function createApp() {
     if (!restartScheduled) return false
     systemUpdateRestartPending = true
     setTimeout(async () => {
-      const updateStorageRoot = path.join(projectRoot, 'storage')
+      const updateStorageRoot = storageRoot
       const helperPath = path.join(projectRoot, 'tools', 'apply-update.mjs')
       try {
         await writeUpdateLock(updateStorageRoot, {
@@ -14132,7 +14133,7 @@ export function createApp() {
       const downloaded = await downloadReleaseUpdate({
         tagName: String(request.body?.tagName ?? ''),
         currentVersion,
-        destinationRoot: path.join(projectRoot, 'storage', 'update-incoming'),
+        destinationRoot: path.join(storageRoot, 'update-incoming'),
       })
       downloadedPath = downloaded.packagePath
       const update = await validateAndStoreSystemUpdate({
@@ -14183,7 +14184,7 @@ export function createApp() {
       return
     }
     const storedAs = path.basename(request.params.storedAs)
-    const filePath = path.join(projectRoot, 'storage', 'update-packages', storedAs)
+    const filePath = path.join(storageRoot, 'update-packages', storedAs)
     try {
       await import('node:fs/promises').then((fs) => fs.unlink(filePath))
     } catch (err) {
