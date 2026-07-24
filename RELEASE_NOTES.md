@@ -5,6 +5,36 @@ section per version using the exact heading `## v<package.json version>`.
 Automation extracts only the matching section, so older notes remain immutable
 history while the next version can be prepared in the same file.
 
+## v0.1.0-beta.3
+
+**Prerelease — Beta / 预发布版本。** Back up the complete workspace before
+upgrading. Docker one-command deployment is now the default path.
+
+### Highlights
+
+- **One-command Docker deployment.** A single `docker run` with `--env DOMAIN=`
+  is enough — JWT signing keys and data-encryption keys are auto-generated on
+  first boot and persisted to `storage/bootstrap-secrets.json`.
+- **Auto-derived URL configuration.** `BASE_URL`, `CORS_ORIGIN`, and
+  `ALLOWED_HOSTS` are derived from the single `DOMAIN` environment variable when
+  not set explicitly.
+- **Security keys step in the `/admin` setup wizard.** Auto-generated keys are
+  displayed in the guided flow with a one-click regeneration option, copy
+  buttons, and destructive-action confirmation.
+- **Drastically simplified documentation.** Installation and deployment guides
+  are now ~1/4 of their previous length — focused on the Docker happy path
+  with a Vaultwarden-style one-liner.
+- **Minimal `.env.example`.** Only `DOMAIN` is required; all other fields are
+  optional overrides.
+
+### 中文摘要
+
+- **Docker 一键部署。** 只需 `docker run --env DOMAIN=` 即可启动，JWT 和加密密钥首次启动自动生成并持久化。
+- **URL 自动推导。** 从单个 `DOMAIN` 变量自动推导 `BASE_URL`、`CORS_ORIGIN`、`ALLOWED_HOSTS`。
+- **Admin 初始化新增安全密钥步骤。** 引导流程中展示自动生成的密钥，支持一键重新生成、复制和确认保护。
+- **文档大幅精简。** 安装和部署指南缩减至原来的 1/4，聚焦 Docker 一条命令上线。
+- **最小化 `.env.example`。** 仅需 `DOMAIN`，其余均为可选覆盖项。
+
 ## v0.1.0-beta.2
 
 **Prerelease — Beta / 预发布版本。** Back up the complete workspace and the

@@ -1,22 +1,25 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
   Check,
+  Copy,
   Database,
   KeyRound,
+  Lock,
   Mail,
+  RefreshCw,
   Server,
   ShieldCheck,
   Sparkles,
   UserRound,
 } from 'lucide-react'
-import type { DatabaseEngine, InitialAdminSetupInput } from '../../api/phdApi'
+import type { BootstrapSecrets, DatabaseEngine, InitialAdminSetupInput } from '../../api/phdApi'
 import { useI18n } from '../hooks/useI18n'
 import { Select } from '../shared/Select'
 import { SwitchControl } from '../shared/SwitchControl'
 
-type SetupStep = 'account' | 'storage' | 'mail' | 'review'
+type SetupStep = 'account' | 'security' | 'storage' | 'mail' | 'review'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -53,6 +56,59 @@ export function AdminSetupScreen({
   const [databaseSsl, setDatabaseSsl] = useState(false)
   const [mysql57Compatibility, setMysql57Compatibility] = useState(false)
   const [databaseSchema, setDatabaseSchema] = useState('')
+  const [secrets, setSecrets] = useState<BootstrapSecrets | null>(null)
+  const [secretsLoading, setSecretsLoading] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [showRegenConfirm, setShowRegenConfirm] = useState(false)
+
+  const fetchSecrets = useCallback(async () => {
+    setSecretsLoading(true)
+    try {
+      const response = await fetch('/api/setup/secrets')
+      if (!response.ok) return
+      const data = await response.json()
+      if (data.ok && data.data) setSecrets(data.data)
+    } catch {
+      // Non-critical
+    } finally {
+      setSecretsLoading(false)
+    }
+  }, [])
+
+  const regenerateKeys = useCallback(async () => {
+    setRegenerating(true)
+    setShowRegenConfirm(false)
+    try {
+      const response = await fetch('/api/setup/secrets/regenerate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: 'REGENERATE' }),
+      })
+      if (!response.ok) return
+      const data = await response.json()
+      if (data.ok && data.data) setSecrets(data.data)
+    } catch {
+      // Non-critical
+    } finally {
+      setRegenerating(false)
+    }
+  }, [])
+
+  // Fetch secrets when the security step becomes active
+  useEffect(() => {
+    if (step === 'security' && !secrets) fetchSecrets()
+  }, [step, secrets, fetchSecrets])
+
+  const copyToClipboard = useCallback(async (text: string, key: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedKey(key)
+      setTimeout(() => setCopiedKey(null), 2000)
+    } catch {
+      // Clipboard unavailable
+    }
+  }, [])
 
   const accountValid = name.trim().length >= 2
     && EMAIL_PATTERN.test(email.trim())
@@ -77,23 +133,26 @@ export function AdminSetupScreen({
     && databaseUser.trim().length > 0
     && databasePassword.length > 0
   )
-  const stepIndex = step === 'account' ? 0 : step === 'storage' ? 1 : step === 'mail' ? 2 : 3
+  const stepIndex = step === 'account' ? 0 : step === 'security' ? 1 : step === 'storage' ? 2 : step === 'mail' ? 3 : 4
   const steps = useMemo(() => [
     { id: 'account' as const, label: tx('admin.setup.accountStep'), icon: UserRound },
+    { id: 'security' as const, label: tx('admin.setup.securityStep'), icon: Lock },
     { id: 'storage' as const, label: tx('admin.setup.storageStep'), icon: Database },
     { id: 'mail' as const, label: tx('admin.setup.mailStep'), icon: Mail },
     { id: 'review' as const, label: tx('admin.setup.reviewStep'), icon: Check },
   ], [tx])
 
   const goForward = () => {
-    if (step === 'account' && accountValid) setStep('storage')
+    if (step === 'account' && accountValid) setStep('security')
+    else if (step === 'security') setStep('storage')
     else if (step === 'storage' && databaseValid) setStep('mail')
     else if (step === 'mail' && mailValid) setStep('review')
   }
   const goBack = () => {
     if (step === 'review') setStep('mail')
     else if (step === 'mail') setStep('storage')
-    else if (step === 'storage') setStep('account')
+    else if (step === 'storage') setStep('security')
+    else if (step === 'security') setStep('account')
   }
 
   const submit = async () => {
@@ -186,6 +245,120 @@ export function AdminSetupScreen({
                     aria-invalid={confirmPassword.length > 0 && password !== confirmPassword}
                   />
                 </label>
+              </div>
+            </>
+          ) : null}
+
+          {step === 'security' ? (
+            <>
+              <div className="admin-setup-section-head">
+                <span><Lock size={17} aria-hidden="true" /></span>
+                <div>
+                  <h2>{tx('admin.setup.securityTitle')}</h2>
+                  <p>{tx('admin.setup.securityDesc')}</p>
+                </div>
+              </div>
+              <div className="admin-setup-fields">
+                {secretsLoading ? (
+                  <div className="admin-setup-secrets-loading">
+                    <span className="admin-setup-spinner" aria-hidden="true" />
+                    <span>{tx('admin.setup.verifying')}</span>
+                  </div>
+                ) : secrets ? (
+                  <>
+                    <div className="admin-setup-secrets-grid">
+                      <div className="admin-secret-card">
+                        <div className="admin-secret-card-header">
+                          <span className="admin-secret-card-icon"><KeyRound size={18} /></span>
+                          <div>
+                            <strong>{tx('admin.setup.securityJwtLabel')}</strong>
+                            {secrets.autoGenerated ? (
+                              <em className="admin-secret-badge">{tx('admin.setup.securityAutoGenerated')}</em>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="admin-secret-card-value">
+                          <code>{secrets.jwtSecretPreview}</code>
+                          <button
+                            type="button"
+                            className="admin-secret-copy-btn quiet-action"
+                            onClick={() => copyToClipboard(secrets.jwtSecretPreview, 'jwt')}
+                            title={tx('admin.setup.securityCopyKey')}
+                          >
+                            {copiedKey === 'jwt' ? (
+                              <><Check size={13} /> {tx('admin.setup.securityCopied')}</>
+                            ) : (
+                              <><Copy size={13} /></>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="admin-secret-card">
+                        <div className="admin-secret-card-header">
+                          <span className="admin-secret-card-icon"><ShieldCheck size={18} /></span>
+                          <div>
+                            <strong>{tx('admin.setup.securityEncKeyLabel')}</strong>
+                            {secrets.autoGenerated ? (
+                              <em className="admin-secret-badge">{tx('admin.setup.securityAutoGenerated')}</em>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="admin-secret-card-value">
+                          <code>{secrets.encryptionKeyPreview}</code>
+                          <button
+                            type="button"
+                            className="admin-secret-copy-btn quiet-action"
+                            onClick={() => copyToClipboard(secrets.encryptionKeyPreview, 'enc')}
+                            title={tx('admin.setup.securityCopyKey')}
+                          >
+                            {copiedKey === 'enc' ? (
+                              <><Check size={13} /> {tx('admin.setup.securityCopied')}</>
+                            ) : (
+                              <><Copy size={13} /></>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="admin-setup-secrets-actions">
+                      {showRegenConfirm ? (
+                        <div className="admin-secret-regen-confirm">
+                          <p className="admin-warning-text">{tx('admin.setup.securityRegenerateWarning')}</p>
+                          <div className="admin-secret-regen-buttons">
+                            <button
+                              type="button"
+                              className="primary-action destructive"
+                              onClick={regenerateKeys}
+                              disabled={regenerating}
+                            >
+                              {regenerating ? (
+                                <><span className="admin-setup-spinner" aria-hidden="true" /></>
+                              ) : (
+                                <><RefreshCw size={13} /> {tx('admin.setup.securityRegenerateConfirm')}</>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              className="quiet-action"
+                              onClick={() => setShowRegenConfirm(false)}
+                              disabled={regenerating}
+                            >
+                              {tx('admin.setup.back')}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className="quiet-action"
+                          onClick={() => setShowRegenConfirm(true)}
+                        >
+                          <RefreshCw size={13} /> {tx('admin.setup.securityRegenerate')}
+                        </button>
+                      )}
+                    </div>
+                  </>
+                ) : null}
               </div>
             </>
           ) : null}
@@ -368,7 +541,7 @@ export function AdminSetupScreen({
                 type="button"
                 className="primary-action"
                 onClick={goForward}
-                disabled={step === 'account' ? !accountValid : step === 'storage' ? !databaseValid : !mailValid}
+                disabled={step === 'account' ? !accountValid : step === 'security' ? false : step === 'storage' ? !databaseValid : !mailValid}
               >
                 {tx('admin.setup.continue')} <ArrowRight size={14} aria-hidden="true" />
               </button>

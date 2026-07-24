@@ -5882,6 +5882,141 @@ html[lang^="ko"] .admin-session-control-label {
   }
 }
 
+/* ── Security keys cards (admin setup) ──────────────────────────────────── */
+
+.admin-setup-secrets-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 0;
+  color: var(--secondary);
+  font-size: 14px;
+  justify-content: center;
+}
+
+.admin-setup-secrets-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.admin-secret-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--surface-muted);
+  overflow: hidden;
+  transition: border-color 180ms var(--ease-out);
+}
+
+.admin-secret-card:focus-within,
+.admin-secret-card:hover {
+  border-color: var(--accent-border);
+}
+
+.admin-secret-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 16px 6px;
+}
+
+.admin-secret-card-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-s);
+  background: var(--accent-soft);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.admin-secret-card-header strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 2px;
+  color: var(--primary);
+}
+
+.admin-secret-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 500;
+  font-style: normal;
+  padding: 1px 8px;
+  border-radius: 100px;
+  background: color-mix(in srgb, var(--green), transparent 88%);
+  color: var(--green);
+  margin-top: 2px;
+}
+
+.admin-secret-card-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px 14px;
+}
+
+.admin-secret-card-value code {
+  flex: 1;
+  font-size: 13px;
+  font-family: var(--mono, 'SF Mono', 'Cascadia Code', monospace);
+  padding: 8px 12px;
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--secondary);
+  letter-spacing: 0.02em;
+  user-select: all;
+}
+
+.admin-secret-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.admin-setup-secrets-actions {
+  margin-top: 4px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.admin-secret-regen-confirm {
+  width: 100%;
+}
+
+.admin-warning-text {
+  font-size: 13px;
+  color: var(--warning, #c77600);
+  background: color-mix(in srgb, var(--warning, #c77600), transparent 92%);
+  padding: 10px 14px;
+  border-radius: var(--radius-s);
+  margin: 0 0 12px;
+  line-height: 1.45;
+}
+
+.admin-secret-regen-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+button.destructive {
+  --btn-bg: var(--danger, #dc3545);
+  --btn-fg: #fff;
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  border-color: var(--btn-bg);
+}
+
+button.destructive:hover {
+  filter: brightness(0.92);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .admin-team-view-switch > i,
   .admin-team-detail-panel,

@@ -193,28 +193,38 @@ operation, backup, and troubleshooting, read
 
 ## Production deployment
 
-Docker is the shortest supported path:
+One command is all you need:
 
 ```bash
-cp .env.example .env
-# Set the HTTPS URL and two independent secrets; public builds ignore BOOTSTRAP_*.
-docker compose pull
+docker run --detach --name phd-atlas \
+  --env DOMAIN="https://phd.example.com" \
+  --volume phd-atlas-data:/app/storage \
+  --restart unless-stopped \
+  --publish 127.0.0.1:8000:4317 \
+  ghcr.io/zhoujasper/phd-atlas:latest
+```
+
+Or with Docker Compose:
+
+```bash
+git clone https://github.com/zhoujasper/phd-atlas.git
+cd phd-atlas
+# Set DOMAIN in .env (everything else is auto-derived)
+vim .env
 docker compose up -d --wait
 ```
 
-The Compose service binds to `127.0.0.1:4317` and persists all application data
-in a named volume. Put an HTTPS reverse proxy in front of it.
+The service binds to `127.0.0.1` and persists all data in a named volume.
+Put an HTTPS reverse proxy in front of it.
 
-For complete Docker, Ubuntu, generic Linux, CentOS Stream/RHEL-compatible, and
-Windows Server + IIS instructions, read [DEPLOYMENT.md](DEPLOYMENT.md).
+For complete Docker, native Linux, and Windows Server instructions, read
+[DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Configuration
 
-Production requires:
-
-- `BASE_URL`, `CORS_ORIGIN`, and `ALLOWED_HOSTS` for the public HTTPS hostname;
-- `TRUST_PROXY=loopback` when the reverse proxy runs on the same host;
-- independent random `JWT_SECRET` and `SETTINGS_ENCRYPTION_KEY` values.
+The only required setting is `DOMAIN`. `BASE_URL`, `CORS_ORIGIN`, and
+`ALLOWED_HOSTS` are auto-derived from it. JWT signing keys and data-encryption
+keys are auto-generated on first boot and persisted to your storage volume.
 
 After the service starts, open `https://your-host/admin` once to create the
 administrator, select the database, and configure system mail.

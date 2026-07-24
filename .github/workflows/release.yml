@@ -483,17 +483,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Promote the validated digest to beta
+      - name: Promote the validated digest to beta and latest
         if: steps.beta_channel.outputs.promote == 'true'
         shell: bash
         run: |
           set -euo pipefail
           docker buildx imagetools create \
             --tag "${REGISTRY}/${IMAGE_NAME}:beta" \
+            --tag "${REGISTRY}/${IMAGE_NAME}:latest" \
             "${REGISTRY}/${IMAGE_NAME}@${RELEASE_IMAGE_DIGEST}"
           docker logout "$REGISTRY"
           bash tools/wait-for-container-digest.sh \
             "${REGISTRY}/${IMAGE_NAME}:beta" \
+            "$RELEASE_IMAGE_DIGEST"
+          bash tools/wait-for-container-digest.sh \
+            "${REGISTRY}/${IMAGE_NAME}:latest" \
             "$RELEASE_IMAGE_DIGEST"
 
       - name: Revalidate assets and publish the Release

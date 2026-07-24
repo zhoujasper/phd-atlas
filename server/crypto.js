@@ -6,8 +6,10 @@ import {
   createHash,
   timingSafeEqual,
 } from 'node:crypto'
+import { getBootstrapSecrets } from './bootstrapSecrets.js'
 
 const ENCRYPTION_KEY = process.env.SETTINGS_ENCRYPTION_KEY
+  ?? getBootstrapSecrets().encryptionKey
   ?? (process.env.NODE_ENV === 'production' ? '' : 'phd-atlas-dev-encryption-key')
 if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length < 16) {
   console.error('FATAL: SETTINGS_ENCRYPTION_KEY must be at least 16 characters.')
