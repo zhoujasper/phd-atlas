@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const __dirname = path.dirname(__filename)
+const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = path.resolve(
-  process.env.PHD_ATLAS_PROJECT_ROOT || path.resolve(__dirname, '..')
+  process.env.PHD_ATLAS_PROJECT_ROOT || path.resolve(scriptDir, '..')
 )
 const STORAGE_ROOT = path.join(PROJECT_ROOT, 'storage')
 const SECRETS_PATH = path.join(STORAGE_ROOT, 'bootstrap-secrets.json')
