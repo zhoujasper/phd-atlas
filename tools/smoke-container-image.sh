@@ -28,8 +28,12 @@ trap cleanup EXIT
 
 jwt_secret="$(openssl rand -hex 48)"
 settings_key="$(openssl rand -hex 32)"
+bootstrap_user_password="smoke-user-$(openssl rand -hex 24)"
+bootstrap_admin_password="smoke-admin-$(openssl rand -hex 24)"
 echo "::add-mask::$jwt_secret"
 echo "::add-mask::$settings_key"
+echo "::add-mask::$bootstrap_user_password"
+echo "::add-mask::$bootstrap_admin_password"
 
 for architecture in amd64 arm64; do
   # Docker's classic image store cannot keep two platform variants under the
@@ -42,6 +46,9 @@ for architecture in amd64 arm64; do
   active_container="phd-atlas-${image_label}-${architecture}-${run_id}-${run_attempt}"
   active_container="$(printf '%s' "$active_container" | tr '[:upper:]_/' '[:lower:]---' | cut -c1-120)"
 
+  # Production intentionally refuses its demonstrative seed passwords. The
+  # smoke container is still a fresh setup instance, but needs unique
+  # ephemeral credentials so it exercises the real production boot path.
   docker run --detach \
     --pull always \
     --platform "linux/${architecture}" \
@@ -54,6 +61,8 @@ for architecture in amd64 arm64; do
     --env TRUST_PROXY=true \
     --env JWT_SECRET="$jwt_secret" \
     --env SETTINGS_ENCRYPTION_KEY="$settings_key" \
+    --env BOOTSTRAP_USER_PASSWORD="$bootstrap_user_password" \
+    --env BOOTSTRAP_ADMIN_PASSWORD="$bootstrap_admin_password" \
     --publish 127.0.0.1::4317 \
     "$image_ref" >/dev/null
 
