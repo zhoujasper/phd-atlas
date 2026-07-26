@@ -1,8 +1,14 @@
 import type { AuthSession, TeamRole } from '../../api/phdApi'
 import type { InterfaceMode } from '../../appModel'
+import { isTeacherAssignedToStudent } from '../../teamRelationships'
 
-/** Public-edition compatibility boundary; only personal Discover entitlement is available. */
 type DiscoverSession = Pick<AuthSession, 'usage' | 'user'> | null | undefined
+
+/**
+ * Team membership is not a personal Pro entitlement. A team owner, teacher, or
+ * student may still have a separate personal Pro plan, which is the only plan
+ * that unlocks Discover in the personal workspace.
+ */
 export function hasPersonalDiscoverAccess(session: DiscoverSession) {
   if (!session) return false
   const settings = session.user.settings
@@ -10,14 +16,33 @@ export function hasPersonalDiscoverAccess(session: DiscoverSession) {
   if (settings.membershipPlan === 'pro') return true
   return session.usage?.plan === 'pro'
 }
-export function hasTeamDiscoverAccess(_role: TeamRole | null | undefined) { return false }
-export function discoverStudentMembers<TMember>(
-  _members: readonly TMember[],
-  _role: TeamRole | null | undefined,
-  _actorId: string | null | undefined,
-): TMember[] { return [] }
+
+export function hasTeamDiscoverAccess(role: TeamRole | null | undefined) {
+  return role === 'owner' || role === 'admin'
+}
+
+export function discoverStudentMembers<TMember extends {
+  status: string
+  role: TeamRole
+  userId: string | null
+  invitedBy?: string | null
+  relationships?: { teacherIds?: readonly string[] }
+}>(members: readonly TMember[], role: TeamRole | null | undefined, actorId: string | null | undefined) {
+  if (!hasTeamDiscoverAccess(role)) return []
+  return members.filter((member) => (
+    member.status === 'active'
+    && member.role === 'member'
+    && Boolean(member.userId)
+    && (role === 'owner' || isTeacherAssignedToStudent(member, actorId))
+  ))
+}
+
 export function canAccessDiscover(
   mode: InterfaceMode,
   session: DiscoverSession,
-  _teamRole: TeamRole | null | undefined,
-) { return mode !== 'team' && hasPersonalDiscoverAccess(session) }
+  teamRole: TeamRole | null | undefined,
+) {
+  return mode === 'team'
+    ? hasTeamDiscoverAccess(teamRole)
+    : hasPersonalDiscoverAccess(session)
+}

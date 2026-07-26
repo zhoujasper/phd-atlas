@@ -28,16 +28,18 @@ const completionGroups: Array<Array<keyof AiUserProfile>> = [
 ]
 
 const fieldMaxLengths: Partial<Record<keyof AiUserProfile, number>> = {
-  preferredName: 80,
-  currentRole: 120,
-  institution: 160,
-  field: 120,
-  researchInterests: 360,
-  achievements: 360,
-  goals: 320,
-  writingLanguage: 80,
+  // Keep browser limits aligned with the server contract: long academic
+  // narratives should never be silently truncated before they can be saved.
+  preferredName: 120,
+  currentRole: 160,
+  institution: 200,
+  field: 160,
+  researchInterests: 4000,
+  achievements: 4000,
+  goals: 3000,
+  writingLanguage: 40,
   writingTone: 120,
-  boundaries: 240,
+  boundaries: 2000,
 }
 
 export function AiProfilePanel({

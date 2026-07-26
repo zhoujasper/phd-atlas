@@ -64,7 +64,7 @@
     "field": "研究分野",
     "fieldPlaceholder": "例えば機械学習、計算生物学",
     "subfields": "サブフィールド/メソッド",
-    "subfieldsPlaceholder": "カンマ区切りの関心事",
+    "subfieldsPlaceholder": "セミコロン（;）で関心分野を区切る",
     "regions": "対象地域",
     "stipendFloor": "最低奨学金 (USD)",
     "nPrograms": "ランク付けするプログラム",

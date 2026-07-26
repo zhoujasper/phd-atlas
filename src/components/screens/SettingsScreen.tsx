@@ -454,6 +454,8 @@ export function SettingsScreen({
   onResetAiKeyUsage,
   onNotify,
   deferProgressiveReveal = false,
+  focusAiKeys = false,
+  onAiKeysFocused,
 }: {
   session: AuthSession
   installStatus?: PwaInstallStatus
@@ -501,6 +503,9 @@ export function SettingsScreen({
   onNotify?: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
   /** Hold non-essential settings groups until the enclosing screen handoff ends. */
   deferProgressiveReveal?: boolean
+  /** Used by Discover after it has safely persisted a research draft. */
+  focusAiKeys?: boolean
+  onAiKeysFocused?: () => void
 }) {
   const lang = session.user.settings.language
   const accent = normalizeThemeAccent(session.user.settings.themeAccent)
@@ -572,6 +577,7 @@ export function SettingsScreen({
   const pendingSettingsScrollRef = useRef<SettingsSectionId | null>(null)
   const settingsScrollSequenceRef = useRef(0)
   const settingsScrollReleaseTimerRef = useRef<number | null>(null)
+  const aiKeysFocusHandledRef = useRef(false)
 
   useEffect(() => {
     setSelectedAccent(accent)
@@ -600,7 +606,7 @@ export function SettingsScreen({
   const maxBackupsLimit = isAdmin
     ? 100
     : isPro
-      ? Math.min(20, Math.max(1, Number(session.settings.maxBackupsPerAppLimit ?? 20)))
+      ? 20
       : 0
   const maxBackups = String(Math.min(maxBackupsLimit || 20, Number(session.user.settings.maxBackupsPerApp ?? (isAdmin ? 100 : 20))))
   const backupFrequencyValue: BackupFrequencyChoice = session.user.settings.autoBackup ? backupFrequency : 'off'
@@ -1386,6 +1392,17 @@ export function SettingsScreen({
     return () => window.cancelAnimationFrame(frame)
   }, [settingsRevealStep, startSettingsSectionScroll])
 
+  useEffect(() => {
+    if (!focusAiKeys || aiKeysFocusHandledRef.current) return
+    aiKeysFocusHandledRef.current = true
+    scrollToSettingsSection('settings-ai-section')
+    onAiKeysFocused?.()
+  }, [focusAiKeys, onAiKeysFocused, scrollToSettingsSection])
+
+  useEffect(() => {
+    if (!focusAiKeys) aiKeysFocusHandledRef.current = false
+  }, [focusAiKeys])
+
   return (
     <section className="simple-screen settings-screen">
       <header className="settings-hero">
@@ -1824,6 +1841,7 @@ export function SettingsScreen({
         {settingsRevealStep >= 1 ? <div id="settings-ai-section" className="settings-block settings-ai-block"><AiKeyManager
           keys={aiKeys}
           scope="personal"
+          autoOpenAdd={focusAiKeys}
           copyPrefix="settings"
           onCreate={onCreateAiKey}
           onUpdate={onUpdateAiKey}
@@ -2621,19 +2639,14 @@ export function SettingsScreen({
                   value={maxBackups}
                   options={backupLimitTiers.map((value) => {
                     const lockedForPlan = !isPro
-                    const lockedForAdmin = isPro && value > maxBackupsLimit
+                    const lockedForAdmin = isAdmin && value > maxBackupsLimit
                     const locked = lockedForPlan || lockedForAdmin
                     return {
                       value: String(value),
                       label: String(value),
                       disabled: locked,
                       locked,
-                      actionLabel: lockedForPlan ? tx('settings.upgradeToPro') : tx('settings.contactAdmin'),
-                      description: lockedForPlan
-                        ? tx('settings.proOnly')
-                        : lockedForAdmin
-                          ? tx('settings.contactAdminToUnlock')
-                          : undefined,
+                      actionLabel: locked ? (lockedForPlan ? tx('settings.upgradeToPro') : tx('settings.contactAdmin')) : undefined,
                     }
                   })}
                   onChange={(value) => onUpdateSetting?.('maxBackupsPerApp', Number(value))}

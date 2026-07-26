@@ -13,6 +13,7 @@
     "signIn": "Connectez-vous à l'administrateur",
     "noPrivileges": "Ce compte ne dispose pas de privilèges d'administrateur.",
     "topbarTitle": "Administrateur de l'Atlas du doctorat",
+    "brand": "PhD Atlas",
     "badge": "Administrateur",
     "backToSite": "Retour à l'Atlas des doctorats",
     "backToSiteShort": "Retour au site",
@@ -62,6 +63,7 @@
     "shareCreateUsage": "{count}/{limit} liens créés",
     "shareCreateUsageLabel": "Utilisation de la création de liens de partage à vie",
     "storageUsage": "Utilisation du stockage",
+    "storageUnlimited": "Stockage illimité",
     "accountType": {
       "free": "Utilisateur gratuit",
       "pro": "Utilisateur professionnel",

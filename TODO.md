@@ -15,9 +15,9 @@ Planned work is tracked here in broad delivery order.
 
 ## Product
 
-- [ ] Bring the Team/institution collaboration model to the public edition,
+- [x] Ship the Team/institution collaboration model in the public Beta,
       including owner/teacher/student roles, invitation lifecycle, permission
-      tests, audit recovery, and safe migration from personal workspaces.
+      enforcement, audit recovery, and personal-workspace transfers.
 - [ ] Continue the full mobile adaptation pass: smaller-phone layouts,
       touch-first context actions, bottom-sheet replacements for dense menus,
       virtualized long lists, and browser-tested motion at 320-480 px.

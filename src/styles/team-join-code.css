@@ -1,0 +1,231 @@
+.team-join-code-generator {
+  display: grid;
+  gap: 14px;
+  min-width: min(360px, calc(100vw - 32px));
+}
+
+.team-join-code-generator-heading {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.team-join-code-generator-icon {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.team-join-code-generator-heading strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 620;
+  color: var(--text);
+}
+
+.team-join-code-generator-heading p,
+.team-join-code-field p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.team-join-code-fields {
+  display: grid;
+  gap: 12px;
+}
+
+.team-join-code-field {
+  display: grid;
+  gap: 6px;
+}
+
+.team-join-code-field > span {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.team-join-code-teachers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.team-join-code-teachers button {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    transform 80ms var(--ease-out);
+}
+
+.team-join-code-teachers button:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+  background: var(--surface-secondary);
+}
+
+.team-join-code-teachers button.selected {
+  border-color: rgba(0, 113, 227, 0.22);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.team-join-code-teachers button:active,
+.team-join-code-submit:active {
+  transform: scale(0.97);
+}
+
+.team-join-code-teachers button:focus-visible,
+.team-join-code-submit:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.32);
+}
+
+.team-join-code-empty {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.team-join-code-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.team-join-code-submit {
+  width: 100%;
+  justify-content: center;
+}
+
+.team-join-code-result {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.team-join-code-result-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.team-join-code-result-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.team-join-code-value {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: var(--radius);
+  background: var(--surface-secondary);
+}
+
+.team-join-code-value > div {
+  min-width: 0;
+}
+
+.team-join-code-value span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 2px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.team-join-code-value strong {
+  display: block;
+  overflow: hidden;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-join-code-link strong {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.team-join-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.team-join-preview-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+@media (max-width: 480px) {
+  .team-join-code-generator {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .team-join-code-result-meta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .team-join-code-teachers button,
+  .team-join-code-submit {
+    transition-duration: 0.01ms;
+  }
+}

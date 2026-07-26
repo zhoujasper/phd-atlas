@@ -13,6 +13,7 @@
     "signIn": "管理者にサインインする",
     "noPrivileges": "このアカウントには管理者権限がありません。",
     "topbarTitle": "PhD アトラス管理者",
+    "brand": "PhD Atlas",
     "badge": "管理者",
     "backToSite": "PhD アトラスに戻る",
     "backToSiteShort": "サイトに戻る",
@@ -62,6 +63,7 @@
     "shareCreateUsage": "{count}/{limit} がリンクを作成しました",
     "shareCreateUsageLabel": "生涯共有リンク作成の使用法",
     "storageUsage": "ストレージの使用量",
+    "storageUnlimited": "無制限のストレージ",
     "accountType": {
       "free": "無料ユーザー",
       "pro": "プロユーザー",

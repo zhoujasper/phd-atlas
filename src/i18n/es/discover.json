@@ -64,7 +64,7 @@
     "field": "Campo de investigación",
     "fieldPlaceholder": "p.ej. Aprendizaje automático, biología computacional.",
     "subfields": "Subcampos/métodos",
-    "subfieldsPlaceholder": "Intereses separados por comas",
+    "subfieldsPlaceholder": "Separe los intereses con punto y coma (;)",
     "regions": "Regiones objetivo",
     "stipendFloor": "Estipendio mínimo (USD)",
     "nPrograms": "Programas para clasificar",

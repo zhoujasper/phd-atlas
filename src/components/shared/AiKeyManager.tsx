@@ -50,6 +50,7 @@ export function AiKeyManager({
   scope,
   teamId = null,
   canManage = true,
+  autoOpenAdd = false,
   copyPrefix,
   onCreate,
   onUpdate,
@@ -62,6 +63,8 @@ export function AiKeyManager({
   scope: 'personal' | 'team'
   teamId?: string | null
   canManage?: boolean
+  /** Lets a contextual handoff (for example Discover → Settings) land directly in the add flow. */
+  autoOpenAdd?: boolean
   copyPrefix: 'settings' | 'team'
   onCreate?: (input: AiKeyInput) => Promise<void> | void
   onUpdate?: (id: string, input: Partial<Pick<AiKeyInput, 'label' | 'model' | 'baseUrl' | 'apiKey'>>) => Promise<void> | void
@@ -83,7 +86,10 @@ export function AiKeyManager({
   const [closingDeleteId, setClosingDeleteId] = useState<string | null>(null)
   const [removingId, setRemovingId] = useState<string | null>(null)
   const [pendingUsageResetId, setPendingUsageResetId] = useState<string | null>(null)
+  const [formError, setFormError] = useState<string | null>(null)
   const deleteCloseTimerRef = useRef<number | null>(null)
+  const autoOpenHandledRef = useRef(false)
+  const apiKeyInputRef = useRef<HTMLInputElement | null>(null)
   const copy = (key: string, fallback?: string) => tx(`${copyPrefix}.ai.${key}`, fallback)
   const notify = (message: string, tone: NotifyTone = 'error') => onNotify?.(message, tone)
   const scopedKeys = useMemo(
@@ -96,9 +102,25 @@ export function AiKeyManager({
     setPendingDeleteId(null)
     setClosingDeleteId(null)
     setPendingUsageResetId(null)
+    setFormError(null)
     setEditing(freshForm())
     setAdding(true)
   }
+
+  useEffect(() => {
+    if (!autoOpenAdd || autoOpenHandledRef.current || !canManage || !onCreate) return
+    autoOpenHandledRef.current = true
+    openAdd()
+    const frame = window.requestAnimationFrame(() => apiKeyInputRef.current?.focus())
+    return () => window.cancelAnimationFrame(frame)
+    // `openAdd` is intentionally local state setup; rerunning this only when the
+    // handoff intent changes prevents a user-cancelled form from reopening.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenAdd, canManage, onCreate])
+
+  useEffect(() => {
+    if (!autoOpenAdd) autoOpenHandledRef.current = false
+  }, [autoOpenAdd])
 
   const openEdit = (key: AiKey) => {
     setAdding(false)
@@ -118,7 +140,9 @@ export function AiKeyManager({
   const submitAdd = async (event: FormEvent) => {
     event.preventDefault()
     if (!editing.apiKey.trim() || !onCreate) {
-      notify(copy('keyRequired'), 'warning')
+      const message = copy('keyRequired')
+      setFormError(message)
+      notify(message, 'warning')
       return
     }
     setBusy(true)
@@ -133,9 +157,12 @@ export function AiKeyManager({
         apiKey: editing.apiKey.trim(),
       })
       setAdding(false)
+      setFormError(null)
       setEditing(freshForm())
     } catch (cause) {
-      notify(normalizeErrorMessage(cause, lang, copy('saveError')), 'error')
+      const message = normalizeErrorMessage(cause, lang, copy('saveError'))
+      setFormError(message)
+      notify(message, 'error')
     } finally {
       setBusy(false)
     }
@@ -155,7 +182,9 @@ export function AiKeyManager({
       setExpandedId(null)
       setEditing(freshForm())
     } catch (cause) {
-      notify(normalizeErrorMessage(cause, lang, copy('saveError')), 'error')
+      const message = normalizeErrorMessage(cause, lang, copy('saveError'))
+      setFormError(message)
+      notify(message, 'error')
     } finally {
       setBusy(false)
     }
@@ -236,7 +265,9 @@ export function AiKeyManager({
     }
   }
 
-  const form = (mode: 'add' | 'edit', key?: AiKey) => (
+  const form = (mode: 'add' | 'edit', key?: AiKey) => {
+    const formErrorId = `ai-key-${mode}-${key?.id ?? 'new'}-error`
+    return (
     <form className="ai-key-form" onSubmit={(event) => mode === 'add' ? void submitAdd(event) : key && void submitEdit(event, key)}>
       <div className="ai-key-form-grid">
         <label data-tour={mode === 'add' ? 'ai-key-provider-field' : undefined}>
@@ -265,8 +296,9 @@ export function AiKeyManager({
       </div>
       <label className="ai-key-secret-field">
         <span>{mode === 'edit' ? copy('replaceKey') : copy('apiKey')}</span>
-        <input type="password" autoComplete="new-password" value={editing.apiKey} onChange={(event) => setEditing((current) => ({ ...current, apiKey: event.target.value }))} placeholder={mode === 'edit' ? copy('replaceKeyPlaceholder') : copy('apiKeyPlaceholder')} />
+        <input ref={mode === 'add' ? apiKeyInputRef : undefined} type="password" autoComplete="new-password" value={editing.apiKey} onChange={(event) => { setFormError(null); setEditing((current) => ({ ...current, apiKey: event.target.value })) }} placeholder={mode === 'edit' ? copy('replaceKeyPlaceholder') : copy('apiKeyPlaceholder')} aria-label={mode === 'edit' ? copy('replaceKey') : copy('apiKey')} aria-invalid={Boolean(formError) || undefined} aria-describedby={formError ? formErrorId : undefined} />
         <small>{mode === 'edit' ? copy('replaceKeyHint') : copy('keyEncryptionHint')}</small>
+        {formError ? <small id={formErrorId} className="ai-key-form-error" role="alert">{formError}</small> : null}
       </label>
       <div className="ai-key-form-actions">
         <button type="submit" className="primary-action ai-key-save-action" disabled={busy || Boolean(testingId)}>
@@ -286,12 +318,13 @@ export function AiKeyManager({
             {testingId === key.id ? copy('testing') : copy('test')}
           </button>
         ) : null}
-        <button type="button" className="quiet-action" disabled={busy || Boolean(testingId)} onClick={() => { setAdding(false); setExpandedId(null); setTestResult(null); setEditing(freshForm()) }}>
+        <button type="button" className="quiet-action" disabled={busy || Boolean(testingId)} onClick={() => { setAdding(false); setExpandedId(null); setTestResult(null); setFormError(null); setEditing(freshForm()) }}>
           <X size={13} aria-hidden="true" /> {copy('cancel')}
         </button>
       </div>
     </form>
-  )
+    )
+  }
 
   return (
     <section className={`ai-key-manager ai-key-manager-${scope}`} aria-label={copy(scope === 'team' ? 'teamTitle' : 'title')}>

@@ -64,7 +64,7 @@
     "field": "연구 분야",
     "fieldPlaceholder": "예를 들어 기계 학습, 전산 생물학",
     "subfields": "하위 필드/방법",
-    "subfieldsPlaceholder": "쉼표로 구분된 관심분야",
+    "subfieldsPlaceholder": "세미콜론(;)으로 관심 분야 구분",
     "regions": "대상 지역",
     "stipendFloor": "최소 급여(USD)",
     "nPrograms": "순위를 매기는 프로그램",

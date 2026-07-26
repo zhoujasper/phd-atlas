@@ -64,7 +64,7 @@
     "field": "Research field",
     "fieldPlaceholder": "e.g. Machine learning, computational biology",
     "subfields": "Subfields / methods",
-    "subfieldsPlaceholder": "Comma-separated interests",
+    "subfieldsPlaceholder": "Separate interests with semicolons (;)",
     "regions": "Target regions",
     "stipendFloor": "Minimum stipend (USD)",
     "nPrograms": "Programs to rank",

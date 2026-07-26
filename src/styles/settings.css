@@ -270,14 +270,18 @@
   min-width: 0;
   display: grid;
   grid-template-columns: 30px minmax(0, 1fr);
+  grid-template-areas:
+    "avatar identity"
+    ". plan";
   gap: 2px 8px;
-  align-items: center;
+  align-items: start;
   padding: 10px 8px 6px;
   border-top: 1px solid var(--border);
 }
 
 .settings-index-avatar {
-  grid-row: 1 / span 2;
+  grid-area: avatar;
+  align-self: center;
   width: 30px;
   height: 30px;
   display: grid;
@@ -848,6 +852,7 @@
 }
 
 .settings-index-account > span:not(.settings-index-avatar) {
+  grid-area: identity;
   min-width: 0;
   display: grid;
   gap: 1px;
@@ -873,7 +878,7 @@
 }
 
 .settings-index-account small {
-  grid-column: 2;
+  grid-area: plan;
   width: fit-content;
   margin-top: 3px;
   padding: 2px 6px;

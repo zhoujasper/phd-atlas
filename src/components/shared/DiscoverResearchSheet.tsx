@@ -79,6 +79,7 @@ export function DiscoverResearchSheet({
   const regionLabel = (region: DiscoverRegion) => tx(({
     US: 'discover.regionUS', UK: 'discover.regionUK', EU: 'discover.regionEU', CA: 'discover.regionCA',
     SG: 'discover.regionSG', HK: 'discover.regionHK', CN: 'discover.regionCN', AU: 'discover.regionAU',
+    OTHER: 'discover.regionOther',
   } as Record<string, string>)[region.key] || 'discover.region', region.label)
   if (!open) return null
   const toggleRegion = (key: string) => {
@@ -147,8 +148,8 @@ export function DiscoverResearchSheet({
               <label className="field">
                 <span>{tx('discover.relatedTopics', 'Related topics')}</span>
                 <input
-                  value={draft.subfields.join(', ')}
-                  onChange={(event) => onDraftChange({ ...draft, subfields: event.target.value.split(',').map((value) => value.trim()).filter(Boolean) })}
+                  value={draft.subfields.join('; ')}
+                  onChange={(event) => onDraftChange({ ...draft, subfields: event.target.value.split(/[;；]/).map((value) => value.trim()).filter(Boolean) })}
                   placeholder={tx('discover.subfieldsPlaceholder')}
                 />
               </label>

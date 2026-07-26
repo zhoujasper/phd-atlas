@@ -97,6 +97,7 @@
       "backupSqlDesc": "Workspace backups include a restore-ready SQL archive for the selected engine and uploaded files."
     },
     "topbarTitle": "PhD Atlas Admin",
+    "brand": "PhD Atlas",
     "badge": "Administrator",
     "backToSite": "Back to PhD Atlas",
     "backToSiteShort": "Back to site",
@@ -166,6 +167,7 @@
     "shareCreateUsage": "{count}/{limit} created links",
     "shareCreateUsageLabel": "Lifetime share link creation usage",
     "storageUsage": "Storage usage",
+    "storageUnlimited": "Unlimited storage",
     "accountType": {
       "free": "Free user",
       "pro": "Pro user",

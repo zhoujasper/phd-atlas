@@ -194,10 +194,14 @@ export function NotificationPublisherPanel({
   const composeDescId = useId()
   const groupTitleId = useId()
   const groupDescId = useId()
+  const csvImportTitleId = useId()
+  const csvImportDescId = useId()
   const titleInputRef = useRef<HTMLInputElement>(null)
   const groupNameInputRef = useRef<HTMLInputElement>(null)
+  const csvTemplateButtonRef = useRef<HTMLButtonElement>(null)
   const [composeOpen, setComposeOpen] = useState(false)
   const [groupDialogOpen, setGroupDialogOpen] = useState(false)
+  const [csvImportOpen, setCsvImportOpen] = useState(false)
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [channels, setChannels] = useState<Array<'in_app' | 'email'>>(['in_app'])
@@ -216,9 +220,11 @@ export function NotificationPublisherPanel({
   const [csvPreview, setCsvPreview] = useState<CsvPreview | null>(null)
   const [csvFileName, setCsvFileName] = useState('')
   const [csvBusy, setCsvBusy] = useState(false)
+  const [csvMessage, setCsvMessage] = useState<NotificationPublisherMessage | null>(null)
 
   const composeClose = useAnimatedClose(composeOpen, () => setComposeOpen(false))
   const groupClose = useAnimatedClose(groupDialogOpen, () => setGroupDialogOpen(false))
+  const csvImportClose = useAnimatedClose(csvImportOpen, () => setCsvImportOpen(false))
 
   const composeDialogRef = useModalA11y<HTMLDivElement>({
     open: composeOpen && !composeClose.exiting,
@@ -230,9 +236,16 @@ export function NotificationPublisherPanel({
   const groupDialogRef = useModalA11y<HTMLDivElement>({
     open: groupDialogOpen && !groupClose.exiting,
     onClose: () => {
-      if (!groupBusy && !csvBusy) groupClose.requestClose()
+      if (!groupBusy && !csvBusy && !csvImportOpen) groupClose.requestClose()
     },
     initialFocusRef: groupNameInputRef,
+  })
+  const csvImportDialogRef = useModalA11y<HTMLDivElement>({
+    open: csvImportOpen && !csvImportClose.exiting,
+    onClose: () => {
+      if (!csvBusy) csvImportClose.requestClose()
+    },
+    initialFocusRef: csvTemplateButtonRef,
   })
 
   const filteredRecipients = useMemo(() => {
@@ -305,6 +318,11 @@ export function NotificationPublisherPanel({
   const openGroupDialog = () => {
     setGroupMessage(null)
     setGroupDialogOpen(true)
+  }
+
+  const openCsvImport = () => {
+    setCsvMessage(null)
+    setCsvImportOpen(true)
   }
 
   const handlePublish = async (event: FormEvent) => {
@@ -399,7 +417,7 @@ export function NotificationPublisherPanel({
       ? files[0].name
       : format(tx('notificationPublisher.csvFilesSelected'), { count: files.length }))
     setCsvPreview(null)
-    setGroupMessage(null)
+    setCsvMessage(null)
     try {
       const parsed = await Promise.all(files.map(async (file) => ({
         file,
@@ -410,7 +428,7 @@ export function NotificationPublisherPanel({
         .filter((preview): preview is CsvPreview => Boolean(preview?.groups.length))
       const invalidFileCount = parsed.length - validPreviews.length
       if (validPreviews.length === 0) {
-        setGroupMessage({ type: 'error', text: tx('notificationPublisher.csvNoGroups') })
+        setCsvMessage({ type: 'error', text: tx('notificationPublisher.csvNoGroups') })
         return
       }
 
@@ -440,9 +458,9 @@ export function NotificationPublisherPanel({
       if (skippedRows > 0) {
         warnings.push(format(tx('notificationPublisher.csvUnknown'), { count: skippedRows }))
       }
-      setGroupMessage(warnings.length > 0 ? { type: 'error', text: warnings.join(' ') } : null)
+      setCsvMessage(warnings.length > 0 ? { type: 'error', text: warnings.join(' ') } : null)
     } catch (error) {
-      setGroupMessage({ type: 'error', text: normalizeErrorMessage(error, lang) })
+      setCsvMessage({ type: 'error', text: normalizeErrorMessage(error, lang) })
     }
   }
 
@@ -466,19 +484,19 @@ export function NotificationPublisherPanel({
   const handleImportCsvGroups = async () => {
     if (!csvPreview?.groups.length) return
     setCsvBusy(true)
-    setGroupMessage(null)
+    setCsvMessage(null)
     try {
       for (const group of csvPreview.groups) {
         await onCreateGroup(group.name, group.memberIds)
       }
-      setGroupMessage({
+      setCsvMessage({
         type: 'success',
         text: format(tx('notificationPublisher.importedGroups'), { count: csvPreview.groups.length }),
       })
       setCsvPreview(null)
       setCsvFileName('')
     } catch (error) {
-      setGroupMessage({ type: 'error', text: normalizeErrorMessage(error, lang) })
+      setCsvMessage({ type: 'error', text: normalizeErrorMessage(error, lang) })
     } finally {
       setCsvBusy(false)
     }
@@ -580,7 +598,7 @@ export function NotificationPublisherPanel({
     <div
       className={`dialog-layer notification-publisher-layer${groupClose.exiting ? ' exiting' : ''}`}
       onClick={(event) => {
-        if (event.target === event.currentTarget && !groupBusy && !csvBusy) groupClose.requestClose()
+        if (event.target === event.currentTarget && !groupBusy && !csvBusy && !csvImportOpen) groupClose.requestClose()
       }}
     >
       <div
@@ -596,12 +614,18 @@ export function NotificationPublisherPanel({
             <span className="eyebrow">{tx('notificationPublisher.groupDialogEyebrow')}</span>
             <h3 id={groupTitleId}>{tx('notificationPublisher.groupDialogTitle')}</h3>
             <p id={groupDescId}>{tx('notificationPublisher.groupDialogDesc')}</p>
+            <div className="notification-group-dialog-tools">
+              <button type="button" className="quiet-action compact-action" onClick={openCsvImport} disabled={groupBusy || csvBusy}>
+                <UploadCloud size={13} aria-hidden="true" />
+                {tx('notificationPublisher.csvImportTitle')}
+              </button>
+            </div>
           </div>
           <button
             type="button"
             className="notification-dialog-close"
             onClick={() => groupClose.requestClose()}
-            disabled={groupBusy || csvBusy}
+            disabled={groupBusy || csvBusy || csvImportOpen}
             aria-label={tx('notificationPublisher.closeDialog')}
           >
             <X size={15} aria-hidden="true" />
@@ -706,73 +730,115 @@ export function NotificationPublisherPanel({
             </button>
           </section>
 
-          <section className="notification-group-manager-section">
-            <div className="notification-publisher-section-head">
-              <div>
-                <strong>{tx('notificationPublisher.csvImportTitle')}</strong>
-                <span>{tx('notificationPublisher.csvHint')}</span>
-              </div>
-            </div>
-            <div className="notification-publisher-csv-actions">
-              <button type="button" className="quiet-action compact-action" onClick={handleDownloadTemplate}>
-                <Download size={13} aria-hidden="true" />
-                {tx('notificationPublisher.downloadTemplate')}
-              </button>
-            </div>
-            <FileDropzone
-              className="notification-publisher-csv-dropzone"
-              compact
-              title={tx('notificationPublisher.chooseCsv')}
-              hint={tx('notificationPublisher.csvHint')}
-              allowedTypes={['.csv', 'text/csv']}
-              maxFileSize={MAX_CSV_IMPORT_FILE_SIZE}
-              maxFiles={MAX_UPLOAD_FILES_PER_BATCH}
-              onFiles={handleCsvChange}
-            />
-            <div className="notification-publisher-csv-preview">
-              {csvPreview ? (
-                <>
-                  <span>
-                    <UploadCloud size={15} aria-hidden="true" />
-                    <strong>{csvFileName || tx('notificationPublisher.csvFile')}</strong>
-                  </span>
-                  <p>{format(tx('notificationPublisher.csvReady'), {
-                    groups: csvPreview.groups.length,
-                    members: csvPreview.matchedMembers,
-                  })}</p>
-                  <div className="notification-publisher-csv-group-list">
-                    {csvPreview.groups.slice(0, 4).map((group) => (
-                      <em key={group.name}>{format(tx('notificationPublisher.csvGroupPreview'), {
-                        name: group.name,
-                        count: group.memberIds.length,
-                      })}</em>
-                    ))}
-                    {csvPreview.groups.length > 4 ? (
-                      <em>{format(tx('notificationPublisher.csvMoreGroups'), { count: csvPreview.groups.length - 4 })}</em>
-                    ) : null}
-                  </div>
-                  <button
-                    type="button"
-                    className="primary-action compact-action"
-                    onClick={() => void handleImportCsvGroups()}
-                    disabled={!canImportGroups}
-                  >
-                    <UploadCloud size={13} aria-hidden="true" />
-                    {csvBusy ? tx('working') : format(tx('notificationPublisher.importGroups'), { count: csvPreview.groups.length })}
-                  </button>
-                </>
-              ) : (
-                <p>{tx('notificationPublisher.csvEmptyPreview')}</p>
-              )}
-            </div>
-          </section>
         </div>
 
         <div className="notification-dialog-footer">
           {groupMessage ? <p className={`notification-publisher-message ${groupMessage.type}`}>{groupMessage.text}</p> : <span />}
-          <button type="button" className="quiet-action compact-action" onClick={() => groupClose.requestClose()} disabled={groupBusy || csvBusy}>
+          <button type="button" className="quiet-action compact-action" onClick={() => groupClose.requestClose()} disabled={groupBusy || csvBusy || csvImportOpen}>
             {tx('done')}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+
+  const renderCsvImportDialog = () => (
+    <div
+      className={`dialog-layer notification-publisher-layer notification-csv-import-layer${csvImportClose.exiting ? ' exiting' : ''}`}
+      onClick={(event) => {
+        if (event.target === event.currentTarget && !csvBusy) csvImportClose.requestClose()
+      }}
+    >
+      <div
+        ref={csvImportDialogRef}
+        className="notification-dialog notification-csv-import-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={csvImportTitleId}
+        aria-describedby={csvImportDescId}
+      >
+        <div className="notification-dialog-head">
+          <div>
+            <span className="eyebrow">{tx('notificationPublisher.groupDialogEyebrow')}</span>
+            <h3 id={csvImportTitleId}>{tx('notificationPublisher.csvImportTitle')}</h3>
+            <p id={csvImportDescId}>{tx('notificationPublisher.csvHint')}</p>
+          </div>
+          <button
+            type="button"
+            className="notification-dialog-close"
+            onClick={() => csvImportClose.requestClose()}
+            disabled={csvBusy}
+            aria-label={tx('notificationPublisher.closeDialog')}
+          >
+            <X size={15} aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="notification-csv-import-body">
+          <div className="notification-csv-import-guide">
+            <span>{tx('notificationPublisher.csvHint')}</span>
+            <button ref={csvTemplateButtonRef} type="button" className="quiet-action compact-action" onClick={handleDownloadTemplate}>
+              <Download size={13} aria-hidden="true" />
+              {tx('notificationPublisher.downloadTemplate')}
+            </button>
+          </div>
+          <FileDropzone
+            className="notification-publisher-csv-dropzone"
+            compact
+            title={tx('notificationPublisher.chooseCsv')}
+            hint={tx('notificationPublisher.csvHint')}
+            allowedTypes={['.csv', 'text/csv']}
+            maxFileSize={MAX_CSV_IMPORT_FILE_SIZE}
+            maxFiles={MAX_UPLOAD_FILES_PER_BATCH}
+            onFiles={handleCsvChange}
+          />
+          <div className="notification-publisher-csv-preview">
+            {csvPreview ? (
+              <>
+                <span>
+                  <UploadCloud size={15} aria-hidden="true" />
+                  <strong>{csvFileName || tx('notificationPublisher.csvFile')}</strong>
+                </span>
+                <p>{format(tx('notificationPublisher.csvReady'), {
+                  groups: csvPreview.groups.length,
+                  members: csvPreview.matchedMembers,
+                })}</p>
+                <div className="notification-publisher-csv-group-list">
+                  {csvPreview.groups.slice(0, 4).map((group) => (
+                    <em key={group.name}>{format(tx('notificationPublisher.csvGroupPreview'), {
+                      name: group.name,
+                      count: group.memberIds.length,
+                    })}</em>
+                  ))}
+                  {csvPreview.groups.length > 4 ? (
+                    <em>{format(tx('notificationPublisher.csvMoreGroups'), { count: csvPreview.groups.length - 4 })}</em>
+                  ) : null}
+                </div>
+              </>
+            ) : (
+              <p>{tx('notificationPublisher.csvEmptyPreview')}</p>
+            )}
+          </div>
+        </div>
+
+        <div className="notification-dialog-footer">
+          {csvMessage ? <p className={`notification-publisher-message ${csvMessage.type}`}>{csvMessage.text}</p> : <span />}
+          <div className="notification-csv-import-footer-actions">
+            <button type="button" className="quiet-action compact-action" onClick={() => csvImportClose.requestClose()} disabled={csvBusy}>
+              {tx('done')}
+            </button>
+            {csvPreview ? (
+              <button
+                type="button"
+                className="primary-action compact-action"
+                onClick={() => void handleImportCsvGroups()}
+                disabled={!canImportGroups}
+              >
+                <UploadCloud size={13} aria-hidden="true" />
+                {csvBusy ? tx('working') : format(tx('notificationPublisher.importGroups'), { count: csvPreview.groups.length })}
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
     </div>
@@ -926,6 +992,7 @@ export function NotificationPublisherPanel({
       {message && !composeOpen ? <p className={`notification-publisher-message ${message.type}`}>{message.text}</p> : null}
       {composeOpen ? renderInPortal(renderComposeDialog()) : null}
       {groupDialogOpen ? renderInPortal(renderGroupDialog()) : null}
+      {csvImportOpen ? renderInPortal(renderCsvImportDialog()) : null}
     </section>
   )
 }

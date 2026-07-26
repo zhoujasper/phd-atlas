@@ -5,6 +5,46 @@ section per version using the exact heading `## v<package.json version>`.
 Automation extracts only the matching section, so older notes remain immutable
 history while the next version can be prepared in the same file.
 
+## v0.1.0-beta.5
+
+**Prerelease — Beta / 预发布版本。** Back up the complete workspace before
+upgrading. This release enables the full Team collaboration workspace in the
+public self-hosted edition, alongside a refined first-run mail and security
+setup flow.
+
+### Highlights
+
+- **Public Team collaboration.** The public repository now ships the same
+  owner, teacher, and student roles, invitations, scoped workspaces, shared
+  application workflows, audit history, and server-authoritative Team
+  permissions as the private source build.
+- **Verified first-run mail.** Initial `/admin` setup now sends a six-digit
+  code through the configured SMTP account and requires verification at the
+  configured notification mailbox before administrator creation can finish.
+- **Reliable setup and notifications.** Complete bootstrap secrets copy
+  correctly, HTML is rendered safely in verification emails, and device-push
+  operations time out cleanly instead of leaving a permanent spinner.
+- **Polished research and administration.** Discover saves its draft before
+  handing users to AI-key setup; public UI improvements cover CSV imports,
+  responsive admin navigation, touch selection, consistent field sizing, and
+  localized helper copy.
+
+### 中文摘要
+
+- **公共版 Team 协作。** 公开仓现已提供与私有源码一致的所有者、教师、学生角色，
+  邀请、范围受控的工作空间、申请协作、审计历史和服务端权限校验。
+- **验证式首次邮件配置。** `/admin` 首次配置会通过已填写的 SMTP 邮箱发送六码验证码，
+  并要求在通知收件箱验证成功后才能完成管理员创建。
+- **更可靠的初始化与通知。** 完整安全密钥可正确复制，验证邮件安全渲染 HTML，
+  设备通知操作不会再因部署异常永久转圈。
+- **调研与管理端优化。** Discover 跳转 AI 密钥配置前会保存草稿；CSV 导入、后台窄屏、
+  触控选中态、字段尺寸和辅助文字均已完成优化。
+
+Full details / 完整记录:
+[English changelog](https://github.com/zhoujasper/phd-atlas/blob/v0.1.0-beta.5/CHANGELOG.md)
+·
+[简体中文更新日志](https://github.com/zhoujasper/phd-atlas/blob/v0.1.0-beta.5/CHANGELOG.zh-CN.md)
+
 ## v0.1.0-beta.4
 
 **Prerelease — Beta / 预发布版本。** Back up the complete workspace before

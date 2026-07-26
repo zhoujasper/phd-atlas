@@ -17,6 +17,7 @@ export type WebPushNotificationStatus =
   | 'error'
 
 export const WEB_PUSH_READY_TIMEOUT_MS = 10_000
+export const WEB_PUSH_OPERATION_TIMEOUT_MS = 12_000
 
 type PushMessage = {
   type: 'PUSH_NOTIFICATION'
@@ -66,8 +67,28 @@ function keysMatch(left: Uint8Array | null, right: Uint8Array) {
   return left.length === right.length && left.every((value, index) => value === right[index])
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error(message)), timeoutMs)
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeout)
+        resolve(value)
+      },
+      (error) => {
+        window.clearTimeout(timeout)
+        reject(error)
+      },
+    )
+  })
+}
+
 async function existingRegistration() {
-  return navigator.serviceWorker.getRegistration()
+  return withTimeout(
+    navigator.serviceWorker.getRegistration(),
+    WEB_PUSH_READY_TIMEOUT_MS,
+    'Could not read the service-worker registration in time.',
+  )
 }
 
 /**
@@ -138,26 +159,50 @@ export function useWebPushNotifications(
     }: { forceRenew?: boolean; createIfMissing?: boolean } = {},
   ) => {
     if (!token) throw new Error('A signed-in session is required for Web Push.')
-    const { publicKey } = await phdApi.webPushPublicKey(token)
+    const { publicKey } = await withTimeout(
+      phdApi.webPushPublicKey(token),
+      WEB_PUSH_OPERATION_TIMEOUT_MS,
+      'Could not retrieve the Web Push configuration in time.',
+    )
     const expectedKey = urlBase64ToUint8Array(publicKey)
-    let subscription = await registration.pushManager.getSubscription()
+    let subscription = await withTimeout(
+      registration.pushManager.getSubscription(),
+      WEB_PUSH_OPERATION_TIMEOUT_MS,
+      'Could not read the current device subscription in time.',
+    )
     if (!subscription && !createIfMissing) return null
     const shouldRenew = Boolean(subscription) && (
       forceRenew || !keysMatch(applicationServerKey(subscription!), expectedKey)
     )
 
     if (subscription && shouldRenew) {
-      await phdApi.deleteWebPushSubscription(token, subscription.endpoint).catch(() => undefined)
-      await subscription.unsubscribe().catch(() => false)
+      await withTimeout(
+        phdApi.deleteWebPushSubscription(token, subscription.endpoint),
+        WEB_PUSH_OPERATION_TIMEOUT_MS,
+        'Could not remove the previous Web Push subscription in time.',
+      ).catch(() => undefined)
+      await withTimeout(
+        subscription.unsubscribe(),
+        WEB_PUSH_OPERATION_TIMEOUT_MS,
+        'Could not retire the previous device subscription in time.',
+      ).catch(() => false)
       subscription = null
     }
     if (!subscription) {
-      subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: expectedKey,
-      })
+      subscription = await withTimeout(
+        registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: expectedKey,
+        }),
+        WEB_PUSH_OPERATION_TIMEOUT_MS,
+        'Could not create the device subscription in time.',
+      )
     }
-    await phdApi.saveWebPushSubscription(token, subscriptionInput(subscription))
+    await withTimeout(
+      phdApi.saveWebPushSubscription(token, subscriptionInput(subscription)),
+      WEB_PUSH_OPERATION_TIMEOUT_MS,
+      'Could not save the device subscription in time.',
+    )
     return subscription
   }, [token])
 
@@ -245,10 +290,22 @@ export function useWebPushNotifications(
       await setServiceWorkerPushPreference(false)
       await waitForLoadingPaint()
       const registration = await existingRegistration()
-      const subscription = registration ? await registration.pushManager.getSubscription() : null
+      const subscription = registration ? await withTimeout(
+        registration.pushManager.getSubscription(),
+        WEB_PUSH_OPERATION_TIMEOUT_MS,
+        'Could not read the device subscription in time.',
+      ) : null
       if (subscription) {
-        await phdApi.deleteWebPushSubscription(token, subscription.endpoint)
-        await subscription.unsubscribe()
+        await withTimeout(
+          phdApi.deleteWebPushSubscription(token, subscription.endpoint),
+          WEB_PUSH_OPERATION_TIMEOUT_MS,
+          'Could not remove the device subscription in time.',
+        )
+        await withTimeout(
+          subscription.unsubscribe(),
+          WEB_PUSH_OPERATION_TIMEOUT_MS,
+          'Could not disable the device subscription in time.',
+        )
       }
       setStatus(statusForPermission())
       return true
@@ -267,13 +324,21 @@ export function useWebPushNotifications(
     const registration = await readyRegistration()
     await registerCurrentSubscription(registration)
     try {
-      return await phdApi.testWebPush(token)
+      return await withTimeout(
+        phdApi.testWebPush(token),
+        WEB_PUSH_OPERATION_TIMEOUT_MS,
+        'Could not send the Web Push test in time.',
+      )
     } catch (error) {
       const canRepair = error instanceof ApiError
         && (error.code === 'PUSH_NOT_SUBSCRIBED' || error.code === 'PUSH_DELIVERY_FAILED')
       if (!canRepair) throw error
       await registerCurrentSubscription(registration, { forceRenew: true })
-      return phdApi.testWebPush(token)
+      return withTimeout(
+        phdApi.testWebPush(token),
+        WEB_PUSH_OPERATION_TIMEOUT_MS,
+        'Could not retry the Web Push test in time.',
+      )
     }
   }, [registerCurrentSubscription, token])
 

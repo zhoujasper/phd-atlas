@@ -47,6 +47,38 @@ function renderManager(onResetUsage = vi.fn(), keys: AiKey[] = [key], onDelete =
 }
 
 describe('AiKeyManager usage metadata', () => {
+  it('submits a new personal key from the add flow', async () => {
+    const user = userEvent.setup()
+    const onCreate = vi.fn().mockResolvedValue(undefined)
+    render(
+      <I18nContext.Provider value={{
+        lang: 'en',
+        t: getDict('en'),
+        format: tpl,
+        tx: (path, fallback) => translate('en', path, fallback),
+      }}>
+        <AiKeyManager
+          keys={[]}
+          scope="personal"
+          copyPrefix="settings"
+          onCreate={onCreate}
+        />
+      </I18nContext.Provider>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Add key' }))
+    await user.type(screen.getByLabelText('API key'), 'sk-test-123456789')
+    const addButton = screen.getAllByRole('button', { name: 'Add key' })
+      .find((button) => !button.hasAttribute('disabled'))
+    await user.click(addButton!)
+
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      scope: 'personal',
+      provider: 'openai',
+      apiKey: 'sk-test-123456789',
+    })))
+  })
+
   it('shows calls and tokens without the attachment capability label', async () => {
     const user = userEvent.setup()
     renderManager()

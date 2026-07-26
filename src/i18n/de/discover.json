@@ -64,7 +64,7 @@
     "field": "Forschungsfeld",
     "fieldPlaceholder": "z.B. Maschinelles Lernen, Computerbiologie",
     "subfields": "Unterfelder/Methoden",
-    "subfieldsPlaceholder": "Durch Kommas getrennte Interessen",
+    "subfieldsPlaceholder": "Interessen mit Semikolon (;) trennen",
     "regions": "Zielregionen",
     "stipendFloor": "Mindeststipendium (USD)",
     "nPrograms": "Programme zum Ranking",

@@ -17,7 +17,8 @@ import {
   Sun,
   UserRound,
 } from 'lucide-react'
-import type { BootstrapSecrets, DatabaseEngine, InitialAdminSetupInput } from '../../api/phdApi'
+import { phdApi, type BootstrapSecrets, type DatabaseEngine, type InitialAdminSetupInput } from '../../api/phdApi'
+import { normalizeErrorMessage } from '../../errorMessages'
 import { useI18n } from '../hooks/useI18n'
 import { type ThemeContextValue } from '../hooks/useTheme'
 import { languageOptions, type Language } from '../../i18n'
@@ -25,6 +26,7 @@ import { Select } from '../shared/Select'
 import { SwitchControl } from '../shared/SwitchControl'
 
 type SetupStep = 'account' | 'security' | 'storage' | 'mail' | 'review'
+type SmtpVerificationState = 'idle' | 'sending' | 'sent' | 'checking' | 'verified'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -71,6 +73,10 @@ export function AdminSetupScreen({
   const [regenerating, setRegenerating] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [showRegenConfirm, setShowRegenConfirm] = useState(false)
+  const [smtpVerificationToken, setSmtpVerificationToken] = useState('')
+  const [smtpVerificationCode, setSmtpVerificationCode] = useState('')
+  const [smtpVerificationState, setSmtpVerificationState] = useState<SmtpVerificationState>('idle')
+  const [smtpVerificationError, setSmtpVerificationError] = useState<string | null>(null)
 
   const fetchSecrets = useCallback(async () => {
     setSecretsLoading(true)
@@ -111,12 +117,29 @@ export function AdminSetupScreen({
   }, [step, secrets, fetchSecrets])
 
   const copyToClipboard = useCallback(async (text: string, key: string) => {
+    let copied = false
     try {
-      await navigator.clipboard.writeText(text)
-      setCopiedKey(key)
-      setTimeout(() => setCopiedKey(null), 2000)
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+        copied = true
+      }
     } catch {
-      // Clipboard unavailable
+      // 某些受限浏览器不提供异步剪贴板权限，继续使用兼容方案。
+    }
+    if (!copied) {
+      const field = document.createElement('textarea')
+      field.value = text
+      field.setAttribute('readonly', '')
+      field.style.position = 'fixed'
+      field.style.opacity = '0'
+      document.body.append(field)
+      field.select()
+      copied = document.execCommand('copy')
+      field.remove()
+    }
+    if (copied) {
+      setCopiedKey(key)
+      window.setTimeout(() => setCopiedKey(null), 2000)
     }
   }, [])
 
@@ -132,6 +155,60 @@ export function AdminSetupScreen({
     && EMAIL_PATTERN.test(smtpUser.trim())
     && smtpPass.length > 0
     && EMAIL_PATTERN.test(notificationMailbox.trim())
+  const smtpVerificationInput = useMemo(() => ({
+    notificationMailbox: notificationMailbox.trim().toLowerCase(),
+    smtpHost: smtpHost.trim(),
+    smtpPort: smtpPortNumber,
+    smtpUser: smtpUser.trim().toLowerCase(),
+    smtpPass,
+    smtpTls,
+    language,
+  }), [language, notificationMailbox, smtpHost, smtpPass, smtpPortNumber, smtpTls, smtpUser])
+
+  const invalidateSmtpVerification = useCallback(() => {
+    setSmtpVerificationToken('')
+    setSmtpVerificationCode('')
+    setSmtpVerificationError(null)
+    setSmtpVerificationState('idle')
+  }, [])
+
+  const sendSmtpVerificationCode = useCallback(async () => {
+    if (!mailValid || smtpVerificationState === 'sending') return
+    setSmtpVerificationState('sending')
+    setSmtpVerificationError(null)
+    try {
+      const result = await phdApi.sendInitialSetupSmtpVerification(smtpVerificationInput)
+      setSmtpVerificationToken(result.token)
+      setSmtpVerificationCode('')
+      setSmtpVerificationState('sent')
+    } catch (reason) {
+      setSmtpVerificationToken('')
+      setSmtpVerificationState('idle')
+      setSmtpVerificationError(normalizeErrorMessage(reason, language as Parameters<typeof normalizeErrorMessage>[1], tx('emailCodeSendFailed')))
+    }
+  }, [language, mailValid, smtpVerificationInput, smtpVerificationState, tx])
+
+  const verifySmtpVerificationCode = useCallback(async () => {
+    if (!smtpVerificationToken || !/^\d{6}$/.test(smtpVerificationCode.trim())) {
+      setSmtpVerificationError(tx('emailCodeRequired'))
+      return false
+    }
+    setSmtpVerificationState('checking')
+    setSmtpVerificationError(null)
+    try {
+      await phdApi.verifyInitialSetupSmtpVerification({
+        ...smtpVerificationInput,
+        token: smtpVerificationToken,
+        code: smtpVerificationCode.trim(),
+      })
+      setSmtpVerificationState('verified')
+      return true
+    } catch (reason) {
+      setSmtpVerificationState('sent')
+      setSmtpVerificationError(normalizeErrorMessage(reason, language as Parameters<typeof normalizeErrorMessage>[1], tx('emailCodeRequired')))
+      return false
+    }
+  }, [language, smtpVerificationCode, smtpVerificationInput, smtpVerificationToken, tx])
   const databasePortNumber = Number(databasePort)
   const externalDatabase = databaseType !== 'sqlite'
   const databaseValid = !externalDatabase || (
@@ -152,11 +229,11 @@ export function AdminSetupScreen({
     { id: 'review' as const, label: tx('admin.setup.reviewStep'), icon: Check },
   ], [tx])
 
-  const goForward = () => {
+  const goForward = async () => {
     if (step === 'account' && accountValid) setStep('security')
     else if (step === 'security') setStep('storage')
     else if (step === 'storage' && databaseValid) setStep('mail')
-    else if (step === 'mail' && mailValid) setStep('review')
+    else if (step === 'mail' && mailValid && await verifySmtpVerificationCode()) setStep('review')
   }
   const goBack = () => {
     if (step === 'review') setStep('mail')
@@ -166,7 +243,7 @@ export function AdminSetupScreen({
   }
 
   const submit = async () => {
-    if (!accountValid || !databaseValid || !mailValid || busy) return
+    if (!accountValid || !databaseValid || !mailValid || smtpVerificationState !== 'verified' || busy) return
     await onSubmit({
       name: name.trim(),
       email: email.trim().toLowerCase(),
@@ -177,6 +254,7 @@ export function AdminSetupScreen({
       smtpUser: smtpUser.trim().toLowerCase(),
       smtpPass,
       smtpTls,
+      smtpVerificationToken,
       language,
       database: databaseType === 'sqlite'
         ? { type: 'sqlite', sqlitePath: sqlitePath.trim() || undefined }
@@ -308,13 +386,14 @@ export function AdminSetupScreen({
                           <button
                             type="button"
                             className="admin-secret-copy-btn quiet-action"
-                            onClick={() => copyToClipboard(secrets.jwtSecretPreview, 'jwt')}
-                            title={tx('admin.setup.securityCopyKey')}
+                            onClick={() => copyToClipboard(secrets.jwtSecret || secrets.jwtSecretPreview, 'jwt')}
+                            title={copiedKey === 'jwt' ? tx('admin.setup.securityCopied') : tx('admin.setup.securityCopyKey')}
+                            aria-label={copiedKey === 'jwt' ? tx('admin.setup.securityCopied') : tx('admin.setup.securityCopyKey')}
                           >
                             {copiedKey === 'jwt' ? (
-                              <><Check size={13} /> {tx('admin.setup.securityCopied')}</>
+                              <Check size={14} aria-hidden="true" />
                             ) : (
-                              <><Copy size={13} /></>
+                              <Copy size={14} aria-hidden="true" />
                             )}
                           </button>
                         </div>
@@ -334,13 +413,14 @@ export function AdminSetupScreen({
                           <button
                             type="button"
                             className="admin-secret-copy-btn quiet-action"
-                            onClick={() => copyToClipboard(secrets.encryptionKeyPreview, 'enc')}
-                            title={tx('admin.setup.securityCopyKey')}
+                            onClick={() => copyToClipboard(secrets.encryptionKey || secrets.encryptionKeyPreview, 'enc')}
+                            title={copiedKey === 'enc' ? tx('admin.setup.securityCopied') : tx('admin.setup.securityCopyKey')}
+                            aria-label={copiedKey === 'enc' ? tx('admin.setup.securityCopied') : tx('admin.setup.securityCopyKey')}
                           >
                             {copiedKey === 'enc' ? (
-                              <><Check size={13} /> {tx('admin.setup.securityCopied')}</>
+                              <Check size={14} aria-hidden="true" />
                             ) : (
-                              <><Copy size={13} /></>
+                              <Copy size={14} aria-hidden="true" />
                             )}
                           </button>
                         </div>
@@ -401,23 +481,23 @@ export function AdminSetupScreen({
               <div className="admin-setup-fields admin-setup-mail-grid">
                 <label className="admin-setup-field-wide">
                   <span>{tx('settings.smtpHost')}</span>
-                  <input value={smtpHost} onChange={(event) => setSmtpHost(event.target.value)} placeholder="smtp.example.com" autoFocus />
+                  <input value={smtpHost} onChange={(event) => { invalidateSmtpVerification(); setSmtpHost(event.target.value) }} placeholder="smtp.example.com" autoFocus />
                 </label>
                 <label>
                   <span>{tx('settings.smtpPort')}</span>
-                  <input type="number" min="1" max="65535" value={smtpPort} onChange={(event) => setSmtpPort(event.target.value)} inputMode="numeric" />
+                  <input type="number" min="1" max="65535" value={smtpPort} onChange={(event) => { invalidateSmtpVerification(); setSmtpPort(event.target.value) }} inputMode="numeric" />
                 </label>
                 <label>
                   <span>{tx('settings.smtpUser')}</span>
-                  <input type="email" value={smtpUser} onChange={(event) => setSmtpUser(event.target.value)} placeholder="notifications@example.com" autoComplete="username" />
+                  <input type="email" value={smtpUser} onChange={(event) => { invalidateSmtpVerification(); setSmtpUser(event.target.value) }} placeholder="notifications@example.com" autoComplete="username" />
                 </label>
                 <label>
                   <span>{tx('settings.smtpPass')}</span>
-                  <input type="password" value={smtpPass} onChange={(event) => setSmtpPass(event.target.value)} autoComplete="new-password" />
+                  <input type="password" value={smtpPass} onChange={(event) => { invalidateSmtpVerification(); setSmtpPass(event.target.value) }} autoComplete="new-password" />
                 </label>
                 <label className="admin-setup-field-wide">
                   <span>{tx('admin.setup.notificationMailbox')}</span>
-                  <input type="email" value={notificationMailbox} onChange={(event) => setNotificationMailbox(event.target.value)} placeholder="admin@example.com" />
+                  <input type="email" value={notificationMailbox} onChange={(event) => { invalidateSmtpVerification(); setNotificationMailbox(event.target.value) }} placeholder="admin@example.com" />
                   <small>{tx('admin.setup.notificationMailboxHint')}</small>
                 </label>
                 <div className="admin-setup-switch-row admin-setup-field-wide">
@@ -425,7 +505,42 @@ export function AdminSetupScreen({
                     <strong>{tx('settings.smtpTls')}</strong>
                     <small>{tx('admin.setup.tlsHint')}</small>
                   </div>
-                  <SwitchControl checked={smtpTls} label={tx('settings.smtpTls')} onChange={setSmtpTls} />
+                  <SwitchControl checked={smtpTls} label={tx('settings.smtpTls')} onChange={(checked) => { invalidateSmtpVerification(); setSmtpTls(checked) }} />
+                </div>
+                <div className={`admin-setup-smtp-verification admin-setup-field-wide is-${smtpVerificationState}`}>
+                  <div className="admin-setup-smtp-verification-copy">
+                    <strong>{tx('emailCode')}</strong>
+                    <small>{notificationMailbox || tx('admin.setup.notificationMailboxHint')}</small>
+                  </div>
+                  <div className="admin-setup-smtp-verification-actions">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      value={smtpVerificationCode}
+                      onChange={(event) => {
+                        setSmtpVerificationCode(event.target.value.replace(/\D/g, '').slice(0, 6))
+                        setSmtpVerificationError(null)
+                        if (smtpVerificationState === 'verified') setSmtpVerificationState('sent')
+                      }}
+                      placeholder={tx('emailCodePlaceholder')}
+                      aria-label={tx('emailCode')}
+                      disabled={!smtpVerificationToken || smtpVerificationState === 'sending' || smtpVerificationState === 'checking'}
+                    />
+                    <button
+                      type="button"
+                      className="quiet-action compact-action"
+                      onClick={() => void sendSmtpVerificationCode()}
+                      disabled={!mailValid || smtpVerificationState === 'sending' || smtpVerificationState === 'checking'}
+                    >
+                      {smtpVerificationState === 'sending' ? <span className="admin-setup-spinner" aria-hidden="true" /> : <Mail size={13} aria-hidden="true" />}
+                      {smtpVerificationToken ? tx('resendCode') : tx('sendCode')}
+                    </button>
+                  </div>
+                  {smtpVerificationState === 'sent' || smtpVerificationState === 'verified' ? (
+                    <p className="admin-setup-smtp-verification-status"><Check size={13} aria-hidden="true" /> {tx('emailCodeSent')}</p>
+                  ) : null}
+                  {smtpVerificationError ? <p className="admin-setup-smtp-verification-error" role="alert">{smtpVerificationError}</p> : null}
                 </div>
               </div>
             </>
@@ -566,8 +681,14 @@ export function AdminSetupScreen({
               <button
                 type="button"
                 className="primary-action"
-                onClick={goForward}
-                disabled={step === 'account' ? !accountValid : step === 'security' ? false : step === 'storage' ? !databaseValid : !mailValid}
+                onClick={() => void goForward()}
+                disabled={step === 'account'
+                  ? !accountValid
+                  : step === 'security'
+                    ? false
+                    : step === 'storage'
+                      ? !databaseValid
+                      : !mailValid || !smtpVerificationToken || !/^\d{6}$/.test(smtpVerificationCode) || smtpVerificationState === 'sending' || smtpVerificationState === 'checking'}
               >
                 {tx('admin.setup.continue')} <ArrowRight size={14} aria-hidden="true" />
               </button>

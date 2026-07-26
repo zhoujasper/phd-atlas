@@ -13,6 +13,7 @@
     "signIn": "Accedi all'amministratore",
     "noPrivileges": "Questo account non dispone dei privilegi di amministratore.",
     "topbarTitle": "Dottorato Atlante Amministratore",
+    "brand": "PhD Atlas",
     "badge": "Amministratore",
     "backToSite": "Torna all'Atlante del Dottorato",
     "backToSiteShort": "Ritorno al sito",
@@ -62,6 +63,7 @@
     "shareCreateUsage": "{count}/{limit} collegamenti creati",
     "shareCreateUsageLabel": "Utilizzo della creazione di collegamenti di condivisione a vita",
     "storageUsage": "Utilizzo dello spazio di archiviazione",
+    "storageUnlimited": "Spazio di archiviazione illimitato",
     "accountType": {
       "free": "Utente gratuito",
       "pro": "Utente professionista",

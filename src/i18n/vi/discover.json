@@ -64,7 +64,7 @@
     "field": "Lĩnh vực nghiên cứu",
     "fieldPlaceholder": "ví dụ. Học máy, sinh học tính toán",
     "subfields": "Trường con/phương thức",
-    "subfieldsPlaceholder": "Sở thích được phân tách bằng dấu phẩy",
+    "subfieldsPlaceholder": "Ngăn cách mối quan tâm bằng dấu chấm phẩy (;)",
     "regions": "Vùng mục tiêu",
     "stipendFloor": "Khoản trợ cấp tối thiểu (USD)",
     "nPrograms": "Các chương trình xếp hạng",

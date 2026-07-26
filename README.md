@@ -25,11 +25,10 @@ database or selected MySQL/MariaDB, PostgreSQL, or Microsoft SQL Server data
 store, plus uploads, backups, credentials, and integration settings, remain on
 infrastructure you control.
 
-This repository is the **public, single-workspace edition**. Team and
-institution collaboration is intentionally not distributed here, and no Team
-enablement material is included in the public package. Future public support
-will be announced through the [roadmap](TODO.md) once permissions, migrations,
-and mobile workflows are ready for general use.
+This repository is the **public self-hosted Beta edition**. It includes the
+complete Team collaboration workspace: owner, teacher, and student roles,
+invitations, scoped workspaces, shared applications and resources, audit
+history, and the same permission checks used by the private source build.
 
 ## Product tour
 
@@ -137,17 +136,17 @@ and mobile workflows are ready for general use.
 - Switch among English, Simplified Chinese, German, Spanish, French, Italian,
   Japanese, Korean, Portuguese, Russian, Thai, and Vietnamese.
 
-## Public edition boundary
+## Public Team availability
 
-The public build sets a deterministic edition flag that:
+The public Beta ships Team collaboration end to end. Organizations can manage
+owner, teacher, and student memberships, invitations, scoped workspaces,
+application sharing, review workflows, audit history, and Team AI access. The
+same server-authoritative permissions and quota checks apply to public and
+private-source deployments.
 
-- removes Team navigation and workspace switching;
-- rejects Team API routes;
-- omits Team invite handling and Team plan presentation;
-- starts with blank login fields instead of private demo shortcuts.
-
-Team collaboration is planned as a future public feature after its permissions,
-data migration, and mobile interaction model are ready for general use.
+The public repository still starts with blank login fields rather than private
+demo shortcuts. As a Beta, Team data and update paths should be backed up and
+tested before production upgrades.
 
 ## Stack
 

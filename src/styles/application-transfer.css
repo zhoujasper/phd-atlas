@@ -1,1 +1,457 @@
-/* Public-edition compatibility boundary; organization transfers are unavailable. */
+.application-transfer-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 470;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(18, 24, 32, 0.3);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  animation: transfer-layer-in var(--duration-overlay-in) var(--ease-out) backwards;
+}
+
+.application-transfer-layer.exiting {
+  animation: transfer-layer-out var(--duration-overlay-out) var(--ease-out) both;
+}
+
+.application-transfer-dialog {
+  width: min(620px, calc(100vw - 48px));
+  max-height: min(820px, calc(100dvh - 48px));
+  overflow: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+  animation: transfer-dialog-in var(--duration-overlay-in) var(--ease-emphasized) backwards;
+}
+
+.application-transfer-layer.exiting .application-transfer-dialog {
+  animation: transfer-dialog-out var(--duration-overlay-out) var(--ease-out) both;
+}
+
+.application-transfer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 24px 16px;
+}
+
+.application-transfer-head h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 640;
+  letter-spacing: -0.015em;
+}
+
+.application-transfer-head p {
+  margin: 5px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.application-transfer-close {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out),
+    transform 80ms var(--ease-out);
+}
+
+.application-transfer-close:hover {
+  color: var(--text);
+  background: var(--surface-secondary);
+}
+
+.application-transfer-close:active {
+  transform: scale(0.97);
+}
+
+.application-transfer-close:focus-visible,
+.application-transfer-organization-list button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.32);
+}
+
+.application-transfer-app {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 24px 18px;
+  padding: 10px 0 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.application-transfer-app > span:first-child {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  margin-right: 2px;
+  border-radius: var(--radius);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+}
+
+.application-transfer-app strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.application-transfer-organizations,
+.application-transfer-preflight {
+  padding: 0 24px;
+}
+
+.application-transfer-organizations h3,
+.application-transfer-preflight h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 620;
+}
+
+.application-transfer-organization-list {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.application-transfer-organization-list button {
+  position: relative;
+  width: 100%;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 20px 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    transform 80ms var(--ease-out);
+}
+
+.application-transfer-organization-list button:last-child {
+  border-bottom: 0;
+}
+
+.application-transfer-organization-list button:hover {
+  background: var(--surface-secondary);
+}
+
+.application-transfer-organization-list button.selected {
+  z-index: 1;
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.application-transfer-organization-list button:active {
+  transform: scale(0.995);
+}
+
+.application-transfer-radio {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  color: var(--surface);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+.application-transfer-organization-list button.selected .application-transfer-radio {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.application-transfer-organization-icon {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+}
+
+.application-transfer-organization-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.application-transfer-organization-copy strong,
+.application-transfer-organization-copy em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.application-transfer-organization-copy strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.application-transfer-organization-copy em {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.application-transfer-availability {
+  min-width: 76px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 550;
+}
+
+.application-transfer-availability.eligible {
+  color: var(--success);
+}
+
+.application-transfer-availability.blocked {
+  color: var(--danger);
+}
+
+.application-transfer-preflight {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.application-transfer-placeholder {
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.application-transfer-placeholder.checking {
+  color: var(--text-tertiary);
+}
+
+.application-transfer-check-list {
+  display: grid;
+}
+
+.application-transfer-check {
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-tertiary);
+  animation: transfer-check-in 260ms var(--ease-out) both;
+  animation-delay: calc(var(--transfer-check-index) * 45ms);
+}
+
+.application-transfer-check:last-child {
+  border-bottom: 0;
+}
+
+.application-transfer-check > span {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.application-transfer-check strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 590;
+}
+
+.application-transfer-check em {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-style: normal;
+  text-align: right;
+}
+
+.application-transfer-check.passed > svg:last-child {
+  color: var(--success);
+}
+
+.application-transfer-check.failed > svg:last-child {
+  color: var(--danger);
+}
+
+.application-transfer-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 24px 0;
+  padding: 12px 0 16px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.application-transfer-note svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.application-transfer-error {
+  margin: 0 24px 12px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.application-transfer-actions {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 24px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.application-transfer-actions .quiet-action,
+.application-transfer-actions .primary-action {
+  min-width: 96px;
+}
+
+@keyframes transfer-layer-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes transfer-layer-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes transfer-dialog-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes transfer-dialog-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(6px) scale(0.99); }
+}
+
+@keyframes transfer-check-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+[data-theme='dark'] .application-transfer-layer {
+  background: rgba(0, 0, 0, 0.58);
+}
+
+@media (max-width: 820px) {
+  .application-transfer-layer {
+    align-items: end;
+    padding: 0;
+  }
+
+  .application-transfer-dialog {
+    width: 100%;
+    max-height: min(88dvh, 820px);
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  }
+
+  .application-transfer-head {
+    padding: 20px 16px 14px;
+  }
+
+  .application-transfer-app {
+    margin-right: 16px;
+    margin-left: 16px;
+  }
+
+  .application-transfer-organizations,
+  .application-transfer-preflight {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .application-transfer-note {
+    margin-right: 16px;
+    margin-left: 16px;
+  }
+
+  .application-transfer-error {
+    margin-right: 16px;
+    margin-left: 16px;
+  }
+
+  .application-transfer-actions {
+    padding-right: 16px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    padding-left: 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .application-transfer-organization-list button {
+    grid-template-columns: 20px 26px minmax(0, 1fr);
+  }
+
+  .application-transfer-availability {
+    grid-column: 3;
+    justify-content: flex-start;
+  }
+
+  .application-transfer-check > span {
+    display: grid;
+    gap: 2px;
+  }
+
+  .application-transfer-check em {
+    text-align: left;
+  }
+
+  .application-transfer-actions .quiet-action,
+  .application-transfer-actions .primary-action {
+    flex: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .application-transfer-layer,
+  .application-transfer-layer.exiting,
+  .application-transfer-dialog,
+  .application-transfer-layer.exiting .application-transfer-dialog,
+  .application-transfer-check {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+  }
+}

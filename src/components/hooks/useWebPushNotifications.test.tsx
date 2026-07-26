@@ -201,6 +201,24 @@ describe('useWebPushNotifications', () => {
     expect(result.current.status).toBe('error')
   })
 
+  it('releases the enable control when saving a subscription stalls', async () => {
+    vi.useFakeTimers()
+    api.saveWebPushSubscription.mockReturnValue(new Promise(() => {}))
+    const { WEB_PUSH_OPERATION_TIMEOUT_MS, useWebPushNotifications } = await import('./useWebPushNotifications')
+    const { result } = renderHook(() => useWebPushNotifications('session_token'))
+
+    let outcome: string | undefined
+    await act(async () => {
+      const pending = result.current.enable().then((value) => { outcome = value })
+      await vi.advanceTimersByTimeAsync(32)
+      await vi.advanceTimersByTimeAsync(WEB_PUSH_OPERATION_TIMEOUT_MS)
+      await pending
+    })
+
+    expect(outcome).toBe('error')
+    expect(result.current.status).toBe('error')
+  })
+
   it('renews a subscription whose application server key no longer matches', async () => {
     ;(window.Notification as unknown as { permission: NotificationPermission }).permission = 'granted'
     const staleSubscription = {

@@ -363,6 +363,38 @@ export function DiscoverScreen({
     }
   }, [applications, applyPayload, intakeDraft, lang, onNotify, rankerDraft, selectedKeyIds, state?.interestPicks, teamScope, token, tx, usableAiKeys, useApplicationSeeds])
 
+  const configureAiKeys = useCallback(async () => {
+    if (!intakeDraft) {
+      onConfigureAiKeys()
+      return
+    }
+
+    // The AI-key handoff is a real navigation boundary. Save the complete
+    // research form first so a user never loses the direction they just set.
+    setResearchSubmissionError(null)
+    setResearchSubmissionPhase('saving')
+    try {
+      const preferredAiKeyIds = selectedKeyIds.filter((id) => usableAiKeys.some((key) => key.id === id))
+      const payload = await phdApi.updateDiscoverState(token, {
+        intake: intakeDraft,
+        intakeCompleted: Boolean(intakeDraft.field.trim() && intakeDraft.regions.length),
+        ranker: rankerDraft,
+        interestPicks: state?.interestPicks,
+        preferredAiKeyId: preferredAiKeyIds[0] ?? null,
+        preferredAiKeyIds,
+      }, teamScope)
+      applyPayload(payload)
+      setResearchSubmissionPhase('idle')
+      onNotify(tx('discover.savedToast', 'Discover preferences saved'), 'success')
+      onConfigureAiKeys()
+    } catch (reason) {
+      const message = normalizeErrorMessage(reason, lang, tx('discover.loadError'))
+      setResearchSubmissionError(message)
+      setResearchSubmissionPhase('idle')
+      onNotify(message, 'error')
+    }
+  }, [applyPayload, intakeDraft, lang, onConfigureAiKeys, onNotify, rankerDraft, selectedKeyIds, state?.interestPicks, teamScope, token, tx, usableAiKeys])
+
   const deletePrograms = useCallback(async (ids: string[]) => {
     const uniqueIds = [...new Set(ids)].filter(Boolean)
     if (!uniqueIds.length) return
@@ -637,7 +669,7 @@ export function DiscoverScreen({
         onUseApplicationSeedsChange={setUseApplicationSeeds}
         onSelectedKeyIdsChange={setSelectedKeyIds}
         onTeamTargetChange={onTeamTargetChange}
-        onConfigureAiKeys={onConfigureAiKeys}
+        onConfigureAiKeys={() => void configureAiKeys()}
         onSubmit={() => void runResearch()}
       />
 

@@ -13,6 +13,7 @@
     "signIn": "ลงชื่อเข้าใช้งานผู้ดูแลระบบ",
     "noPrivileges": "บัญชีนี้ไม่มีสิทธิ์ของผู้ดูแลระบบ",
     "topbarTitle": "ผู้ดูแลระบบ Atlas ปริญญาเอก",
+    "brand": "PhD Atlas",
     "badge": "ผู้ดูแลระบบ",
     "backToSite": "กลับสู่ปริญญาเอก Atlas",
     "backToSiteShort": "กลับไปที่ไซต์",
@@ -62,6 +63,7 @@
     "shareCreateUsage": "{count}/{limit} สร้างลิงก์",
     "shareCreateUsageLabel": "การใช้การสร้างลิงก์แชร์ตลอดชีวิต",
     "storageUsage": "การใช้พื้นที่เก็บข้อมูล",
+    "storageUnlimited": "พื้นที่เก็บข้อมูลไม่จำกัด",
     "accountType": {
       "free": "ผู้ใช้ฟรี",
       "pro": "ผู้ใช้มืออาชีพ",

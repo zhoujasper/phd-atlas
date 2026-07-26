@@ -97,6 +97,7 @@
       "backupSqlDesc": "工作区备份将包含适用于所选引擎、可恢复的 SQL 归档以及上传文件。"
     },
     "topbarTitle": "PhD Atlas 管理后台",
+    "brand": "PhD Atlas",
     "badge": "管理员",
     "backToSite": "返回 PhD Atlas",
     "backToSiteShort": "返回站点",
@@ -166,6 +167,7 @@
     "shareCreateUsage": "累计创建 {count}/{limit} 条链接",
     "shareCreateUsageLabel": "累计分享链接创建用量",
     "storageUsage": "空间使用",
+    "storageUnlimited": "不限存储空间",
     "accountType": {
       "free": "普通用户",
       "pro": "专业版用户",

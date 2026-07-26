@@ -1354,6 +1354,8 @@ export default function App() {
 
   // Navigation
   const [screen, setScreen] = useState<Screen>(loadStoredScreen)
+  /** A one-shot intent from Discover: arrive at the personal AI-key manager. */
+  const [focusAiKeys, setFocusAiKeys] = useState(false)
   // True when the current URL didn't match any known screen at all (vs. a known screen with
   // a stale/missing sub-resource, e.g. a deleted application — see applicationNotFound below).
   const [routeNotFound, setRouteNotFound] = useState(() => parseRoute(window.location.pathname) === null)
@@ -6493,15 +6495,20 @@ export default function App() {
           setMobileDetailOpen(false)
         } : undefined}
         onConfigureAiKeys={() => {
-          startTransition(() => {
-            if (teamDiscoverScope && teamViewerRole === 'owner') {
+          if (teamDiscoverScope && teamViewerRole === 'owner') {
+            runAnimatedScreenUpdate(() => {
               setTeamSection('settings')
               setScreen('team')
-            } else {
+              setMobileDetailOpen(false)
+            }, { scope: 'screen', direction: 'forward', readinessGate: screenReadinessGate(teamScreen) })
+          } else {
+            setFocusAiKeys(true)
+            runAnimatedScreenUpdate(() => {
               setInterfaceMode('personal')
               setScreen('settings')
-            }
-          })
+              setMobileDetailOpen(false)
+            }, { scope: 'screen', direction: 'forward', readinessGate: screenReadinessGate(settingsScreen) })
+          }
         }}
         deferProgressiveReveal={deferScreenProgressiveReveal}
         realtimeConnected={realtimeUpdates.connected}
@@ -6619,6 +6626,8 @@ export default function App() {
     ) : screen === 'settings' ? (
       <SettingsScreen
         session={activeSession}
+        focusAiKeys={focusAiKeys}
+        onAiKeysFocused={() => setFocusAiKeys(false)}
         installStatus={pwaInstall.status}
         webPushStatus={webPushNotifications.status}
         deferProgressiveReveal={deferScreenProgressiveReveal}

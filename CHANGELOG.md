@@ -8,6 +8,34 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0-beta.5] - 2026-07-26
+
+### Added
+
+- Full Team collaboration is now available in the public Beta, including
+  organization roles, invitations, scoped workspaces, shared application
+  workflows, audit history, and Team AI access.
+- First-run SMTP setup now verifies a six-digit code sent from the configured
+  sender to the configured notification mailbox before creating the first
+  administrator.
+
+### Changed
+
+- The public exporter preserves the Team runtime, language packs, and the same
+  server-authoritative permissions used by the private source build.
+- Recipient-group CSV import is now a focused animated flow with a template,
+  drag/drop upload, file picker, and preview.
+
+### Fixed
+
+- Bootstrap security-key copy now preserves the complete value; verification
+  email markup is rendered as HTML rather than visible source text.
+- Discover preserves the current research draft before opening AI-key setup;
+  device-notification operations fail with a bounded error instead of spinning
+  indefinitely after deployment.
+- Improved responsive admin navigation, touch selection feedback, paired field
+  dimensions, helper text hierarchy, and localized public-facing copy.
+
 ## [0.1.0-beta.4] - 2026-07-24
 
 ### Added

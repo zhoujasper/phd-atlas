@@ -64,7 +64,7 @@
     "field": "Campo de pesquisa",
     "fieldPlaceholder": "por exemplo Aprendizado de máquina, biologia computacional",
     "subfields": "Subcampos/métodos",
-    "subfieldsPlaceholder": "Interesses separados por vírgula",
+    "subfieldsPlaceholder": "Separe interesses com ponto e vírgula (;)",
     "regions": "Regiões alvo",
     "stipendFloor": "Estipêndio mínimo (USD)",
     "nPrograms": "Programas para classificar",

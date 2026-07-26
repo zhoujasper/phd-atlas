@@ -16,7 +16,7 @@ import {
 } from '../api/phdApi'
 import { AdminScreen } from '../components/screens/AdminScreen'
 import { AdminSetupScreen } from '../components/screens/AdminSetupScreen'
-import { Clock, Languages, LockKeyhole, Moon, Server, ShieldCheck, Sun, UserRound } from 'lucide-react'
+import { ArrowLeft, Clock, Languages, LockKeyhole, LogOut, Moon, Server, ShieldCheck, Sun, UserRound } from 'lucide-react'
 import { Select } from '../components/shared/Select'
 import {
   applyDocumentLanguage,
@@ -486,7 +486,10 @@ export function AdminApp() {
         <header className="admin-topbar">
           <div className="admin-topbar-left">
             <ShieldCheck size={20} aria-hidden="true" />
-            <strong>{tx('admin.topbarTitle')}</strong>
+            <strong>
+              <span className="admin-topbar-brand-full">{tx('admin.topbarTitle')}</span>
+              <span className="admin-topbar-brand-compact" aria-hidden="true">{tx('admin.brand')}</span>
+            </strong>
             <span className="admin-badge">{tx('admin.badge')}</span>
           </div>
           <nav
@@ -530,18 +533,21 @@ export function AdminApp() {
             <button type="button" className="icon-action" onClick={themeProvider.toggleTheme} title={themeProvider.theme === 'dark' ? tx('settings.light') : tx('settings.dark')} aria-label={themeProvider.theme === 'dark' ? tx('settings.light') : tx('settings.dark')}>
               {themeProvider.theme === 'dark' ? <Sun size={14} aria-hidden="true" /> : <Moon size={14} aria-hidden="true" />}
             </button>
-            <button type="button" className="quiet-action" onClick={logout}>
-              {tx('signOut')}
+            <button type="button" className="quiet-action admin-topbar-signout" onClick={logout} title={tx('signOut')} aria-label={tx('signOut')}>
+              <LogOut size={14} aria-hidden="true" />
+              <span className="admin-topbar-action-label">{tx('signOut')}</span>
             </button>
             <button
               type="button"
-              className="text-action"
-              style={{ width: 'auto', margin: 0 }}
+              className="text-action admin-topbar-back"
+              title={tx('admin.backToSiteShort')}
+              aria-label={tx('admin.backToSiteShort')}
               onClick={() => {
                 window.location.href = '/'
               }}
             >
-              {tx('admin.backToSiteShort')}
+              <ArrowLeft size={14} aria-hidden="true" />
+              <span className="admin-topbar-action-label">{tx('admin.backToSiteShort')}</span>
             </button>
           </div>
         </header>

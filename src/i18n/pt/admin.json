@@ -13,6 +13,7 @@
     "signIn": "Faça login no administrador",
     "noPrivileges": "Esta conta não possui privilégios de administrador.",
     "topbarTitle": "PhD Atlas Administrador",
+    "brand": "PhD Atlas",
     "badge": "Administrador",
     "backToSite": "De volta ao Atlas de doutorado",
     "backToSiteShort": "Voltar ao site",
@@ -62,6 +63,7 @@
     "shareCreateUsage": "{count}/{limit} links criados",
     "shareCreateUsageLabel": "Uso vitalício de criação de link de compartilhamento",
     "storageUsage": "Uso de armazenamento",
+    "storageUnlimited": "Armazenamento ilimitado",
     "accountType": {
       "free": "Usuário gratuito",
       "pro": "Usuário profissional",

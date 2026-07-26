@@ -13,6 +13,7 @@
     "signIn": "Melden Sie sich als Administrator an",
     "noPrivileges": "Dieses Konto verfügt nicht über Administratorrechte.",
     "topbarTitle": "PhD Atlas Admin",
+    "brand": "PhD Atlas",
     "badge": "Administrator",
     "backToSite": "Zurück zum PhD-Atlas",
     "backToSiteShort": "Zurück zur Website",
@@ -62,6 +63,7 @@
     "shareCreateUsage": "{count}/{limit} erstellte Links",
     "shareCreateUsageLabel": "Nutzung der lebenslangen Freigabe-Link-Erstellung",
     "storageUsage": "Speichernutzung",
+    "storageUnlimited": "Unbegrenzter Speicherplatz",
     "accountType": {
       "free": "Kostenloser Benutzer",
       "pro": "Profi-Benutzer",

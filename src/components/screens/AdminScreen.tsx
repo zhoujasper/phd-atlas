@@ -1861,7 +1861,9 @@ export function AdminScreen({
                       <small>{tx('admin.database.sslHint')}</small>
                     </label>
                   ) : null}
-                  <p className="settings-inline-note">{databaseDraft.type === 'sqlite' ? tx('admin.database.sqlitePathHint') : tx('admin.database.externalHint')}</p>
+                  {databaseDraft.type !== 'sqlite' ? (
+                    <p className="settings-inline-note">{tx('admin.database.externalHint')}</p>
+                  ) : null}
                   <div className="admin-card-actions mail-admin-actions">
                     <button type="button" className="quiet-action compact-action" onClick={() => void testDatabase()} disabled={databaseTesting || databaseSaving}>
                       {databaseTesting ? <><RefreshCw size={12} aria-hidden="true" className="spin-icon" /> {tx('admin.database.testing')}</> : <><Server size={12} aria-hidden="true" /> {tx('admin.database.test')}</>}
@@ -2342,7 +2344,7 @@ export function AdminScreen({
                             <div className="admin-user-quota-stack">
                               <div className="admin-record-quota-line admin-record-quota-line-inline">
                                 <div className="admin-record-quota-head">
-                                  <span>{storageUnlimited ? tx('team.storageUnlimited') : `${quota} MB`}</span>
+                                  <span>{storageUnlimited ? tx('admin.storageUnlimited') : `${quota} MB`}</span>
                                   {storageUnlimited ? (
                                     <span className="admin-quota-infinite">∞</span>
                                   ) : (

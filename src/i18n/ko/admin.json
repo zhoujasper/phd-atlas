@@ -13,6 +13,7 @@
     "signIn": "관리자로 로그인",
     "noPrivileges": "이 계정에는 관리자 권한이 없습니다.",
     "topbarTitle": "박사 아틀라스 관리자",
+    "brand": "PhD Atlas",
     "badge": "관리자",
     "backToSite": "박사 학위 아틀라스로 돌아가기",
     "backToSiteShort": "사이트로 돌아가기",
@@ -62,6 +63,7 @@
     "shareCreateUsage": "{count}/{limit} 링크 생성됨",
     "shareCreateUsageLabel": "평생 공유 링크 생성 사용법",
     "storageUsage": "스토리지 사용량",
+    "storageUnlimited": "무제한 저장용량",
     "accountType": {
       "free": "무료 사용자",
       "pro": "프로 사용자",

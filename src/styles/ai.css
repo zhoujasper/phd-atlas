@@ -392,6 +392,15 @@
   padding: 0 10px 0 4px;
 }
 
+.ai-key-form-error {
+  display: block;
+  margin-top: 2px;
+  color: var(--danger) !important;
+  font-size: 11px !important;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
 .ai-key-delete-inline {
   position: static;
   z-index: 1;

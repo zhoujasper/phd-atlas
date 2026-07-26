@@ -13,6 +13,7 @@
     "signIn": "Đăng nhập vào quản trị viên",
     "noPrivileges": "Tài khoản này không có đặc quyền của quản trị viên.",
     "topbarTitle": "Tiến sĩ Atlas Quản trị viên",
+    "brand": "PhD Atlas",
     "badge": "Quản trị viên",
     "backToSite": "Quay lại Tiến sĩ Atlas",
     "backToSiteShort": "Quay lại trang web",
@@ -62,6 +63,7 @@
     "shareCreateUsage": "{count}/{limit} đã tạo liên kết",
     "shareCreateUsageLabel": "Sử dụng tạo liên kết chia sẻ trọn đời",
     "storageUsage": "Mức sử dụng bộ nhớ",
+    "storageUnlimited": "Dung lượng không giới hạn",
     "accountType": {
       "free": "Người dùng miễn phí",
       "pro": "Người dùng chuyên nghiệp",

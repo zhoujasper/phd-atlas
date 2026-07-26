@@ -64,7 +64,7 @@
     "field": "Campo di ricerca",
     "fieldPlaceholder": "per esempio. Apprendimento automatico, biologia computazionale",
     "subfields": "Sottocampi/metodi",
-    "subfieldsPlaceholder": "Interessi separati da virgole",
+    "subfieldsPlaceholder": "Separa gli interessi con punto e virgola (;)",
     "regions": "Regioni target",
     "stipendFloor": "Stipendio minimo (USD)",
     "nPrograms": "Programmi da classificare",

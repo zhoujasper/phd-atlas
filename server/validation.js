@@ -325,6 +325,23 @@ export const SendEmailCodeSchema = z.object({
   language: z.string().min(2).max(12).optional().default('en'),
 })
 
+const InitialSetupSmtpSettingsSchema = z.object({
+  notificationMailbox: z.email().transform((value) => value.toLowerCase()),
+  smtpHost: z.string().trim().min(1).max(253),
+  smtpPort: z.number().int().min(1).max(65535),
+  smtpUser: z.email().transform((value) => value.toLowerCase()),
+  smtpPass: z.string().min(1).max(500),
+  smtpTls: z.boolean(),
+  language: z.string().min(2).max(12).optional().default('en'),
+})
+
+export const InitialSetupSmtpVerificationSendSchema = InitialSetupSmtpSettingsSchema
+
+export const InitialSetupSmtpVerificationCheckSchema = InitialSetupSmtpSettingsSchema.extend({
+  token: z.string().min(16).max(4096),
+  code: z.string().regex(/^\d{6}$/),
+})
+
 export const PasswordResetRequestSchema = z.object({
   email: z.email().transform((value) => value.toLowerCase()),
 })
@@ -1102,6 +1119,7 @@ export const InitialAdminSetupSchema = z.object({
   smtpUser: z.email().transform((value) => value.toLowerCase()),
   smtpPass: z.string().min(1).max(500),
   smtpTls: z.boolean(),
+  smtpVerificationToken: z.string().min(16).max(4096),
   language: z.string().min(2).max(12).default('en'),
   database: DatabaseConnectionSchema.default({ type: 'sqlite' }),
 })

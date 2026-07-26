@@ -61,19 +61,21 @@
   --inline-test-idle-width: 126px;
   --inline-test-form-width: 316px;
   position: relative;
-  display: grid;
-  grid-template-areas: "control";
-  width: var(--inline-test-idle-width);
-  max-width: 100%;
+  display: block;
+  width: min(var(--inline-test-idle-width), 100%);
   min-width: 0;
-  min-height: 32px;
+  min-height: 34px;
+  transition: width 320ms var(--ease-out);
 }
 
 .inline-test-email-trigger,
 .inline-test-email-form {
-  grid-area: control;
+  position: absolute;
+  inset: 0;
   transition:
     opacity var(--duration) var(--ease-out),
+    transform var(--duration) var(--ease-out),
+    clip-path var(--duration) var(--ease-out),
     visibility 0s linear var(--duration);
 }
 
@@ -82,45 +84,51 @@
   justify-content: center;
   opacity: 1;
   visibility: visible;
+  transform: translate3d(0, 0, 0);
 }
 
 .inline-test-email.is-editing .inline-test-email-trigger {
   opacity: 0;
+  transform: translate3d(-8px, 0, 0) scale(.98);
   visibility: hidden;
-  transition-delay: 0s, var(--duration-fast);
+  transition-delay: 0s, 0s, 0s, var(--duration-fast);
 }
 
 .inline-test-email-form {
-  position: absolute;
-  right: 0;
-  z-index: 2;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 30px;
+  grid-template-columns: minmax(0, 1fr) auto 34px;
   gap: 6px;
   align-items: center;
-  width: var(--inline-test-form-width);
-  max-width: calc(100vw - 32px);
+  width: 100%;
   min-width: 0;
-  min-height: 32px;
-  padding-left: 4px;
+  min-height: 34px;
   border-radius: var(--radius);
   background: var(--surface);
   opacity: 0;
+  transform: translate3d(8px, 0, 0) scale(.98);
+  clip-path: inset(0 0 0 100% round var(--radius));
   visibility: hidden;
   pointer-events: none;
 }
 
 .inline-test-email.is-editing .inline-test-email-form {
+  width: 100%;
   opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  clip-path: inset(0 0 0 0 round var(--radius));
   visibility: visible;
   pointer-events: auto;
   transition-delay: 0s, 0s;
 }
 
+.inline-test-email.is-editing {
+  width: min(var(--inline-test-form-width), calc(100vw - 32px));
+}
+
 .inline-test-email-form input {
   width: 100%;
   min-width: 0;
-  height: 32px;
+  height: 34px;
   padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -138,13 +146,16 @@
 
 .inline-test-email-send {
   min-width: 88px;
+  min-height: 34px;
+  height: 34px;
   justify-content: center;
   white-space: nowrap;
 }
 
 .inline-test-email-cancel {
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
 }
 
 .settings-lines .verification-resend-action {
@@ -198,17 +209,8 @@
     margin-left: auto;
   }
 
-  .inline-test-email-form {
-    width: min(var(--inline-test-form-width), calc(100vw - 32px));
-  }
-
-  /* The anchored form intentionally occupies the action row on narrow cards.
-     Keep the saved layout slot, but fade the covered save action completely so
-     no button edge peeks out beneath the form. */
-  .mail-config-button-row:has(.inline-test-email.is-editing) .mail-save-btn {
-    opacity: 0;
-    visibility: hidden;
-    pointer-events: none;
+  .inline-test-email.is-editing {
+    width: min(100%, var(--inline-test-form-width));
   }
 }
 
