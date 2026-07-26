@@ -250,7 +250,7 @@ import {
 } from './mailAttachmentBudget.js'
 import { defaultTeamProfilePresets, mergeTeamProfilePresets } from './profile-preset-defaults.js'
 import { resolvePdfLanguage, toPdfBuffer as toPolishedPdfBuffer } from './pdfExport.js'
-import { PUBLIC_EDITION } from './edition.js'
+import { PUBLIC_DISTRIBUTION, PUBLIC_EDITION } from './edition.js'
 import {
   buildImportPayload,
   computeDiscoverStats,
@@ -5091,7 +5091,7 @@ export function createApp() {
   app.get('/api/setup/status', asyncHandler(async (_request, response) => {
     const store = await readStore()
     ok(response, {
-      required: PUBLIC_EDITION && activeAdminCount(store) === 0,
+      required: PUBLIC_DISTRIBUTION && activeAdminCount(store) === 0,
     })
   }))
 
@@ -5099,7 +5099,7 @@ export function createApp() {
   // before the first administrator is created).
   app.get('/api/setup/secrets', asyncHandler(async (_request, response) => {
     const store = await readStore()
-    if (!PUBLIC_EDITION || activeAdminCount(store) > 0) {
+    if (!PUBLIC_DISTRIBUTION || activeAdminCount(store) > 0) {
       fail(response, 404, 'NOT_FOUND', 'This endpoint is only available during initial setup.')
       return
     }
@@ -5121,7 +5121,7 @@ export function createApp() {
 
   app.post('/api/setup/secrets/regenerate', asyncHandler(async (request, response) => {
     const store = await readStore()
-    if (!PUBLIC_EDITION || activeAdminCount(store) > 0) {
+    if (!PUBLIC_DISTRIBUTION || activeAdminCount(store) > 0) {
       fail(response, 404, 'NOT_FOUND', 'This endpoint is only available during initial setup.')
       return
     }
@@ -5142,7 +5142,7 @@ export function createApp() {
   }))
 
   app.post('/api/setup/smtp-verification/send', asyncHandler(async (request, response) => {
-    if (!PUBLIC_EDITION) {
+    if (!PUBLIC_DISTRIBUTION) {
       fail(response, 404, 'NOT_FOUND', 'Initial setup is not available in this edition.')
       return
     }
@@ -5187,7 +5187,7 @@ export function createApp() {
   }))
 
   app.post('/api/setup/smtp-verification/check', asyncHandler(async (request, response) => {
-    if (!PUBLIC_EDITION) {
+    if (!PUBLIC_DISTRIBUTION) {
       fail(response, 404, 'NOT_FOUND', 'Initial setup is not available in this edition.')
       return
     }
@@ -5205,7 +5205,7 @@ export function createApp() {
   }))
 
   app.post('/api/setup', asyncHandler(async (request, response) => {
-    if (!PUBLIC_EDITION) {
+    if (!PUBLIC_DISTRIBUTION) {
       fail(response, 404, 'NOT_FOUND', 'Initial setup is not available in this edition.')
       return
     }
@@ -14221,7 +14221,7 @@ export function createApp() {
   }
 
   app.get('/api/admin/system-update/check', asyncHandler(async (_request, response) => {
-    if (!PUBLIC_EDITION) {
+    if (!PUBLIC_DISTRIBUTION) {
       fail(response, 404, 'NOT_FOUND', 'Public GitHub Release updates are not available in this edition.')
       return
     }
@@ -14230,7 +14230,7 @@ export function createApp() {
   }))
 
   app.post('/api/admin/system-update/install-release', asyncHandler(async (request, response) => {
-    if (!PUBLIC_EDITION) {
+    if (!PUBLIC_DISTRIBUTION) {
       fail(response, 404, 'NOT_FOUND', 'Public GitHub Release updates are not available in this edition.')
       return
     }

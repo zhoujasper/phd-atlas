@@ -1,7 +1,7 @@
 import { CalendarClock, Check, Copy, Eye, EyeOff, Fingerprint, FolderCheck, GraduationCap, Languages, ListChecks, Mail, Moon, RefreshCw, ShieldCheck, Sun, Users } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { normalizeErrorMessage } from '../../errorMessages'
-import { PUBLIC_EDITION } from '../../edition'
+import { PUBLIC_DISTRIBUTION } from '../../edition'
 import type { Language } from '../../i18n'
 import { useI18n } from '../hooks/useI18n'
 import { useTheme } from '../hooks/useTheme'
@@ -53,9 +53,9 @@ export function AuthScreen({
   const modeHeightRef = useRef<number | null>(null)
   const modeRef = useRef<AuthMode>(mode)
   modeRef.current = mode
-  const [name, setName] = useState(PUBLIC_EDITION ? '' : 'Jasper')
-  const [email, setEmail] = useState(PUBLIC_EDITION ? '' : 'jasper@example.com')
-  const [password, setPassword] = useState(PUBLIC_EDITION ? '' : 'demo123456')
+  const [name, setName] = useState(PUBLIC_DISTRIBUTION ? '' : 'Jasper')
+  const [email, setEmail] = useState(PUBLIC_DISTRIBUTION ? '' : 'jasper@example.com')
+  const [password, setPassword] = useState(PUBLIC_DISTRIBUTION ? '' : 'demo123456')
   const [showPassword, setShowPassword] = useState(false)
   const [recoveryMessage, setRecoveryMessage] = useState('')
   const [recoveryLink, setRecoveryLink] = useState('')
@@ -208,7 +208,7 @@ export function AuthScreen({
   }
 
   const modeHeading = mode === 'login' ? tx('signIn') : mode === 'register' ? tx('createAccount') : tx('resetPassword.title')
-  const demoAccounts = PUBLIC_EDITION
+  const demoAccounts = PUBLIC_DISTRIBUTION
     ? []
     : [
         { key: 'owner', email: 'jasper@example.com', label: tx('demoOwner'), desc: tx('demoOwnerDesc'), Icon: ShieldCheck },

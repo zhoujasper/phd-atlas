@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { phdApi, type AdminSettings, type SystemInfo } from '../api/phdApi'
 import { AdminScreen } from '../components/screens/AdminScreen'
 
-vi.mock('../edition', () => ({ PUBLIC_EDITION: true }))
+vi.mock('../edition', () => ({ PUBLIC_EDITION: false, PUBLIC_DISTRIBUTION: true }))
 
 const settings: AdminSettings = {
   allowRegistration: true,

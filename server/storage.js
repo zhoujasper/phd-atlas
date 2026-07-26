@@ -57,7 +57,7 @@ import {
   seedApplications,
   seedProfileAssets,
 } from './seed-data.js'
-import { PUBLIC_EDITION } from './edition.js'
+import { PUBLIC_DISTRIBUTION, PUBLIC_EDITION } from './edition.js'
 import {
   isTeacherAssignedToStudent,
   normalizeTeamTeacherGroups,
@@ -1986,7 +1986,7 @@ async function createSeedStore() {
     },
     settings: {
       allowRegistration: true,
-      notificationMailbox: PUBLIC_EDITION ? '' : 'admin-alerts@phd-atlas.local',
+      notificationMailbox: PUBLIC_DISTRIBUTION ? '' : 'admin-alerts@phd-atlas.local',
       backupFrequency: DEFAULT_BACKUP_FREQUENCY,
       maxBackupsPerAppLimit: DEFAULT_PRO_MAX_BACKUPS_PER_APP,
       encryptionAtRest: true,
@@ -2127,7 +2127,10 @@ async function createSeedStore() {
     ],
   }
 
-  if (PUBLIC_EDITION && process.env.NODE_ENV !== 'test') {
+  // The published Docker/runtime always uses production and must start with a
+  // blank administrator setup. Test and development processes retain seeded
+  // fixtures so Team permission coverage remains deterministic.
+  if (PUBLIC_DISTRIBUTION && process.env.NODE_ENV === 'production') {
     seedStore.meta.publicSetupState = PUBLIC_SETUP_PENDING_STATE
     seedStore.users = []
     seedStore.profileAssets = []
@@ -2837,6 +2840,10 @@ export function logEvent(store, event) {
 
 async function initializeStorage() {
   storageInitialized = false
+  // Public artifacts intentionally start empty only when they are running as a
+  // deployed production service. Keeping the test/development fixture seeded
+  // preserves deterministic Team permission coverage in the public repository.
+  const publicProductionSetup = PUBLIC_DISTRIBUTION && process.env.NODE_ENV === 'production'
   await prepareConfiguredDatabaseSource()
   await fs.mkdir(uploadRoot, { recursive: true })
   await fs.mkdir(backupRoot, { recursive: true })
@@ -2893,10 +2900,10 @@ async function initializeStorage() {
       await writeStore(await createSeedStore())
       database = getDb()
     }
-  } else if (!PUBLIC_EDITION) {
+  } else if (!publicProductionSetup) {
     await ensureDefaultAdminUser(database)
   }
-  if (!PUBLIC_EDITION) {
+  if (!publicProductionSetup) {
     await ensureDemoTeamWorkspace(getDb())
   }
 

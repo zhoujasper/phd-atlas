@@ -1,4 +1,4 @@
-import { PUBLIC_EDITION } from './edition.js'
+import { PUBLIC_DISTRIBUTION } from './edition.js'
 
 const FALLBACK_USER_EMAIL = 'jasper@example.com'
 const FALLBACK_USER_PASSWORD = 'demo123456'
@@ -10,7 +10,7 @@ export const DEFAULT_USER_PASSWORD = process.env.BOOTSTRAP_USER_PASSWORD || FALL
 export const DEFAULT_ADMIN_EMAIL = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim() || FALLBACK_ADMIN_EMAIL
 export const DEFAULT_ADMIN_PASSWORD = process.env.BOOTSTRAP_ADMIN_PASSWORD || FALLBACK_ADMIN_PASSWORD
 
-if (process.env.NODE_ENV === 'production' && !PUBLIC_EDITION) {
+if (process.env.NODE_ENV === 'production' && !PUBLIC_DISTRIBUTION) {
   const unsafeDefaults = [
     [DEFAULT_USER_PASSWORD, FALLBACK_USER_PASSWORD, 'BOOTSTRAP_USER_PASSWORD'],
     [DEFAULT_ADMIN_PASSWORD, FALLBACK_ADMIN_PASSWORD, 'BOOTSTRAP_ADMIN_PASSWORD'],

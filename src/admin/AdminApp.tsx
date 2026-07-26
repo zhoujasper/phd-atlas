@@ -33,7 +33,7 @@ import { FormValidationPrompt } from '../components/shared/FormValidationPrompt'
 import { LaunchScreen } from '../components/shared/LaunchScreen'
 import { ToastStack } from '../components/shared/ToastView'
 import { normalizeErrorMessage } from '../errorMessages'
-import { PUBLIC_EDITION } from '../edition'
+import { PUBLIC_DISTRIBUTION } from '../edition'
 
 const ADMIN_SESSION_KEY = 'phd-atlas-admin-session'
 const ADMIN_LANGUAGE_KEY = 'phd-atlas-admin-language'
@@ -80,9 +80,9 @@ export function AdminApp() {
     safeParseJson<AuthSession>(localStorage.getItem(ADMIN_SESSION_KEY)),
   )
   const [setupRequired, setSetupRequired] = useState<boolean | null>(() => (
-    session || !PUBLIC_EDITION ? false : null
+    session || !PUBLIC_DISTRIBUTION ? false : null
   ))
-  const [email, setEmail] = useState(PUBLIC_EDITION ? '' : 'admin@phd-atlas.local')
+  const [email, setEmail] = useState(PUBLIC_DISTRIBUTION ? '' : 'admin@phd-atlas.local')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -254,7 +254,7 @@ export function AdminApp() {
   }, [loadAdminData])
 
   useEffect(() => {
-    if (!PUBLIC_EDITION) return
+    if (!PUBLIC_DISTRIBUTION) return
     if (session) {
       setSetupRequired(false)
       return

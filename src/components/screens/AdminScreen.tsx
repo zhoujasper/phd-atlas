@@ -55,7 +55,7 @@ import { AsyncActionButton } from '../shared/AsyncActionButton'
 import { phdApi, type AdminSettings, type AdminTeamRecord, type AdminUser, type BackupRecord, type DatabaseConfiguration, type DatabaseConnectionInput, type DatabaseEngine, type EncryptionAlgorithm, type NotificationGroup, type ReleaseUpdateCheck, type SystemEvent, type SystemInfo, type TeamMember, type TeamRole, type TeamSummary } from '../../api/phdApi'
 import type { BackupFrequency } from '../../data/applications'
 import { normalizeErrorMessage } from '../../errorMessages'
-import { PUBLIC_EDITION } from '../../edition'
+import { PUBLIC_DISTRIBUTION, PUBLIC_EDITION } from '../../edition'
 import { MAX_SYSTEM_UPDATE_FILE_SIZE, filesRejectedForReason, formatFileSize, validateUploadFiles } from '../../fileUploads'
 import { registerLanguage, type LangDict } from '../../i18n'
 import englishAdmin from '../../i18n/en/admin.json'
@@ -2999,12 +2999,12 @@ export function AdminScreen({
               <div>
                 <span className="eyebrow">{tx('admin.updateEyebrow')}</span>
                 <h3>{tx('admin.systemUpdate')}</h3>
-                <p>{tx(PUBLIC_EDITION ? 'admin.systemUpdateDesc' : 'admin.manualUpdateDesc')}</p>
+                <p>{tx(PUBLIC_DISTRIBUTION ? 'admin.systemUpdateDesc' : 'admin.manualUpdateDesc')}</p>
               </div>
               <Package size={17} aria-hidden="true" />
             </div>
             <div className="admin-update-panel">
-              {PUBLIC_EDITION ? (
+              {PUBLIC_DISTRIBUTION ? (
                 <div className="admin-release-update">
                   <div className="admin-release-update-summary">
                     <span className="admin-release-update-icon">
