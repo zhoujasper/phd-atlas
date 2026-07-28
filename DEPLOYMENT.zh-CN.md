@@ -496,7 +496,7 @@ npm prune --omit=dev
 docker compose pull
 docker compose up -d --wait
 
-# 或 Admin 内更新（beta.2+）：管理后台 → 系统信息 → 系统更新 → 检查更新
+# 或 Admin 内更新（beta.6+）：管理后台 → 系统信息 → 系统更新 → 检查更新
 ```
 
 ### 原生
@@ -512,8 +512,14 @@ sudo -u phd-atlas npm prune --omit=dev
 sudo systemctl start phd-atlas
 ```
 
-Admin Release 包更新（beta.2+）：管理后台 → 系统信息 → 系统更新。
-支持自动检查 GitHub Release 或手动上传 `.tar.gz`。
+Admin Release 包更新（beta.6+）：管理后台 → 系统信息 → 系统更新。
+支持自动检查 GitHub Release 或手动上传 `.tar.gz`。从 Beta.5 或更早版本一次性
+过渡到 Beta.6 时，必须在可信设备下载 Beta.6 Release 的 `.tar.gz`，再通过
+**手动更新**上传；本次不要依赖旧版自动安装流程。
+
+Beta.6 及后续更新包会直接从标准 package manifest 与 lockfile 自动收集全部生产
+依赖，并随 Release 携带精确、经过完整性校验的依赖归档；旧版恢复和第三方安装脚本
+仍可在有界时间内依次使用 npmjs、npmmirror、Yarn 兼容源及适用的 GitHub 镜像。
 
 ## 备份与回滚
 

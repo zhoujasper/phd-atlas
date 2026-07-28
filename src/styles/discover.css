@@ -221,6 +221,18 @@
   gap: 8px;
 }
 
+.discover-research-trigger > svg,
+.discover-research-trigger-label {
+  position: relative;
+  z-index: 1;
+}
+
+.discover-research-trigger > svg {
+  display: block;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
 .discover-clear-compare-action,
 .discover-compare-action {
   min-width: 0;
@@ -1713,42 +1725,62 @@
   }
   .discover-pi-program { display: none; }
   .discover-pi-row > span:nth-of-type(1) { display: none; }
-  .discover-mobile-overlay { align-items: flex-end; background: rgba(0, 0, 0, 0.24); }
+  .discover-mobile-overlay {
+    align-items: stretch;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: calc(var(--mobile-tab-bar-height, 62px) + env(safe-area-inset-bottom, 0px));
+    background: rgba(0, 0, 0, 0.24);
+  }
   .discover-mobile-overlay .discover-filter-rail.is-mobile {
     width: 100%;
-    height: min(78dvh, 680px);
-    margin-bottom: 62px;
+    height: 100%;
+    max-height: none;
+    min-height: 0;
+    margin-bottom: 0;
     border: 1px solid var(--border);
     border-bottom: 0;
     border-radius: 14px 14px 0 0;
     box-shadow: 0 -18px 48px rgba(0, 0, 0, 0.18);
     animation: discover-mobile-filter-in var(--duration-overlay-in) var(--ease-emphasized) backwards;
+    animation-duration: 320ms;
   }
-  .discover-mobile-overlay.is-exiting .discover-filter-rail.is-mobile { animation: discover-mobile-filter-out var(--duration-overlay-out) var(--ease-out) forwards; }
+  .discover-mobile-overlay.is-exiting .discover-filter-rail.is-mobile {
+    animation: discover-mobile-filter-out 220ms var(--ease-out) forwards;
+  }
   @keyframes discover-mobile-filter-in {
     from { transform: translate3d(0, 14px, 0); opacity: 0; }
     to { transform: none; opacity: 1; }
   }
   @keyframes discover-mobile-filter-out { to { transform: translateY(20px); opacity: 0; } }
-  .discover-sheet-backdrop { align-items: flex-end; }
+  .discover-sheet-backdrop {
+    align-items: stretch;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: calc(var(--mobile-tab-bar-height, 62px) + env(safe-area-inset-bottom, 0px));
+  }
   .discover-side-sheet {
-    position: fixed;
-    right: 0;
-    bottom: 62px;
-    left: 0;
+    position: relative;
+    right: auto;
+    bottom: auto;
+    left: auto;
     width: 100%;
-    height: min(88dvh, 760px);
+    height: 100%;
+    max-height: none;
+    margin-top: auto;
     border: 1px solid var(--border);
     border-bottom: 0;
     border-radius: 14px 14px 0 0;
     box-shadow: 0 -18px 48px rgba(0, 0, 0, 0.18);
     animation-name: discover-mobile-sheet-in;
+    animation-duration: 320ms;
   }
   @keyframes discover-mobile-sheet-in {
     from { transform: translate3d(0, 14px, 0); opacity: 0; }
     to { transform: none; opacity: 1; }
   }
-  .discover-side-sheet.is-exiting { animation-name: discover-mobile-sheet-out; }
+  .discover-side-sheet.is-exiting {
+    animation-name: discover-mobile-sheet-out;
+    animation-duration: 220ms;
+  }
   @keyframes discover-mobile-sheet-out { to { opacity: 0; transform: translateY(20px); } }
   .discover-side-sheet-header { min-height: 74px; padding: 15px 16px 12px; }
   .discover-side-sheet-header h3 { font-size: 17px; }
@@ -2029,10 +2061,29 @@ body.discover-pane-resizing * { cursor: ew-resize !important; user-select: none 
   justify-content: space-between;
   gap: 8px;
 }
-.discover-list-pane > .explorer-selection-presence {
+.discover-list-count > span:first-child {
   flex: 0 0 auto;
-  margin-right: 12px;
-  margin-left: 12px;
+}
+.discover-list-count > .explorer-selection-presence {
+  min-width: 0;
+  flex: 1 1 auto;
+  margin: 0;
+  transform: translate3d(0, -3px, 0);
+  contain: layout paint;
+}
+.discover-list-count > .explorer-selection-presence.is-open {
+  margin: 0;
+  transform: translate3d(0, 0, 0);
+}
+.discover-list-count .explorer-selection-presence-clip {
+  overflow: hidden;
+}
+.discover-list-count .explorer-selection-bar {
+  min-height: 26px;
+  padding: 2px 4px 2px 8px;
+  border-color: transparent;
+  background: var(--surface-secondary);
+  box-shadow: none;
 }
 .discover-column-button {
   width: 28px;

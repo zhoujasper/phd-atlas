@@ -73,4 +73,36 @@ describe('development CORS policy', () => {
       delete process.env.CORS_ORIGIN
     }
   })
+
+  it('rejects cross-site state-changing browser requests even when Origin is absent', async () => {
+    const response = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'sec-fetch-site': 'cross-site',
+      },
+      body: JSON.stringify({
+        email: 'nobody@example.com',
+        password: 'not-a-real-password',
+      }),
+    })
+    const payload = await response.json()
+
+    expect(response.status).toBe(403)
+    expect(payload).toMatchObject({
+      ok: false,
+      error: { code: 'FORBIDDEN' },
+    })
+  })
+
+  it('issues an opaque, server-stored fallback challenge instead of a readable JWT answer', async () => {
+    const response = await fetch(`${baseUrl}/api/auth/captcha`)
+    const payload = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(payload.data.provider).toBe('math')
+    expect(payload.data.question).toMatch(/^\d+ \+ \d+$/)
+    expect(payload.data.token).toMatch(/^[A-Za-z0-9_-]{40,}$/)
+    expect(payload.data.token).not.toContain('.')
+  })
 })

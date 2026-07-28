@@ -119,6 +119,11 @@
     "guidanceShowDetails": "ดูรายละเอียดของ {name}",
     "guidanceOffice": "ห้องทำงาน",
     "guidanceAvailability": "เวลาที่ติดต่อได้",
-    "guidanceSupport": "สิ่งที่ฉันช่วยได้"
+    "guidanceSupport": "สิ่งที่ฉันช่วยได้",
+    "guidanceContact": "ติดต่อ {name}",
+    "guidanceContactOptions": "ตัวเลือกการติดต่อสำหรับ {name}",
+    "guidanceInApp": "ข้อความในแอป",
+    "guidanceMessageTitle": "ส่งข้อความถึง {name}",
+    "guidanceMessageSent": "ส่งข้อความถึง {name} แล้ว"
   }
 }

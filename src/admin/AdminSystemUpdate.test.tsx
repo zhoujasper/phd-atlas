@@ -2,7 +2,8 @@ import '@testing-library/jest-dom/vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { phdApi, type AdminSettings, type SystemInfo } from '../api/phdApi'
+import { phdApi, type AdminSettings, type SystemInfo, type SystemUpdateResult } from '../api/phdApi'
+import * as systemUpdateClient from './systemUpdateClient'
 import { AdminScreen } from '../components/screens/AdminScreen'
 
 vi.mock('../edition', () => ({ PUBLIC_EDITION: false, PUBLIC_DISTRIBUTION: true }))
@@ -55,7 +56,7 @@ function renderSystemUpdate({
   onSystemUpdate = vi.fn().mockResolvedValue(true),
   onNotify = vi.fn(),
 }: {
-  onSystemUpdate?: (file: File) => Promise<boolean>
+  onSystemUpdate?: (file: File) => Promise<boolean | SystemUpdateResult>
   onNotify?: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
 } = {}) {
   render(
@@ -110,14 +111,30 @@ describe('AdminScreen public system updates', () => {
     })
     vi.spyOn(phdApi, 'installReleaseUpdate').mockResolvedValue({
       received: true,
+      accepted: true,
+      background: true,
+      jobId: 'update-test-1',
       fileName: 'phd-atlas-update-0.1.0-beta.2.tar.gz',
-      size: 2048,
-      storedAs: 'phd-atlas-update-0.1.0-beta.2.tar.gz',
+      size: 0,
+      storedAs: '',
       version: '0.1.0-beta.2',
-      verified: true,
+      verified: false,
       restartScheduled: true,
       message: 'ok',
     })
+    vi.spyOn(phdApi, 'systemUpdateStatus').mockResolvedValue({
+      phase: 'idle',
+      source: null,
+      bytes: 0,
+      total: 0,
+      targetVersion: null,
+      errorCode: null,
+      updatedAt: '2026-07-23T12:02:00.000Z',
+      currentVersion: '0.1.0-beta.2',
+      operationInFlight: false,
+      restartPending: false,
+    })
+    vi.spyOn(systemUpdateClient, 'reloadInstalledApplication').mockImplementation(() => undefined)
 
     renderSystemUpdate({ onNotify })
 
@@ -140,9 +157,51 @@ describe('AdminScreen public system updates', () => {
       )
     })
     expect(onNotify).toHaveBeenCalledWith(
-      'Update installed. PhD Atlas is restarting…',
-      'success',
+      'The server is handling this update in the background. You can close this browser window safely.',
+      'info',
     )
+    await waitFor(() => expect(onNotify).toHaveBeenCalledWith(
+      'PhD Atlas is updated and ready. Refreshing the page…',
+      'success',
+    ))
+  })
+
+  it('restores a persisted background failure and exposes its installer log after reopening', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(phdApi, 'systemUpdateStatus').mockResolvedValue({
+      phase: 'error',
+      jobId: 'update-test-error',
+      source: 'github',
+      bytes: 2048,
+      total: 2048,
+      targetVersion: '0.1.0-beta.2',
+      errorCode: 'UPDATE_APPLY_FAILED',
+      errorMessage: 'npm ci failed with exit code 1.',
+      updatedAt: '2026-07-23T12:02:00.000Z',
+      currentVersion: '0.1.0-beta.1',
+      operationInFlight: false,
+      restartPending: false,
+    })
+    vi.spyOn(phdApi, 'systemUpdateLogs').mockResolvedValue({
+      fileName: 'system-update.log.jsonl',
+      entries: [{
+        at: '2026-07-23T12:02:00.000Z',
+        jobId: 'update-test-error',
+        level: 'error',
+        phase: 'installing',
+        message: 'npm could not reach the package registry.',
+        errorCode: 'UPDATE_APPLY_FAILED',
+        detail: 'npm ERR! network timeout',
+      }],
+    })
+
+    renderSystemUpdate()
+
+    expect(await screen.findByText('npm ci failed with exit code 1.')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Update log' }))
+
+    expect(await screen.findByText('npm could not reach the package registry.')).toBeInTheDocument()
+    expect(screen.getByText('npm ERR! network timeout')).toBeInTheDocument()
   })
 
   it('keeps the manual package upload flow available behind progressive disclosure', async () => {

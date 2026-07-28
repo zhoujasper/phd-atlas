@@ -119,6 +119,11 @@
     "guidanceShowDetails": "Показать сведения о {name}",
     "guidanceOffice": "Кабинет",
     "guidanceAvailability": "Время для связи",
-    "guidanceSupport": "Чем я могу помочь"
+    "guidanceSupport": "Чем я могу помочь",
+    "guidanceContact": "Связаться с {name}",
+    "guidanceContactOptions": "Способы связи с {name}",
+    "guidanceInApp": "Сообщение в приложении",
+    "guidanceMessageTitle": "Написать пользователю {name}",
+    "guidanceMessageSent": "Сообщение для {name} отправлено."
   }
 }

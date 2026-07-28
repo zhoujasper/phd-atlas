@@ -7,12 +7,27 @@ import {
   isNetworkLikeError,
   loadOfflineSnapshot,
   mergeOfflineApplicationUpdate,
+  offlineAccessForSession,
   readOfflineQueue,
   saveOfflineSnapshot,
 } from './offline'
 
+function jwtFor(claims: Record<string, unknown>) {
+  const encode = (value: unknown) => btoa(JSON.stringify(value))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '')
+  return `${encode({ alg: 'none' })}.${encode(claims)}.signature`
+}
+
+const sessionIssuedAt = Math.floor(Date.now() / 1000)
 const session = {
-  token: 'token',
+  token: jwtFor({
+    sub: 'user-1',
+    scope: 'app',
+    iat: sessionIssuedAt,
+    exp: sessionIssuedAt + 12 * 60 * 60,
+  }),
   user: {
     id: 'user-1',
     name: 'Jasper',
@@ -80,6 +95,7 @@ const application = {
 describe('offline queue safeguards', () => {
   beforeEach(() => {
     localStorage.clear()
+    sessionStorage.clear()
   })
 
   function offlineStorageValue(prefix: string) {
@@ -102,7 +118,88 @@ describe('offline queue safeguards', () => {
       teamApplications: [],
     })
 
-    expect(loadOfflineSnapshot(session)?.data.applications).toHaveLength(1)
+    const snapshot = loadOfflineSnapshot(session)
+    expect(snapshot?.version).toBe(3)
+    expect(snapshot?.authorization).toMatchObject({
+      scope: 'personal-owner',
+      subject: session.user.id,
+    })
+    expect(snapshot?.data.applications).toHaveLength(1)
+    expect(Date.parse(snapshot?.authorization.expiresAt ?? '')).toBeGreaterThan(Date.now())
+  })
+
+  it('reduces the cached workspace to owned personal applications without capability fields', () => {
+    const applicationWithVaultHandles = {
+      ...application,
+      materials: [{
+        id: 'material-1',
+        name: 'Transcript',
+        type: 'file',
+        status: 'ready',
+        version: '1',
+        updatedAt: application.updatedAt ?? '',
+        fileId: 'private-material-file',
+        storageName: 'private-material-storage',
+        versions: [{
+          id: 'material-version-1',
+          file: 'transcript.pdf',
+          author: 'Jasper',
+          createdAt: application.updatedAt ?? '',
+          fileId: 'private-version-file',
+          storageName: 'private-version-storage',
+        }],
+      }],
+      communications: [{
+        id: 'communication-1',
+        subject: 'Application',
+        channel: 'Email',
+        date: '2026-07-08',
+        summary: 'Follow-up',
+        sourceMessageKey: 'private-message-key',
+        sourceMailbox: 'private-mailbox',
+        attachments: [{
+          id: 'attachment-1',
+          fileName: 'letter.pdf',
+          fileId: 'private-attachment-file',
+          storageName: 'private-attachment-storage',
+        }],
+      }],
+    } as ApplicationRecord
+    saveOfflineSnapshot(session, {
+      applications: [
+        applicationWithVaultHandles,
+        { ...application, id: 'team-app', teamId: 'team-1' },
+        { ...application, id: 'foreign-app', ownerId: 'other-user' },
+      ],
+      profileAssets: [{ id: 'profile-asset' }] as never,
+      backups: [{ id: 'backup-1' }] as never,
+      applicationTrash: [{ id: 'trash-1' }] as never,
+      teamWorkspaces: [{ id: 'team-1' }] as never,
+      activeTeamId: 'team-1',
+      teamSummary: { id: 'team-1' } as never,
+      teamApplications: [{ id: 'team-app' }] as never,
+    })
+
+    const data = loadOfflineSnapshot(session)?.data
+    expect(data?.applications.map((item) => item.id)).toEqual(['app-1'])
+    expect(data?.applications[0]).not.toHaveProperty('shares')
+    expect(data?.applications[0]).not.toHaveProperty('reviewComments')
+    expect(data?.applications[0]).not.toHaveProperty('backupSettings')
+    expect(data?.applications[0].materials[0]).not.toHaveProperty('fileId')
+    expect(data?.applications[0].materials[0]).not.toHaveProperty('storageName')
+    expect(data?.applications[0].materials[0].versions?.[0]).not.toHaveProperty('fileId')
+    expect(data?.applications[0].communications[0]).not.toHaveProperty('sourceMessageKey')
+    expect(data?.applications[0].communications[0].attachments?.[0]).not.toHaveProperty('fileId')
+    expect(offlineStorageValue('phd-atlas-offline-snapshot:v3:').value).not.toContain('private-')
+    expect(data).toMatchObject({
+      profileAssets: [],
+      backups: [],
+      applicationTrash: [],
+      teamWorkspaces: [],
+      activeTeamId: null,
+      teamSummary: null,
+      teamApplications: [],
+    })
   })
 
   it('uses a device-keyed HMAC integrity envelope for snapshots and queues', () => {
@@ -116,10 +213,10 @@ describe('offline queue safeguards', () => {
       teamSummary: null,
       teamApplications: [],
     })
-    enqueueApplicationUpdate(session.user.id, application, application.updatedAt ?? null)
+    enqueueApplicationUpdate(session, application, application.updatedAt ?? null)
 
-    const snapshot = JSON.parse(offlineStorageValue('phd-atlas-offline-snapshot:v2:').value)
-    const queue = JSON.parse(offlineStorageValue('phd-atlas-offline-queue:v2:').value)
+    const snapshot = JSON.parse(offlineStorageValue('phd-atlas-offline-snapshot:v3:').value)
+    const queue = JSON.parse(offlineStorageValue('phd-atlas-offline-queue:v3:').value)
 
     expect(snapshot.integrity.algorithm).toBe('hmac-sha256-device-v1')
     expect(snapshot.integrity.digest).toMatch(/^[a-f0-9]{64}$/)
@@ -139,7 +236,7 @@ describe('offline queue safeguards', () => {
       teamApplications: [],
     })
 
-    const stored = offlineStorageValue('phd-atlas-offline-snapshot:v2:')
+    const stored = offlineStorageValue('phd-atlas-offline-snapshot:v3:')
     const parsed = JSON.parse(stored.value)
     parsed.data.applications[0].progress = 99
     localStorage.setItem(stored.key, JSON.stringify(parsed))
@@ -150,9 +247,9 @@ describe('offline queue safeguards', () => {
 
   it('deduplicates offline application saves while preserving the first base timestamp', () => {
     const baseUpdatedAt = '2026-07-08T00:00:00.000Z'
-    enqueueApplicationUpdate(session.user.id, application, baseUpdatedAt)
+    enqueueApplicationUpdate(session, application, baseUpdatedAt)
     enqueueApplicationUpdate(
-      session.user.id,
+      session,
       { ...application, progress: 35 },
       '2026-07-09T00:00:00.000Z',
     )
@@ -166,7 +263,7 @@ describe('offline queue safeguards', () => {
   it('automatically merges offline and server edits made to different application fields', () => {
     const local = { ...application, progress: 35 }
     enqueueApplicationUpdate(
-      session.user.id,
+      session,
       local,
       application.updatedAt ?? null,
       application,
@@ -188,7 +285,7 @@ describe('offline queue safeguards', () => {
 
   it('keeps overlapping offline/server edits blocked instead of overwriting either copy', () => {
     enqueueApplicationUpdate(
-      session.user.id,
+      session,
       { ...application, progress: 35 },
       application.updatedAt ?? null,
       application,
@@ -204,9 +301,9 @@ describe('offline queue safeguards', () => {
   })
 
   it('drops a locally tampered offline queue before replay', () => {
-    enqueueApplicationUpdate(session.user.id, application, application.updatedAt ?? null)
+    enqueueApplicationUpdate(session, application, application.updatedAt ?? null)
 
-    const stored = offlineStorageValue('phd-atlas-offline-queue:v2:')
+    const stored = offlineStorageValue('phd-atlas-offline-queue:v3:')
     const parsed = JSON.parse(stored.value)
     parsed.items[0].application.progress = 88
     localStorage.setItem(stored.key, JSON.stringify(parsed))
@@ -215,16 +312,15 @@ describe('offline queue safeguards', () => {
     expect(localStorage.getItem(stored.key)).toBeNull()
   })
 
-  it('filters malformed or cross-owner queue items even with a valid queue envelope', () => {
+  it('refuses to create a cross-owner queue item', () => {
     enqueueApplicationUpdate(
-      session.user.id,
+      session,
       { ...application, ownerId: 'other-user' },
       application.updatedAt ?? null,
     )
-    const stored = offlineStorageValue('phd-atlas-offline-queue:v2:')
 
     expect(readOfflineQueue(session.user.id)).toEqual([])
-    expect(localStorage.getItem(stored.key)).toBeNull()
+    expect(() => offlineStorageValue('phd-atlas-offline-queue:v3:')).toThrow()
   })
 
   it('allows only personal-scope application updates to queue', () => {
@@ -237,9 +333,106 @@ describe('offline queue safeguards', () => {
     )).toBe(false)
     expect(canQueueApplicationUpdate(
       session,
+      { ...application, teamId: 'team-1' },
+      { isTeamMode: false },
+    )).toBe(false)
+    expect(canQueueApplicationUpdate(
+      session,
       { ...application, updatedAt: undefined },
       { isTeamMode: false },
     )).toBe(false)
+  })
+
+  it('denies offline leases to administrators, impersonated sessions, and expired tokens', () => {
+    expect(offlineAccessForSession({
+      ...session,
+      user: { ...session.user, role: 'admin' },
+    }).reason).toBe('administrator')
+    expect(offlineAccessForSession({
+      ...session,
+      impersonation: {
+        actorId: 'admin-1',
+        actorName: 'Admin',
+        actorEmail: 'admin@example.com',
+        targetUserId: session.user.id,
+        targetName: session.user.name,
+        targetEmail: session.user.email,
+        startedAt: new Date().toISOString(),
+        returnTo: 'admin',
+      },
+    }).reason).toBe('impersonation')
+    expect(offlineAccessForSession({
+      ...session,
+      token: jwtFor({
+        sub: session.user.id,
+        scope: 'app',
+        iat: Math.floor(Date.now() / 1000) - 120,
+        exp: Math.floor(Date.now() / 1000) - 60,
+      }),
+    }).reason).toBe('expired')
+    expect(offlineAccessForSession({
+      ...session,
+      token: 'opaque-or-malformed-token',
+    }).reason).toBe('identity')
+  })
+
+  it('binds the offline lease to token issue time instead of rolling it on each save', () => {
+    const issuedAt = Date.parse('2026-07-20T10:00:00.000Z')
+    const longSession = {
+      ...session,
+      token: jwtFor({
+        sub: session.user.id,
+        scope: 'app',
+        iat: issuedAt / 1000,
+        exp: issuedAt / 1000 + 30 * 24 * 60 * 60,
+      }),
+    }
+
+    const first = offlineAccessForSession(longSession, issuedAt + 60 * 60 * 1000)
+    const later = offlineAccessForSession(longSession, issuedAt + 48 * 60 * 60 * 1000)
+
+    expect(first.expiresAt).toBe('2026-07-23T10:00:00.000Z')
+    expect(later.expiresAt).toBe(first.expiresAt)
+  })
+
+  it('restores server-owned sharing, backup, and file authority before replay', () => {
+    const local = {
+      ...application,
+      progress: 35,
+      materials: [{
+        id: 'material-1',
+        name: 'Transcript',
+        type: 'file',
+        status: 'ready',
+        version: '1',
+        updatedAt: application.updatedAt ?? '',
+        fileId: 'forged-local-file',
+        storageName: 'forged-local-storage',
+      }],
+    }
+    const base = { ...local, progress: application.progress }
+    enqueueApplicationUpdate(session, local, application.updatedAt ?? null, base)
+    const operation = readOfflineQueue(session.user.id)[0]
+    const server = {
+      ...local,
+      progress: application.progress,
+      materials: [{
+        ...local.materials[0],
+        fileId: 'server-file',
+        storageName: 'server-storage',
+      }],
+      updatedAt: application.updatedAt,
+    } as ApplicationRecord
+
+    const result = mergeOfflineApplicationUpdate(operation, server)
+
+    expect(result?.application.progress).toBe(35)
+    expect(result?.application.materials[0]).toMatchObject({
+      fileId: 'server-file',
+      storageName: 'server-storage',
+    })
+    expect(result?.application.shares).toBe(server.shares)
+    expect(result?.application.backupSettings).toBe(server.backupSettings)
   })
 
   it('treats request timeouts and gateway outages as offline transport failures', () => {

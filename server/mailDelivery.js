@@ -1,6 +1,15 @@
 import { MailerError, sendMail } from './mailer.js'
 import { logEvent } from './storage.js'
 
+function auditRecipient(value) {
+  const address = String(value ?? '').trim().toLowerCase()
+  const separator = address.lastIndexOf('@')
+  if (separator <= 0) return 'redacted recipient'
+  const local = address.slice(0, separator)
+  const domain = address.slice(separator + 1)
+  return `${local.slice(0, 1) || '*'}***@${domain}`
+}
+
 async function deliverEmail(store, smtpSettings, {
   from,
   to,
@@ -30,7 +39,7 @@ async function deliverEmail(store, smtpSettings, {
     })
     logEvent(store, {
       scope,
-      message: `Email sent to ${to}`,
+      message: `Email sent to ${auditRecipient(to)}`,
       metadata: { ...metadata, delivery: 'sent', messageId: result.messageId, attachments: attachmentLog },
     })
     return { sent: true, delivery: 'smtp', messageId: result.messageId }
@@ -38,11 +47,11 @@ async function deliverEmail(store, smtpSettings, {
     if (error instanceof MailerError && error.code === 'NOT_CONFIGURED') {
       logEvent(store, {
         scope,
-        message: `Email logged (SMTP not configured) for ${to}`,
+        message: `Email not sent (SMTP not configured) for ${auditRecipient(to)}`,
         metadata: {
           ...metadata,
           delivery: 'log-only',
-          emailTemplate: { subject, text, html, attachments: attachmentLog },
+          attachments: attachmentLog,
         },
       })
       return { sent: false, delivery: 'log-only', errorCode: 'NOT_CONFIGURED' }

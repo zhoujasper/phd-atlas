@@ -52,7 +52,7 @@
     "installAppBenefitOffline": "오프라인 준비됨",
     "installAppBenefitQuick": "빠른 실행",
     "installAppOfflineScopeLabel": "오프라인 범위",
-    "installAppOfflineScope": "오프라인 데이터는 이 장치에 유지됩니다. 마지막으로 동기화된 작업 공간을 보고 자신의 애플리케이션에 대한 편집 내용을 대기열에 추가할 수 있습니다. 업로드, 이메일, AI, 팀, 공유, 계정 및 백업 작업은 온라인 전용으로 유지됩니다.",
+    "installAppOfflineScope": "오프라인 데이터는 이 기기에만 저장됩니다. 짧고 만료되는 권한 범위에서 본인이 소유한 개인 지원서만 캐시하며 편집 내용을 대기열에 둘 수 있습니다. 동기화 전에 서버가 신원, 소유권, 권한, 버전을 다시 확인합니다. 업로드, 이메일, AI, 팀, 공유, 계정, 백업은 온라인에서만 사용할 수 있습니다.",
     "installAppStatusAvailable": "설치 가능",
     "installAppStatusInstalling": "확인 대기 중",
     "installAppStatusInstalled": "설치됨",

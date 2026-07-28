@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react'
 import { StandaloneProviders } from './components/StandaloneProviders'
 import { LaunchScreen } from './components/shared/LaunchScreen'
 import { PUBLIC_EDITION } from './edition'
+import { AdminAccessGate } from './admin/AdminAccessGate'
 
 const App = lazy(() => import('./App'))
 const AdminApp = lazy(() => import('./admin/AdminApp').then((m) => ({ default: m.AdminApp })))
@@ -66,7 +67,11 @@ export function RootRoutes() {
           <ResetPassword token={decodeURIComponent(window.location.pathname.split('/reset-password/')[1] ?? '')} />
         </StandaloneProviders>
       ) : isAdminRoute ? (
-        <AdminApp />
+        <StandaloneProviders>
+          <AdminAccessGate>
+            <AdminApp />
+          </AdminAccessGate>
+        </StandaloneProviders>
       ) : (
         <App />
       )}

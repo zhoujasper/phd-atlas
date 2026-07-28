@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -44,6 +44,14 @@ const student: TeamMember = {
   invitedBy: 'owner_1',
   createdAt: '2026-07-01T00:00:00.000Z',
   updatedAt: '2026-07-01T00:00:00.000Z',
+}
+
+const secondStudent: TeamMember = {
+  ...student,
+  id: 'member_student_2',
+  userId: 'student_2',
+  displayName: 'Noah Student',
+  invitedEmail: 'noah@example.com',
 }
 
 const teacher: TeamMember = {
@@ -124,6 +132,43 @@ const teacherSummary: TeamSummary = {
   roleCounts: { owner: 1, admin: 1, member: 1 },
 }
 
+const studentSession = {
+  ...session,
+  token: 'student-token',
+  user: {
+    ...session.user,
+    id: 'student_1',
+    name: 'Lina Student',
+    email: 'lina@example.com',
+  },
+} as AuthSession
+
+const studentSummary: TeamSummary = {
+  ...summary,
+  team: {
+    ...summary.team,
+    profilePresets: [{
+      id: 'org-research-plan',
+      kind: 'ResearchProposal',
+      nameZh: '组织研究计划',
+      nameEn: 'Organization research plan',
+      descriptionZh: '组织统一模板',
+      descriptionEn: 'Organization-managed template',
+      contentZh: '研究问题与方法',
+      contentEn: 'Research question and methods',
+      icon: 'flask-conical',
+      color: 'teal',
+      createdBy: 'owner_1',
+      createdByRole: 'owner',
+      syncToTeachers: true,
+      syncToStudents: true,
+    }],
+  },
+  membership: student,
+  members: [owner, teacher, student],
+  roleCounts: { owner: 1, admin: 1, member: 1 },
+}
+
 const asset: ProfileAsset = {
   id: 'asset_student_1',
   ownerId: 'student_1',
@@ -146,6 +191,14 @@ const asset: ProfileAsset = {
   shares: [],
   createdAt: '2026-07-01T00:00:00.000Z',
   updatedAt: '2026-07-01T00:00:00.000Z',
+}
+
+const secondStudentAsset: ProfileAsset = {
+  ...asset,
+  id: 'asset_student_2',
+  ownerId: 'student_2',
+  name: 'Second Student CV',
+  familyId: 'asset_student_2',
 }
 
 const deckAssets: ProfileAsset[] = Array.from({ length: 7 }, (_, index) => ({
@@ -177,6 +230,7 @@ function renderResources(
 
 describe('TeamScreen student profile assets', () => {
   beforeEach(() => {
+    window.localStorage.clear()
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       value: vi.fn().mockReturnValue({
@@ -209,6 +263,9 @@ describe('TeamScreen student profile assets', () => {
     const update = vi.spyOn(phdApi, 'updateTeamMemberProfileAsset').mockResolvedValue(updated)
     renderResources()
 
+    await screen.findByRole('button', { name: 'Open material: Student CV' })
+    expect(document.querySelector('.team-portrait-library-view')).toHaveClass('is-cards')
+    await user.click(screen.getByRole('button', { name: 'List view' }))
     await user.click(await screen.findByRole('button', { name: 'Open material: Student CV' }))
     const dialog = await screen.findByRole('dialog', { name: 'Edit snippet' }, { timeout: 10_000 })
     const nameInput = within(dialog).getByRole('textbox', { name: 'Name' })
@@ -227,12 +284,32 @@ describe('TeamScreen student profile assets', () => {
     expect(await screen.findByRole('button', { name: `Open material: ${updated.name}` })).toBeInTheDocument()
   })
 
+  it('uses the personal Profile layout for a Team student with organization templates only', () => {
+    window.localStorage.setItem('phd-atlas-team-student-profiles:v1', JSON.stringify([{
+      id: 'student-org-snippet',
+      teamId: 'team_1',
+      studentUserId: 'student_1',
+      kind: 'ResearchProposal',
+      name: 'Org research draft',
+      description: 'A reusable organization-scoped research paragraph.',
+      updatedAt: '2026-07-25T00:00:00.000Z',
+    }]))
+
+    const view = renderResources(studentSession, studentSummary)
+
+    expect(view.container.querySelector('.team-student-personal-profile')).toBeInTheDocument()
+    expect(view.container.querySelector('.profile-toolbar')).toBeInTheDocument()
+    expect(view.container.querySelector('.profile-snippet-section')).toBeInTheDocument()
+    expect(screen.getByText('Organization research plan')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add preset' })).not.toBeInTheDocument()
+    expect(view.container.querySelector('.ai-profile-panel')).not.toBeInTheDocument()
+  })
+
   it('opens the same editor from card view and allows deletion', async () => {
     const user = userEvent.setup()
     const remove = vi.spyOn(phdApi, 'deleteTeamMemberProfileAsset').mockResolvedValue({ id: asset.id })
     renderResources(teacherSession, teacherSummary)
 
-    await user.click(await screen.findByRole('button', { name: 'Card view' }))
     await user.click(await screen.findByRole('button', { name: 'Open material: Student CV' }))
     const dialog = await screen.findByRole('dialog', { name: 'Edit snippet' }, { timeout: 10_000 })
     await user.click(within(dialog).getByRole('button', { name: 'Close' }))
@@ -249,6 +326,69 @@ describe('TeamScreen student profile assets', () => {
       asset.id,
     ))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Open material: Student CV' })).not.toBeInTheDocument())
+  })
+
+  it('slides the selection immediately and keeps the outgoing portrait mounted until the next one is ready', async () => {
+    let resolveSecondStudentAssets: (assets: ProfileAsset[]) => void = () => undefined
+    const secondStudentAssets = new Promise<ProfileAsset[]>((resolve) => {
+      resolveSecondStudentAssets = resolve
+    })
+    const listAssets = vi.mocked(phdApi.listTeamMemberProfileAssets)
+    listAssets.mockImplementation((_token, _teamId, studentUserId) => (
+      studentUserId === 'student_2'
+        ? secondStudentAssets
+        : Promise.resolve([asset])
+    ))
+    renderResources(session, {
+      ...summary,
+      members: [owner, student, secondStudent],
+      roleCounts: { owner: 1, admin: 0, member: 2 },
+    })
+
+    await screen.findByRole('button', { name: 'Open material: Student CV' })
+    const list = screen.getByRole('listbox', { name: 'Choose a student' })
+    const firstOption = within(list).getByRole('option', { name: /Lina Student/i })
+    const secondOption = within(list).getByRole('option', { name: /Noah Student/i })
+    const selection = list.querySelector<HTMLElement>('.team-portrait-student-selection')
+    expect(selection).not.toBeNull()
+
+    Object.defineProperties(firstOption, {
+      offsetTop: { configurable: true, value: 0 },
+      offsetHeight: { configurable: true, value: 66 },
+    })
+    Object.defineProperties(secondOption, {
+      offsetTop: { configurable: true, value: 66 },
+      offsetHeight: { configurable: true, value: 66 },
+    })
+
+    fireEvent.pointerDown(secondOption, { button: 0 })
+    expect(selection?.style.getPropertyValue('--team-portrait-selection-y')).toBe('66px')
+    expect(selection).toHaveClass('is-moving')
+
+    fireEvent.click(secondOption)
+    await waitFor(() => expect(secondOption).toHaveAttribute('aria-selected', 'true'))
+
+    const profilePane = document.querySelector<HTMLElement>('.team-portrait-profile-pane')
+    expect(profilePane).not.toBeNull()
+    expect(profilePane).toHaveAttribute('aria-busy', 'true')
+    expect(within(profilePane!).getByRole('heading', { name: 'Lina Student' })).toBeInTheDocument()
+    expect(within(profilePane!).getByRole('button', { name: 'Open material: Student CV' })).toBeInTheDocument()
+    expect(profilePane?.querySelector('.team-portrait-profile-loading')).not.toBeInTheDocument()
+
+    await act(async () => {
+      resolveSecondStudentAssets([secondStudentAsset])
+      await secondStudentAssets
+    })
+
+    await waitFor(() => {
+      expect(within(profilePane!).getByRole('heading', { name: 'Noah Student' })).toBeInTheDocument()
+      expect(within(profilePane!).getByRole('button', { name: 'Open material: Second Student CV' })).toBeInTheDocument()
+      expect(profilePane).not.toHaveAttribute('aria-busy')
+    })
+    const content = profilePane?.querySelector('.team-portrait-profile-content')
+    expect(content?.className).toMatch(/is-handoff-[ab]/)
+    expect(content).toHaveAttribute('data-student-portrait-stable', 'true')
+    expect(listAssets.mock.calls.filter((call) => call[2] === 'student_2')).toHaveLength(1)
   })
 
   it('turns the real Team portrait deck continuously with one bounded follow-up', async () => {
@@ -270,7 +410,6 @@ describe('TeamScreen student profile assets', () => {
     renderResources()
 
     await screen.findByRole('button', { name: 'Open material: Student CV v1' })
-    await user.click(screen.getByRole('button', { name: 'Card view' }))
     const stack = await waitFor(() => {
       const node = document.querySelector<HTMLElement>('.team-portrait-profile-stack')
       expect(node).not.toBeNull()
@@ -294,17 +433,18 @@ describe('TeamScreen student profile assets', () => {
     }
     fireEvent.animationEnd(firstOutgoing as HTMLElement)
 
-    const secondOutgoing = await waitFor(() => {
-      const node = stack.querySelector<HTMLElement>('.is-deck-outgoing')
-      expect(node).not.toBeNull()
-      expect(node?.dataset.assetId).not.toBe(initialFrontId)
-      return node as HTMLElement
+    const secondTurn = await waitFor(() => {
+      const outgoing = stack.querySelector<HTMLElement>('.is-deck-outgoing')
+      const incoming = stack.querySelector<HTMLElement>('.is-deck-incoming')
+      expect(outgoing).not.toBeNull()
+      expect(outgoing?.dataset.assetId).not.toBe(initialFrontId)
+      expect(incoming).not.toBeNull()
+      return { outgoing: outgoing!, incoming: incoming! }
     })
-    const secondIncomingId = stack.querySelector<HTMLElement>('.is-deck-incoming')?.dataset.assetId
-    fireEvent.animationEnd(secondOutgoing)
+    fireEvent.animationEnd(secondTurn.outgoing)
 
     await waitFor(() => expect(stack).not.toHaveClass('is-turning'))
-    expect(stack.querySelector<HTMLElement>('.is-deck-front')?.dataset.assetId).toBe(secondIncomingId)
+    expect(stack.querySelector<HTMLElement>('.is-deck-front')).toBe(secondTurn.incoming)
     await new Promise((resolve) => window.setTimeout(resolve, 240))
     expect(stack).not.toHaveClass('is-turning')
 

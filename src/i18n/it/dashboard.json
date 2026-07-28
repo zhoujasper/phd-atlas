@@ -119,6 +119,11 @@
     "guidanceShowDetails": "Mostra i dettagli di {name}",
     "guidanceOffice": "Ufficio",
     "guidanceAvailability": "Disponibilità",
-    "guidanceSupport": "Come posso aiutarti"
+    "guidanceSupport": "Come posso aiutarti",
+    "guidanceContact": "Contatta {name}",
+    "guidanceContactOptions": "Opzioni di contatto per {name}",
+    "guidanceInApp": "Messaggio nell’app",
+    "guidanceMessageTitle": "Invia un messaggio a {name}",
+    "guidanceMessageSent": "Messaggio inviato a {name}."
   }
 }

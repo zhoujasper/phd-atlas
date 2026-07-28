@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import {
@@ -14,7 +15,9 @@ import {
   listPushSubscriptions,
   listBackups,
   lockedWriteStore,
+  normalizeSystemLogRetentionDays,
   pruneApplicationBackups,
+  readSchoolLogoAsset,
   readStore,
   resetMailFetchState,
   withWriteLock,
@@ -22,8 +25,18 @@ import {
   upsertPushSubscription,
   writeStore,
 } from './storage.js'
+import { schoolLogoWebsiteCacheKey } from './schoolLogoCacheKey.js'
 
 const createdFiles = []
+
+describe('system log retention settings', () => {
+  it('uses null for unlimited retention and bounds finite cleanup windows', () => {
+    expect(normalizeSystemLogRetentionDays(null)).toBeNull()
+    expect(normalizeSystemLogRetentionDays(0)).toBeNull()
+    expect(normalizeSystemLogRetentionDays(90)).toBe(90)
+    expect(normalizeSystemLogRetentionDays(99_999)).toBe(3650)
+  })
+})
 
 async function writeTestBackup(fileName, backup = { actorId: 'user_test' }) {
   await fs.mkdir(backupRoot, { recursive: true })
@@ -186,8 +199,9 @@ describe('backup storage', () => {
     })
   })
 
-  it('coalesces concurrent directory scans after the backup list changes', async () => {
+  it('detects external changes with a frozen directory timestamp and coalesces the scan', async () => {
     await listBackups()
+    const frozenDirectoryStat = await fs.stat(backupRoot)
     const stamp = Date.now()
     const fileName = `phd-atlas-backup-vitest-coalesced-${stamp}.json`
     await writeTestBackup(fileName, {
@@ -197,9 +211,17 @@ describe('backup storage', () => {
     })
 
     const originalReaddir = fs.readdir.bind(fs)
+    const originalStat = fs.stat.bind(fs)
+    const backupRootPath = path.resolve(backupRoot)
     const readdirSpy = vi.spyOn(fs, 'readdir').mockImplementation(async (...args) => {
       await new Promise((resolve) => setTimeout(resolve, 20))
       return originalReaddir(...args)
+    })
+    const statSpy = vi.spyOn(fs, 'stat').mockImplementation(async (filePath, ...args) => {
+      if (path.resolve(String(filePath)) === backupRootPath) {
+        return frozenDirectoryStat
+      }
+      return originalStat(filePath, ...args)
     })
     try {
       const [first, second] = await Promise.all([listBackups(), listBackups()])
@@ -207,6 +229,7 @@ describe('backup storage', () => {
       expect(second.some((backup) => backup.fileName === fileName)).toBe(true)
       expect(readdirSpy).toHaveBeenCalledTimes(1)
     } finally {
+      statSpy.mockRestore()
       readdirSpy.mockRestore()
     }
   })
@@ -308,6 +331,68 @@ describe.sequential('concurrent store writes', () => {
       expect(cachedAfterDelete.teams.some((item) => item.id === team.id)).toBe(false)
     } finally {
       if (!deleted) await deleteTeam(team.id)
+    }
+  })
+})
+
+describe.sequential('shared school logo storage', () => {
+  it('hydrates the same cached website logo across applications owned by different users', async () => {
+    const stamp = `${Date.now()}_${Math.random().toString(36).slice(2)}`
+    const firstId = `app_logo_cache_first_${stamp}`
+    const secondId = `app_logo_cache_second_${stamp}`
+    const websiteUrl = 'https://www.cam.ac.uk/'
+    const cacheKey = schoolLogoWebsiteCacheKey(websiteUrl)
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+
+    try {
+      const store = await readStore()
+      const source = store.applications[0]
+      const owners = store.users.filter((user) => user.role !== 'admin')
+      const makeApplication = (id, ownerId) => ({
+        ...JSON.parse(JSON.stringify(source)),
+        id,
+        ownerId,
+        teamId: null,
+        school: {
+          ...source.school,
+          name: 'University of Cambridge',
+          website: websiteUrl,
+          logo: {
+            dataUrl,
+            source: 'website',
+            sourceUrl: 'https://www.cam.ac.uk/themes/custom/fresh/images/interface/cambridge_university2.svg',
+            websiteUrl,
+            cacheKey,
+            candidateKind: 'page-logo',
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      })
+      store.applications.push(
+        makeApplication(firstId, owners[0].id),
+        makeApplication(secondId, (owners[1] ?? owners[0]).id),
+      )
+      await lockedWriteStore(store)
+
+      const assetKey = createHash('sha256').update(dataUrl).digest('hex')
+      const [persisted, asset] = await Promise.all([
+        readStore(),
+        readSchoolLogoAsset(assetKey),
+      ])
+      expect(asset).toMatchObject({
+        asset_key: assetKey,
+        data_url: dataUrl,
+      })
+      expect(persisted.applications.find((application) => application.id === firstId)?.school.logo?.dataUrl)
+        .toBe(dataUrl)
+      expect(persisted.applications.find((application) => application.id === secondId)?.school.logo?.dataUrl)
+        .toBe(dataUrl)
+    } finally {
+      const cleanup = await readStore()
+      cleanup.applications = cleanup.applications.filter(
+        (application) => application.id !== firstId && application.id !== secondId,
+      )
+      await lockedWriteStore(cleanup)
     }
   })
 })

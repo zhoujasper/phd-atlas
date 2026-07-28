@@ -6,9 +6,16 @@ import {
   savePushVapidKeys,
 } from './storage.js'
 
-const DEFAULT_VAPID_SUBJECT = 'mailto:notifications@phd-atlas.local'
 const WEB_PUSH_REQUEST_TIMEOUT_MS = 10_000
 let configurationPromise = null
+
+function defaultVapidSubject() {
+  try {
+    const baseUrl = new URL(String(process.env.BASE_URL ?? '').trim())
+    if (baseUrl.protocol === 'https:') return baseUrl.origin
+  } catch {}
+  return 'mailto:notifications@phd-atlas.local'
+}
 
 function configuredEnvironmentKeys() {
   const publicKey = String(process.env.PUSH_VAPID_PUBLIC_KEY ?? '').trim()
@@ -29,7 +36,7 @@ async function configureWebPush() {
   }
 
   webPush.setVapidDetails(
-    String(process.env.PUSH_VAPID_SUBJECT ?? DEFAULT_VAPID_SUBJECT).trim(),
+    String(process.env.PUSH_VAPID_SUBJECT ?? defaultVapidSubject()).trim(),
     keys.publicKey,
     keys.privateKey,
   )
@@ -65,11 +72,10 @@ function notificationPayload(notification) {
 
 function isInvalidSubscription(error) {
   const status = Number(error?.statusCode ?? error?.status ?? 0)
-  if (status === 404 || status === 410) return true
-  if (status !== 403) return false
-  const detail = `${error?.message ?? ''}\n${error?.body ?? ''}`.toLowerCase()
-  return detail.includes('vapid')
-    && (detail.includes('do not correspond') || detail.includes('mismatch'))
+  // Provider 4xx responses are permanent for this endpoint/key envelope.
+  // Retaining them makes every later reminder fail and prevents the explicit
+  // enable/test flow from creating a clean subscription.
+  return [400, 401, 403, 404, 410].includes(status)
 }
 
 export async function initializeWebPush() {

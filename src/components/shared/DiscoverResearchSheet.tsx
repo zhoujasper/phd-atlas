@@ -5,6 +5,8 @@ import type { ApplicationRecord } from '../../data/applications'
 import type { DiscoverCatalogMeta, DiscoverIntake, DiscoverRegion, PiCategory } from '../../data/discover'
 import { useI18n } from '../hooks/useI18n'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
+import { useModalA11y } from '../hooks/useModalA11y'
+import { ModalPortal } from './ModalPortal'
 import { Select } from './Select'
 import { DiscoverMultiSelectOption } from './DiscoverMultiSelect'
 import { SmoothDisclosure } from './SmoothDisclosure'
@@ -61,7 +63,8 @@ export function DiscoverResearchSheet({
   onSubmit: () => void
 }) {
   const { tx } = useI18n()
-  const { exiting, requestClose } = useAnimatedClose(open, onClose, 150)
+  const { exiting, requestClose } = useAnimatedClose(open, onClose, 220)
+  const dialogRef = useModalA11y<HTMLElement>({ open, onClose: requestClose })
   const submissionBusy = submissionPhase === 'saving' || submissionPhase === 'validating'
   const submissionVisible = submissionPhase !== 'idle' || Boolean(submissionError)
   const submissionLabel = submissionError
@@ -96,8 +99,9 @@ export function DiscoverResearchSheet({
       : [...selectedKeyIds, id])
   }
   return (
+    <ModalPortal>
     <div className={`discover-sheet-backdrop${exiting ? ' is-exiting' : ''}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}>
-      <aside className={`discover-side-sheet${exiting ? ' is-exiting' : ''}`} role="dialog" aria-modal="true" aria-labelledby="discover-research-sheet-title">
+      <aside ref={dialogRef} className={`discover-side-sheet${exiting ? ' is-exiting' : ''}`} role="dialog" aria-modal="true" aria-labelledby="discover-research-sheet-title">
         <header className="discover-side-sheet-header">
           <div>
             <h3 id="discover-research-sheet-title">{tx('discover.updateResearch', 'Update research')}</h3>
@@ -334,5 +338,6 @@ export function DiscoverResearchSheet({
         </footer>
       </aside>
     </div>
+    </ModalPortal>
   )
 }

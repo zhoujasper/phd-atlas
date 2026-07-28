@@ -256,6 +256,64 @@
   color: var(--text-tertiary);
 }
 
+.application-transfer-placeholder.failed {
+  color: var(--danger);
+}
+
+.application-transfer-preflight-stage {
+  display: grid;
+  min-height: 162px;
+  overflow: hidden;
+}
+
+.application-transfer-preflight-view {
+  grid-area: 1 / 1;
+  align-self: stretch;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translate3d(0, 5px, 0);
+  transition:
+    opacity 110ms var(--ease-out),
+    transform 160ms var(--ease-out),
+    visibility 0s linear 160ms;
+}
+
+.application-transfer-preflight-view.active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translate3d(0, 0, 0);
+  transition:
+    opacity 210ms var(--ease-out) 55ms,
+    transform 240ms var(--ease-out) 35ms,
+    visibility 0s linear 0s;
+}
+
+.application-transfer-checking-indicator {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.application-transfer-checking-indicator::before {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  animation: transfer-check-pulse 1.25s var(--ease-out) infinite;
+}
+
+.application-transfer-checking-indicator svg {
+  position: relative;
+  color: var(--accent);
+  animation: spin 720ms linear infinite;
+}
+
 .application-transfer-check-list {
   display: grid;
 }
@@ -369,6 +427,11 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes transfer-check-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.72); }
+  50% { opacity: 0.9; transform: scale(1.35); }
+}
+
 [data-theme='dark'] .application-transfer-layer {
   background: rgba(0, 0, 0, 0.58);
 }
@@ -450,8 +513,13 @@
   .application-transfer-layer.exiting,
   .application-transfer-dialog,
   .application-transfer-layer.exiting .application-transfer-dialog,
-  .application-transfer-check {
+  .application-transfer-check,
+  .application-transfer-preflight-view,
+  .application-transfer-checking-indicator::before,
+  .application-transfer-checking-indicator svg {
     animation-duration: 0.01ms !important;
     animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
   }
 }

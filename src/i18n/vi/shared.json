@@ -95,6 +95,10 @@
     "INVALID_CREDENTIALS": "Email hoặc mật khẩu không chính xác.",
     "FORBIDDEN": "Bạn không được phép thực hiện hành động này.",
     "REGISTRATION_CLOSED": "Đăng ký người dùng mới bị vô hiệu hóa.",
+    "REGISTRATION_EMAIL_NOT_ALLOWED": "Tên miền email này không được phép dùng để đăng ký.",
+    "PASSWORD_TOO_WEAK": "Chọn mật khẩu ít nhất 15 ký tự, không phổ biến, dễ đoán hoặc từng bị lộ.",
+    "PASSWORD_CHECK_UNAVAILABLE": "Tạm thời không thể kiểm tra độ an toàn của mật khẩu.",
+    "HUMAN_VERIFICATION_UNAVAILABLE": "Tạm thời không thể xác minh người dùng.",
     "EMAIL_EXISTS": "Đã tồn tại tài khoản cho email này.",
     "SMTP_NOT_CONFIGURED": "Email gửi đi chưa được định cấu hình. Yêu cầu quản trị viên thiết lập thư hệ thống trước.",
     "SMTP_ERROR": "Gửi thư không thành công. Hãy kiểm tra cài đặt thư và thử lại.",
@@ -211,7 +215,6 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "Hãy chọn cả nhóm và sinh viên được phân công cho nghiên cứu nhóm.",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "Giảng viên hướng dẫn được chọn không có địa chỉ email đã xác minh.",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "Cần có hồ sơ và email thực của giảng viên hướng dẫn trước khi có thể thêm chương trình này vào hồ sơ ứng tuyển.",
-    "DISCOVER_PROGRAM_NOT_VERIFIED": "Chương trình này thiếu nguồn chính thức đã xác minh hoặc hạn nộp hồ sơ hiện tại. Hãy làm mới nghiên cứu trước khi nhập.",
     "MAIL_ATTACHMENT_TOO_LARGE": "Một tệp đính kèm quá lớn để thêm vào email."
   },
   "apiErrorFields": {
@@ -322,6 +325,13 @@
     "checking": "Kiểm tra kết nối",
     "manualDetail": "Bạn đã chọn làm việc ngoại tuyến. Các chỉnh sửa ứng dụng cá nhân được lưu cục bộ và sẽ đợi cho đến khi bạn tiếp tục chế độ trực tuyến.",
     "panelTitle": "Trạng thái kết nối và ngoại tuyến",
+    "launchTitle": "Bạn đang ngoại tuyến",
+    "launchDetail": "Giao diện ứng dụng và các tài nguyên tĩnh đã truy cập vẫn có thể mở. Hãy kết nối lại để đăng nhập; khi ngoại tuyến chỉ không gian cá nhân đã được cấp quyền trước đó và còn hiệu lực mới có thể mở.",
+    "noLocalCopy": "Thiết bị này không có không gian cục bộ đã được cấp quyền để sử dụng.",
+    "permissionProtected": "Dữ liệu ngoại tuyến không bao giờ được coi là quyền truy cập. Máy chủ kiểm tra lại danh tính, quyền sở hữu, quyền truy cập và phiên bản trước mỗi lần đồng bộ.",
+    "personalScopeValue": "Chỉ hồ sơ cá nhân do bạn sở hữu",
+    "accessUntil": "Truy cập ngoại tuyến đến",
+    "authorizationExpired": "Quyền truy cập ngoại tuyến an toàn đã kết thúc. Hãy kết nối lại và đăng nhập.",
     "offlineDetail": "Bạn có thể tiếp tục làm việc từ bản sao cục bộ. Các chỉnh sửa ứng dụng cá nhân được hỗ trợ sẽ đồng bộ hóa khi kết nối trở lại.",
     "serverUnavailableDetail": "Thiết bị này có quyền truy cập internet nhưng PhD Atlas không thể truy cập máy chủ của nó. Công việc địa phương vẫn có sẵn.",
     "slowDetail": "Máy chủ có thể truy cập được nhưng phản hồi mất nhiều thời gian hơn bình thường. Những thay đổi cục bộ vẫn được bảo vệ.",
@@ -830,5 +840,21 @@
     "resizeColumn": "Thay đổi kích thước cột {column}",
     "actions": "hành động"
   },
-  "doubleClickToCopy": "Nhấp đúp để sao chép {label}"
+  "doubleClickToCopy": "Nhấp đúp để sao chép {label}",
+  "projectFooter": {
+    "ariaLabel": "Thông tin dự án",
+    "projectName": "PhD Atlas",
+    "authorName": "Jasper Zhou",
+    "projectHome": "Mở trang chủ PhD Atlas",
+    "by": "Tác giả",
+    "repository": "GitHub",
+    "repositoryAria": "Mở kho GitHub của PhD Atlas",
+    "support": "Ủng hộ",
+    "supportAria": "Ủng hộ PhD Atlas",
+    "dialogTitle": "Tiếp thêm một chút năng lượng cho PhD Atlas",
+    "dialogDescription": "Chọn mã thuận tiện nhất để quét — sự ủng hộ của bạn sẽ trở thành bản nâng cấp nhỏ tiếp theo.",
+    "wechat": "WeChat Pay",
+    "alipay": "Alipay",
+    "qrAlt": "Mã QR thanh toán {method}"
+  }
 }

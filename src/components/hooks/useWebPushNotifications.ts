@@ -84,10 +84,16 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
 }
 
 async function existingRegistration() {
-  return withTimeout(
+  const registration = await withTimeout(
     navigator.serviceWorker.getRegistration(),
     WEB_PUSH_READY_TIMEOUT_MS,
     'Could not read the service-worker registration in time.',
+  )
+  if (registration) return registration
+  return withTimeout(
+    navigator.serviceWorker.ready,
+    WEB_PUSH_READY_TIMEOUT_MS,
+    'Service worker did not become ready in time.',
   )
 }
 
@@ -210,6 +216,8 @@ export function useWebPushNotifications(
     if (!channelEnabled || !token || !pushIsSupported() || Notification.permission !== 'granted') return false
     const registration = await existingRegistration()
     if (!registration?.active) return false
+    // Do not recreate a missing endpoint during background sync: a granted
+    // browser permission can coexist with an explicit per-device opt-out.
     return Boolean(await registerCurrentSubscription(registration, { createIfMissing: false }))
   }, [channelEnabled, registerCurrentSubscription, token])
 

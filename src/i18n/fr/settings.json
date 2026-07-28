@@ -52,7 +52,7 @@
     "installAppBenefitOffline": "Prêt hors ligne",
     "installAppBenefitQuick": "Lancement rapide",
     "installAppOfflineScopeLabel": "Portée hors connexion",
-    "installAppOfflineScope": "Les données hors ligne restent sur cet appareil : vous pouvez afficher les dernières modifications synchronisées de l'espace de travail et de la file d'attente dans vos propres candidatures. Les actions de téléchargement, de courrier électronique, d’IA, d’équipe, de partage, de compte et de sauvegarde restent en ligne uniquement.",
+    "installAppOfflineScope": "Les données hors ligne restent sur cet appareil. Seules vos candidatures personnelles sont mises en cache avec une autorisation courte et expirante ; leurs modifications peuvent être mises en attente. Avant la synchronisation, le serveur revérifie l’identité, la propriété, les droits et la version. Téléversements, e-mail, IA, équipe, partage, compte et sauvegardes restent en ligne.",
     "installAppStatusAvailable": "Installation disponible",
     "installAppStatusInstalling": "En attente de confirmation",
     "installAppStatusInstalled": "Installé",

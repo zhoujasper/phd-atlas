@@ -377,15 +377,19 @@ describe('ProfileScreen presets', () => {
     expect(getAnimations).not.toHaveBeenCalled()
 
     fireEvent.animationEnd(stack.querySelector('.is-deck-outgoing') as HTMLElement)
-    await waitFor(() => {
+    const secondTurn = await waitFor(() => {
+      const incoming = stack.querySelector<HTMLElement>('.is-deck-incoming')
+      const outgoing = stack.querySelector<HTMLElement>('.is-deck-outgoing')
       expect(stack).toHaveClass('is-turning-forward')
-      expect(stack.querySelector('.is-deck-incoming')).not.toBe(firstIncoming)
+      expect(incoming).not.toBeNull()
+      expect(incoming).not.toBe(firstIncoming)
+      expect(outgoing).not.toBeNull()
+      return { incoming: incoming!, outgoing: outgoing! }
     })
-    const secondIncoming = stack.querySelector('.is-deck-incoming') as HTMLElement
-    fireEvent.animationEnd(stack.querySelector('.is-deck-outgoing') as HTMLElement)
+    fireEvent.animationEnd(secondTurn.outgoing)
 
     await waitFor(() => {
-      expect(getFront()).toBe(secondIncoming)
+      expect(getFront()).toBe(secondTurn.incoming)
       expect(stack).not.toHaveClass('is-turning')
     })
   })

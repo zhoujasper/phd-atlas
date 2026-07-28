@@ -171,6 +171,200 @@ describe('Release update discovery', () => {
     expect(await fs.readFile(result.packagePath)).toEqual(payload)
   })
 
+  it('falls back from a slow official download to the fastest valid mirror without weakening checksum verification', async () => {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phd-atlas-release-update-'))
+    const payload = Buffer.alloc(128, 'm')
+    payload[0] = 0x1f
+    payload[1] = 0x8b
+    const sha256 = createHash('sha256').update(payload).digest('hex')
+    const release = releaseFixture('0.1.0-beta.2')
+    release.assets[0].digest = `sha256:${sha256}`
+    const checksum = `${sha256}  ${release.assets[0].name}\n`
+    const phases = []
+    const fetchImpl = vi.fn(async (url, init = {}) => {
+      const address = String(url)
+      if (address.includes('/releases/tags/')) {
+        return new Response(JSON.stringify(release), { status: 200 })
+      }
+      if (address.includes('/releases/assets/102')) {
+        return new Response(checksum, { status: 200 })
+      }
+      const range = new Headers(init.headers).get('range')
+      if (range && address.includes('/releases/assets/101')) {
+        const timeout = new Error('slow official source')
+        timeout.name = 'TimeoutError'
+        throw timeout
+      }
+      if (range && address.startsWith('https://gh-proxy.com/')) {
+        return new Response(payload.subarray(0, 2), { status: 206 })
+      }
+      if (range) return new Response('<html>', { status: 200 })
+      if (address.startsWith('https://gh-proxy.com/')) {
+        return new Response(payload, {
+          status: 200,
+          headers: { 'content-length': String(payload.length) },
+        })
+      }
+      throw new Error(`Unexpected request: ${address}`)
+    })
+
+    const result = await downloadReleaseUpdate({
+      tagName: 'v0.1.0-beta.2',
+      currentVersion: '0.1.0-beta.1',
+      destinationRoot: tempRoot,
+      fetchImpl,
+      sourceSelection: true,
+      onStatus: (status) => phases.push(status.phase),
+    })
+
+    expect(result.source).toMatchObject({ id: 'gh-proxy', kind: 'mirror' })
+    expect(result.sha256).toBe(sha256)
+    expect(await fs.readFile(result.packagePath)).toEqual(payload)
+    expect(phases).toEqual(expect.arrayContaining(['probing', 'downloading', 'verifying']))
+  })
+
+  it('abandons an official body that stops making progress and then probes a verified mirror', async () => {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phd-atlas-release-update-'))
+    const payload = Buffer.alloc(128, 's')
+    payload[0] = 0x1f
+    payload[1] = 0x8b
+    const sha256 = createHash('sha256').update(payload).digest('hex')
+    const release = releaseFixture('0.1.0-beta.2')
+    release.assets[0].digest = `sha256:${sha256}`
+    const checksum = `${sha256}  ${release.assets[0].name}\n`
+    const requests = []
+    const statuses = []
+    let stalledBodyCancelled = false
+    let partialFilePresentDuringMirrorProbe = null
+    const fetchImpl = vi.fn(async (url, init = {}) => {
+      const address = String(url)
+      const range = new Headers(init.headers).get('range')
+      requests.push({ address, range })
+      if (address.includes('/releases/tags/')) {
+        return new Response(JSON.stringify(release), { status: 200 })
+      }
+      if (address.includes('/releases/assets/102')) {
+        return new Response(checksum, { status: 200 })
+      }
+      if (range && address.includes('/releases/assets/101')) {
+        return new Response(payload.subarray(0, 2), { status: 206 })
+      }
+      if (!range && address.includes('/releases/assets/101')) {
+        return new Response(new ReadableStream({
+          cancel() {
+            stalledBodyCancelled = true
+          },
+        }), {
+          status: 200,
+          headers: { 'content-length': String(payload.length) },
+        })
+      }
+      if (range && address.startsWith('https://gh-proxy.com/')) {
+        partialFilePresentDuringMirrorProbe = (await fs.readdir(tempRoot))
+          .some((name) => name.startsWith('release-update-') && name.endsWith('.tar.gz'))
+        return new Response(payload.subarray(0, 2), { status: 206 })
+      }
+      if (range) return new Response('<html>', { status: 200 })
+      if (address.startsWith('https://gh-proxy.com/')) {
+        return new Response(payload, {
+          status: 200,
+          headers: { 'content-length': String(payload.length) },
+        })
+      }
+      throw new Error(`Unexpected request: ${address}`)
+    })
+
+    const result = await downloadReleaseUpdate({
+      tagName: 'v0.1.0-beta.2',
+      currentVersion: '0.1.0-beta.1',
+      destinationRoot: tempRoot,
+      fetchImpl,
+      sourceSelection: true,
+      downloadStallTimeoutMs: 25,
+      onStatus: (status) => statuses.push(status),
+    })
+
+    const officialDownloadIndex = requests.findIndex(({ address, range }) => (
+      !range && address.includes('/releases/assets/101')
+    ))
+    const mirrorProbeIndex = requests.findIndex(({ address, range }) => (
+      Boolean(range) && address.startsWith('https://gh-proxy.com/')
+    ))
+    expect(officialDownloadIndex).toBeGreaterThan(-1)
+    expect(mirrorProbeIndex).toBeGreaterThan(officialDownloadIndex)
+    expect(stalledBodyCancelled).toBe(true)
+    expect(partialFilePresentDuringMirrorProbe).toBe(false)
+    expect(result.source).toMatchObject({ id: 'gh-proxy', kind: 'mirror' })
+    expect(result.sha256).toBe(sha256)
+    expect(await fs.readFile(result.packagePath)).toEqual(payload)
+    expect(statuses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'downloading', source: 'github' }),
+      expect.objectContaining({ phase: 'probing', source: 'mirrors' }),
+      expect.objectContaining({ phase: 'downloading', source: 'gh-proxy' }),
+      expect.objectContaining({ phase: 'verifying', source: 'gh-proxy' }),
+    ]))
+  })
+
+  it('bounds the full official response-header wait after a successful probe', async () => {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phd-atlas-release-update-'))
+    const payload = Buffer.alloc(128, 'h')
+    payload[0] = 0x1f
+    payload[1] = 0x8b
+    const sha256 = createHash('sha256').update(payload).digest('hex')
+    const release = releaseFixture('0.1.0-beta.2')
+    release.assets[0].digest = `sha256:${sha256}`
+    const checksum = `${sha256}  ${release.assets[0].name}\n`
+    let officialResponseAborted = false
+    const fetchImpl = vi.fn(async (url, init = {}) => {
+      const address = String(url)
+      const range = new Headers(init.headers).get('range')
+      if (address.includes('/releases/tags/')) {
+        return new Response(JSON.stringify(release), { status: 200 })
+      }
+      if (address.includes('/releases/assets/102')) {
+        return new Response(checksum, { status: 200 })
+      }
+      if (range && address.includes('/releases/assets/101')) {
+        return new Response(payload.subarray(0, 2), { status: 206 })
+      }
+      if (!range && address.includes('/releases/assets/101')) {
+        return new Promise((_, reject) => {
+          const abort = () => {
+            officialResponseAborted = true
+            reject(new DOMException('aborted', 'AbortError'))
+          }
+          if (init.signal.aborted) abort()
+          else init.signal.addEventListener('abort', abort, { once: true })
+        })
+      }
+      if (range && address.startsWith('https://gh-proxy.com/')) {
+        return new Response(payload.subarray(0, 2), { status: 206 })
+      }
+      if (range) return new Response('<html>', { status: 200 })
+      if (address.startsWith('https://gh-proxy.com/')) {
+        return new Response(payload, {
+          status: 200,
+          headers: { 'content-length': String(payload.length) },
+        })
+      }
+      throw new Error(`Unexpected request: ${address}`)
+    })
+
+    const result = await downloadReleaseUpdate({
+      tagName: 'v0.1.0-beta.2',
+      currentVersion: '0.1.0-beta.1',
+      destinationRoot: tempRoot,
+      fetchImpl,
+      sourceSelection: true,
+      sourceResponseTimeoutMs: 25,
+    })
+
+    expect(officialResponseAborted).toBe(true)
+    expect(result.source).toMatchObject({ id: 'gh-proxy', kind: 'mirror' })
+    expect(result.sha256).toBe(sha256)
+    expect(await fs.readFile(result.packagePath)).toEqual(payload)
+  })
+
   it('retries partial filesystem writes without weakening the streamed checksum', async () => {
     tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phd-atlas-release-update-'))
     const payload = Buffer.alloc(128, 'p')

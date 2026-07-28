@@ -19,7 +19,6 @@ import {
   History,
   Info,
   KeyRound,
-  Link2,
   ListChecks,
   LoaderCircle,
   LogIn,
@@ -43,7 +42,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react'
-import { lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { lazy, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
   phdApi,
   type AuthSession,
@@ -56,6 +55,8 @@ import {
   type TeamMemberContactProfile,
   type TeamMergePreview,
   type TeamRole,
+  type TeamStudentPermissions,
+  type TeamTeacherPermissions,
   type ProfileAsset,
   type ProfileAssetInput,
   type TeamProfilePreset,
@@ -72,6 +73,11 @@ import {
   teachersForStudent,
 } from '../../teamRelationships'
 import {
+  canUseTeamDiscover,
+  teamStudentPermissions,
+  teamTeacherPermissions,
+} from '../../teamPermissions'
+import {
   clampRelationshipZoom,
   RELATIONSHIP_ZOOM_MAX,
   RELATIONSHIP_ZOOM_MIN,
@@ -86,8 +92,8 @@ import {
 
 const TEAM_SECTION_ORDER: TeamSection[] = ['overview', 'applications', 'members', 'resources', 'discover', 'audit', 'settings']
 
-function hasOwnerAuditAccess(role: TeamRole | null | undefined) {
-  return role === 'owner'
+function hasAuditAccess(role: TeamRole | null | undefined) {
+  return role === 'owner' || role === 'admin'
 }
 import { normalizeErrorMessage } from '../../errorMessages'
 import { localeForLanguage, registerLanguage, type LangDict } from '../../i18n'
@@ -101,7 +107,6 @@ import { defaultProfilePresets, profilePresetText } from '../../profilePresets'
 import { useI18n } from '../hooks/useI18n'
 import { getMotionDelay } from '../hooks/useAnimatedClose'
 import { CollapsiblePanel } from '../shared/CollapsiblePanel'
-import { InlineConfirm } from '../shared/InlineConfirm'
 import { InlinePresence } from '../shared/InlinePresence'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/ExplorerContextMenu'
@@ -109,15 +114,17 @@ import { NotificationPublisherPanel, type NotificationPublisherAudience, type No
 import { AnchoredPopover } from '../shared/AnchoredPopover'
 import { Select } from '../shared/Select'
 import { StatusPill } from '../shared/StatusPill'
-import { MarkdownContent } from '../shared/MarkdownContent'
 import { ScreenSkeleton } from '../shared/LaunchScreen'
 import { AiKeyManager } from '../shared/AiKeyManager'
 import { ProfilePresetEditorDialog, type ProfilePresetEditorValue } from '../shared/ProfilePresetEditorDialog'
 import { ProfilePresetIcon } from '../shared/ProfilePresetIcon'
+import { LibraryInsertionMotionBoundary } from '../shared/LibraryInsertionMotion'
 import { LibraryViewSwitch, type LibraryViewMode } from '../shared/LibraryViewSwitch'
 import { LazyOverlayBoundary } from '../shared/LazyOverlayBoundary'
+import { ProjectFooter } from '../shared/ProjectFooter'
 import { UserAvatar } from '../shared/UserAvatar'
 import { TeamPortraitFamilyDeck } from './TeamPortraitFamilyDeck'
+import { ProfileScreen } from './ProfileScreen'
 import { TeamJoinCodeGenerator } from '../shared/TeamJoinCodeGenerator'
 import {
   auditFieldSummary,
@@ -141,11 +148,9 @@ import {
   mergeStatusRecommendationKey,
 } from './teamAuditMergeModel'
 import {
-  defaultStudentProfileDraft,
   readStoredTeamStudentProfiles,
   writeStoredTeamStudentProfiles,
   type TeamStudentProfileAsset,
-  type TeamStudentProfileDraft,
 } from './teamStudentProfileStorage'
 import { normalizeTeamLogoFile, TEAM_LOGO_ACCEPT, TeamLogoError } from './teamLogo'
 
@@ -176,11 +181,21 @@ const HEALTH_FILTERS: HealthFilter[] = ['all', 'risk', 'watch', 'steady', 'close
 type TeamMemberView = 'table' | 'map'
 type MemberWorkspaceView = 'students' | 'teacher-groups'
 type TeamMemberStatusFilter = 'all' | 'active' | 'pending'
-type OrganizationSettingsSection = 'identity' | 'quota' | 'key'
+type OrganizationSettingsSection = 'identity' | 'permissions' | 'quota' | 'key'
 type StudentProfileFilter = 'all' | 'attention' | 'missing'
 type StudentProfileSort = 'attention' | 'name' | 'progress'
 type StudentProfileState = 'missing' | 'risk' | 'due' | 'feedback' | 'steady'
 type OwnerOverviewFocusKey = 'transfers' | 'risk' | 'resources' | 'students' | 'invites' | 'steady'
+const TEAM_DISCOVER_VIEW_KEY = 'phd-atlas-team-discover-view:v1'
+
+function storedTeamDiscoverView(): LibraryViewMode {
+  try {
+    return localStorage.getItem(TEAM_DISCOVER_VIEW_KEY) === 'list' ? 'list' : 'cards'
+  } catch {
+    return 'cards'
+  }
+}
+
 type OwnerOverviewDetailView = 'priority' | 'students'
 type ProfilePresetSourceFilter = 'all' | 'system' | 'org' | 'mine'
 type ProfilePresetSource = Exclude<ProfilePresetSourceFilter, 'all'>
@@ -272,11 +287,31 @@ function TeamMemberAvatar({
   className?: string
   fallbackName?: string
 }) {
+  const name = member?.displayName || fallbackName || ''
+  const email = member?.invitedEmail || ''
+  const avatarUrl = member?.avatarUrl
+  if (!avatarUrl) {
+    const words = name.trim().split(/\s+/).filter(Boolean)
+    const initials = words.length > 1
+      ? `${words[0]?.[0] ?? ''}${words.at(-1)?.[0] ?? ''}`.toLocaleUpperCase()
+      : (words[0]?.slice(0, 2) || email.slice(0, 2) || '?').toLocaleUpperCase()
+    const identity = `${member?.id ?? ''}:${name}:${email}`
+    const tone = [...identity].reduce((total, character) => total + character.charCodeAt(0), 0) % 6
+    return (
+      <span
+        className={`${className} team-member-avatar-fallback tone-${tone}`}
+        aria-hidden="true"
+      >
+        {initials}
+      </span>
+    )
+  }
+
   return (
     <UserAvatar
-      avatarUrl={member?.avatarUrl}
-      name={member?.displayName || fallbackName || '?'}
-      email={member?.invitedEmail}
+      avatarUrl={avatarUrl}
+      name={name || '?'}
+      email={email}
       className={className}
     />
   )
@@ -286,16 +321,18 @@ function TeamTeacherAssignmentPicker({
   teachers,
   assignedTeacherUserIds,
   busy,
-  onToggle,
+  onCommit,
 }: {
   teachers: TeamMember[]
   assignedTeacherUserIds: readonly string[]
   busy: boolean
-  onToggle: (teacher: TeamMember) => void | Promise<void>
+  onCommit: (teacherUserIds: string[]) => void | boolean | Promise<void | boolean>
 }) {
   const { tx, format, lang } = useI18n()
   const [query, setQuery] = useState('')
-  const assignedIds = new Set(assignedTeacherUserIds)
+  const [draftTeacherUserIds, setDraftTeacherUserIds] = useState<string[] | null>(null)
+  const [committing, setCommitting] = useState(false)
+  const assignedIds = new Set(draftTeacherUserIds ?? assignedTeacherUserIds)
   const assignedTeachers = teachers.filter((teacher) => (
     Boolean(teacher.userId && assignedIds.has(teacher.userId))
   ))
@@ -336,7 +373,12 @@ function TeamTeacherAssignmentPicker({
       estimatedHeight={420}
       align="start"
       onOpenChange={(open) => {
-        if (!open) setQuery('')
+        if (open) {
+          setDraftTeacherUserIds([...assignedTeacherUserIds])
+          return
+        }
+        setQuery('')
+        setDraftTeacherUserIds(null)
       }}
       trigger={(
         <span className="team-teacher-picker-trigger-inner" aria-busy={busy || undefined}>
@@ -373,7 +415,7 @@ function TeamTeacherAssignmentPicker({
             <button
               type="button"
               className="team-teacher-picker-close"
-              onClick={close}
+              onClick={() => close()}
               aria-label={tx('close')}
               title={tx('close')}
             >
@@ -409,8 +451,16 @@ function TeamTeacherAssignmentPicker({
                   role="option"
                   className={selected ? 'is-selected' : ''}
                   aria-selected={selected}
-                  disabled={busy}
-                  onClick={() => void onToggle(teacher)}
+                  disabled={busy || committing || !teacher.userId}
+                  onClick={() => {
+                    if (!teacher.userId) return
+                    setDraftTeacherUserIds((current) => {
+                      const next = new Set(current ?? assignedTeacherUserIds)
+                      if (next.has(teacher.userId!)) next.delete(teacher.userId!)
+                      else next.add(teacher.userId!)
+                      return [...next]
+                    })
+                  }}
                 >
                   <TeamMemberAvatar member={teacher} className="team-teacher-picker-option-avatar" />
                   <span>
@@ -435,7 +485,29 @@ function TeamTeacherAssignmentPicker({
 
           <div className="team-teacher-picker-popover-foot">
             <span>{selectionLabel}</span>
-            <button type="button" className="quiet-action" onClick={close}>
+            <button
+              type="button"
+              className="quiet-action"
+              disabled={busy || committing}
+              onClick={async () => {
+                const nextIds = draftTeacherUserIds ?? [...assignedTeacherUserIds]
+                const changed = nextIds.length !== assignedTeacherUserIds.length
+                  || nextIds.some((id) => !assignedTeacherUserIds.includes(id))
+                if (!changed) {
+                  close()
+                  return
+                }
+                setCommitting(true)
+                try {
+                  const saved = await onCommit(nextIds)
+                  if (saved === false) return
+                  close()
+                } finally {
+                  setCommitting(false)
+                }
+              }}
+            >
+              {committing ? <LoaderCircle className="spin" size={13} aria-hidden="true" /> : null}
               {tx('done')}
             </button>
           </div>
@@ -583,6 +655,9 @@ export function TeamScreen({
   const [teamQuery, setTeamQuery] = useState('')
   const [teamDiscoverQuery, setTeamDiscoverQuery] = useState('')
   const [teamDiscoverFilter, setTeamDiscoverFilter] = useState<StudentProfileFilter>('all')
+  const [renderedTeamDiscoverFilter, setRenderedTeamDiscoverFilter] = useState<StudentProfileFilter>('all')
+  const [teamDiscoverFilterPhase, setTeamDiscoverFilterPhase] = useState<'idle' | 'exiting' | 'entering'>('idle')
+  const [teamDiscoverView, setTeamDiscoverView] = useState<LibraryViewMode>(storedTeamDiscoverView)
   const [healthFilter, setHealthFilter] = useState<HealthFilter>('all')
   const [teacherStudentFilter, setTeacherStudentFilter] = useState('all')
   const [ownerOverviewFocusKey, setOwnerOverviewFocusKey] = useState<OwnerOverviewFocusKey>('risk')
@@ -592,6 +667,9 @@ export function TeamScreen({
   const [teacherQuickCreateOpen, setTeacherQuickCreateOpen] = useState(false)
   const [memberView, setMemberView] = useState<TeamMemberView>('table')
   const [memberWorkspaceView, setMemberWorkspaceView] = useState<MemberWorkspaceView>('students')
+  const [renderedMemberWorkspaceView, setRenderedMemberWorkspaceView] = useState<MemberWorkspaceView>('students')
+  const [memberWorkspaceMotion, setMemberWorkspaceMotion] = useState<'idle' | 'exiting' | 'entering'>('idle')
+  const [memberWorkspaceDirection, setMemberWorkspaceDirection] = useState<'forward' | 'backward'>('forward')
   const [memberQuery, setMemberQuery] = useState('')
   const [memberStatusFilter, setMemberStatusFilter] = useState<TeamMemberStatusFilter>('all')
   const [inviteEmail, setInviteEmail] = useState('')
@@ -631,25 +709,28 @@ export function TeamScreen({
   const [selectedAuditEventId, setSelectedAuditEventId] = useState<string | null>(null)
   const [selectedAuditStudentId, setSelectedAuditStudentId] = useState('all')
   const [selectedRelationStudentId, setSelectedRelationStudentId] = useState<string | null>(null)
+  const [relationFocus, setRelationFocus] = useState<{ memberId: string; nonce: number } | null>(null)
   const [selectedResourceStudentId, setSelectedResourceStudentId] = useState<string | null>(null)
+  const [displayedResourceStudentId, setDisplayedResourceStudentId] = useState<string | null>(null)
   const [studentResourceQuery, setStudentResourceQuery] = useState('')
   const [studentProfileFilter, setStudentProfileFilter] = useState<StudentProfileFilter>('all')
   const [studentProfileSort, setStudentProfileSort] = useState<StudentProfileSort>('attention')
   const [studentProfileAssets, setStudentProfileAssets] = useState<TeamStudentProfileAsset[]>(readStoredTeamStudentProfiles)
-  const [studentProfileEditorOpen, setStudentProfileEditorOpen] = useState(false)
-  const [editingStudentProfileId, setEditingStudentProfileId] = useState<string | null>(null)
-  const [pendingStudentProfileDeleteId, setPendingStudentProfileDeleteId] = useState<string | null>(null)
   const [removingStudentProfileIds, setRemovingStudentProfileIds] = useState<Set<string>>(() => new Set())
-  const [studentProfileDraft, setStudentProfileDraft] = useState<TeamStudentProfileDraft>(defaultStudentProfileDraft)
   const [presetSourceFilter, setPresetSourceFilter] = useState<ProfilePresetSourceFilter>('all')
+  const [renderedPresetSourceFilter, setRenderedPresetSourceFilter] = useState<ProfilePresetSourceFilter>('all')
+  const [presetSourceFilterPhase, setPresetSourceFilterPhase] = useState<'idle' | 'exiting' | 'entering'>('idle')
   const [presetQuery, setPresetQuery] = useState('')
   const [viewedStudentAssets, setViewedStudentAssets] = useState<ProfileAsset[]>([])
   const [viewedStudentAssetsLoading, setViewedStudentAssetsLoading] = useState(false)
+  const [studentPortraitHandoffCycle, setStudentPortraitHandoffCycle] = useState<'a' | 'b' | null>(null)
+  const [studentPortraitStable, setStudentPortraitStable] = useState(false)
   const [viewedStudentAssetQuery, setViewedStudentAssetQuery] = useState('')
-  const [studentAssetView, setStudentAssetView] = useState<LibraryViewMode>('list')
+  const [studentAssetView, setStudentAssetView] = useState<LibraryViewMode>('cards')
   const [expandedStudentFamilyId, setExpandedStudentFamilyId] = useState<string | null>(null)
   const [studentSnippetPreset, setStudentSnippetPreset] = useState<TeamProfilePreset | null>(null)
   const [editingViewedStudentAssetId, setEditingViewedStudentAssetId] = useState<string | null>(null)
+  const [enteredStudentAssetId, setEnteredStudentAssetId] = useState<string | null>(null)
   const [pendingViewedStudentAssetDelete, setPendingViewedStudentAssetDelete] = useState<ProfileAsset | null>(null)
   const [deletingViewedStudentAssetId, setDeletingViewedStudentAssetId] = useState<string | null>(null)
   const [applyingStudentPresetId, setApplyingStudentPresetId] = useState<string | null>(null)
@@ -688,6 +769,14 @@ export function TeamScreen({
   const activeTeamIdRef = useRef(activeTeamId)
   const sessionTokenRef = useRef(session.token)
   const selectedResourceStudentIdRef = useRef(selectedResourceStudentId)
+  const displayedResourceStudentIdRef = useRef(displayedResourceStudentId)
+  const studentPortraitListRef = useRef<HTMLDivElement | null>(null)
+  const studentPortraitSelectionRef = useRef<HTMLSpanElement | null>(null)
+  const studentPortraitRowRefs = useRef(new Map<string, HTMLButtonElement>())
+  const studentPortraitSelectionMotionTimerRef = useRef<number | null>(null)
+  const studentPortraitDossierScrollRef = useRef<HTMLDivElement | null>(null)
+  const studentPortraitAssetCacheRef = useRef(new Map<string, ProfileAsset[]>())
+  const studentPortraitAssetRequestRef = useRef(new Map<string, Promise<ProfileAsset[]>>())
   const teamLogoInputRef = useRef<HTMLInputElement>(null)
   const relationCanvasRef = useRef<HTMLDivElement | null>(null)
   const relationCanvasStageRef = useRef<HTMLDivElement | null>(null)
@@ -699,6 +788,17 @@ export function TeamScreen({
   const relationWheelHandlerRef = useRef<(event: WheelEvent) => void>(() => undefined)
   const relationWheelListenerRef = useRef<((event: WheelEvent) => void) | null>(null)
   const relationSuppressClickUntilRef = useRef(0)
+  const renderedMemberWorkspaceViewRef = useRef(renderedMemberWorkspaceView)
+  const memberWorkspaceMotionTimersRef = useRef<number[]>([])
+  const teacherGroupNavRef = useRef<HTMLElement | null>(null)
+  const teacherGroupNavIndicatorRef = useRef<HTMLSpanElement | null>(null)
+  const teacherGroupNavButtonRefs = useRef(new Map<string, HTMLButtonElement>())
+  const teacherGroupNavIndicatorTimerRef = useRef<number | null>(null)
+  const studentFamilyStackRefs = useRef(new Map<string, HTMLElement>())
+  const pendingStudentFamilyLayoutFlipRef = useRef<Map<HTMLElement, DOMRect> | null>(null)
+  const studentFamilyLayoutAnimationsRef = useRef<Animation[]>([])
+  const presetSourceFilterTimersRef = useRef<number[]>([])
+  const teamDiscoverFilterTimersRef = useRef<number[]>([])
   const relationCanvasGestureRef = useRef<{
     pointers: Map<number, RelationshipCanvasPointer>
     panPointerId: number | null
@@ -721,6 +821,8 @@ export function TeamScreen({
   activeTeamIdRef.current = activeTeamId
   sessionTokenRef.current = session.token
   selectedResourceStudentIdRef.current = selectedResourceStudentId
+  displayedResourceStudentIdRef.current = displayedResourceStudentId
+  renderedMemberWorkspaceViewRef.current = renderedMemberWorkspaceView
   relationWheelHandlerRef.current = handleRelationshipWheel
 
   const setRelationCanvas = useCallback((node: HTMLDivElement | null) => {
@@ -751,6 +853,98 @@ export function TeamScreen({
     node?.style.setProperty('--team-relation-zoom', String(relationZoomRef.current))
   }, [])
 
+  const finishStudentPortraitSelectionMotion = useCallback(() => {
+    if (studentPortraitSelectionMotionTimerRef.current !== null) {
+      window.clearTimeout(studentPortraitSelectionMotionTimerRef.current)
+      studentPortraitSelectionMotionTimerRef.current = null
+    }
+    studentPortraitSelectionRef.current?.classList.remove('is-moving')
+  }, [])
+
+  const finishTeacherGroupNavIndicatorMotion = useCallback(() => {
+    if (teacherGroupNavIndicatorTimerRef.current !== null) {
+      window.clearTimeout(teacherGroupNavIndicatorTimerRef.current)
+      teacherGroupNavIndicatorTimerRef.current = null
+    }
+    teacherGroupNavIndicatorRef.current?.classList.remove('is-moving')
+  }, [])
+
+  const positionTeacherGroupNavIndicator = useCallback((groupId: string) => {
+    const indicator = teacherGroupNavIndicatorRef.current
+    const button = teacherGroupNavButtonRefs.current.get(groupId)
+    if (!indicator || !button) {
+      finishTeacherGroupNavIndicatorMotion()
+      indicator?.classList.remove('is-ready')
+      return
+    }
+
+    const nextX = `${button.offsetLeft}px`
+    const nextY = `${button.offsetTop}px`
+    const nextWidth = `${button.offsetWidth}px`
+    const nextHeight = `${button.offsetHeight}px`
+    const shouldAnimate = indicator.classList.contains('is-ready')
+      && (
+        indicator.style.getPropertyValue('--team-teacher-group-nav-x') !== nextX
+        || indicator.style.getPropertyValue('--team-teacher-group-nav-y') !== nextY
+        || indicator.style.getPropertyValue('--team-teacher-group-nav-width') !== nextWidth
+        || indicator.style.getPropertyValue('--team-teacher-group-nav-height') !== nextHeight
+      )
+
+    if (shouldAnimate) {
+      finishTeacherGroupNavIndicatorMotion()
+      indicator.classList.add('is-moving')
+      teacherGroupNavIndicatorTimerRef.current = window.setTimeout(
+        finishTeacherGroupNavIndicatorMotion,
+        getMotionDelay(220),
+      )
+    }
+
+    indicator.style.setProperty('--team-teacher-group-nav-x', nextX)
+    indicator.style.setProperty('--team-teacher-group-nav-y', nextY)
+    indicator.style.setProperty('--team-teacher-group-nav-width', nextWidth)
+    indicator.style.setProperty('--team-teacher-group-nav-height', nextHeight)
+    indicator.classList.add('is-ready')
+  }, [finishTeacherGroupNavIndicatorMotion])
+
+  const positionStudentPortraitSelection = useCallback((
+    studentUserId: string | null,
+    targetRow?: HTMLButtonElement | null,
+  ) => {
+    const list = studentPortraitListRef.current
+    const slider = studentPortraitSelectionRef.current
+    const row = targetRow ?? (studentUserId ? studentPortraitRowRefs.current.get(studentUserId) : null)
+    if (!list || !slider || !row) {
+      finishStudentPortraitSelectionMotion()
+      slider?.classList.remove('is-visible')
+      list?.classList.remove('has-selection-slider')
+      return
+    }
+
+    const nextTopValue = `${row.offsetTop}px`
+    const nextHeightValue = `${row.offsetHeight || 66}px`
+    const shouldAnimate = slider.classList.contains('is-visible')
+      && (
+        slider.style.getPropertyValue('--team-portrait-selection-y') !== nextTopValue
+        || slider.style.getPropertyValue('--team-portrait-selection-height') !== nextHeightValue
+      )
+
+    if (shouldAnimate) {
+      if (studentPortraitSelectionMotionTimerRef.current !== null) {
+        window.clearTimeout(studentPortraitSelectionMotionTimerRef.current)
+      }
+      slider.classList.add('is-moving')
+      studentPortraitSelectionMotionTimerRef.current = window.setTimeout(
+        finishStudentPortraitSelectionMotion,
+        280,
+      )
+    }
+
+    slider.style.setProperty('--team-portrait-selection-y', nextTopValue)
+    slider.style.setProperty('--team-portrait-selection-height', nextHeightValue)
+    slider.classList.add('is-visible')
+    list.classList.add('has-selection-slider')
+  }, [finishStudentPortraitSelectionMotion])
+
   useEffect(() => () => {
     if (relationZoomCommitTimerRef.current !== null) {
       window.clearTimeout(relationZoomCommitTimerRef.current)
@@ -758,9 +952,151 @@ export function TeamScreen({
     if (relationArrivalTimerRef.current !== null) {
       window.clearTimeout(relationArrivalTimerRef.current)
     }
+    if (studentPortraitSelectionMotionTimerRef.current !== null) {
+      window.clearTimeout(studentPortraitSelectionMotionTimerRef.current)
+    }
     relationZoomAnimationRef.current?.cancel()
+    studentFamilyLayoutAnimationsRef.current.forEach((animation) => animation.cancel())
+    studentFamilyLayoutAnimationsRef.current = []
+    presetSourceFilterTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+    presetSourceFilterTimersRef.current = []
+    teamDiscoverFilterTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+    teamDiscoverFilterTimersRef.current = []
+    memberWorkspaceMotionTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+    memberWorkspaceMotionTimersRef.current = []
+    if (teacherGroupNavIndicatorTimerRef.current !== null) {
+      window.clearTimeout(teacherGroupNavIndicatorTimerRef.current)
+    }
+    teacherGroupNavButtonRefs.current.clear()
+    studentFamilyStackRefs.current.clear()
+    studentPortraitRowRefs.current.clear()
+    studentPortraitAssetCacheRef.current.clear()
+    studentPortraitAssetRequestRef.current.clear()
     relationCanvasGestureRef.current.pointers.clear()
   }, [])
+
+  useEffect(() => {
+    if (!enteredStudentAssetId) return undefined
+    const delay = getMotionDelay(620)
+    if (delay === 0) {
+      setEnteredStudentAssetId(null)
+      return undefined
+    }
+    const timer = window.setTimeout(() => setEnteredStudentAssetId(null), delay)
+    return () => window.clearTimeout(timer)
+  }, [enteredStudentAssetId])
+
+  useEffect(() => {
+    if (renderedMemberWorkspaceViewRef.current === memberWorkspaceView) {
+      setMemberWorkspaceMotion('idle')
+      return undefined
+    }
+
+    memberWorkspaceMotionTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+    memberWorkspaceMotionTimersRef.current = []
+    setMemberWorkspaceDirection(memberWorkspaceView === 'teacher-groups' ? 'forward' : 'backward')
+
+    const exitDelay = getMotionDelay(90)
+    const enterDelay = getMotionDelay(190)
+    if (exitDelay === 0 && enterDelay === 0) {
+      setRenderedMemberWorkspaceView(memberWorkspaceView)
+      setMemberWorkspaceMotion('idle')
+      return undefined
+    }
+
+    setMemberWorkspaceMotion('exiting')
+    const swapTimer = window.setTimeout(() => {
+      setRenderedMemberWorkspaceView(memberWorkspaceView)
+      setMemberWorkspaceMotion('entering')
+      const settleTimer = window.setTimeout(() => {
+        setMemberWorkspaceMotion('idle')
+        memberWorkspaceMotionTimersRef.current = []
+      }, enterDelay)
+      memberWorkspaceMotionTimersRef.current = [settleTimer]
+    }, exitDelay)
+    memberWorkspaceMotionTimersRef.current = [swapTimer]
+
+    return () => {
+      memberWorkspaceMotionTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+      memberWorkspaceMotionTimersRef.current = []
+    }
+  }, [memberWorkspaceView])
+
+  const changePresetSourceFilter = useCallback((nextFilter: ProfilePresetSourceFilter) => {
+    if (nextFilter === presetSourceFilter) return
+
+    setPresetSourceFilter(nextFilter)
+    presetSourceFilterTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+    presetSourceFilterTimersRef.current = []
+    setPresetSourceFilterPhase('exiting')
+
+    const swapTimer = window.setTimeout(() => {
+      setRenderedPresetSourceFilter(nextFilter)
+      setPresetSourceFilterPhase('entering')
+      const settleTimer = window.setTimeout(() => {
+        setPresetSourceFilterPhase('idle')
+        presetSourceFilterTimersRef.current = []
+      }, getMotionDelay(190))
+      presetSourceFilterTimersRef.current = [settleTimer]
+    }, getMotionDelay(90))
+    presetSourceFilterTimersRef.current = [swapTimer]
+  }, [presetSourceFilter])
+
+  const changeTeamDiscoverFilter = useCallback((nextFilter: StudentProfileFilter) => {
+    if (nextFilter === teamDiscoverFilter) return
+    setTeamDiscoverFilter(nextFilter)
+    teamDiscoverFilterTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+    teamDiscoverFilterTimersRef.current = []
+    setTeamDiscoverFilterPhase('exiting')
+
+    const swapTimer = window.setTimeout(() => {
+      setRenderedTeamDiscoverFilter(nextFilter)
+      setTeamDiscoverFilterPhase('entering')
+      const settleTimer = window.setTimeout(() => {
+        setTeamDiscoverFilterPhase('idle')
+        teamDiscoverFilterTimersRef.current = []
+      }, getMotionDelay(190))
+      teamDiscoverFilterTimersRef.current = [settleTimer]
+    }, getMotionDelay(90))
+    teamDiscoverFilterTimersRef.current = [swapTimer]
+  }, [teamDiscoverFilter])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TEAM_DISCOVER_VIEW_KEY, teamDiscoverView)
+    } catch {
+      // A blocked storage backend should never make the view switch unusable.
+    }
+  }, [teamDiscoverView])
+
+  useLayoutEffect(() => {
+    const beforeRects = pendingStudentFamilyLayoutFlipRef.current
+    pendingStudentFamilyLayoutFlipRef.current = null
+    if (!beforeRects) return
+    const reduceMotion = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduceMotion) return
+
+    const animations: Animation[] = []
+    beforeRects.forEach((before, element) => {
+      if (!element.isConnected || typeof element.animate !== 'function') return
+      const after = element.getBoundingClientRect()
+      const deltaX = before.left - after.left
+      const deltaY = before.top - after.top
+      if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return
+      animations.push(element.animate(
+        [
+          { transform: `translate3d(${deltaX}px, ${deltaY}px, 0)` },
+          { transform: 'translate3d(0, 0, 0)' },
+        ],
+        {
+          duration: 560,
+          easing: 'cubic-bezier(0.16, 0.72, 0.24, 1)',
+        },
+      ))
+    })
+    studentFamilyLayoutAnimationsRef.current = animations
+  }, [expandedStudentFamilyId])
 
   useEffect(() => {
     // In-place directional handoff for team page switches (mirrors personal rail feel
@@ -1015,49 +1351,146 @@ export function TeamScreen({
     && (viewerTeamMember.role === 'owner' || viewerTeamMember.role === 'admin'),
   )
 
+  const studentPortraitCacheKey = useCallback((studentUserId: string) => {
+    const teamId = summary?.team.id
+    return teamId ? `${teamId}:${studentUserId}` : ''
+  }, [summary?.team.id])
+
+  const loadStudentPortraitAssets = useCallback((studentUserId: string) => {
+    const teamId = summary?.team.id
+    if (!teamId || (viewerRole !== 'owner' && viewerRole !== 'admin')) {
+      return Promise.resolve([] as ProfileAsset[])
+    }
+
+    const cacheKey = `${teamId}:${studentUserId}`
+    const cached = studentPortraitAssetCacheRef.current.get(cacheKey)
+    if (cached !== undefined) return Promise.resolve(cached)
+
+    const pending = studentPortraitAssetRequestRef.current.get(cacheKey)
+    if (pending) return pending
+
+    const request = phdApi.listTeamMemberProfileAssets(session.token, teamId, studentUserId)
+      .then((assets) => {
+        studentPortraitAssetCacheRef.current.set(cacheKey, assets)
+        return assets
+      })
+      .finally(() => {
+        studentPortraitAssetRequestRef.current.delete(cacheKey)
+      })
+    studentPortraitAssetRequestRef.current.set(cacheKey, request)
+    return request
+  }, [session.token, summary?.team.id, viewerRole])
+
+  const warmStudentPortraitAssets = useCallback((studentUserId: string | null | undefined) => {
+    if (!studentUserId) return
+    void loadStudentPortraitAssets(studentUserId).catch(() => undefined)
+  }, [loadStudentPortraitAssets])
+
+  const selectResourceStudent = useCallback((
+    studentUserId: string | null | undefined,
+    targetRow?: HTMLButtonElement | null,
+  ) => {
+    if (!studentUserId) return
+    positionStudentPortraitSelection(studentUserId, targetRow)
+    warmStudentPortraitAssets(studentUserId)
+    if (selectedResourceStudentIdRef.current === studentUserId) return
+
+    selectedResourceStudentIdRef.current = studentUserId
+    startTransition(() => {
+      setViewedStudentAssetsLoading(displayedResourceStudentIdRef.current !== studentUserId)
+      setSelectedResourceStudentId(studentUserId)
+    })
+  }, [positionStudentPortraitSelection, warmStudentPortraitAssets])
+
+  const updateCachedStudentPortraitAssets = useCallback((
+    studentUserId: string,
+    update: (assets: ProfileAsset[]) => ProfileAsset[],
+  ) => {
+    const cacheKey = studentPortraitCacheKey(studentUserId)
+    if (!cacheKey) return
+    const cached = studentPortraitAssetCacheRef.current.get(cacheKey)
+    if (cached !== undefined) {
+      studentPortraitAssetCacheRef.current.set(cacheKey, update(cached))
+    }
+  }, [studentPortraitCacheKey])
+
   useEffect(() => {
     if (contactProfileOpen) return
     setContactProfileDraft(teamContactProfileDraft(viewerTeamMember))
   }, [contactProfileOpen, viewerTeamMember])
 
   useEffect(() => {
+    studentPortraitAssetCacheRef.current.clear()
+    studentPortraitAssetRequestRef.current.clear()
+    displayedResourceStudentIdRef.current = null
+    setDisplayedResourceStudentId(null)
+    setViewedStudentAssets([])
+    setViewedStudentAssetsLoading(false)
+    setEnteredStudentAssetId(null)
+    setStudentPortraitHandoffCycle(null)
+    setStudentPortraitStable(false)
+  }, [session.user.id, summary?.team.id])
+
+  useEffect(() => {
     const teamId = summary?.team.id
     const studentUserId = selectedResourceStudentId
     if (!teamId || !studentUserId || (viewerRole !== 'owner' && viewerRole !== 'admin')) {
+      displayedResourceStudentIdRef.current = null
+      setDisplayedResourceStudentId(null)
       setViewedStudentAssets([])
       setViewedStudentAssetsLoading(false)
       setExpandedStudentFamilyId(null)
       setStudentSnippetPreset(null)
       setEditingViewedStudentAssetId(null)
+      setEnteredStudentAssetId(null)
       setPendingViewedStudentAssetDelete(null)
       return undefined
     }
 
     let cancelled = false
-    setViewedStudentAssetsLoading(true)
-    setViewedStudentAssetQuery('')
-    setExpandedStudentFamilyId(null)
-    setStudentSnippetPreset(null)
-    setEditingViewedStudentAssetId(null)
-    setPendingViewedStudentAssetDelete(null)
-    void phdApi.listTeamMemberProfileAssets(session.token, teamId, studentUserId)
+    if (displayedResourceStudentIdRef.current !== studentUserId) {
+      setViewedStudentAssetsLoading(true)
+    }
+    void loadStudentPortraitAssets(studentUserId)
       .then((assets) => {
-        if (cancelled) return
+        if (cancelled || selectedResourceStudentIdRef.current !== studentUserId) return
+        studentFamilyLayoutAnimationsRef.current.forEach((animation) => animation.cancel())
+        studentFamilyLayoutAnimationsRef.current = []
+        studentFamilyStackRefs.current.clear()
+        displayedResourceStudentIdRef.current = studentUserId
+        setDisplayedResourceStudentId(studentUserId)
         setViewedStudentAssets(assets)
+        setViewedStudentAssetQuery('')
+        setExpandedStudentFamilyId(null)
+        setStudentSnippetPreset(null)
+        setEditingViewedStudentAssetId(null)
+        setEnteredStudentAssetId(null)
+        setPendingViewedStudentAssetDelete(null)
+        setStudentPortraitHandoffCycle((current) => current === 'a' ? 'b' : 'a')
+        setStudentPortraitStable(true)
+        setViewedStudentAssetsLoading(false)
       })
       .catch((err) => {
-        if (cancelled) return
-        setViewedStudentAssets([])
+        if (cancelled || selectedResourceStudentIdRef.current !== studentUserId) return
+        const fallbackStudentId = displayedResourceStudentIdRef.current
+        if (fallbackStudentId && fallbackStudentId !== studentUserId) {
+          selectedResourceStudentIdRef.current = fallbackStudentId
+          startTransition(() => setSelectedResourceStudentId(fallbackStudentId))
+        } else {
+          displayedResourceStudentIdRef.current = studentUserId
+          setDisplayedResourceStudentId(studentUserId)
+          setViewedStudentAssets([])
+          setStudentPortraitHandoffCycle((current) => current === 'a' ? 'b' : 'a')
+          setStudentPortraitStable(true)
+        }
+        setViewedStudentAssetsLoading(false)
         setError(normalizeErrorMessage(err, lang))
-      })
-      .finally(() => {
-        if (!cancelled) setViewedStudentAssetsLoading(false)
       })
 
     return () => {
       cancelled = true
     }
-  }, [selectedResourceStudentId, summary?.team.id, session.token, lang, viewerRole])
+  }, [lang, loadStudentPortraitAssets, selectedResourceStudentId, summary?.team.id, viewerRole])
 
   const teamProfilePresets = useMemo<TeamProfilePreset[]>(() => {
     if (summary?.team.profilePresets) return summary.team.profilePresets
@@ -1082,7 +1515,7 @@ export function TeamScreen({
 
   async function createSelectedStudentSnippet(input: ProfileAssetInput) {
     const teamId = summary?.team.id
-    const studentUserId = selectedResourceStudentId
+    const studentUserId = displayedResourceStudentId
     const presetId = studentSnippetPreset?.id ?? 'student-snippet'
     if (!teamId || !studentUserId || applyingStudentPresetId) return
 
@@ -1095,7 +1528,12 @@ export function TeamScreen({
         studentUserId,
         input,
       )
-      if (selectedResourceStudentIdRef.current === studentUserId) {
+      updateCachedStudentPortraitAssets(
+        studentUserId,
+        (items) => [created, ...items.filter((item) => item.id !== created.id)],
+      )
+      if (displayedResourceStudentIdRef.current === studentUserId) {
+        setEnteredStudentAssetId(created.id)
         setViewedStudentAssetQuery('')
         setViewedStudentAssets((items) => [created, ...items.filter((item) => item.id !== created.id)])
         setExpandedStudentFamilyId(profileAssetFamilyId(created))
@@ -1118,9 +1556,25 @@ export function TeamScreen({
     setEditingViewedStudentAssetId(asset.id)
   }
 
+  function toggleStudentAssetFamily(familyId: string, open: boolean) {
+    const stack = studentFamilyStackRefs.current.get(familyId)
+    const grid = stack?.parentElement
+    if (grid) {
+      const targets = [...grid.children].filter(
+        (child): child is HTMLElement => child instanceof HTMLElement,
+      )
+      pendingStudentFamilyLayoutFlipRef.current = new Map(
+        targets.map((element) => [element, element.getBoundingClientRect()]),
+      )
+      studentFamilyLayoutAnimationsRef.current.forEach((animation) => animation.cancel())
+      studentFamilyLayoutAnimationsRef.current = []
+    }
+    setExpandedStudentFamilyId(open ? null : familyId)
+  }
+
   async function updateSelectedStudentSnippet(assetId: string, input: Partial<ProfileAssetInput>) {
     const teamId = summary?.team.id
-    const studentUserId = selectedResourceStudentId
+    const studentUserId = displayedResourceStudentId
     if (!teamId || !studentUserId) return
 
     setError(null)
@@ -1132,7 +1586,11 @@ export function TeamScreen({
         assetId,
         input,
       )
-      if (selectedResourceStudentIdRef.current === studentUserId) {
+      updateCachedStudentPortraitAssets(
+        studentUserId,
+        (items) => items.map((item) => item.id === updated.id ? updated : item),
+      )
+      if (displayedResourceStudentIdRef.current === studentUserId) {
         setViewedStudentAssets((items) => items.map((item) => item.id === updated.id ? updated : item))
       }
       setMessage(tx('toast.profileAssetUpdated'))
@@ -1145,7 +1603,7 @@ export function TeamScreen({
   async function deleteSelectedStudentSnippet() {
     const asset = pendingViewedStudentAssetDelete
     const teamId = summary?.team.id
-    const studentUserId = selectedResourceStudentId
+    const studentUserId = displayedResourceStudentId
     if (!asset || !teamId || !studentUserId || deletingViewedStudentAssetId) return
 
     setPendingViewedStudentAssetDelete(null)
@@ -1158,7 +1616,11 @@ export function TeamScreen({
         studentUserId,
         asset.id,
       )
-      if (selectedResourceStudentIdRef.current === studentUserId) {
+      updateCachedStudentPortraitAssets(
+        studentUserId,
+        (items) => items.filter((item) => item.id !== asset.id),
+      )
+      if (displayedResourceStudentIdRef.current === studentUserId) {
         setViewedStudentAssets((items) => items.filter((item) => item.id !== asset.id))
         setEditingViewedStudentAssetId((current) => current === asset.id ? null : current)
       }
@@ -1171,7 +1633,10 @@ export function TeamScreen({
     }
   }
 
-  const canInvite = viewerRole === 'owner' || viewerRole === 'admin'
+  const viewerTeacherPermissions = teamTeacherPermissions(summary?.membership?.relationships)
+  const canInvite = viewerRole === 'owner'
+    || (viewerRole === 'admin' && viewerTeacherPermissions.inviteStudents)
+  const canDiscover = canUseTeamDiscover(viewerRole, summary?.membership)
   const canRename = viewerRole === 'owner'
   const canManageLogo = viewerRole === 'owner'
   const canRestore = viewerRole === 'owner'
@@ -1181,9 +1646,18 @@ export function TeamScreen({
   )
   const visibleTeamTabs = useMemo<TeamSection[]>(() => {
     if (viewerRole === 'member') return ['overview', 'applications', 'resources']
-    if (viewerRole === 'admin') return ['overview', 'applications', 'members', 'resources', 'discover']
+    if (viewerRole === 'admin') {
+      return [
+        'overview',
+        'applications',
+        'members',
+        'resources',
+        ...(canDiscover ? ['discover' as const] : []),
+        'audit',
+      ]
+    }
     return TEAM_TABS
-  }, [viewerRole])
+  }, [canDiscover, viewerRole])
   const safeActiveTab = visibleTeamTabs.includes(activeTab) ? activeTab : 'overview'
 
   useEffect(() => {
@@ -1297,9 +1771,42 @@ export function TeamScreen({
     }
   }, [selectedTeacherGroupId, teacherGroups])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setTeacherGroupRenameDraft(activeTeacherGroup?.name ?? '')
   }, [activeTeacherGroup?.id, activeTeacherGroup?.name])
+
+  useLayoutEffect(() => {
+    if (renderedMemberWorkspaceView !== 'teacher-groups') {
+      finishTeacherGroupNavIndicatorMotion()
+      return undefined
+    }
+
+    positionTeacherGroupNavIndicator(selectedTeacherGroupId)
+    const nav = teacherGroupNavRef.current
+    const activeButton = teacherGroupNavButtonRefs.current.get(selectedTeacherGroupId)
+    if (!nav || !activeButton) return undefined
+
+    const reposition = () => positionTeacherGroupNavIndicator(selectedTeacherGroupId)
+    window.addEventListener('resize', reposition)
+    if (typeof ResizeObserver === 'undefined') {
+      return () => window.removeEventListener('resize', reposition)
+    }
+
+    const observer = new ResizeObserver(reposition)
+    observer.observe(nav)
+    observer.observe(activeButton)
+    return () => {
+      window.removeEventListener('resize', reposition)
+      observer.disconnect()
+    }
+  }, [
+    finishTeacherGroupNavIndicatorMotion,
+    positionTeacherGroupNavIndicator,
+    renderedMemberWorkspaceView,
+    selectedTeacherGroupId,
+    teacherGroupCreateOpen,
+    teacherGroups,
+  ])
 
   const relationshipStudents = useMemo(
     () => (summary?.members ?? []).filter((member) => (
@@ -1506,8 +2013,14 @@ export function TeamScreen({
     )
     return Boolean(ownerId && auditVisibleOwnerIds?.has(ownerId))
   }
-  const canPreviewMergeEvent = (event: SystemEvent) => canMergeEvent(event, viewerRole) && canAccessAuditEvent(event)
-  const canRestoreAuditEvent = (event: SystemEvent) => canRestoreEvent(event, viewerRole) && canAccessAuditEvent(event)
+  const canMutateAuditApplications = viewerRole === 'owner'
+    || (viewerRole === 'admin' && viewerTeacherPermissions.editStudentApplications)
+  const canPreviewMergeEvent = (event: SystemEvent) => (
+    canMutateAuditApplications && canMergeEvent(event, viewerRole) && canAccessAuditEvent(event)
+  )
+  const canRestoreAuditEvent = (event: SystemEvent) => (
+    canMutateAuditApplications && canRestoreEvent(event, viewerRole) && canAccessAuditEvent(event)
+  )
   const priorityApplications = useMemo(() => sortedTeamApplications
     .map((application) => ({
       application,
@@ -1643,12 +2156,12 @@ export function TeamScreen({
     const query = teamDiscoverQuery.trim().toLowerCase()
     return accessibleStudentProfileRows.filter((row) => {
       if (
-        teamDiscoverFilter === 'attention'
+        renderedTeamDiscoverFilter === 'attention'
         && row.state !== 'risk'
         && row.state !== 'due'
         && row.state !== 'feedback'
       ) return false
-      if (teamDiscoverFilter === 'missing' && row.state !== 'missing') return false
+      if (renderedTeamDiscoverFilter === 'missing' && row.state !== 'missing') return false
       if (!query) return true
       const advisors = teachersForStudent(row.member, membersByUserId)
       return [
@@ -1658,9 +2171,9 @@ export function TeamScreen({
         row.applications.map((application) => application.school.name).join(' '),
       ].join(' ').toLowerCase().includes(query)
     })
-  }, [accessibleStudentProfileRows, membersByUserId, teamDiscoverFilter, teamDiscoverQuery])
+  }, [accessibleStudentProfileRows, membersByUserId, renderedTeamDiscoverFilter, teamDiscoverQuery])
   const selectedResourceStudent = accessibleStudentProfileRows.find(
-    (row) => row.member.userId === selectedResourceStudentId,
+    (row) => row.member.userId === (displayedResourceStudentId ?? selectedResourceStudentId),
   ) ?? null
   const selectedResourceStudentName = selectedResourceStudent
     ? memberDisplayName(selectedResourceStudent.member, tx('team.memberFallback'))
@@ -1671,15 +2184,42 @@ export function TeamScreen({
       .map((row) => row.member.userId)
       .filter((userId): userId is string => Boolean(userId))
     if (!selectedResourceStudentId && selectable.length > 0) {
-      setSelectedResourceStudentId(selectable[0])
+      selectResourceStudent(selectable[0])
       return
     }
     if (selectedResourceStudentId && !selectable.includes(selectedResourceStudentId)) {
+      selectedResourceStudentIdRef.current = null
       setSelectedResourceStudentId(null)
-      setStudentProfileEditorOpen(false)
-      setEditingStudentProfileId(null)
     }
-  }, [accessibleStudentProfileRows, selectedResourceStudentId])
+  }, [accessibleStudentProfileRows, selectResourceStudent, selectedResourceStudentId])
+
+  useLayoutEffect(() => {
+    positionStudentPortraitSelection(selectedResourceStudentId)
+    const list = studentPortraitListRef.current
+    const row = selectedResourceStudentId
+      ? studentPortraitRowRefs.current.get(selectedResourceStudentId)
+      : null
+    if (!list || typeof ResizeObserver === 'undefined') return undefined
+
+    const observer = new ResizeObserver(() => {
+      positionStudentPortraitSelection(selectedResourceStudentId)
+    })
+    observer.observe(list)
+    if (row) observer.observe(row)
+    return () => observer.disconnect()
+  }, [
+    accessibleStudentProfileRows,
+    positionStudentPortraitSelection,
+    selectedResourceStudentId,
+    studentProfileFilter,
+    studentProfileSort,
+    studentResourceQuery,
+  ])
+
+  useLayoutEffect(() => {
+    if (!displayedResourceStudentId || !studentPortraitDossierScrollRef.current) return
+    studentPortraitDossierScrollRef.current.scrollTop = 0
+  }, [displayedResourceStudentId])
 
   useEffect(() => {
     if (teacherStudentFilter !== 'all' && !supervisedStudentIds.has(teacherStudentFilter)) {
@@ -1999,15 +2539,30 @@ export function TeamScreen({
     }
   }
 
-  async function handleToggleStudentTeacher(member: TeamMember, teacher: TeamMember) {
-    if (!teacher.userId) return
-    const assigned = new Set(teamMemberTeacherIds(member))
-    if (assigned.has(teacher.userId)) assigned.delete(teacher.userId)
-    else assigned.add(teacher.userId)
-    const teacherMemberIds = relationshipManagers
-      .filter((candidate) => Boolean(candidate.userId && assigned.has(candidate.userId)))
-      .map((candidate) => candidate.id)
-    await handleStudentTeachersChange(member, teacherMemberIds)
+  async function handleDelegatedAccessChange(
+    member: TeamMember,
+    patch: {
+      accessLevel?: 'pro' | 'standard'
+      studentProLimit?: number
+      studentPermissions?: Partial<TeamStudentPermissions>
+      teacherPermissions?: Partial<TeamTeacherPermissions>
+    },
+  ) {
+    if (!summary) return
+    setRowBusyId(member.id)
+    setError(null)
+    setMessage(null)
+    try {
+      await phdApi.updateTeamMemberAccess(session.token, summary.team.id, member.id, patch)
+      setMessage(format(tx('team.delegatedAccessUpdated'), {
+        name: memberDisplayName(member, tx('team.memberFallback')),
+      }))
+      await syncAfterMutation()
+    } catch (err) {
+      setError(normalizeErrorMessage(err, lang))
+    } finally {
+      setRowBusyId(null)
+    }
   }
 
   function teacherMemberIdsForUserIds(teacherUserIds: readonly string[]) {
@@ -2113,11 +2668,11 @@ export function TeamScreen({
     stage.style.willChange = 'transform, opacity'
     const animation = stage.animate([
       {
-        transform: `scale(${zoomChange.previousZoom / zoomChange.nextZoom})`,
+        transform: `scale(${zoomChange.previousZoom})`,
         opacity: 0.94,
       },
       {
-        transform: 'scale(1)',
+        transform: `scale(${zoomChange.nextZoom})`,
         opacity: 1,
       },
     ], {
@@ -2717,7 +3272,7 @@ export function TeamScreen({
     const appCount = member.userId ? applicationCounts?.[member.userId] ?? 0 : 0
     const canRemove = memberCanRemove(member)
     const canEnterView = memberCanEnterView(member)
-    const canFocusRelationship = member.role === 'member' && member.status === 'active'
+    const canFocusRelationship = (member.role === 'member' || member.role === 'admin') && member.status === 'active'
     setContextMenu({
       x,
       y,
@@ -2779,12 +3334,36 @@ export function TeamScreen({
   }
 
   function focusMemberInRelationshipMap(member: TeamMember) {
-    if (member.role !== 'member' || member.status !== 'active') return
+    if ((member.role !== 'member' && member.role !== 'admin') || member.status !== 'active') return
     setMemberQuery('')
     setMemberStatusFilter('all')
-    setSelectedRelationStudentId(member.id)
+    if (member.role === 'member') setSelectedRelationStudentId(member.id)
+    setRelationFocus({ memberId: member.id, nonce: Date.now() })
     setMemberView('map')
   }
+
+  useLayoutEffect(() => {
+    if (renderedMemberWorkspaceView !== 'students' || memberView !== 'map' || !relationFocus) return undefined
+    const frame = window.requestAnimationFrame(() => {
+      const canvas = relationCanvasRef.current
+      const target = [...(canvas?.querySelectorAll<HTMLElement>('[data-relation-member-id]') ?? [])]
+        .find((node) => node.dataset.relationMemberId === relationFocus.memberId)
+      if (!canvas || !target) return
+      target.classList.remove('is-located')
+      void target.offsetWidth
+      target.classList.add('is-located')
+      const canvasRect = canvas.getBoundingClientRect()
+      const targetRect = target.getBoundingClientRect()
+      canvas.scrollTo({
+        left: Math.max(0, canvas.scrollLeft + targetRect.left + targetRect.width / 2 - canvasRect.left - canvasRect.width / 2),
+        top: Math.max(0, canvas.scrollTop + targetRect.top + targetRect.height / 2 - canvasRect.top - canvasRect.height / 2),
+        behavior: 'smooth',
+      })
+      target.focus({ preventScroll: true })
+      window.setTimeout(() => target.classList.remove('is-located'), getMotionDelay(1500))
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [memberView, relationFocus, renderedMemberWorkspaceView])
 
   function openAuditContextMenu(event: ReactMouseEvent<HTMLElement>, auditEvent: SystemEvent) {
     event.preventDefault()
@@ -2878,7 +3457,10 @@ export function TeamScreen({
               teachers={relationshipManagers}
               assignedTeacherUserIds={teamMemberTeacherIds(member)}
               busy={rowBusyId === member.id}
-              onToggle={(teacher) => handleToggleStudentTeacher(member, teacher)}
+              onCommit={(teacherUserIds) => handleStudentTeachersChange(
+                member,
+                teacherMemberIdsForUserIds(teacherUserIds),
+              )}
             />
           ) : (
             <div className="team-readonly-relation">
@@ -2957,6 +3539,317 @@ export function TeamScreen({
     return null
   }
 
+  function renderDelegatedAccessControls(member: TeamMember) {
+    const canEdit = member.role === 'member'
+      ? viewerRole === 'owner' || (
+          viewerRole === 'admin'
+          && viewerTeacherPermissions.manageStudentPermissions
+          && isTeacherAssignedToStudent(member, session.user.id)
+        )
+      : member.role === 'admin' && viewerRole === 'owner'
+    if (!canEdit) return null
+    const accessLevel = member.relationships?.accessLevel === 'standard' ? 'standard' : 'pro'
+    const studentProLimit = Number.isInteger(member.relationships?.studentProLimit)
+      ? member.relationships!.studentProLimit!
+      : 100
+    const studentPermissions = teamStudentPermissions(member.relationships)
+    const teacherPermissions = teamTeacherPermissions(member.relationships)
+    const busy = rowBusyId === member.id
+    const studentUsage = member.relationships?.usage ?? { applicationsCreated: 0, sharesCreated: 0 }
+    const studentStats = summary?.memberStats?.[member.id]
+    const studentPermissionRows: Array<{
+      key: keyof Pick<TeamStudentPermissions,
+        | 'editApplications'
+        | 'createApplications'
+        | 'useDiscover'
+        | 'createShareLinks'
+        | 'requestTeamTransfers'>
+      title: string
+      description: string
+      icon: typeof Pencil
+    }> = [
+      {
+        key: 'editApplications',
+        title: tx('team.permissionStudentEditTitle'),
+        description: tx('team.permissionStudentEditDesc'),
+        icon: Pencil,
+      },
+      {
+        key: 'createApplications',
+        title: tx('team.permissionStudentCreateTitle'),
+        description: tx('team.permissionStudentCreateDesc'),
+        icon: Plus,
+      },
+      {
+        key: 'useDiscover',
+        title: tx('team.permissionStudentDiscoverTitle'),
+        description: tx('team.permissionStudentDiscoverDesc'),
+        icon: Compass,
+      },
+      {
+        key: 'createShareLinks',
+        title: tx('team.permissionStudentShareTitle'),
+        description: tx('team.permissionStudentShareDesc'),
+        icon: ExternalLink,
+      },
+      {
+        key: 'requestTeamTransfers',
+        title: tx('team.permissionStudentTransferTitle'),
+        description: tx('team.permissionStudentTransferDesc'),
+        icon: GitMerge,
+      },
+    ]
+    const teacherPermissionRows: Array<{
+      key: keyof TeamTeacherPermissions
+      title: string
+      description: string
+      icon: typeof Pencil
+    }> = [
+      {
+        key: 'inviteStudents',
+        title: tx('team.permissionTeacherInviteTitle'),
+        description: tx('team.permissionTeacherInviteDesc'),
+        icon: UserPlus,
+      },
+      {
+        key: 'manageStudentPermissions',
+        title: tx('team.permissionTeacherStudentPermissionsTitle'),
+        description: tx('team.permissionTeacherStudentPermissionsDesc'),
+        icon: ShieldCheck,
+      },
+      {
+        key: 'useDiscover',
+        title: tx('team.permissionTeacherDiscoverTitle'),
+        description: tx('team.permissionTeacherDiscoverDesc'),
+        icon: Compass,
+      },
+      {
+        key: 'createStudentApplications',
+        title: tx('team.permissionTeacherCreateTitle'),
+        description: tx('team.permissionTeacherCreateDesc'),
+        icon: Plus,
+      },
+      {
+        key: 'editStudentApplications',
+        title: tx('team.permissionTeacherEditTitle'),
+        description: tx('team.permissionTeacherEditDesc'),
+        icon: Pencil,
+      },
+      {
+        key: 'manageStudentShares',
+        title: tx('team.permissionTeacherShareTitle'),
+        description: tx('team.permissionTeacherShareDesc'),
+        icon: ExternalLink,
+      },
+    ]
+    const limitRows: Array<{
+      key: keyof Pick<TeamStudentPermissions,
+        | 'activeApplicationLimit'
+        | 'lifetimeApplicationLimit'
+        | 'activeShareLimit'
+        | 'lifetimeShareLimit'>
+      title: string
+      description: string
+      defaultValue: number
+      used: number
+    }> = [
+      {
+        key: 'activeApplicationLimit',
+        title: tx('team.permissionStudentActiveApplicationLimitTitle'),
+        description: tx('team.permissionStudentActiveApplicationLimitDesc'),
+        defaultValue: 10,
+        used: studentStats?.applicationCount ?? 0,
+      },
+      {
+        key: 'lifetimeApplicationLimit',
+        title: tx('team.permissionStudentLifetimeApplicationLimitTitle'),
+        description: tx('team.permissionStudentLifetimeApplicationLimitDesc'),
+        defaultValue: 50,
+        used: studentUsage.applicationsCreated,
+      },
+      {
+        key: 'activeShareLimit',
+        title: tx('team.permissionStudentActiveShareLimitTitle'),
+        description: tx('team.permissionStudentActiveShareLimitDesc'),
+        defaultValue: 10,
+        used: studentStats?.studentActiveShareCount ?? 0,
+      },
+      {
+        key: 'lifetimeShareLimit',
+        title: tx('team.permissionStudentLifetimeShareLimitTitle'),
+        description: tx('team.permissionStudentLifetimeShareLimitDesc'),
+        defaultValue: 100,
+        used: studentUsage.sharesCreated,
+      },
+    ]
+    const permissionSwitch = (
+      enabled: boolean,
+      label: string,
+      onChange: () => void,
+    ) => (
+      <button
+        type="button"
+        className={`team-permission-switch${enabled ? ' enabled' : ''}`}
+        role="switch"
+        aria-checked={enabled}
+        aria-label={label}
+        disabled={busy}
+        onClick={onChange}
+      >
+        <span aria-hidden="true" />
+      </button>
+    )
+    return (
+      <section className={`team-permission-editor role-${member.role}${busy ? ' is-saving' : ''}`}>
+        <header className="team-permission-editor-head">
+          <span className="team-permission-editor-icon"><ShieldCheck size={15} aria-hidden="true" /></span>
+          <div>
+            <strong>{tx(member.role === 'admin'
+              ? 'team.permissionTeacherTitle'
+              : 'team.permissionStudentTitle')}</strong>
+            <p>{tx(member.role === 'admin'
+              ? 'team.permissionTeacherDesc'
+              : 'team.permissionStudentDesc')}</p>
+          </div>
+          <span className="team-permission-save-state" aria-live="polite">
+            {busy ? <><LoaderCircle size={12} className="spin" aria-hidden="true" /> {tx('working')}</> : tx('team.permissionSaved')}
+          </span>
+        </header>
+
+        <div className="team-permission-list">
+          {(member.role === 'member' ? studentPermissionRows : teacherPermissionRows).map((permission) => {
+            const enabled = member.role === 'member'
+              ? studentPermissions[permission.key as keyof typeof studentPermissions] === true
+              : teacherPermissions[permission.key as keyof typeof teacherPermissions] === true
+            const Icon = permission.icon
+            return (
+              <div key={permission.key} className="team-permission-row">
+                <span className="team-permission-row-icon"><Icon size={14} aria-hidden="true" /></span>
+                <span className="team-permission-row-copy">
+                  <strong>{permission.title}</strong>
+                  <small>{permission.description}</small>
+                </span>
+                {permissionSwitch(enabled, permission.title, () => {
+                  if (member.role === 'member') {
+                    void handleDelegatedAccessChange(member, {
+                      studentPermissions: { [permission.key]: !enabled },
+                    })
+                  } else {
+                    void handleDelegatedAccessChange(member, {
+                      teacherPermissions: { [permission.key]: !enabled },
+                    })
+                  }
+                })}
+              </div>
+            )
+          })}
+        </div>
+
+        {member.role === 'member' ? (
+          <div className="team-permission-limit-list">
+            <div className="team-permission-section-label">
+              <span>{tx('team.permissionLimitsTitle')}</span>
+              <em>{tx('team.permissionLimitsOptional')}</em>
+            </div>
+            {limitRows.map((limit) => {
+              const value = studentPermissions[limit.key]
+              const enabled = typeof value === 'number'
+              return (
+                <div key={limit.key} className={`team-permission-limit-row${enabled ? ' enabled' : ''}`}>
+                  <div className="team-permission-limit-summary">
+                    <span className="team-permission-row-copy">
+                      <strong>{limit.title}</strong>
+                      <small>{limit.description}</small>
+                    </span>
+                    <span className="team-permission-limit-usage">
+                      {format(tx('team.permissionLimitUsage'), { count: limit.used })}
+                    </span>
+                    {permissionSwitch(enabled, limit.title, () => {
+                      void handleDelegatedAccessChange(member, {
+                        studentPermissions: {
+                          [limit.key]: enabled ? null : Math.max(limit.defaultValue, limit.used + 1),
+                        },
+                      })
+                    })}
+                  </div>
+                  <CollapsiblePanel
+                    open={enabled}
+                    keepMounted
+                    className="team-permission-limit-field"
+                    innerClassName="team-permission-limit-field-inner"
+                    openMs={240}
+                    closeMs={180}
+                  >
+                    <label>
+                      <span>{tx('team.permissionMaximumAllowed')}</span>
+                      <input
+                        key={`${limit.key}:${value ?? 'off'}`}
+                        type="number"
+                        min={1}
+                        max={10_000}
+                        defaultValue={value ?? limit.defaultValue}
+                        disabled={busy}
+                        onBlur={(event) => {
+                          const next = Math.max(1, Math.min(10_000, Number.parseInt(event.currentTarget.value, 10) || 1))
+                          event.currentTarget.value = String(next)
+                          if (next !== value) {
+                            void handleDelegatedAccessChange(member, {
+                              studentPermissions: { [limit.key]: next },
+                            })
+                          }
+                        }}
+                      />
+                    </label>
+                  </CollapsiblePanel>
+                </div>
+              )
+            })}
+          </div>
+        ) : null}
+
+        <footer className="team-permission-entitlement">
+          <div>
+            <strong>{tx('team.permissionPlanTitle')}</strong>
+            <small>{tx('team.permissionPlanDesc')}</small>
+          </div>
+          <div className="team-access-segment" role="group" aria-label={tx('team.delegatedAccessTitle')}>
+            {(['pro', 'standard'] as const).map((level) => (
+              <button
+                key={level}
+                type="button"
+                className={accessLevel === level ? 'selected' : ''}
+                aria-pressed={accessLevel === level}
+                disabled={busy}
+                onClick={() => {
+                  if (accessLevel !== level) void handleDelegatedAccessChange(member, { accessLevel: level })
+                }}
+              >
+                {tx(level === 'pro' ? 'team.delegatedAccessPro' : 'team.delegatedAccessStandard')}
+              </button>
+            ))}
+          </div>
+          {member.role === 'admin' ? (
+            <label className="team-student-pro-limit">
+              <span>{tx('team.teacherStudentProLimit')}</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                defaultValue={studentProLimit}
+                disabled={busy}
+                onBlur={(event) => {
+                  const next = Math.max(0, Math.min(100, Number.parseInt(event.currentTarget.value, 10) || 0))
+                  event.currentTarget.value = String(next)
+                  if (next !== studentProLimit) void handleDelegatedAccessChange(member, { studentProLimit: next })
+                }}
+              />
+            </label>
+          ) : null}
+        </footer>
+      </section>
+    )
+  }
+
   function renderMemberAccessSummary(
     member: TeamMember,
     stats: NonNullable<TeamSummary['memberStats']>[string] | undefined,
@@ -3033,6 +3926,7 @@ export function TeamScreen({
       <button
         key={student.id}
         type="button"
+        data-relation-member-id={student.id}
         className={`team-relation-node student ${compact ? 'compact' : ''} ${selected ? 'selected' : ''}${dragging ? ' is-dragging' : ''}${canDrag ? ' is-draggable' : ''}${rowBusyId === student.id ? ' is-updating' : ''}${arriving ? ` is-arriving mode-${relationArrival.mode}` : ''}`}
         aria-pressed={selected}
         aria-busy={rowBusyId === student.id || undefined}
@@ -3448,6 +4342,7 @@ export function TeamScreen({
                   >
                     <div className="team-relation-branch-line" aria-hidden="true" />
                     <div
+                      data-relation-member-id={teacher?.id}
                       className={`team-relation-node teacher${teacher ? ' is-contextual' : ''}${dropActive ? ` is-drop-active mode-${relationDragMode}` : ''}`}
                       role={teacher ? 'button' : undefined}
                       tabIndex={teacher ? 0 : undefined}
@@ -3501,7 +4396,10 @@ export function TeamScreen({
                       teachers={relationshipManagers}
                       assignedTeacherUserIds={teamMemberTeacherIds(selectedStudent)}
                       busy={rowBusyId === selectedStudent.id}
-                      onToggle={(teacher) => handleToggleStudentTeacher(selectedStudent, teacher)}
+                      onCommit={(teacherUserIds) => handleStudentTeachersChange(
+                        selectedStudent,
+                        teacherMemberIdsForUserIds(teacherUserIds),
+                      )}
                     />
                   ) : (
                     <div className="team-readonly-relation">
@@ -4530,6 +5428,10 @@ export function TeamScreen({
       )
     }
 
+    const owner = summary?.members.find((member) => (
+      member.role === 'owner'
+      || member.userId === summary?.team.ownerId
+    )) ?? null
     const quotaRows = [
       {
         id: 'storage',
@@ -4565,6 +5467,7 @@ export function TeamScreen({
     ]
     const settingsSections = [
       { id: 'identity' as const, label: tx('team.settingsOrganizationName'), icon: Pencil },
+      { id: 'permissions' as const, label: tx('team.settingsPermissionsTitle'), icon: ShieldCheck },
       { id: 'quota' as const, label: tx('team.settingsQuotaTitle'), icon: Database },
       { id: 'key' as const, label: tx('team.ai.teamTitle'), icon: KeyRound },
     ]
@@ -4572,7 +5475,11 @@ export function TeamScreen({
     return (
       <div className="team-tab-panel team-settings-page role-owner team-organization-settings">
         <header className="team-organization-settings-hero">
-          <h2>{tx('team.settingsOwnerTitle')}</h2>
+          <span className="team-organization-settings-hero-icon"><Settings size={18} aria-hidden="true" /></span>
+          <div>
+            <h2>{tx('team.settingsOwnerTitle')}</h2>
+            <p>{tx('team.settingsOwnerDesc')}</p>
+          </div>
         </header>
 
         <div className="team-organization-settings-layout">
@@ -4596,6 +5503,17 @@ export function TeamScreen({
                 )
               })}
             </nav>
+            <div className="team-organization-settings-account">
+              <TeamMemberAvatar
+                member={owner}
+                fallbackName={summary?.team.name ?? screenTitle}
+                className="team-organization-settings-avatar"
+              />
+              <span>
+                <strong>{summary?.team.name ?? screenTitle}</strong>
+                <em>{owner ? memberDisplayName(owner, tx('team.memberFallback')) : tx(ROLE_LABEL_KEYS.owner)}</em>
+              </span>
+            </div>
           </aside>
 
           <div className="team-organization-settings-body">
@@ -4655,6 +5573,45 @@ export function TeamScreen({
                     </button>
                   </div>
                 )}
+              </div>
+            </section>
+
+            <section
+              id="team-organization-settings-permissions"
+              className="team-organization-settings-section"
+              aria-labelledby="team-organization-settings-permissions-title"
+            >
+              <div className="section-title team-organization-settings-title">
+                <h4 id="team-organization-settings-permissions-title">
+                  <ShieldCheck size={13} aria-hidden="true" />
+                  {tx('team.settingsPermissionsTitle')}
+                </h4>
+              </div>
+              <div className="team-organization-settings-group team-settings-permission-summary">
+                <button type="button" onClick={() => {
+                  setMemberWorkspaceView('students')
+                  changeTab('members')
+                }}>
+                  <span className="team-settings-permission-summary-icon"><UserRound size={15} aria-hidden="true" /></span>
+                  <span>
+                    <strong>{tx('team.settingsStudentPermissionsTitle')}</strong>
+                    <small>{tx('team.settingsStudentPermissionsDesc')}</small>
+                  </span>
+                  <em>{summary?.roleCounts?.member ?? 0}</em>
+                  <ArrowRight size={13} aria-hidden="true" />
+                </button>
+                <button type="button" onClick={() => {
+                  setMemberWorkspaceView('teacher-groups')
+                  changeTab('members')
+                }}>
+                  <span className="team-settings-permission-summary-icon"><Users size={15} aria-hidden="true" /></span>
+                  <span>
+                    <strong>{tx('team.settingsTeacherPermissionsTitle')}</strong>
+                    <small>{tx('team.settingsTeacherPermissionsDesc')}</small>
+                  </span>
+                  <em>{summary?.roleCounts?.admin ?? 0}</em>
+                  <ArrowRight size={13} aria-hidden="true" />
+                </button>
               </div>
             </section>
 
@@ -5159,6 +6116,7 @@ export function TeamScreen({
   }
 
   const applicationDueLabel = (application: ApplicationRecord) => {
+    if (!application.deadline) return '—'
     const due = daysUntil(application.deadline)
     if (due === 0) return tx('team.applicationDueToday')
     return due > 0
@@ -5701,50 +6659,22 @@ export function TeamScreen({
     )
   }
 
-  const renderStudentResources = () => {
-    const stats = currentMember ? memberStats[currentMember.id] ?? null : null
+  const renderStudentResourcesPersonalLayout = () => {
     const teamId = summary?.team.id ?? ''
-    const ownProfileAssets = studentProfileAssets.filter((asset) => asset.teamId === teamId && asset.studentUserId === session.user.id)
-    const editingOwnProfile = editingStudentProfileId
-      ? ownProfileAssets.find((asset) => asset.id === editingStudentProfileId) ?? null
-      : null
-    const openOwnProfileEditor = (preset?: Partial<TeamStudentProfileDraft>) => {
-      setEditingStudentProfileId(null)
-      setStudentProfileDraft({ ...defaultStudentProfileDraft, ...preset })
-      setStudentProfileEditorOpen(true)
-    }
-    const editOwnProfile = (asset: TeamStudentProfileAsset) => {
-      setEditingStudentProfileId(asset.id)
-      setStudentProfileDraft({ kind: asset.kind, name: asset.name, description: asset.description })
-      setStudentProfileEditorOpen(true)
-    }
-    const saveOwnProfile = () => {
-      if (!teamId || !studentProfileDraft.name.trim()) return
-      const now = new Date().toISOString()
-      setStudentProfileAssets((items) => editingOwnProfile
-        ? items.map((item) => item.id === editingOwnProfile.id ? {
-            ...item,
-            kind: studentProfileDraft.kind,
-            name: studentProfileDraft.name.trim(),
-            description: studentProfileDraft.description.trim(),
-            updatedAt: now,
-          } : item)
-        : [{
-            id: `student-profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            teamId,
-            studentUserId: session.user.id,
-            kind: studentProfileDraft.kind,
-            name: studentProfileDraft.name.trim(),
-            description: studentProfileDraft.description.trim(),
-            updatedAt: now,
-          }, ...items])
-      setStudentProfileEditorOpen(false)
-      setEditingStudentProfileId(null)
-      setStudentProfileDraft(defaultStudentProfileDraft)
-      setMessage(tx('team.studentProfileSaved'))
-    }
-    const confirmOwnProfileDelete = (assetId: string) => {
-      setPendingStudentProfileDeleteId(null)
+    const ownProfileAssets = studentProfileAssets.filter((asset) => (
+      asset.teamId === teamId && asset.studentUserId === session.user.id
+    ))
+    const profileAssetsForLayout: ProfileAsset[] = ownProfileAssets.map((asset) => ({
+      id: asset.id,
+      ownerId: session.user.id,
+      kind: asset.kind,
+      name: asset.name,
+      description: asset.description,
+      attachments: [],
+      updatedAt: asset.updatedAt,
+      createdAt: asset.updatedAt,
+    }))
+    const finishDelete = (assetId: string) => {
       setRemovingStudentProfileIds((current) => new Set(current).add(assetId))
       window.setTimeout(() => {
         setStudentProfileAssets((items) => items.filter((item) => item.id !== assetId))
@@ -5757,183 +6687,45 @@ export function TeamScreen({
     }
 
     return (
-      <div className="team-tab-panel team-role-resource-page role-member">
-        <section className="team-panel">
-          <div className="team-panel-head">
-            <div>
-              <span className="eyebrow">{tx('team.resourcesStudentEyebrow')}</span>
-              <h3>{tx('team.resourcesStudentTitle')}</h3>
-            </div>
-            <Database size={16} aria-hidden="true" />
-          </div>
-          <div className="team-resource-grid team-resource-grid-scoped">
-            <section className="team-resource-card">
-              <span className="team-resource-icon"><FileText size={18} aria-hidden="true" /></span>
-              <div>
-                <strong>{stats?.applicationCount ?? applications.length}</strong>
-                <span>{tx('team.settingsMetricSharedApps')}</span>
-              </div>
-            </section>
-            <section className="team-resource-card">
-              <span className="team-resource-icon"><MessageSquare size={18} aria-hidden="true" /></span>
-              <div>
-                <strong>{stats?.reviewCommentCount ?? studentFeedbackCount}</strong>
-                <span>{tx('team.metricFeedback')}</span>
-              </div>
-            </section>
-            <section className="team-resource-card">
-              <span className="team-resource-icon"><Link2 size={18} aria-hidden="true" /></span>
-              <div>
-                <strong>{stats?.activeShareCount ?? 0}</strong>
-                <span>{format(tx('team.memberStatLinks'), { count: stats?.activeShareCount ?? 0 })}</span>
-              </div>
-            </section>
-            <section className="team-resource-card">
-              <span className="team-resource-icon"><Database size={18} aria-hidden="true" /></span>
-              <div>
-                <strong>{formatBytes(stats?.storageUsedBytes ?? 0, lang)}</strong>
-                <span>{tx('team.capacityUsedOnly')}</span>
-              </div>
-            </section>
-          </div>
-          <div className="team-student-resource-flow">
-            <section className="team-student-resource-policy">
-              <span className="team-resource-icon"><ShieldCheck size={18} aria-hidden="true" /></span>
-              <div>
-                <strong>{tx('team.studentResourcePolicyTitle')}</strong>
-                <em>{tx('team.studentResourcePolicyDesc')}</em>
-              </div>
-              {onCreateApplication ? (
-                <button type="button" className="primary-action compact-action" onClick={() => onCreateApplication(null)}>
-                  <Plus size={13} aria-hidden="true" />
-                  {tx('team.studentRequestNewApplication')}
-                </button>
-              ) : null}
-            </section>
-            <section className="team-student-resource-requests">
-              <div className="team-student-resource-requests-head">
-                <span>{tx('team.studentPendingRequests')}</span>
-                <strong>{studentPendingTransferRequests.length}</strong>
-              </div>
-              {studentPendingTransferRequests.length === 0 ? (
-                <p>{tx('team.studentNoPendingRequests')}</p>
-              ) : (
-                <div className="team-student-resource-request-list">
-                  {studentPendingTransferRequests.slice(0, 4).map((request) => (
-                    <span key={request.id}>
-                      <strong>{request.applicationName}</strong>
-                      <em>{format(tx(request.direction === 'join' ? 'team.transferDirectionJoin' : 'team.transferDirectionLeave'), {
-                        student: request.ownerName || request.ownerEmail || tx('team.memberFallback'),
-                      })} · {eventTime(request.requestedAt, lang)}</em>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </section>
-          </div>
-          <div className="team-role-primary-actions">
-            <button type="button" className="primary-action" onClick={() => changeTab('applications')}>
-              <FileText size={13} aria-hidden="true" />
-              {tx('team.studentOpenSharedApps')}
-            </button>
-          </div>
-        </section>
-
-        <section className="team-panel team-member-profile-workspace" aria-labelledby="team-member-profile-library-title">
-          <div className="team-panel-head">
-            <div>
-              <span className="eyebrow">{tx('team.studentProfileOrgEyebrow')}</span>
-              <h3 id="team-member-profile-library-title">{tx('team.studentProfileOrgTitle')}</h3>
-            </div>
-            <span className="profile-count-badge">{ownProfileAssets.length}</span>
-          </div>
-          <p className="team-profile-boundary-note">{tx('team.studentProfileOrgBoundary')}</p>
-
-          {ownProfileAssets.length === 0 ? (
-            <div className="team-empty compact">
-              <span className="empty-state-icon"><FileText size={18} aria-hidden="true" /></span>
-              <div><h3>{tx('team.studentProfileOrgEmpty')}</h3><p>{tx('team.studentProfileOrgEmptyDesc')}</p></div>
-            </div>
-          ) : (
-            <div className="snippet-grid team-student-profile-grid">
-              {ownProfileAssets.map((asset) => {
-                const isRemoving = removingStudentProfileIds.has(asset.id)
-                return (
-                <article key={asset.id} className={`snippet-card team-student-profile-card${isRemoving ? ' is-removing' : ''}`}>
-                  <button type="button" className="snippet-card-main" onClick={() => editOwnProfile(asset)}>
-                    <div className="snippet-card-icon"><FileText size={18} aria-hidden="true" /></div>
-                    <div className="snippet-card-info">
-                      <div className="snippet-card-title-row"><strong>{asset.name}</strong><span>{asset.kind}</span></div>
-                      {asset.description ? <MarkdownContent value={asset.description} className="snippet-card-description" /> : null}
-                    </div>
-                  </button>
-                  <div className="snippet-card-foot">
-                    <span className="snippet-card-chip">{tx('team.studentProfileOrganizationOnly')}</span>
-                    <div className="snippet-card-actions">
-                      <button type="button" className="icon-action" title={tx('team.studentProfileEdit')} disabled={isRemoving} onClick={() => editOwnProfile(asset)}><Pencil size={13} aria-hidden="true" /></button>
-                      <InlineConfirm
-                        className="team-student-profile-delete"
-                        open={pendingStudentProfileDeleteId === asset.id}
-                        busy={isRemoving}
-                        disabled={isRemoving}
-                        confirmLabel={tx('team.studentProfileDelete')}
-                        cancelLabel={tx('cancel')}
-                        confirmTone="danger"
-                        idleClassName="icon-action"
-                        idleTitle={tx('team.studentProfileDelete')}
-                        idleAriaLabel={tx('team.studentProfileDelete')}
-                        onOpen={() => setPendingStudentProfileDeleteId(asset.id)}
-                        onCancel={() => setPendingStudentProfileDeleteId(null)}
-                        onConfirm={() => confirmOwnProfileDelete(asset.id)}
-                      >
-                        <Trash2 size={13} aria-hidden="true" />
-                      </InlineConfirm>
-                    </div>
-                  </div>
-                </article>
-                )
-              })}
-            </div>
-          )}
-
-          <CollapsiblePanel open={studentProfileEditorOpen} keepMounted className="team-student-profile-editor-collapse" innerClassName="team-student-profile-editor-collapse-inner" openMs={380} closeMs={320}>
-            <div className="team-student-profile-editor">
-              <div className="team-student-profile-editor-head"><span>{editingOwnProfile ? tx('team.studentProfileEdit') : tx('team.studentProfileAdd')}</span></div>
-              <div className="team-student-profile-editor-grid">
-                <label><span>{tx('team.studentProfileName')}</span><input value={studentProfileDraft.name} onChange={(event) => setStudentProfileDraft((current) => ({ ...current, name: event.target.value }))} /></label>
-                <label><span>{tx('team.studentProfileKind')}</span><Select size="small" value={studentProfileDraft.kind} options={teamProfilePresets.map((preset) => ({ value: preset.kind, label: profilePresetText(preset, lang).name }))} onChange={(kind) => setStudentProfileDraft((current) => ({ ...current, kind }))} /></label>
-                <label className="wide"><span>{tx('team.studentProfileContent')}</span><textarea rows={4} value={studentProfileDraft.description} onChange={(event) => setStudentProfileDraft((current) => ({ ...current, description: event.target.value }))} /></label>
-              </div>
-              <div className="team-student-profile-editor-actions">
-                <button type="button" className="quiet-action" onClick={() => { setStudentProfileEditorOpen(false); setEditingStudentProfileId(null) }}>{tx('cancel')}</button>
-                <button type="button" className="primary-action" onClick={saveOwnProfile} disabled={!studentProfileDraft.name.trim()}><Check size={13} aria-hidden="true" />{tx('team.studentProfileSave')}</button>
-              </div>
-            </div>
-          </CollapsiblePanel>
-          <CollapsiblePanel open={!studentProfileEditorOpen} keepMounted className="team-student-profile-presets-collapse" innerClassName="team-student-profile-presets-collapse-inner" openMs={380} closeMs={320}>
-            <div className="profile-preset-section team-student-profile-section">
-              <div className="profile-section-head">
-                <div><span className="eyebrow">{tx('team.studentProfilePresetEyebrow')}</span><h3>{tx('team.studentProfilePresetTitle')}</h3></div>
-                <span className="profile-count-badge">{teamProfilePresets.length}</span>
-              </div>
-              <div className="profile-preset-grid team-student-profile-presets">
-                {teamProfilePresets.map((preset) => {
-                  const display = profilePresetText(preset, lang)
-                  return (
-                    <button key={preset.id} type="button" className="profile-preset-card" onClick={() => openOwnProfileEditor({ kind: preset.kind, name: display.name, description: display.content })}>
-                      <ProfilePresetIcon icon={preset.icon} color={preset.color} />
-                      <strong>{display.name}</strong><em>{display.description}</em>
-                      <span className="profile-preset-action"><Plus size={12} aria-hidden="true" />{tx('team.studentProfileUsePreset')}</span>
-                    </button>
-                  )
-                })}
-                <button type="button" className="profile-preset-card profile-preset-add-card" onClick={() => openOwnProfileEditor()}>
-                  <span className="profile-preset-icon"><Plus size={16} aria-hidden="true" /></span><strong>{tx('team.studentProfileAdd')}</strong><em>{tx('team.studentProfileOwnSnippetHint')}</em>
-                </button>
-              </div>
-            </div>
-          </CollapsiblePanel>
-        </section>
+      <div className="team-tab-panel team-student-profile-parity">
+        <ProfileScreen
+          assets={profileAssetsForLayout}
+          session={session}
+          presetsOverride={teamProfilePresets}
+          mode="organization-student"
+          removingAssetIds={removingStudentProfileIds}
+          onCreateSnippet={(input) => {
+            const now = new Date().toISOString()
+            setStudentProfileAssets((items) => [{
+              id: `student-profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              teamId,
+              studentUserId: session.user.id,
+              kind: input.kind,
+              name: input.name.trim(),
+              description: input.description.trim(),
+              updatedAt: now,
+            }, ...items])
+          }}
+          onUpdateAsset={(assetId, input) => {
+            setStudentProfileAssets((items) => items.map((item) => item.id === assetId ? {
+              ...item,
+              kind: input.kind ?? item.kind,
+              name: input.name?.trim() ?? item.name,
+              description: input.description?.trim() ?? item.description,
+              updatedAt: new Date().toISOString(),
+            } : item))
+          }}
+          onDeleteAsset={(asset) => finishDelete(asset.id)}
+          onUploadFiles={() => undefined}
+          onRenameFile={() => undefined}
+          onDeleteFile={() => undefined}
+          onDownloadFile={() => undefined}
+          onLoadFile={async () => new Blob()}
+          onCreateShare={() => undefined}
+          onRevokeShare={() => undefined}
+          onUpdateSettings={() => undefined}
+          onCopy={onCopy}
+        />
       </div>
     )
   }
@@ -5976,17 +6768,20 @@ export function TeamScreen({
       const activeSourceFilter: ProfilePresetSourceFilter = (
         isOwnerLibrary && presetSourceFilter === 'mine'
       ) ? 'all' : presetSourceFilter
+      const renderedSourceFilter: ProfilePresetSourceFilter = (
+        isOwnerLibrary && renderedPresetSourceFilter === 'mine'
+      ) ? 'all' : renderedPresetSourceFilter
       const sourceCounts: Record<ProfilePresetSourceFilter, number> = {
         all: teamProfilePresets.length,
         system: buckets.system.length,
         org: buckets.org.length,
         mine: buckets.mine.length,
       }
-      const sourcePresets = activeSourceFilter === 'all'
+      const sourcePresets = renderedSourceFilter === 'all'
         ? teamProfilePresets
-        : activeSourceFilter === 'system'
+        : renderedSourceFilter === 'system'
           ? buckets.system
-          : activeSourceFilter === 'org'
+          : renderedSourceFilter === 'org'
             ? buckets.org
             : buckets.mine
       const normalizedPresetQuery = presetQuery.trim().toLowerCase()
@@ -6072,7 +6867,7 @@ export function TeamScreen({
                 role="tab"
                 className={activeSourceFilter === value ? 'active' : ''}
                 aria-selected={activeSourceFilter === value}
-                onClick={() => setPresetSourceFilter(value)}
+                onClick={() => changePresetSourceFilter(value)}
               >
                 <span>{label}</span>
                 <b>{sourceCounts[value]}</b>
@@ -6080,8 +6875,12 @@ export function TeamScreen({
             ))}
           </div>
 
-          {visiblePresets.length === 0 ? (
-            <div className={`team-portrait-presets-empty${compactEmpty ? ' compact' : ''}`}>
+          <div
+            className={`team-portrait-preset-results is-${presetSourceFilterPhase}`}
+            aria-live="polite"
+          >
+            {visiblePresets.length === 0 ? (
+              <div className={`team-portrait-presets-empty${compactEmpty ? ' compact' : ''}`}>
               <span className="empty-state-icon"><ListChecks size={18} aria-hidden="true" /></span>
               <div>
                 <strong>{tx(normalizedPresetQuery ? 'noResults' : 'team.myPortraitPresetsEmpty')}</strong>
@@ -6100,10 +6899,10 @@ export function TeamScreen({
                   {tx(isOwnerLibrary ? 'team.orgPortraitPresetsAdd' : 'profile.addPreset')}
                 </button>
               ) : null}
-            </div>
-          ) : (
-            <div className="team-portrait-preset-list" role="list">
-              {visiblePresets.map((preset) => {
+              </div>
+            ) : (
+              <div className="team-portrait-preset-list" role="list">
+                {visiblePresets.map((preset) => {
                 const display = profilePresetText(preset, lang)
                 const source = resolvePresetSource(preset)
                 const sourceLabel = source === 'system'
@@ -6177,9 +6976,10 @@ export function TeamScreen({
                     </div>
                   </article>
                 )
-              })}
-            </div>
-          )}
+                })}
+              </div>
+            )}
+          </div>
         </section>
       )
     }
@@ -6231,15 +7031,24 @@ export function TeamScreen({
       })
     const selectedRow = studentRows.find((row) => row.member.userId === selectedResourceStudentId) ?? null
     const selectedStudentId = selectedRow?.member.userId ?? null
+    const displayedRow = studentRows.find((row) => row.member.userId === displayedResourceStudentId) ?? null
+    const contentRow = displayedRow ?? (!displayedResourceStudentId ? selectedRow : null)
+    const contentStudentId = contentRow?.member.userId ?? null
+    const studentPortraitPending = Boolean(
+      viewedStudentAssetsLoading
+      && selectedStudentId
+      && selectedStudentId !== displayedResourceStudentId,
+    )
+    const studentPortraitColdLoading = viewedStudentAssetsLoading && !displayedResourceStudentId
     const selectedHiddenByFilters = Boolean(
       selectedResourceStudentId
       && !selectedRow
       && profileRows.some((row) => row.member.userId === selectedResourceStudentId),
     )
-    const selectedAdvisors = selectedRow ? studentTeachersFor(selectedRow.member) : []
-    const selectedStudentMailHref = selectedRow ? memberMailtoHref(selectedRow.member) : ''
-    const selectedStudentName = selectedRow
-      ? memberDisplayName(selectedRow.member, tx('team.memberFallback'))
+    const selectedAdvisors = contentRow ? studentTeachersFor(contentRow.member) : []
+    const selectedStudentMailHref = contentRow ? memberMailtoHref(contentRow.member) : ''
+    const selectedStudentName = contentRow
+      ? memberDisplayName(contentRow.member, tx('team.memberFallback'))
       : ''
     const filteredStudentAssets = viewedStudentAssets.filter((asset) => {
       const needle = viewedStudentAssetQuery.trim().toLowerCase()
@@ -6333,21 +7142,43 @@ export function TeamScreen({
                   </button>
                 </div>
               ) : (
-                <div className="team-portrait-student-list" role="listbox" aria-label={tx('team.studentProfilePickerTitle')}>
+                <div
+                  ref={studentPortraitListRef}
+                  className="team-portrait-student-list"
+                  role="listbox"
+                  aria-label={tx('team.studentProfilePickerTitle')}
+                >
+                  <span
+                    ref={studentPortraitSelectionRef}
+                    className="team-portrait-student-selection"
+                    aria-hidden="true"
+                    onTransitionEnd={(event) => {
+                      if (event.propertyName === 'transform') finishStudentPortraitSelectionMotion()
+                    }}
+                  />
                   {studentRows.map((row) => {
                     const isSelected = row.member.userId === selectedStudentId
                     const studentName = memberDisplayName(row.member, tx('team.memberFallback'))
+                    const studentUserId = row.member.userId
                     return (
                       <button
                         key={row.member.id}
+                        ref={(node) => {
+                          if (!studentUserId) return
+                          if (node) studentPortraitRowRefs.current.set(studentUserId, node)
+                          else studentPortraitRowRefs.current.delete(studentUserId)
+                        }}
                         type="button"
                         role="option"
                         className={`team-portrait-student-row state-${row.state}${isSelected ? ' selected' : ''}`}
                         aria-selected={isSelected}
-                        onClick={() => {
-                          setSelectedResourceStudentId(row.member.userId ?? null)
-                          setStudentProfileEditorOpen(false)
+                        onPointerDown={(event) => {
+                          if (event.button !== 0 || !studentUserId) return
+                          positionStudentPortraitSelection(studentUserId, event.currentTarget)
                         }}
+                        onPointerEnter={() => warmStudentPortraitAssets(studentUserId)}
+                        onFocus={() => warmStudentPortraitAssets(studentUserId)}
+                        onClick={(event) => selectResourceStudent(studentUserId, event.currentTarget)}
                       >
                         <TeamMemberAvatar member={row.member} className="team-portrait-student-avatar" />
                         <span className="team-portrait-student-copy">
@@ -6370,17 +7201,27 @@ export function TeamScreen({
               )}
             </aside>
 
-            <section className="team-portrait-profile-pane" aria-label={tx('profile.title')}>
-              {selectedRow ? (
+            <section
+              className={`team-portrait-profile-pane${studentPortraitPending ? ' is-student-loading' : ''}`}
+              aria-label={tx('profile.title')}
+              aria-busy={viewedStudentAssetsLoading || undefined}
+            >
+              {studentPortraitPending ? <span className="team-portrait-student-loading-line" aria-hidden="true" /> : null}
+              <div
+                className={`team-portrait-profile-content${studentPortraitHandoffCycle ? ` is-handoff-${studentPortraitHandoffCycle}` : ''}`}
+                data-student-portrait-stable={studentPortraitStable ? 'true' : undefined}
+                inert={studentPortraitPending || undefined}
+              >
+              {contentRow ? (
                 <>
                   <div className="team-portrait-dossier-head">
                     <div className="team-portrait-identity">
-                      <TeamMemberAvatar member={selectedRow.member} className="team-portrait-identity-avatar" />
+                      <TeamMemberAvatar member={contentRow.member} className="team-portrait-identity-avatar" />
                       <div>
                         <span className="eyebrow">{tx('team.studentProfileEyebrow')}</span>
-                        <h2>{memberDisplayName(selectedRow.member, tx('team.memberFallback'))}</h2>
+                        <h2>{memberDisplayName(contentRow.member, tx('team.memberFallback'))}</h2>
                         <p>
-                          {selectedStudentMailHref ? <a href={selectedStudentMailHref}>{memberEmail(selectedRow.member)}</a> : (memberEmail(selectedRow.member) || tx('team.noLinkedEmail'))}
+                          {selectedStudentMailHref ? <a href={selectedStudentMailHref}>{memberEmail(contentRow.member)}</a> : (memberEmail(contentRow.member) || tx('team.noLinkedEmail'))}
                           <span aria-hidden="true">·</span>
                           {format(tx('team.studentPortraitAdvisorMeta'), {
                             name: selectedAdvisors.length
@@ -6391,14 +7232,14 @@ export function TeamScreen({
                       </div>
                     </div>
                     <div className="team-portrait-identity-actions">
-                      {selectedRow.member.userId && onViewApplications ? (
-                        <button type="button" className="quiet-action compact-action" onClick={() => onViewApplications(selectedRow.member.userId!)}>
+                      {contentRow.member.userId && onViewApplications ? (
+                        <button type="button" className="quiet-action compact-action" onClick={() => onViewApplications(contentRow.member.userId!)}>
                           <FolderOpen size={13} aria-hidden="true" />
                           {tx('team.studentProfileOpenApps')}
                         </button>
                       ) : null}
-                      {selectedRow.member.userId && onCreateApplication ? (
-                        <button type="button" className="primary-action compact-action" onClick={() => onCreateApplication(selectedRow.member.userId!)}>
+                      {contentRow.member.userId && onCreateApplication ? (
+                        <button type="button" className="primary-action compact-action" onClick={() => onCreateApplication(contentRow.member.userId!)}>
                           <Plus size={13} aria-hidden="true" />
                           {tx('team.teacherCreateForStudent')}
                         </button>
@@ -6406,7 +7247,7 @@ export function TeamScreen({
                     </div>
                   </div>
 
-                  <div className="team-portrait-dossier-scroll">
+                  <div ref={studentPortraitDossierScrollRef} className="team-portrait-dossier-scroll">
                     <section className="team-portrait-content-section" aria-labelledby="team-student-library-title">
                       <div className="team-portrait-section-head team-portrait-library-head">
                         <div>
@@ -6456,7 +7297,21 @@ export function TeamScreen({
                         </div>
                       </div>
 
-                      {viewedStudentAssetsLoading ? (
+                      <LibraryInsertionMotionBoundary
+                        key={`team-library-motion:${contentStudentId ?? 'none'}`}
+                        assetIds={viewedStudentAssets.map((asset) => asset.id)}
+                        items={studentAssetView === 'list'
+                          ? filteredStudentAssets.map((asset) => ({
+                              key: `asset:${asset.id}`,
+                              assetIds: [asset.id],
+                            }))
+                          : filteredStudentFamilies.map((family) => ({
+                              key: `family:${family.familyId}`,
+                              assetIds: family.versions.map((version) => version.id),
+                            }))}
+                        enabled={studentPortraitStable && !studentPortraitColdLoading}
+                      >
+                      {studentPortraitColdLoading ? (
                         <div className="team-portrait-profile-loading" aria-busy="true"><span /><span /><span /></div>
                       ) : filteredStudentAssets.length === 0 ? (
                         <div className="team-portrait-section-empty team-portrait-profile-empty">
@@ -6472,7 +7327,11 @@ export function TeamScreen({
                             const attachmentCount = asset.attachments?.length ?? 0
                             const deleting = deletingViewedStudentAssetId === asset.id
                             return (
-                              <article key={asset.id} className={`team-portrait-snippet-row${deleting ? ' is-removing' : ''}`}>
+                              <article
+                                key={asset.id}
+                                data-library-motion-key={`asset:${asset.id}`}
+                                className={`team-portrait-snippet-row${deleting ? ' is-removing' : ''}`}
+                              >
                                 <button
                                   type="button"
                                   className="team-portrait-snippet-main"
@@ -6519,12 +7378,17 @@ export function TeamScreen({
                               const open = expandedStudentFamilyId === family.familyId
                               return (
                                 <TeamPortraitFamilyDeck
-                                  key={`${activeTeamId ?? summary?.team.id ?? 'team'}:${selectedStudentId ?? 'student'}:${family.familyId}`}
+                                  key={`${activeTeamId ?? summary?.team.id ?? 'team'}:${contentStudentId ?? 'student'}:${family.familyId}`}
                                   family={family}
                                   familyIndex={familyIndex}
                                   open={open}
+                                  preferredVersionId={enteredStudentAssetId}
                                   deletingAssetId={deletingViewedStudentAssetId}
-                                  onToggle={() => setExpandedStudentFamilyId(open ? null : family.familyId)}
+                                  onToggle={() => toggleStudentAssetFamily(family.familyId, open)}
+                                  onRootChange={(node) => {
+                                    if (node) studentFamilyStackRefs.current.set(family.familyId, node)
+                                    else studentFamilyStackRefs.current.delete(family.familyId)
+                                  }}
                                   onOpen={openSelectedStudentSnippet}
                                   onDelete={setPendingViewedStudentAssetDelete}
                                 />
@@ -6533,6 +7397,7 @@ export function TeamScreen({
                           </div>
                         </div>
                       )}
+                      </LibraryInsertionMotionBoundary>
                     </section>
                   </div>
                 </>
@@ -6545,14 +7410,15 @@ export function TeamScreen({
                   </div>
                   <div className="team-portrait-detail-empty-actions">
                     {selectedHiddenByFilters ? <button type="button" className="primary-action" onClick={clearStudentProfileFilters}>{tx('team.studentProfileClearFilters')}</button> : null}
-                    {studentRows.slice(0, 3).map((row) => <button key={row.member.id} type="button" className="quiet-action" onClick={() => setSelectedResourceStudentId(row.member.userId ?? null)}>{memberDisplayName(row.member, tx('team.memberFallback'))}</button>)}
+                    {studentRows.slice(0, 3).map((row) => <button key={row.member.id} type="button" className="quiet-action" onClick={() => selectResourceStudent(row.member.userId)}>{memberDisplayName(row.member, tx('team.memberFallback'))}</button>)}
                   </div>
                 </div>
               )}
+              </div>
             </section>
 
             <aside className="team-portrait-template-pane" aria-label={tx('team.myPortraitPresetsEyebrow')}>
-              {renderPresetLibrary(false, Boolean(selectedRow), 'inspector')}
+              {renderPresetLibrary(false, Boolean(selectedRow && !viewedStudentAssetsLoading), 'inspector')}
             </aside>
           </div>
         )}
@@ -6568,7 +7434,7 @@ export function TeamScreen({
   )
 
   const renderResources = () => {
-    if (viewerRole === 'member') return renderStudentResources()
+    if (viewerRole === 'member') return renderStudentResourcesPersonalLayout()
     // Institution admin and teacher share the same student-portrait layout.
     if (viewerRole === 'admin') return renderTeacherResources()
     return renderStudentProfileResources(
@@ -6685,10 +7551,14 @@ export function TeamScreen({
 
         <CollapsiblePanel
           open={isExpanded}
+          warmMount
+          openMs={320}
+          closeMs={260}
           className="team-collaboration-detail"
           innerClassName="team-collaboration-detail-inner"
         >
           {renderMemberAccessSummary(member, stats, appCount, riskTotal, false)}
+          {renderDelegatedAccessControls(member)}
           {member.status === 'active' ? renderRelationshipControls(member) : (
             <p className="team-collaboration-pending-note">
               {format(tx('team.pendingHint'), { email: email || displayName })}
@@ -6775,53 +7645,12 @@ export function TeamScreen({
   function renderStudentCollaborationWorkspace() {
     return (
       <>
-        <div className="team-collaboration-toolbar">
-          <label className="team-member-search">
-            <Search size={14} aria-hidden="true" />
-            <input
-              type="search"
-              value={memberQuery}
-              onChange={(event) => setMemberQuery(event.target.value)}
-              placeholder={tx('team.collaborationStudentSearch')}
-            />
-          </label>
-          <span className="team-member-filter-count">
-            {format(tx('team.memberFilteredCount'), {
-              visible: filteredCollaborationStudents.length,
-              total: collaborationStudents.length,
-            })}
-          </span>
-          <div className="team-collaboration-toolbar-actions">
-            <label className="team-member-filter-select">
-              <span className="sr-only">{tx('team.memberStatusFilterLabel')}</span>
-              <Select
-                size="small"
-                value={memberStatusFilter}
-                ariaLabel={tx('team.memberStatusFilterLabel')}
-                options={[
-                  { value: 'all', label: tx('team.memberStatusAll') },
-                  { value: 'active', label: tx('team.statusActive') },
-                  { value: 'pending', label: tx('team.statusPending') },
-                ]}
-                onChange={(value) => setMemberStatusFilter(value as TeamMemberStatusFilter)}
-              />
-            </label>
-            <div className="team-member-view-switch" role="tablist" aria-label={tx('team.relationshipViewLabel')}>
-              <span className={`team-member-view-indicator ${memberView === 'map' ? 'is-map' : ''}`} aria-hidden="true" />
-              <button type="button" className={memberView === 'table' ? 'active' : ''} aria-selected={memberView === 'table'} onClick={() => setMemberView('table')}>
-                <Table2 size={13} aria-hidden="true" />
-                {tx('team.collaborationListView')}
-              </button>
-              <button type="button" className={memberView === 'map' ? 'active' : ''} aria-selected={memberView === 'map'} onClick={() => setMemberView('map')}>
-                <Network size={13} aria-hidden="true" />
-                {tx('team.relationshipViewMap')}
-              </button>
-            </div>
+        {memberView === 'map' ? (
+          <div key="relationship-map" className="team-member-view-panel is-map">
+            {renderRelationshipMap(memberMatchesFilter, memberFilterActive)}
           </div>
-        </div>
-
-        {memberView === 'map' ? renderRelationshipMap(memberMatchesFilter, memberFilterActive) : (
-          <div className="team-collaboration-list">
+        ) : (
+          <div key="collaboration-list" className="team-member-view-panel is-list team-collaboration-list">
             {filteredCollaborationStudents.length > 0
               ? filteredCollaborationStudents.map(renderCollaborationStudentRow)
               : (
@@ -6847,6 +7676,77 @@ export function TeamScreen({
     )
   }
 
+  function renderStudentCollaborationToolbar() {
+    return (
+      <div className="team-collaboration-toolbar">
+        <label className="team-member-search">
+          <Search size={14} aria-hidden="true" />
+          <input
+            type="search"
+            value={memberQuery}
+            onChange={(event) => setMemberQuery(event.target.value)}
+            placeholder={tx('team.collaborationStudentSearch')}
+          />
+        </label>
+        <span className="team-member-filter-count">
+          {format(tx('team.memberFilteredCount'), {
+            visible: filteredCollaborationStudents.length,
+            total: collaborationStudents.length,
+          })}
+        </span>
+        <div className="team-collaboration-toolbar-actions">
+          <label className="team-member-filter-select">
+            <span className="sr-only">{tx('team.memberStatusFilterLabel')}</span>
+            <Select
+              size="small"
+              value={memberStatusFilter}
+              ariaLabel={tx('team.memberStatusFilterLabel')}
+              options={[
+                { value: 'all', label: tx('team.memberStatusAll') },
+                { value: 'active', label: tx('team.statusActive') },
+                { value: 'pending', label: tx('team.statusPending') },
+              ]}
+              onChange={(value) => setMemberStatusFilter(value as TeamMemberStatusFilter)}
+            />
+          </label>
+          <div className="team-member-view-switch" role="tablist" aria-label={tx('team.relationshipViewLabel')}>
+            <span className={`team-member-view-indicator ${memberView === 'map' ? 'is-map' : ''}`} aria-hidden="true" />
+            <button type="button" className={memberView === 'table' ? 'active' : ''} aria-selected={memberView === 'table'} onClick={() => setMemberView('table')}>
+              <Table2 size={13} aria-hidden="true" />
+              {tx('team.collaborationListView')}
+            </button>
+            <button type="button" className={memberView === 'map' ? 'active' : ''} aria-selected={memberView === 'map'} onClick={() => setMemberView('map')}>
+              <Network size={13} aria-hidden="true" />
+              {tx('team.relationshipViewMap')}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  function renderTeacherGroupToolbar() {
+    return (
+      <div className="team-collaboration-toolbar teacher-groups">
+        <label className="team-member-search">
+          <Search size={14} aria-hidden="true" />
+          <input
+            type="search"
+            value={memberQuery}
+            onChange={(event) => setMemberQuery(event.target.value)}
+            placeholder={tx('team.teacherGroupSearch')}
+          />
+        </label>
+        <span className="team-member-filter-count">
+          {format(tx('team.memberFilteredCount'), {
+            visible: filteredTeacherDirectory.length,
+            total: teacherDirectory.length,
+          })}
+        </span>
+      </div>
+    )
+  }
+
   function renderTeacherGroupWorkspace() {
     const selectedTitle = activeTeacherGroup?.name
       ?? (selectedTeacherGroupId === 'ungrouped' ? tx('team.teacherGroupUngrouped') : tx('team.teacherGroupAll'))
@@ -6858,27 +7758,14 @@ export function TeamScreen({
 
     return (
       <>
-        <div className="team-collaboration-toolbar teacher-groups">
-          <label className="team-member-search">
-            <Search size={14} aria-hidden="true" />
-            <input
-              type="search"
-              value={memberQuery}
-              onChange={(event) => setMemberQuery(event.target.value)}
-              placeholder={tx('team.teacherGroupSearch')}
-            />
-          </label>
-          <span className="team-member-filter-count">
-            {format(tx('team.memberFilteredCount'), {
-              visible: filteredTeacherDirectory.length,
-              total: teacherDirectory.length,
-            })}
-          </span>
-        </div>
-
         <div className="team-teacher-group-layout">
-          <nav className="team-teacher-group-nav" aria-label={tx('team.teacherGroupsTitle')}>
+          <nav ref={teacherGroupNavRef} className="team-teacher-group-nav" aria-label={tx('team.teacherGroupsTitle')}>
+            <span ref={teacherGroupNavIndicatorRef} className="team-teacher-group-nav-indicator" aria-hidden="true" />
             <button
+              ref={(node) => {
+                if (node) teacherGroupNavButtonRefs.current.set('all', node)
+                else teacherGroupNavButtonRefs.current.delete('all')
+              }}
               type="button"
               className={selectedTeacherGroupId === 'all' ? 'active' : ''}
               onClick={() => setSelectedTeacherGroupId('all')}
@@ -6889,6 +7776,10 @@ export function TeamScreen({
             {teacherGroups.map((group) => (
               <button
                 key={group.id}
+                ref={(node) => {
+                  if (node) teacherGroupNavButtonRefs.current.set(group.id, node)
+                  else teacherGroupNavButtonRefs.current.delete(group.id)
+                }}
                 type="button"
                 className={selectedTeacherGroupId === group.id ? 'active' : ''}
                 onClick={() => setSelectedTeacherGroupId(group.id)}
@@ -6898,6 +7789,10 @@ export function TeamScreen({
               </button>
             ))}
             <button
+              ref={(node) => {
+                if (node) teacherGroupNavButtonRefs.current.set('ungrouped', node)
+                else teacherGroupNavButtonRefs.current.delete('ungrouped')
+              }}
               type="button"
               className={selectedTeacherGroupId === 'ungrouped' ? 'active' : ''}
               onClick={() => setSelectedTeacherGroupId('ungrouped')}
@@ -6961,6 +7856,11 @@ export function TeamScreen({
           </nav>
 
           <div className="team-teacher-group-directory">
+            <div
+              key={selectedTeacherGroupId}
+              className="team-teacher-group-directory-stage"
+              data-teacher-group-stage={selectedTeacherGroupId}
+            >
             <div className="team-teacher-group-directory-head">
               <div>
                 <span className="eyebrow">{tx('team.teacherGroupsEyebrow')}</span>
@@ -7017,15 +7917,18 @@ export function TeamScreen({
                 const memberships = teacherGroups.filter((group) => group.memberIds.includes(teacher.id))
                 const selected = Boolean(activeTeacherGroup?.memberIds.includes(teacher.id))
                 const canRemove = memberCanRemove(teacher)
+                const permissionsOpen = expandedMemberId === teacher.id
                 return (
-                  <div key={teacher.id} className="team-teacher-directory-row">
+                  <article key={teacher.id} className={`team-teacher-directory-entry${permissionsOpen ? ' expanded' : ''}`}>
+                  <div className="team-teacher-directory-row">
                     <TeamMemberAvatar member={teacher} />
                     <span className="team-collaboration-identity">
                       <strong>{memberDisplayName(teacher, tx('team.memberFallback'))}</strong>
                       <em>{memberEmail(teacher) || tx('team.noLinkedEmail')}</em>
                     </span>
                     <span className="team-teacher-directory-load">
-                      {format(tx('team.memberAssignedStudentsDesc'), { count: assignedStudents })}
+                      <Users size={12} aria-hidden="true" />
+                      <span>{format(tx('team.memberAssignedStudentsDesc'), { count: assignedStudents })}</span>
                     </span>
                     <span className="team-teacher-directory-groups">
                       {memberships.length > 0
@@ -7033,6 +7936,35 @@ export function TeamScreen({
                         : <em>{tx('team.teacherGroupUngrouped')}</em>}
                     </span>
                     <div className="team-teacher-directory-actions">
+                      {memberCanEnterView(teacher) || teacher.status === 'active' ? (
+                        <div className="team-teacher-directory-shortcuts">
+                          {memberCanEnterView(teacher) ? (
+                            <button
+                              type="button"
+                              className="team-teacher-directory-shortcut is-account"
+                              aria-label={tx('team.enterMemberView')}
+                              title={tx('team.enterMemberView')}
+                              onClick={() => onImpersonateMember?.(teacher.userId!)}
+                            >
+                              <LogIn size={13} aria-hidden="true" />
+                            </button>
+                          ) : null}
+                          {teacher.status === 'active' ? (
+                            <button
+                              type="button"
+                              className="team-teacher-directory-shortcut"
+                              aria-label={tx('team.viewRelationshipMap')}
+                              title={tx('team.viewRelationshipMap')}
+                              onClick={() => {
+                                setMemberWorkspaceView('students')
+                                focusMemberInRelationshipMap(teacher)
+                              }}
+                            >
+                              <Network size={13} aria-hidden="true" />
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {memberCanEditRole(teacher) ? (
                         <Select
                           size="small"
@@ -7049,6 +7981,18 @@ export function TeamScreen({
                           onChange={(role) => handleRoleChange(teacher, role as Exclude<TeamRole, 'owner'>)}
                         />
                       ) : null}
+                      {viewerRole === 'owner' ? (
+                        <button
+                          type="button"
+                          className={`team-teacher-directory-shortcut is-permissions${permissionsOpen ? ' active' : ''}`}
+                          aria-label={tx('team.permissionTeacherTitle')}
+                          title={tx('team.permissionTeacherTitle')}
+                          aria-expanded={permissionsOpen}
+                          onClick={() => setExpandedMemberId(permissionsOpen ? null : teacher.id)}
+                        >
+                          <ShieldCheck size={13} aria-hidden="true" />
+                        </button>
+                      ) : null}
                       {activeTeacherGroup && teacher.status === 'active' ? (
                         <button
                           type="button"
@@ -7057,7 +8001,9 @@ export function TeamScreen({
                           disabled={teacherGroupBusyId === activeTeacherGroup.id}
                           onClick={() => void handleToggleTeacherGroupMember(activeTeacherGroup, teacher.id)}
                         >
-                          <Check size={13} aria-hidden="true" />
+                          {selected
+                            ? <Check size={12} aria-hidden="true" />
+                            : <Plus size={12} aria-hidden="true" />}
                           {selected ? tx('team.teacherGroupIncluded') : tx('team.teacherGroupAdd')}
                         </button>
                       ) : null}
@@ -7068,6 +8014,18 @@ export function TeamScreen({
                       ) : null}
                     </div>
                   </div>
+                  <CollapsiblePanel
+                    open={permissionsOpen}
+                    warmMount
+                    keepMounted
+                    openMs={320}
+                    closeMs={240}
+                    className="team-teacher-permission-detail"
+                    innerClassName="team-teacher-permission-detail-inner"
+                  >
+                    {renderDelegatedAccessControls(teacher)}
+                  </CollapsiblePanel>
+                  </article>
                 )
               }) : (
                 <div className="team-empty compact">
@@ -7078,6 +8036,7 @@ export function TeamScreen({
                   </div>
                 </div>
               )}
+            </div>
             </div>
           </div>
         </div>
@@ -7256,6 +8215,12 @@ export function TeamScreen({
 
   const renderMembers = () => {
     if (viewerRole === 'member') return renderStudentOverview()
+    const memberWorkspaceMotionClass = [
+      memberWorkspaceMotion === 'exiting' ? 'is-exiting' : '',
+      memberWorkspaceMotion === 'entering' ? 'is-entering' : '',
+      memberWorkspaceDirection === 'backward' ? 'dir-backward' : 'dir-forward',
+    ].filter(Boolean).join(' ')
+
     return (
       <div className="team-tab-panel team-collaboration-page">
         <div className="team-layout single-column members-fullwidth">
@@ -7272,7 +8237,7 @@ export function TeamScreen({
                   <AnchoredPopover
                     triggerAriaLabel={tx('team.joinCodeTitle')}
                     popoverAriaLabel={tx('team.joinCodeTitle')}
-                    triggerClassName="quiet-action"
+                    triggerClassName="quiet-action compact-action"
                     popoverClassName="team-invite-popover-shell"
                     width={400}
                     estimatedHeight={540}
@@ -7296,7 +8261,7 @@ export function TeamScreen({
                   <AnchoredPopover
                     triggerAriaLabel={tx('team.inviteTitle')}
                     popoverAriaLabel={tx('team.inviteTitle')}
-                    triggerClassName="primary-action team-invite-trigger"
+                    triggerClassName="primary-action compact-action team-invite-trigger"
                     popoverClassName="team-invite-popover-shell"
                     width={380}
                     estimatedHeight={520}
@@ -7318,22 +8283,38 @@ export function TeamScreen({
               <span><strong>{pendingMembers.length}</strong><em>{tx('team.memberOpsPending')}</em></span>
             </div>
 
-            <div className="team-collaboration-mode-switch" role="tablist" aria-label={tx('team.collaborationModeLabel')}>
-              <span className={`team-collaboration-mode-indicator ${memberWorkspaceView === 'teacher-groups' ? 'is-groups' : ''}`} aria-hidden="true" />
-              <button type="button" className={memberWorkspaceView === 'students' ? 'active' : ''} aria-selected={memberWorkspaceView === 'students'} onClick={() => setMemberWorkspaceView('students')}>
-                <Users size={14} aria-hidden="true" />
-                <span>{tx('team.collaborationStudentsTab')}</span>
-                <b>{collaborationStudents.length}</b>
-              </button>
-              <button type="button" className={memberWorkspaceView === 'teacher-groups' ? 'active' : ''} aria-selected={memberWorkspaceView === 'teacher-groups'} onClick={() => setMemberWorkspaceView('teacher-groups')}>
-                <Network size={14} aria-hidden="true" />
-                <span>{tx('team.teacherGroupsTitle')}</span>
-                <b>{teacherGroups.length}</b>
-              </button>
+            <div className="team-collaboration-command-row">
+              <div className="team-collaboration-mode-switch" role="tablist" aria-label={tx('team.collaborationModeLabel')}>
+                <span className={`team-collaboration-mode-indicator ${memberWorkspaceView === 'teacher-groups' ? 'is-groups' : ''}`} aria-hidden="true" />
+                <button type="button" className={memberWorkspaceView === 'students' ? 'active' : ''} aria-selected={memberWorkspaceView === 'students'} onClick={() => setMemberWorkspaceView('students')}>
+                  <Users size={14} aria-hidden="true" />
+                  <span>{tx('team.collaborationStudentsTab')}</span>
+                  <b>{collaborationStudents.length}</b>
+                </button>
+                <button type="button" className={memberWorkspaceView === 'teacher-groups' ? 'active' : ''} aria-selected={memberWorkspaceView === 'teacher-groups'} onClick={() => setMemberWorkspaceView('teacher-groups')}>
+                  <Network size={14} aria-hidden="true" />
+                  <span>{tx('team.teacherGroupsTitle')}</span>
+                  <b>{teacherGroups.length}</b>
+                </button>
+              </div>
+
+              <div className="team-collaboration-top-tools">
+                <div
+                  key={`tools-${renderedMemberWorkspaceView}`}
+                  className={`team-collaboration-tool-stage ${memberWorkspaceMotionClass}`}
+                >
+                  {renderedMemberWorkspaceView === 'students'
+                    ? renderStudentCollaborationToolbar()
+                    : renderTeacherGroupToolbar()}
+                </div>
+              </div>
             </div>
 
-            <div className="team-collaboration-workspace">
-              {memberWorkspaceView === 'students'
+            <div
+              key={`workspace-${renderedMemberWorkspaceView}`}
+              className={`team-collaboration-workspace team-collaboration-workspace-panel ${memberWorkspaceMotionClass}`}
+            >
+              {renderedMemberWorkspaceView === 'students'
                 ? renderStudentCollaborationWorkspace()
                 : renderTeacherGroupWorkspace()}
             </div>
@@ -7344,7 +8325,7 @@ export function TeamScreen({
   }
 
   const renderAudit = () => {
-    if (!hasOwnerAuditAccess(viewerRole)) return null
+    if (!hasAuditAccess(viewerRole)) return null
 
     const approvalRequest = pendingTransferRequests.find((request) => request.id === selectedTransferRequestId)
       ?? pendingTransferRequests[0]
@@ -7367,7 +8348,7 @@ export function TeamScreen({
       storage: Database,
     } as const
 
-    if (hasOwnerAuditAccess(viewerRole)) return (
+    const transferAudit = viewerRole === 'owner' ? (
       <section className="team-transfer-audit">
         <header className="team-transfer-audit-hero">
           <div>
@@ -7577,7 +8558,7 @@ export function TeamScreen({
           </div>
         )}
       </section>
-    )
+    ) : null
 
     const allAuditEvents = summary?.recentEvents ?? []
     const selectedOwnerId = selectedAuditStudentId === 'all' ? null : selectedAuditStudentId
@@ -7642,7 +8623,9 @@ export function TeamScreen({
           ? 'clean'
           : 'same'
     return (
-    <div className="team-tab-panel">
+    <div className="team-audit-page">
+      {transferAudit}
+      <div className="team-tab-panel">
       <div className="team-activity-grid">
         <section className="team-panel">
           <div className="team-panel-head">
@@ -8095,17 +9078,19 @@ export function TeamScreen({
           )}
         </section>
       </div>
+      </div>
     </div>
     )
   }
 
+  const teamDiscoverLibraryId = `team-discover-library-${summary?.team.id ?? 'active'}`
   const renderTeamDiscover = () => (
     <section className="team-discover-directory" aria-label={tx('team.teamDiscoverTitle', 'Research a student’s programs')}>
       <div className="team-discover-directory-head">
         <div>
           <span className="eyebrow">{tx('team.teamDiscoverEyebrow', 'TEAM DISCOVER')}</span>
           <h3>{tx('team.teamDiscoverTitle', 'Research a student’s programs')}</h3>
-          <p>{tx('team.teamDiscoverDesc', 'Choose one assigned student. Research uses teacher-authorized personal or team AI keys; students cannot access this surface or its keys.')}</p>
+          <p>{tx('team.teamDiscoverDesc', 'Choose one assigned student. Research uses the Team AI keys managed by the institution administrator.')}</p>
         </div>
         <span className="team-discover-directory-total" aria-label={tx('team.studentProfilePickerTitle')}>
           <Users size={16} aria-hidden="true" />
@@ -8138,7 +9123,7 @@ export function TeamScreen({
                   key={value}
                   type="button"
                   className={teamDiscoverFilter === value ? 'active' : ''}
-                  onClick={() => setTeamDiscoverFilter(value)}
+                  onClick={() => changeTeamDiscoverFilter(value)}
                   aria-pressed={teamDiscoverFilter === value}
                 >
                   <span>{label}</span>
@@ -8147,15 +9132,32 @@ export function TeamScreen({
               ))}
             </div>
 
+            <LibraryViewSwitch
+              value={teamDiscoverView}
+              onChange={setTeamDiscoverView}
+              label={tx('team.teamDiscoverViewLabel')}
+              cardLabel={tx('team.teamDiscoverViewCards')}
+              listLabel={tx('team.teamDiscoverViewList')}
+              transitionScope="team-discover"
+              controlsId={teamDiscoverLibraryId}
+              className="team-discover-view-switch"
+            />
+
             <span className="team-discover-result-count">
               <strong>{teamDiscoverStudentRows.length}</strong>
               <span>{tx('team.studentProfilePickerEyebrow')}</span>
             </span>
           </div>
 
+          <div
+            id={teamDiscoverLibraryId}
+            className={`team-discover-library view-${teamDiscoverView} phase-${teamDiscoverFilterPhase}`}
+            data-view={teamDiscoverView}
+            aria-live="polite"
+          >
           {teamDiscoverStudentRows.length ? (
-            <div className="team-discover-student-grid">
-              {teamDiscoverStudentRows.map((row) => {
+            <div className={`team-discover-student-grid view-${teamDiscoverView}`}>
+              {teamDiscoverStudentRows.map((row, index) => {
                 const studentName = memberDisplayName(row.member, tx('team.memberFallback'))
                 const advisors = studentTeachersFor(row.member)
                 return (
@@ -8166,6 +9168,7 @@ export function TeamScreen({
                     disabled={!row.member.userId}
                     onClick={() => row.member.userId && onOpenTeamDiscover?.(row.member.userId)}
                     aria-label={`${tx('team.teamDiscoverOpen', 'Open research')}: ${studentName}`}
+                    style={{ '--team-discover-index': Math.min(index, 8) } as CSSProperties}
                   >
                     <span className="team-discover-card-head">
                       <TeamMemberAvatar member={row.member} className="team-discover-card-avatar" />
@@ -8217,7 +9220,7 @@ export function TeamScreen({
                   className="quiet-action compact-action"
                   onClick={() => {
                     setTeamDiscoverQuery('')
-                    setTeamDiscoverFilter('all')
+                    changeTeamDiscoverFilter('all')
                   }}
                 >
                   {tx('team.studentProfileClearFilters')}
@@ -8225,6 +9228,7 @@ export function TeamScreen({
               </div>
             </div>
           )}
+          </div>
         </>
       ) : (
         <div className="team-empty compact"><span className="empty-state-icon"><Users size={18} aria-hidden="true" /></span><div><strong>{tx('team.teamDiscoverEmptyTitle', 'No assigned students yet')}</strong><p>{tx('team.teamDiscoverEmptyDesc', 'Assign a student to a teacher before starting Team Discover.')}</p></div></div>
@@ -8452,6 +9456,10 @@ export function TeamScreen({
           </div>
         </>
       )}
+
+      {summary && (displayedSection === 'overview' || displayedSection === 'settings')
+        ? <ProjectFooter />
+        : null}
 
       <ExplorerContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} />
 

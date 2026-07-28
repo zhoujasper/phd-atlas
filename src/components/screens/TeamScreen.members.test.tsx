@@ -108,10 +108,11 @@ afterEach(() => {
 describe('TeamScreen member collaboration workspace', () => {
   it('places inline group creation immediately after Ungrouped', async () => {
     vi.spyOn(phdApi, 'teamNotificationGroups').mockResolvedValue([])
+    vi.spyOn(phdApi, 'listTeamMemberProfileAssets').mockResolvedValue([])
     renderMembers()
 
     fireEvent.click(await screen.findByRole('button', { name: /Teacher groups/ }))
-    const groupNav = screen.getByRole('navigation', { name: 'Teacher groups' })
+    const groupNav = await screen.findByRole('navigation', { name: 'Teacher groups' })
     const ungrouped = within(groupNav).getByRole('button', { name: /Ungrouped/ })
     const create = within(groupNav).getByRole('button', { name: 'New group' })
 
@@ -127,6 +128,7 @@ describe('TeamScreen member collaboration workspace', () => {
 
   it('opens the shared context menu from teacher and student relationship nodes', async () => {
     vi.spyOn(phdApi, 'teamNotificationGroups').mockResolvedValue([])
+    vi.spyOn(phdApi, 'listTeamMemberProfileAssets').mockResolvedValue([])
     const view = renderMembers()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Map' }))

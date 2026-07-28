@@ -1,7 +1,12 @@
 type SnapshotPayload = {
-  version: 2
+  version: 3
   userId: string
   savedAt: string
+  authorization: {
+    scope: 'personal-owner'
+    subject: string
+    expiresAt: string
+  }
   data: unknown
 }
 

@@ -57,7 +57,7 @@ export function ResetPassword({ token }: { token: string }) {
                 type="password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
-                minLength={8}
+                minLength={15}
                 required
                 autoFocus
               />
@@ -68,7 +68,7 @@ export function ResetPassword({ token }: { token: string }) {
                 type="password"
                 value={confirmPassword}
                 onChange={(event) => setConfirmPassword(event.target.value)}
-                minLength={8}
+                minLength={15}
                 required
               />
             </label>

@@ -448,9 +448,35 @@ input:focus-visible,
 textarea:focus-visible,
 select:focus-visible,
 [contenteditable="true"]:focus-visible {
-  box-shadow: 0 0 0 3px var(--accent-ring);
-  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 8%, transparent);
+  border-color: var(--border-strong);
   outline: none;
+}
+
+/* Composite search controls own their focus surface. Do not draw a second
+   bright frame around the nested input itself. */
+.search-field:focus-within,
+.owner-picker-search:focus-within,
+.team-search-field:focus-within,
+.team-member-search:focus-within,
+.team-teacher-picker-search:focus-within {
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+.search-field input:focus-visible,
+.owner-picker-search input:focus-visible,
+.team-search-field input:focus-visible,
+.team-member-search input:focus-visible,
+.team-teacher-picker-search input:focus-visible {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.owner-picker-list button.active {
+  border-color: transparent;
+  background: var(--surface-secondary);
+  color: var(--text);
 }
 
 /* Buttons / chrome: keyboard outline only — no blue outer glow */

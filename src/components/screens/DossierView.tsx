@@ -169,6 +169,10 @@ import type {
   MaterialRecommender,
   MaterialStatus,
 } from '../../data/applications'
+import {
+  applicationStatusOrder,
+  builtInApplicationStatuses,
+} from '../../data/applications'
 import { countReviewComments, reviewRepliesFor } from '../../reviewComments'
 import type { DetailTab } from '../../appModel'
 import { formatDate, today, daysUntil, deadlineUrgency, relativeTime, groupTimelineEvents, priorityToLevel, priorityTone, timelineDateStatus } from '../../appModel'
@@ -291,9 +295,9 @@ import {
 import { useTableColumnMenu } from '../shared/useTableColumnMenu'
 import type { TableColumnDef } from '../shared/useTableColumns'
 
-const statusOrder: ApplicationStatus[] = [
-  'Draft', 'Preparing', 'Submitted', 'Interview', 'Accepted', 'Rejected', 'Waitlist',
-]
+const builtInApplicationStatusKeys = new Set(
+  builtInApplicationStatuses.map((status) => status.toLocaleLowerCase()),
+)
 
 const materialStatusOrder: MaterialStatus[] = [
   'Missing',
@@ -447,6 +451,7 @@ type DossierJumpExpand =
   | { kind: 'material' | 'task'; id: string }
   | { kind: 'scholarship'; id: string }
 export type DossierJumpIntent = {
+  applicationId: string
   token: number
   tab: DetailTab
   targetId: string
@@ -1063,6 +1068,7 @@ export function DossierView({
   teamTransferOrganizations = [],
   onPreflightTeamTransfer,
   onToggleTeamVisibility,
+  onCustomApplicationStatusesChange,
   onCloseApplication,
   onOpenUpgrade,
   onRegisterNavigationGuard,
@@ -1084,9 +1090,11 @@ export function DossierView({
   onRemoveTimelineEvent,
   onRemoveTimelineEvents,
   jumpIntent,
+  onJumpIntentConsumed,
   allowedTabs,
   readOnly = false,
   readOnlyBanner,
+  canShareApplication,
 }: {
   application: ApplicationRecord
   draft: ApplicationRecord
@@ -1120,6 +1128,7 @@ export function DossierView({
   teamTransferOrganizations?: TeamWorkspaceOption[]
   onPreflightTeamTransfer?: (visible: boolean, teamId: string) => Promise<TeamTransferPreflight>
   onToggleTeamVisibility?: (visible: boolean, teamId?: string) => boolean | void | Promise<boolean | void>
+  onCustomApplicationStatusesChange?: (statuses: ApplicationStatus[]) => void | Promise<void>
   onCloseApplication?: () => void
   onOpenUpgrade?: (feature: string, requested: string, limit?: string) => void
   onCopy?: (value: string, label: string) => void
@@ -1166,12 +1175,15 @@ export function DossierView({
   // Only set (and only when it isn't the viewer's own application) in the team-scoped workspace.
   applicationOwnerName?: string
   jumpIntent?: DossierJumpIntent | null
+  onJumpIntentConsumed?: (token: number) => void
   /** Restrict visible dossier tabs (e.g. shared application sections). */
   allowedTabs?: DetailTab[]
   /** Disable all nested form controls and hide owner mutation affordances. */
   readOnly?: boolean
   /** Optional override for the default read-only banner copy. */
   readOnlyBanner?: string
+  /** Share management is independently delegable from dossier editing in Team workspaces. */
+  canShareApplication?: boolean
 }) {
   const { tx, format, lang } = useI18n()
   const [teamTransferDirection, setTeamTransferDirection] = useState<'join' | 'leave' | null>(null)
@@ -1199,9 +1211,10 @@ export function DossierView({
     || session.user.settings.membershipPlan === 'pro'
     || session.user.settings.membershipPlan === 'team'
   const isReadOnly = readOnly
-  // Deleting/sharing a teammate's application is never allowed, even for the institution admin
-  // editing it — only the application's actual owner controls those two actions.
+  // Deletion remains owner-only. Sharing is a separate Team capability and may
+  // be available even when content editing is read-only.
   const isOwnApplication = application.ownerId === session.user.id
+  const canShare = canShareApplication ?? (!isReadOnly && isOwnApplication)
   const pendingTeamTransfer = application.teamTransferRequest?.status === 'pending' ? application.teamTransferRequest : null
   const isTeamVisible = Boolean(application.teamId)
   const canManageTeamVisibility = canToggleTeamVisibility && !isReadOnly
@@ -3276,6 +3289,52 @@ export function DossierView({
     value: status,
     label: tx(`dossier.scholarshipStatus.${status}`, status),
   }))
+  const applicationStatusOptions = useMemo(() => {
+    const customStatuses = session.user.settings.customApplicationStatuses ?? []
+    const ordered = applicationStatusOrder(customStatuses, [draft.status])
+    return ordered.map((status) => ({
+      value: status,
+      label: statusLabel(status, tx),
+      custom: !builtInApplicationStatusKeys.has(status.toLocaleLowerCase()),
+    }))
+  }, [draft.status, session.user.settings.customApplicationStatuses, tx])
+  const applicationStatusCreateConfig = useMemo<SelectCreateConfig<ApplicationStatus> | undefined>(() => {
+    if (!onCustomApplicationStatusesChange || isReadOnly) return undefined
+    const savedCustomStatuses = applicationStatusOrder(session.user.settings.customApplicationStatuses ?? [])
+      .filter((status) => !builtInApplicationStatusKeys.has(status.toLocaleLowerCase()))
+    if (savedCustomStatuses.length >= 30) return undefined
+    return {
+      label: tx('dossier.addCustomOption'),
+      placeholder: tx('dossier.customStatusPlaceholder'),
+      createAriaLabel: tx('dossier.addCustomOption'),
+      renameAriaLabel: tx('dossier.renameCustomOption'),
+      deleteAriaLabel: tx('dossier.deleteCustomOption'),
+      maxLength: 64,
+      onCreate: (rawValue) => {
+        const value = rawValue.trim().replace(/\s+/g, ' ')
+        if (!value) return
+        const existing = applicationStatusOptions.find(
+          (option) => option.value.toLocaleLowerCase() === value.toLocaleLowerCase(),
+        )
+        const nextStatus = existing?.value ?? value
+        if (!existing) {
+          const nextCustom = applicationStatusOrder(savedCustomStatuses, [value])
+            .filter((status) => !builtInApplicationStatusKeys.has(status.toLocaleLowerCase()))
+            .slice(0, 30)
+          void onCustomApplicationStatusesChange(nextCustom)
+        }
+        const currentDraft = draftRef.current
+        commitDraft({ ...currentDraft, status: nextStatus })
+      },
+    }
+  }, [
+    applicationStatusOptions,
+    commitDraft,
+    isReadOnly,
+    onCustomApplicationStatusesChange,
+    session.user.settings.customApplicationStatuses,
+    tx,
+  ])
   const notificationTarget = session.user.settings.receiveAt || session.user.email
   const completedChecklistCount = useMemo(
     () => checklistContentReady
@@ -5597,94 +5656,195 @@ export function DossierView({
       }) ?? null
   }, [])
 
-  const focusJumpTarget = useCallback((targetId: string, fallbackText?: string[], onFocused?: () => void) => {
-    let firstFrame = 0
-    let secondFrame = 0
-    let focusFrame = 0
-    let focusTimer = 0
-    let handoffTimer = 0
-    let cleanupTimer = 0
-    let hasFocused = false
-    let scrollEndTargets: EventTarget[] = []
-    let clearScrollEndListeners: (() => void) | null = null
+  const focusJumpTarget = useCallback((targetId: string, fallbackText?: string[], onFinished?: () => void) => {
     const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+    const rootScroller = document.scrollingElement instanceof HTMLElement
+      ? document.scrollingElement
+      : null
+    const startedAt = performance.now()
+    let findStartedAt: number | null = null
+    let handoffFrame = 0
+    let findFrame = 0
+    let settleFrame = 0
+    let highlightFrame = 0
+    let highlightTimer = 0
+    let activeNode: HTMLElement | null = null
+    let scrollEventTarget: EventTarget | null = null
+    let scrollEndListener: EventListener | null = null
+    let focusStarted = false
+    let finished = false
+    let disposed = false
 
-    const beginFocus = () => {
-      secondFrame = window.requestAnimationFrame(() => {
-        const node = findJumpTargetNode(targetId, fallbackText)
-        if (!node) return
-        const startFocus = () => {
-          if (hasFocused) return
-          hasFocused = true
-          if (focusTimer) window.clearTimeout(focusTimer)
-          clearScrollEndListeners?.()
-          clearScrollEndListeners = null
-          focusFrame = window.requestAnimationFrame(() => {
-            node.classList.add('jump-focus')
-            onFocused?.()
-            // Match jump-focus-glow duration (~1.45s); reduced-motion ~0.72s.
-            cleanupTimer = window.setTimeout(
-              () => node.classList.remove('jump-focus', 'jump-focus-prep'),
-              reduceMotion ? 780 : 1500,
-            )
-          })
-        }
-        const handleScrollEnd: EventListener = () => startFocus()
-        node.classList.remove('search-highlight', 'jump-focus', 'jump-focus-prep')
-        node.classList.add('jump-focus-prep')
+    const clearScrollWait = () => {
+      if (settleFrame) window.cancelAnimationFrame(settleFrame)
+      settleFrame = 0
+      if (scrollEventTarget && scrollEndListener) {
+        scrollEventTarget.removeEventListener('scrollend', scrollEndListener)
+      }
+      scrollEventTarget = null
+      scrollEndListener = null
+    }
 
-        const scrollParent = findScrollableAncestor(node)
-        const viewportRect = scrollParent && scrollParent !== document.scrollingElement
-          ? scrollParent.getBoundingClientRect()
-          : { top: 0, bottom: window.innerHeight }
-        const targetRect = node.getBoundingClientRect()
-        const alreadyCentered = Math.abs(
-          (targetRect.top + targetRect.bottom) / 2 - (viewportRect.top + viewportRect.bottom) / 2,
-        ) < 32
+    const clearFocusClasses = () => {
+      activeNode?.classList.remove('search-highlight', 'jump-focus', 'jump-focus-prep')
+    }
 
-        // Skip the scroll wait when the target is already where scrollIntoView would
-        // place it — native smooth-scroll then moves ~0px and never fires `scrollend`,
-        // which otherwise stalled the highlight until the fixed 620ms fallback timer.
-        if (reduceMotion || alreadyCentered) {
-          node.scrollIntoView?.({ behavior: 'auto', block: 'center', inline: 'nearest' })
-          startFocus()
-          return
-        }
+    const complete = () => {
+      if (disposed || finished) return
+      finished = true
+      clearScrollWait()
+      clearFocusClasses()
+      onFinished?.()
+    }
 
-        node.scrollIntoView?.({ behavior: 'smooth', block: 'center', inline: 'nearest' })
-        scrollEndTargets = Array.from(new Set<EventTarget>([window, document, scrollParent].filter(Boolean) as EventTarget[]))
-        scrollEndTargets.forEach((target) => target.addEventListener('scrollend', handleScrollEnd, { once: true }))
-        clearScrollEndListeners = () => {
-          scrollEndTargets.forEach((target) => target.removeEventListener('scrollend', handleScrollEnd))
-          scrollEndTargets = []
-        }
-        focusTimer = window.setTimeout(startFocus, 620)
+    const showFocus = () => {
+      if (disposed || finished || focusStarted || !activeNode) return
+      focusStarted = true
+      clearScrollWait()
+      highlightFrame = window.requestAnimationFrame(() => {
+        if (disposed || finished || !activeNode) return
+        activeNode.classList.add('jump-focus')
+        // Two low-contrast accent breaths complete in 1.68s. Reduced-motion
+        // keeps a static locator ring briefly instead of moving or flashing.
+        highlightTimer = window.setTimeout(complete, reduceMotion ? 900 : 1740)
       })
     }
 
-    firstFrame = window.requestAnimationFrame(() => {
-      const transitionRoot = document.documentElement
-      const tabHandoffActive = transitionRoot.dataset.atlasFallbackScope === 'dossier-tab'
-        || transitionRoot.dataset.atlasTransitionScope === 'dossier-tab'
-      if (!reduceMotion && tabHandoffActive) {
-        // A timeline card can open a different tab and ask it to scroll in the
-        // same click. Let the parent handoff finish before smooth scrolling so
-        // the browser never has to animate scroll and horizontal movement at
-        // the same time.
-        handoffTimer = window.setTimeout(beginFocus, 260)
+    const scrollToNode = (node: HTMLElement) => {
+      activeNode = node
+      clearFocusClasses()
+      node.classList.add('jump-focus-prep')
+
+      const scrollParent = findScrollableAncestor(node)
+      const usesViewport = !scrollParent || scrollParent === rootScroller
+      const targetRect = node.getBoundingClientRect()
+      const scrollRect = !usesViewport && scrollParent
+        ? scrollParent.getBoundingClientRect()
+        : { top: 0, height: window.innerHeight }
+      const viewportHeight = Math.max(1, scrollRect.height)
+      const currentTop = () => usesViewport
+        ? (window.scrollY || rootScroller?.scrollTop || 0)
+        : (scrollParent?.scrollTop ?? 0)
+      const maxTop = usesViewport
+        ? Math.max(
+            0,
+            Math.max(
+              document.documentElement.scrollHeight,
+              document.body?.scrollHeight ?? 0,
+              rootScroller?.scrollHeight ?? 0,
+            ) - viewportHeight,
+          )
+        : scrollParent
+          ? Math.max(0, scrollParent.scrollHeight - scrollParent.clientHeight)
+          : 0
+      const targetInset = targetRect.height >= viewportHeight - 48
+        ? 24
+        : Math.max(24, (viewportHeight - targetRect.height) / 2)
+      const desiredTop = Math.min(
+        maxTop,
+        Math.max(0, currentTop() + targetRect.top - scrollRect.top - targetInset),
+      )
+      const initialTop = currentTop()
+      const distance = Math.abs(desiredTop - initialTop)
+      const behavior: ScrollBehavior = reduceMotion ? 'auto' : 'smooth'
+
+      const performScroll = () => {
+        if (usesViewport && typeof window.scrollTo === 'function') {
+          window.scrollTo({ top: desiredTop, behavior })
+          return
+        }
+        if (scrollParent && typeof scrollParent.scrollTo === 'function') {
+          scrollParent.scrollTo({ top: desiredTop, behavior })
+          return
+        }
+        node.scrollIntoView?.({ behavior, block: 'center', inline: 'nearest' })
+      }
+
+      if (reduceMotion || distance < 2) {
+        if (distance >= 2) performScroll()
+        showFocus()
         return
       }
-      beginFocus()
-    })
+
+      scrollEventTarget = usesViewport ? document : scrollParent
+      scrollEndListener = () => showFocus()
+      scrollEventTarget?.addEventListener('scrollend', scrollEndListener, { once: true })
+
+      let lastTop = initialTop
+      let stableFrames = 0
+      let hasMoved = false
+      const scrollStartedAt = performance.now()
+      const watchScrollSettle = () => {
+        if (disposed || finished || focusStarted) return
+        const nextTop = currentTop()
+        const delta = Math.abs(nextTop - lastTop)
+        const elapsed = performance.now() - scrollStartedAt
+        hasMoved = hasMoved || delta > 0.5
+        stableFrames = delta < 0.5 ? stableFrames + 1 : 0
+        lastTop = nextTop
+        const nearDestination = Math.abs(nextTop - desiredTop) < 1.5
+        if (
+          (stableFrames >= 3 && (nearDestination || hasMoved || elapsed >= 160))
+          || elapsed >= 1100
+        ) {
+          showFocus()
+          return
+        }
+        settleFrame = window.requestAnimationFrame(watchScrollSettle)
+      }
+
+      performScroll()
+      settleFrame = window.requestAnimationFrame(watchScrollSettle)
+    }
+
+    const findTarget = () => {
+      if (disposed || finished) return
+      if (findStartedAt === null) findStartedAt = performance.now()
+      const node = findJumpTargetNode(targetId, fallbackText)
+      if (node) {
+        scrollToNode(node)
+        return
+      }
+      // Filters, disclosure rows, and deferred dossier content can mount one or
+      // two frames after the tab. Retry briefly, then consume the stale intent
+      // instead of leaving it armed for a future application.
+      if (performance.now() - findStartedAt >= 900) {
+        complete()
+        return
+      }
+      findFrame = window.requestAnimationFrame(findTarget)
+    }
+
+    const waitForHandoff = () => {
+      if (disposed || finished) return
+      const transitionRoot = document.documentElement
+      const handoffActive = Boolean(
+        transitionRoot.dataset.atlasFallbackScope
+        || transitionRoot.dataset.atlasTransitionScope,
+      )
+      if (
+        reduceMotion
+        || !handoffActive
+        || performance.now() - startedAt >= 520
+      ) {
+        findTarget()
+        return
+      }
+      // Let the screen/tab/record handoff release before asking the same pane to
+      // animate its scroll position; the two motions otherwise compete.
+      handoffFrame = window.requestAnimationFrame(waitForHandoff)
+    }
+
+    handoffFrame = window.requestAnimationFrame(waitForHandoff)
 
     return () => {
-      window.cancelAnimationFrame(firstFrame)
-      window.cancelAnimationFrame(secondFrame)
-      window.cancelAnimationFrame(focusFrame)
-      if (handoffTimer) window.clearTimeout(handoffTimer)
-      if (focusTimer) window.clearTimeout(focusTimer)
-      if (cleanupTimer) window.clearTimeout(cleanupTimer)
-      clearScrollEndListeners?.()
+      disposed = true
+      window.cancelAnimationFrame(handoffFrame)
+      window.cancelAnimationFrame(findFrame)
+      window.cancelAnimationFrame(highlightFrame)
+      clearScrollWait()
+      if (highlightTimer) window.clearTimeout(highlightTimer)
+      clearFocusClasses()
     }
   }, [findJumpTargetNode])
 
@@ -5728,14 +5888,29 @@ export function DossierView({
   }, [focusJumpTarget, jumpTargetFromTimelineNav, pendingTimelineNav, prepareJumpTarget, tab, tabContentReady])
 
   useEffect(() => {
-    if (!tabContentReady || !jumpIntent || consumedJumpTokenRef.current === jumpIntent.token || tab !== jumpIntent.tab) {
+    if (
+      !tabContentReady
+      || !jumpIntent
+      || jumpIntent.applicationId !== application.id
+      || consumedJumpTokenRef.current === jumpIntent.token
+      || tab !== jumpIntent.tab
+    ) {
       return undefined
     }
     prepareJumpTarget(jumpIntent)
     return focusJumpTarget(jumpIntent.targetId, jumpIntent.fallbackText, () => {
       consumedJumpTokenRef.current = jumpIntent.token
+      onJumpIntentConsumed?.(jumpIntent.token)
     })
-  }, [focusJumpTarget, jumpIntent, prepareJumpTarget, tab, tabContentReady])
+  }, [
+    application.id,
+    focusJumpTarget,
+    jumpIntent,
+    onJumpIntentConsumed,
+    prepareJumpTarget,
+    tab,
+    tabContentReady,
+  ])
 
   const openMaterialContextMenu = (event: MouseEvent<HTMLElement>, material: MaterialItem) => {
     event.preventDefault()
@@ -6476,7 +6651,7 @@ export function DossierView({
           </a>
         ) : null}
         {field.value.trim() ? (
-          <CopyButton value={field.value} label={field.label || tx('dossier.resourceFieldUntitled')} />
+          <CopyButton value={field.value} label={field.label || tx('dossier.resourceFieldUntitled')} onNotify={onNotify} />
         ) : null}
       </div>
     )
@@ -7119,18 +7294,18 @@ export function DossierView({
             <p>{application.professor.english}</p>
           </div>
         </div>
-        {(!isReadOnly && isOwnApplication) || onCloseApplication ? (
+        {(!isReadOnly && isOwnApplication) || canShare || onCloseApplication ? (
           <div className="dossier-actions">
+            {!isReadOnly && isOwnApplication && onEnrich ? (
+              <button type="button" className="quiet-action dossier-enrich-action" onClick={onEnrich}>
+                <Sparkles size={14} /> {tx('dossier.enrichApplication', 'Enrich application')}
+              </button>
+            ) : null}
+            {canShare ? (
+              <button type="button" className="quiet-action" onClick={onShare}><Link size={14} /> {tx('dossier.share')}</button>
+            ) : null}
             {!isReadOnly && isOwnApplication ? (
-              <>
-                {onEnrich ? (
-                  <button type="button" className="quiet-action dossier-enrich-action" onClick={onEnrich}>
-                    <Sparkles size={14} /> {tx('dossier.enrichApplication', 'Enrich application')}
-                  </button>
-                ) : null}
-                <button type="button" className="quiet-action" onClick={onShare}><Link size={14} /> {tx('dossier.share')}</button>
-                <button type="button" className="danger-action" onClick={onDelete}><Trash2 size={14} /> {tx('dossier.delete')}</button>
-              </>
+              <button type="button" className="danger-action" onClick={onDelete}><Trash2 size={14} /> {tx('dossier.delete')}</button>
             ) : null}
             {onCloseApplication ? (
               <button
@@ -7236,7 +7411,9 @@ export function DossierView({
                   {formatDate(draft.deadline, lang)}
                 </strong>
                 <small>
-                  {due === 0
+                  {!draft.deadline
+                    ? '—'
+                    : due === 0
                     ? tx('dossier.today')
                     : due > 0
                       ? format(tx('dossier.daysLeft'), { count: due })
@@ -7276,13 +7453,13 @@ export function DossierView({
                   <label><span>{tx('dossier.schoolName')}</span>
                     <div className="input-with-copy">
                       <input value={draft.school.name} onChange={(e) => onDraft({ ...draft, school: { ...draft.school, name: e.target.value } })} />
-                      <CopyButton value={draft.school.name} label={tx('inspector.copySchool')} className="copy-inside" />
+                      <CopyButton value={draft.school.name} label={tx('inspector.copySchool')} className="copy-inside" onNotify={onNotify} />
                     </div>
                   </label>
                   <label><span>{tx('dossier.program')}</span>
                     <div className="input-with-copy">
                       <input value={draft.program} onChange={(e) => onDraft({ ...draft, program: e.target.value })} />
-                      <CopyButton value={draft.program} label={tx('inspector.copyProgram')} className="copy-inside" />
+                      <CopyButton value={draft.program} label={tx('inspector.copyProgram')} className="copy-inside" onNotify={onNotify} />
                     </div>
                   </label>
                   <label><span>{tx('dossier.country')}</span>
@@ -7297,7 +7474,7 @@ export function DossierView({
                     <div className="dossier-link-field">
                       <input value={draft.school.website} onChange={(e) => onDraft({ ...draft, school: { ...draft.school, website: e.target.value } })} />
                       {normalizedExternalHref(draft.school.website) && <a href={normalizedExternalHref(draft.school.website)} target="_blank" rel="noopener noreferrer" className="icon-action" title={tx('dossier.openLink')}><ExternalLink size={14} /></a>}
-                      <CopyButton value={draft.school.website} label={tx('dossier.schoolWebsite')} />
+                      <CopyButton value={draft.school.website} label={tx('dossier.schoolWebsite')} onNotify={onNotify} />
                     </div>
                   </label>
                 </div>
@@ -7320,26 +7497,26 @@ export function DossierView({
                     <div className="input-with-copy">
                       <input value={draft.professor.english} onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, english: e.target.value } })}
                         placeholder={tx('dossier.professorNamePlaceholder')} />
-                      <CopyButton value={draft.professor.english} label={tx('inspector.copyProfessor')} className="copy-inside" />
+                      <CopyButton value={draft.professor.english} label={tx('inspector.copyProfessor')} className="copy-inside" onNotify={onNotify} />
                     </div>
                   </label>
                   <label><span>{tx('dossier.email')}</span>
                     <div className="input-with-copy">
                       <input value={draft.professor.email} onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, email: e.target.value } })} />
-                      <CopyButton value={draft.professor.email} label={tx('inspector.copyEmail')} className="copy-inside" />
+                      <CopyButton value={draft.professor.email} label={tx('inspector.copyEmail')} className="copy-inside" onNotify={onNotify} />
                     </div>
                   </label>
                   <div className="field-grid field-grid-pair">
                     <label><span>{tx('dossier.phone')}</span>
                       <div className="input-with-copy">
                         <input value={draft.professor.phone} onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, phone: e.target.value } })} />
-                        <CopyButton value={draft.professor.phone} label={tx('dossier.phone')} className="copy-inside" />
+                        <CopyButton value={draft.professor.phone} label={tx('dossier.phone')} className="copy-inside" onNotify={onNotify} />
                       </div>
                     </label>
                     <label><span>{tx('dossier.social')}</span>
                       <div className="input-with-copy">
                         <input value={draft.professor.social} onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, social: e.target.value } })} />
-                        <CopyButton value={draft.professor.social} label={tx('dossier.social')} className="copy-inside" />
+                        <CopyButton value={draft.professor.social} label={tx('dossier.social')} className="copy-inside" onNotify={onNotify} />
                       </div>
                     </label>
                   </div>
@@ -7347,7 +7524,7 @@ export function DossierView({
                     <div className="dossier-link-field">
                       <input value={draft.professor.homepage} onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, homepage: e.target.value } })} />
                       {normalizedExternalHref(draft.professor.homepage) && <a href={normalizedExternalHref(draft.professor.homepage)} target="_blank" rel="noopener noreferrer" className="icon-action" title={tx('dossier.openLink')}><ExternalLink size={14} /></a>}
-                      <CopyButton value={draft.professor.homepage} label={tx('dossier.homepage')} />
+                      <CopyButton value={draft.professor.homepage} label={tx('dossier.homepage')} onNotify={onNotify} />
                     </div>
                   </label>
                 </div>
@@ -7373,6 +7550,32 @@ export function DossierView({
                   <label className="textarea-field"><span>{tx('dossier.labGroup')}</span>
                     <MarkdownTextarea value={localize(draft.professor.lab)} onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, lab: e.target.value } })} rows={2} />
                   </label>
+                  <div className="field-stack">
+                    <label><span>{tx('dossier.labLink')}</span>
+                      <div className="dossier-link-field">
+                        <input
+                          type="url"
+                          inputMode="url"
+                          value={draft.professor.labUrl ?? ''}
+                          onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, labUrl: e.target.value } })}
+                        />
+                        {normalizedExternalHref(draft.professor.labUrl ?? '') && <a href={normalizedExternalHref(draft.professor.labUrl ?? '')} target="_blank" rel="noopener noreferrer" className="icon-action" title={tx('dossier.openLink')}><ExternalLink size={14} /></a>}
+                        <CopyButton value={draft.professor.labUrl ?? ''} label={tx('dossier.labLink')} onNotify={onNotify} />
+                      </div>
+                    </label>
+                    <label><span>{tx('dossier.projectLink')}</span>
+                      <div className="dossier-link-field">
+                        <input
+                          type="url"
+                          inputMode="url"
+                          value={draft.professor.projectUrl ?? ''}
+                          onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, projectUrl: e.target.value } })}
+                        />
+                        {normalizedExternalHref(draft.professor.projectUrl ?? '') && <a href={normalizedExternalHref(draft.professor.projectUrl ?? '')} target="_blank" rel="noopener noreferrer" className="icon-action" title={tx('dossier.openLink')}><ExternalLink size={14} /></a>}
+                        <CopyButton value={draft.professor.projectUrl ?? ''} label={tx('dossier.projectLink')} onNotify={onNotify} />
+                      </div>
+                    </label>
+                  </div>
                 </CollapsiblePanel>
               </section>
 
@@ -7392,7 +7595,13 @@ export function DossierView({
                     <DatePicker value={draft.deadline} onChange={(v) => onDraft({ ...draft, deadline: v })} placeholder={tx('dossier.selectDeadline')} />
                   </label>
                   <label><span>{tx('dossier.status')}</span>
-                    <Select value={draft.status} options={statusOrder.map((s) => ({ value: s, label: statusLabel(s, tx) }))} onChange={(v) => onDraft({ ...draft, status: v as ApplicationStatus })} />
+                    <Select
+                      value={draft.status}
+                      options={applicationStatusOptions}
+                      onChange={(value) => commitDraft({ ...draftRef.current, status: value })}
+                      create={applicationStatusCreateConfig}
+                      ariaLabel={tx('dossier.status')}
+                    />
                   </label>
                   <label><span>{tx('dossier.priority')}</span>
                     <PrioritySlider
@@ -7690,7 +7899,7 @@ export function DossierView({
                   )}
 
                   <div className="checklist-upload-actions">
-                    {checklistUploadTarget ? (
+                    {checklistUploadTarget && canShare ? (
                       <button
                         type="button"
                         className="quiet-action"
@@ -8854,7 +9063,7 @@ export function DossierView({
                                 <Reply size={13} aria-hidden="true" />
                               </button>
                             ) : null}
-                            <CopyButton value={item.summary} label={tx('copySummary')} size={12} />
+                            <CopyButton value={item.summary} label={tx('copySummary')} size={12} onNotify={onNotify} />
                             <button type="button" className={`correspondence-edit-btn${isEditing ? ' active' : ''}`}
                               onClick={() => startEditingCommunication(item)} title={isEditing ? tx('dossier.cancelEdit') : tx('explorer.edit')} aria-label={isEditing ? tx('dossier.cancelEdit') : tx('explorer.edit')} aria-expanded={isEditing} disabled={!onUpdateCommunication}>
                               {isEditing ? <X size={12} /> : <Pencil size={12} />}

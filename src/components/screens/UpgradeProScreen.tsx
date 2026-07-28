@@ -1,27 +1,30 @@
 import {
   ArrowLeft,
+  ArrowRight,
   CheckCircle2,
   Clock3,
   Database,
+  HardDrive,
   LockKeyhole,
   Mail,
   ShieldCheck,
   Sparkles,
-  Users,
 } from 'lucide-react'
-import { useMemo } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import englishUpgrade from '../../i18n/en/upgrade.json'
 import chineseUpgrade from '../../i18n/zh/upgrade.json'
 import { registerLanguage } from '../../i18n'
 import { PUBLIC_EDITION } from '../../edition'
 import { useI18n } from '../hooks/useI18n'
+import { useMarketingReveal, usePointerTilt } from '../hooks/useMarketingMotion'
+import { StandalonePreferences } from '../shared/StandalonePreferences'
+import { MarketingWorkspaceDemo, type MarketingProFeature } from './MarketingWorkspaceDemo'
 
 // This standalone route must render its access explanation immediately, including after a resize
 // or hot reload, before the provider's background namespace request completes.
 registerLanguage('en', englishUpgrade, 'upgrade')
 registerLanguage('zh', chineseUpgrade, 'upgrade')
 
-const PRO_BACKUP_LIMIT = 20
 const FREE_APPLICATION_LIMIT = 3
 const PRO_APPLICATION_LIMIT = 300
 const ADMIN_MAILBOX = 'admin@phd-atlas.local'
@@ -37,11 +40,16 @@ function returnToSettings() {
 
 export function UpgradeProScreen() {
   const { tx, format } = useI18n()
+  const pageRef = useRef<HTMLElement | null>(null)
+  const capabilityStageRef = useRef<HTMLDivElement | null>(null)
+  const [activeBenefit, setActiveBenefit] = useState(0)
+  useMarketingReveal(pageRef)
+  usePointerTilt(capabilityStageRef, 1.8)
   const params = useMemo(() => new URLSearchParams(window.location.search), [])
   const requestedFeature = params.get('feature') ?? 'membership'
   const feature = PUBLIC_EDITION && requestedFeature === 'team' ? 'membership' : requestedFeature
   const requestedTier = params.get('requested')
-  const currentLimit = params.get('limit') ?? '5'
+  const currentLimit = params.get('limit') ?? String(FREE_APPLICATION_LIMIT)
   const frequencyLabels: Record<string, string> = {
     '1m': tx('upgrade.backupEvery1m'),
     '5m': tx('upgrade.backupEvery5m'),
@@ -77,40 +85,23 @@ export function UpgradeProScreen() {
   })
   const mailto = `mailto:${ADMIN_MAILBOX}?subject=${encodeURIComponent(mailSubject)}&body=${encodeURIComponent(mailBody)}`
 
-  const metrics = feature === 'application-limit'
-    ? [
-        { label: tx('upgrade.currentLimitLabel'), value: format(tx('upgrade.applicationLimitValue'), { limit: currentLimit || FREE_APPLICATION_LIMIT }) },
-        { label: tx('upgrade.requestedTierLabel'), value: requestedLabel },
-        { label: tx('upgrade.proLimitLabel'), value: format(tx('upgrade.applicationLimitValue'), { limit: PRO_APPLICATION_LIMIT }) },
-      ]
-    : feature === 'backup-frequency'
-      ? [
-          { label: tx('upgrade.currentLimitLabel'), value: tx('upgrade.offOnly') },
-          { label: tx('upgrade.requestedTierLabel'), value: requestedLabel },
-          { label: tx('upgrade.proLimitLabel'), value: tx('upgrade.allFrequencies') },
-        ]
-      : feature === 'manual-backup'
-        ? [
-            { label: tx('upgrade.currentLimitLabel'), value: tx('upgrade.proOnly') },
-            { label: tx('upgrade.requestedTierLabel'), value: tx('upgrade.manualBackupLabel') },
-            { label: tx('upgrade.proLimitLabel'), value: tx('upgrade.unlimitedBackups') },
-          ]
-        : feature === 'draft-mailbox'
-          ? [
-              { label: tx('upgrade.currentLimitLabel'), value: tx('upgrade.draftMailboxFreeValue') },
-              { label: tx('upgrade.requestedTierLabel'), value: tx('upgrade.draftMailboxLabel') },
-              { label: tx('upgrade.proLimitLabel'), value: tx('upgrade.draftMailboxProValue') },
-            ]
-        : feature === 'team'
-          ? [
-              { label: tx('upgrade.requestedTierLabel'), value: tx('upgrade.teamPlan') },
-              { label: tx('upgrade.proLimitLabel'), value: tx('upgrade.teamFeatureSeats') },
-            ]
-          : [
-            { label: tx('upgrade.currentLimitLabel'), value: format(tx('upgrade.backupLimitValue'), { limit: currentLimit }) },
-            { label: tx('upgrade.requestedTierLabel'), value: requestedTier ? format(tx('upgrade.backupLimitValue'), { limit: requestedTier }) : tx('upgrade.notSpecified') },
-            { label: tx('upgrade.proLimitLabel'), value: format(tx('upgrade.backupLimitValue'), { limit: PRO_BACKUP_LIMIT }) },
-          ]
+  const metrics = [
+    {
+      label: tx('upgrade.benefitSeasonTitle'),
+      current: format(tx('upgrade.applicationLimitValue'), { limit: currentLimit || FREE_APPLICATION_LIMIT }),
+      unlocked: format(tx('upgrade.applicationLimitValue'), { limit: PRO_APPLICATION_LIMIT }),
+    },
+    {
+      label: tx('upgrade.benefitBackupTitle'),
+      current: tx('upgrade.offOnly'),
+      unlocked: tx('upgrade.backupEvery1m'),
+    },
+    {
+      label: tx('upgrade.benefitMemberTitle'),
+      current: '25 MB',
+      unlocked: '100 MB',
+    },
+  ]
 
   const plans = [
     {
@@ -159,11 +150,12 @@ export function UpgradeProScreen() {
   ]
 
   const benefits = [
-    { icon: Database, title: tx('upgrade.benefitBackupTitle'), body: tx('upgrade.benefitBackupBody') },
+    { icon: Database, title: tx('upgrade.benefitSeasonTitle'), body: tx('upgrade.benefitSeasonBody') },
+    { icon: Clock3, title: tx('upgrade.benefitBackupTitle'), body: tx('upgrade.benefitBackupBody') },
     { icon: ShieldCheck, title: tx('upgrade.benefitSafetyTitle'), body: tx('upgrade.benefitSafetyBody') },
-    { icon: Clock3, title: tx('upgrade.benefitSeasonTitle'), body: tx('upgrade.benefitSeasonBody') },
-    { icon: Users, title: tx('upgrade.benefitMemberTitle'), body: tx('upgrade.benefitMemberBody') },
+    { icon: HardDrive, title: tx('upgrade.benefitMemberTitle'), body: tx('upgrade.benefitMemberBody') },
   ]
+  const benefitFeatures: MarketingProFeature[] = ['capacity', 'backup', 'recovery', 'storage']
 
   const steps = [
     tx('upgrade.stepRequest'),
@@ -171,130 +163,203 @@ export function UpgradeProScreen() {
     tx('upgrade.stepActivate'),
   ]
 
+  const comparisonRows = [
+    {
+      label: tx('upgrade.benefitSeasonTitle'),
+      values: plans.map((plan) => plan.features[0]),
+    },
+    {
+      label: tx('upgrade.benefitBackupTitle'),
+      values: plans.map((plan) => plan.features[1]),
+    },
+    {
+      label: tx('upgrade.benefitSafetyTitle'),
+      values: plans.map((plan) => plan.features[2]),
+    },
+  ]
+
   return (
-    <main className="upgrade-canvas route-content-reveal">
-      <div className="upgrade-shell">
-        <header className="upgrade-topbar">
-          <div className="upgrade-brand">
-            <span className="upgrade-brand-mark" aria-hidden="true">
-              <Sparkles size={17} />
-            </span>
-            <span>{tx('upgrade.membershipCenter')}</span>
-          </div>
+    <main className="upgrade-canvas upgrade-experience route-content-reveal" ref={pageRef}>
+      <header className="upgrade-topbar" data-marketing-reveal data-marketing-visible="true">
+        <a className="upgrade-brand" href="#upgrade-top" aria-label={tx('upgrade.membershipCenter')}>
+          <span className="upgrade-brand-mark" aria-hidden="true">
+            <Sparkles size={16} />
+          </span>
+          <strong>{tx('appTitle')} <em>{tx('upgrade.proPlan')}</em></strong>
+        </a>
+        <div className="upgrade-topbar-actions">
+          <StandalonePreferences />
           <button type="button" className="upgrade-back-button" onClick={returnToSettings}>
             <ArrowLeft size={14} aria-hidden="true" />
             {tx('upgrade.backToSettings')}
           </button>
-        </header>
+        </div>
+      </header>
 
-        <section className="upgrade-hero" aria-labelledby="upgrade-title">
-          <div className="upgrade-hero-copy">
-            <span className="upgrade-eyebrow">{tx('upgrade.eyebrow')}</span>
-            <h1 id="upgrade-title">{tx('upgrade.title')}</h1>
-            <p>{tx('upgrade.subtitle')}</p>
-            <div className="upgrade-actions">
-              <a className="upgrade-primary-action" href={mailto}>
-                <Mail size={14} aria-hidden="true" />
-                {tx('upgrade.primaryCta')}
-              </a>
-              <button type="button" className="upgrade-secondary-action" onClick={returnToSettings}>
-                {tx('upgrade.secondaryCta')}
-              </button>
-            </div>
+      <section className="upgrade-hero" id="upgrade-top" aria-labelledby="upgrade-title">
+        <div className="upgrade-hero-copy" data-marketing-reveal data-marketing-visible="true">
+          <h1 id="upgrade-title">{tx('upgrade.title')}</h1>
+          <p>{tx('upgrade.subtitle')}</p>
+          <div className="upgrade-actions">
+            <a className="upgrade-primary-action" href={mailto}>
+              <Mail size={14} aria-hidden="true" />
+              {tx('upgrade.primaryCta')}
+            </a>
+            <button type="button" className="upgrade-secondary-action" onClick={returnToSettings}>
+              {tx('upgrade.secondaryCta')}
+            </button>
           </div>
+        </div>
 
+        <div
+          className="upgrade-capability-stage"
+          ref={capabilityStageRef}
+          aria-label={tx('upgrade.limitPanelLabel')}
+          data-marketing-reveal
+          data-marketing-visible="true"
+        >
+          <div className="upgrade-capability-light" aria-hidden="true" />
+          <MarketingWorkspaceDemo
+            className="upgrade-real-workspace"
+            mode="pro"
+            feature="backup"
+            activeTab="dossier"
+          />
           <aside className="upgrade-limit-panel" aria-label={tx('upgrade.limitPanelLabel')}>
             <span className="upgrade-limit-icon" aria-hidden="true">
-              <LockKeyhole size={18} />
+              <LockKeyhole size={17} />
             </span>
-            <h2>{tx('upgrade.limitPanelTitle')}</h2>
-            <p>{requestSummary}</p>
+            <div className="upgrade-limit-copy">
+              <h2>{tx('upgrade.limitPanelTitle')}</h2>
+              <p>{requestSummary}</p>
+            </div>
             <dl className="upgrade-limit-list">
               {metrics.map((metric) => (
                 <div key={metric.label}>
                   <dt>{metric.label}</dt>
-                  <dd>{metric.value}</dd>
+                  <dd>
+                    <span>{metric.current}</span>
+                    <ArrowRight size={11} aria-hidden="true" />
+                    <strong>{metric.unlocked}</strong>
+                  </dd>
                 </div>
               ))}
             </dl>
           </aside>
-        </section>
+        </div>
+      </section>
 
-        <section className="upgrade-section" aria-labelledby="upgrade-plans-title">
-          <div className="upgrade-section-head">
-            <span className="upgrade-eyebrow">{tx('upgrade.plansEyebrow')}</span>
-            <h2 id="upgrade-plans-title">{tx('upgrade.plansTitle')}</h2>
-            <p>{tx('upgrade.plansDesc')}</p>
-          </div>
-          <div className="upgrade-plan-grid">
-            {plans.map((plan) => (
-              <article key={plan.key} className={`upgrade-plan-card ${plan.featured ? 'featured' : ''}`}>
-                <div className="upgrade-plan-head">
-                  {plan.badge ? <span className="upgrade-plan-chip">{plan.badge}</span> : null}
-                  <h3>{plan.name}</h3>
-                  <strong>{plan.price}</strong>
-                  <p>{plan.description}</p>
-                </div>
-                <ul className="upgrade-feature-list">
-                  {plan.features.map((feature) => (
-                    <li key={feature}>
-                      <CheckCircle2 size={13} aria-hidden="true" />
-                      <span>{feature}</span>
-                    </li>
-                  ))}
-                </ul>
-                {plan.disabled ? (
-                  <button type="button" className="upgrade-plan-action" disabled>
-                    {plan.action}
+      <section className="upgrade-benefit-story" aria-labelledby="upgrade-benefits-title">
+        <div className="upgrade-benefit-story-inner">
+          <div className="upgrade-benefit-selector" data-marketing-reveal>
+            <div className="upgrade-benefit-story-head">
+              <h2 id="upgrade-benefits-title">{tx('upgrade.introTitle')}</h2>
+              <p>{tx('upgrade.introDesc')}</p>
+            </div>
+            <div className="upgrade-benefit-buttons">
+              {benefits.map((benefit, index) => {
+                const Icon = benefit.icon
+                return (
+                  <button
+                    key={benefit.title}
+                    type="button"
+                    className={activeBenefit === index ? 'is-active' : ''}
+                    aria-pressed={activeBenefit === index}
+                    onClick={() => setActiveBenefit(index)}
+                  >
+                    <span><Icon size={18} aria-hidden="true" /></span>
+                    <span>
+                      <strong>{benefit.title}</strong>
+                      <small>{benefit.body}</small>
+                    </span>
                   </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <div className="upgrade-benefit-preview" data-benefit={activeBenefit} data-marketing-reveal aria-live="polite">
+            <MarketingWorkspaceDemo
+              className="upgrade-benefit-real-workspace"
+              mode="pro"
+              feature={benefitFeatures[activeBenefit] ?? 'capacity'}
+              activeTab={activeBenefit === 0 ? 'dossier' : activeBenefit === 2 ? 'timeline' : 'materials'}
+            />
+          </div>
+        </div>
+      </section>
+
+      <section className="upgrade-plan-comparison" aria-labelledby="upgrade-plans-title">
+        <div className="upgrade-section-head" data-marketing-reveal>
+          <h2 id="upgrade-plans-title">{tx('upgrade.plansTitle')}</h2>
+          <p>{tx('upgrade.plansDesc')}</p>
+        </div>
+        <div className={`upgrade-comparison-grid plan-count-${plans.length}`} data-marketing-reveal>
+          <div className="upgrade-comparison-corner" aria-hidden="true" />
+          {plans.map((plan) => (
+            <div key={plan.key} className={`upgrade-comparison-plan ${plan.featured ? 'featured' : ''}`}>
+              <div>
+                <h3>{plan.name}</h3>
+                {plan.badge ? <span>{plan.badge}</span> : null}
+              </div>
+              <strong>{plan.price}</strong>
+              <p>{plan.description}</p>
+            </div>
+          ))}
+          {comparisonRows.map((row) => (
+            <div className="upgrade-comparison-row" key={row.label}>
+              <h4>{row.label}</h4>
+              {row.values.map((value, index) => (
+                <div className={plans[index]?.featured ? 'featured' : ''} key={`${plans[index]?.key}-${row.label}`}>
+                  <CheckCircle2 size={13} aria-hidden="true" />
+                  <span>{value}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+          <div className="upgrade-comparison-actions">
+            <span aria-hidden="true" />
+            {plans.map((plan) => (
+              <div className={plan.featured ? 'featured' : ''} key={plan.key}>
+                {plan.disabled ? (
+                  <button type="button" className="upgrade-plan-action" disabled>{plan.action}</button>
                 ) : (
-                  <a className="upgrade-plan-action primary" href={mailto}>
+                  <a className={`upgrade-plan-action ${plan.featured ? 'primary' : ''}`} href={mailto}>
                     {plan.action}
+                    <ArrowRight size={13} aria-hidden="true" />
                   </a>
                 )}
-              </article>
+              </div>
             ))}
           </div>
-        </section>
+        </div>
+      </section>
 
-        <section className="upgrade-section upgrade-benefits" aria-labelledby="upgrade-benefits-title">
-          <div className="upgrade-section-head compact">
-            <span className="upgrade-eyebrow">{tx('upgrade.introEyebrow')}</span>
-            <h2 id="upgrade-benefits-title">{tx('upgrade.introTitle')}</h2>
-            <p>{tx('upgrade.introDesc')}</p>
-          </div>
-          <div className="upgrade-benefit-grid">
-            {benefits.map((benefit) => {
-              const Icon = benefit.icon
-              return (
-                <article key={benefit.title} className="upgrade-benefit-card">
-                  <span aria-hidden="true">
-                    <Icon size={16} />
-                  </span>
-                  <h3>{benefit.title}</h3>
-                  <p>{benefit.body}</p>
-                </article>
-              )
-            })}
-          </div>
-        </section>
-
-        <section className="upgrade-flow" aria-label={tx('upgrade.flowTitle')}>
-          <div>
-            <span className="upgrade-eyebrow">{tx('upgrade.flowEyebrow')}</span>
-            <h2>{tx('upgrade.flowTitle')}</h2>
-            <p>{tx('upgrade.flowDesc')}</p>
-          </div>
-          <ol>
-            {steps.map((step, index) => (
-              <li key={step}>
-                <span>{index + 1}</span>
-                <p>{step}</p>
-              </li>
-            ))}
-          </ol>
-        </section>
-      </div>
+      <section className="upgrade-flow" aria-labelledby="upgrade-flow-title">
+        <div className="upgrade-flow-head" data-marketing-reveal>
+          <h2 id="upgrade-flow-title">{tx('upgrade.flowTitle')}</h2>
+          <p>{tx('upgrade.flowDesc')}</p>
+        </div>
+        <ol data-marketing-reveal>
+          {steps.map((step, index) => (
+            <li key={step}>
+              <span>{index + 1}</span>
+              <p>{step}</p>
+            </li>
+          ))}
+        </ol>
+        <div className="upgrade-final-cta" data-marketing-reveal>
+          <h2>{tx('upgrade.title')}</h2>
+          <a className="upgrade-primary-action" href={mailto}>
+            <Mail size={14} aria-hidden="true" />
+            {tx('upgrade.primaryCta')}
+          </a>
+          <button type="button" className="upgrade-secondary-action" onClick={returnToSettings}>
+            <ArrowLeft size={13} aria-hidden="true" />
+            {tx('upgrade.backToSettings')}
+          </button>
+        </div>
+      </section>
     </main>
   )
 }

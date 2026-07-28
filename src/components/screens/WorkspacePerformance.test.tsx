@@ -109,18 +109,18 @@ describe('large workspace collections', () => {
     })
     expect(screen.queryByText('dashboard.applicationSnapshotDesc')).not.toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Mark complete: Submit research proposal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Mark complete: Submit research proposal' }))
     expect(container.querySelector('.stat-task-item')).toHaveClass('is-pending-done')
     // Grace window: still on the list until ~5s pass.
     expect(onToggleTask).not.toHaveBeenCalled()
 
     // Second click within the grace window restores the open state.
-    await userEvent.click(screen.getByRole('button', { name: 'Undo complete: Submit research proposal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Undo complete: Submit research proposal' }))
     expect(container.querySelector('.stat-task-item')).not.toHaveClass('is-pending-done')
     expect(onToggleTask).not.toHaveBeenCalled()
 
     // Complete again and wait for the grace window to commit.
-    await userEvent.click(screen.getByRole('button', { name: 'Mark complete: Submit research proposal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Mark complete: Submit research proposal' }))
     expect(container.querySelector('.stat-task-item')).toHaveClass('is-pending-done')
     await waitFor(() => {
       expect(onToggleTask).toHaveBeenCalledWith(application.id, 'dashboard-task-1', true)
@@ -213,7 +213,9 @@ describe('large workspace collections', () => {
       />,
     )
 
-    const visibleTitles = () => [...container.querySelectorAll('.stat-task-title')].map((node) => node.textContent)
+    const visibleTitles = () => [...container.querySelectorAll('.stat-task-title')]
+      .filter((node) => !node.closest('[aria-hidden="true"]'))
+      .map((node) => node.textContent)
     expect(visibleTitles()).toEqual([
       'Application material',
       'Scholarship material',

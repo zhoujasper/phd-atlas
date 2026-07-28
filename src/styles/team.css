@@ -217,6 +217,668 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* 2026-07-27 — delegated Team capabilities, directory handoffs, and
+   personal-Settings parity. These rules intentionally keep one calm surface:
+   permission rows are separated by hairlines instead of nested cards. */
+.team-audit-page {
+  min-width: 0;
+  display: grid;
+  gap: 24px;
+}
+
+.team-organization-settings-hero {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.team-organization-settings-hero-icon {
+  width: 30px;
+  height: 30px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.team-organization-settings-hero > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.team-organization-settings-hero p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.team-settings-permission-summary {
+  display: grid;
+}
+
+.team-settings-permission-summary > button {
+  min-width: 0;
+  min-height: 66px;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto 14px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    transform 80ms var(--ease-out);
+}
+
+.team-settings-permission-summary > button:last-child {
+  border-bottom: 0;
+}
+
+.team-settings-permission-summary > button:hover {
+  background: var(--surface-secondary);
+}
+
+.team-settings-permission-summary > button:active {
+  transform: scale(0.99);
+}
+
+.team-settings-permission-summary > button:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.team-settings-permission-summary-icon {
+  width: 32px;
+  height: 32px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--radius);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+}
+
+.team-settings-permission-summary > button > span:nth-child(2) {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.team-settings-permission-summary strong {
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.team-settings-permission-summary small {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-settings-permission-summary em {
+  min-width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.team-permission-editor {
+  min-width: 0;
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.team-permission-editor.is-saving {
+  opacity: 0.82;
+}
+
+.team-permission-editor-head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+}
+
+.team-permission-editor-icon,
+.team-permission-row-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--text-secondary);
+}
+
+.team-permission-editor-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.team-permission-editor-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.team-permission-editor-head strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.team-permission-editor-head p {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.team-permission-save-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.team-permission-list {
+  display: grid;
+  border-top: 1px solid var(--border);
+}
+
+.team-permission-row {
+  min-width: 0;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.team-permission-row:last-child {
+  border-bottom: 0;
+}
+
+.team-permission-row:hover {
+  background: color-mix(in srgb, var(--surface-secondary) 55%, transparent);
+}
+
+.team-permission-row-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.team-permission-row-copy strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 610;
+}
+
+.team-permission-row-copy small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.team-permission-switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    transform 80ms var(--ease-out);
+}
+
+.team-permission-switch > span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  transform: translateX(0);
+  transition: transform var(--duration) var(--ease-fluid);
+}
+
+.team-permission-switch.enabled {
+  background: var(--accent);
+}
+
+.team-permission-switch.enabled > span {
+  transform: translateX(16px);
+}
+
+.team-permission-switch:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.team-permission-switch:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.team-permission-switch:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.2);
+  opacity: 0.45;
+}
+
+.team-permission-limit-list {
+  display: grid;
+  border-top: 1px solid var(--border);
+}
+
+.team-permission-section-label {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 680;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.team-permission-section-label em {
+  font-style: normal;
+  font-weight: 520;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.team-permission-limit-row {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+}
+
+.team-permission-limit-summary {
+  min-width: 0;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.team-permission-limit-usage {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.team-permission-limit-field-inner {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0 10px;
+}
+
+.team-permission-limit-field label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 580;
+}
+
+.team-permission-limit-field input {
+  width: 76px;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: right;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.team-permission-limit-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.team-permission-entitlement {
+  min-width: 0;
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.team-permission-entitlement > div:first-child {
+  min-width: 160px;
+  display: grid;
+  gap: 2px;
+  flex: 1 1 220px;
+}
+
+.team-permission-entitlement > div:first-child strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.team-permission-entitlement > div:first-child small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.team-teacher-directory-entry {
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.team-teacher-directory-entry:last-child {
+  border-bottom: 0;
+}
+
+.team-teacher-directory-entry .team-teacher-directory-row {
+  border-bottom: 0;
+}
+
+.team-teacher-directory-shortcut.is-permissions {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.team-teacher-directory-shortcut.is-permissions.active {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.team-teacher-permission-detail-inner {
+  padding: 0 16px 14px 64px;
+}
+
+.team-discover-controls {
+  grid-template-columns: minmax(240px, 1fr) auto auto auto;
+}
+
+.team-discover-view-switch {
+  flex: 0 0 auto;
+}
+
+.team-discover-library {
+  min-width: 0;
+  transform-origin: 50% 0;
+  transition:
+    opacity 90ms var(--ease-out),
+    transform 90ms var(--ease-out);
+}
+
+.team-discover-directory[data-library-view-stable="true"] .team-discover-library {
+  min-height: var(--library-view-stable-height);
+}
+
+.team-discover-library.phase-exiting {
+  opacity: 0;
+  transform: translateY(3px) scale(0.995);
+  pointer-events: none;
+}
+
+.team-discover-library.phase-entering .team-discover-student-card {
+  animation: teamDiscoverResultEnter 190ms var(--ease-out) both;
+  animation-delay: calc(var(--team-discover-index, 0) * 18ms);
+}
+
+@keyframes teamDiscoverResultEnter {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.team-discover-student-grid.view-list {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.team-discover-student-grid.view-list .team-discover-student-card {
+  min-height: 78px;
+  grid-template-columns: minmax(300px, 1.2fr) auto minmax(250px, 0.8fr);
+  grid-template-rows: auto;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 14px;
+}
+
+.team-discover-student-grid.view-list .team-discover-card-head {
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+}
+
+.team-discover-student-grid.view-list .team-discover-card-avatar {
+  width: 36px;
+  height: 36px;
+}
+
+.team-discover-student-grid.view-list .team-discover-card-identity strong {
+  font-size: 13px;
+}
+
+.team-discover-student-grid.view-list .team-discover-card-facts {
+  justify-content: flex-start;
+  flex-wrap: nowrap;
+}
+
+.team-discover-student-grid.view-list .team-discover-card-footer {
+  align-self: center;
+  align-items: center;
+  padding: 0;
+  border-top: 0;
+}
+
+html[data-library-view-transition-scope="team-discover"] .team-discover-library {
+  view-transition-name: team-discover-library;
+}
+
+html[data-library-view-transition-scope="team-discover"][data-library-view-transition-mode="fallback"] .team-discover-library {
+  animation: teamDiscoverViewFallback 280ms var(--ease-out) both;
+}
+
+@keyframes teamDiscoverViewFallback {
+  from {
+    opacity: 0.58;
+    transform: translateY(5px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+html[data-library-view-transition-scope="team-discover"]::view-transition-old(team-discover-library),
+html[data-library-view-transition-scope="team-discover"]::view-transition-new(team-discover-library) {
+  animation-duration: 280ms;
+  animation-timing-function: var(--ease-out);
+  mix-blend-mode: plus-lighter;
+}
+
+html[data-library-view-transition-scope="team-discover"]::view-transition-old(team-discover-library) {
+  animation-name: teamDiscoverViewOld;
+}
+
+html[data-library-view-transition-scope="team-discover"]::view-transition-new(team-discover-library) {
+  animation-name: teamDiscoverViewNew;
+}
+
+@keyframes teamDiscoverViewOld {
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.995);
+  }
+}
+
+@keyframes teamDiscoverViewNew {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.995);
+  }
+}
+
+@media (max-width: 1180px) {
+  .team-discover-controls {
+    grid-template-columns: minmax(220px, 1fr) auto auto;
+  }
+
+  .team-discover-result-count {
+    grid-column: 1 / -1;
+  }
+
+  .team-discover-student-grid.view-list .team-discover-student-card {
+    grid-template-columns: minmax(260px, 1fr) auto;
+  }
+
+  .team-discover-student-grid.view-list .team-discover-card-footer {
+    grid-column: 1 / -1;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+}
+
+@media (max-width: 820px) {
+  .team-organization-settings-hero {
+    align-items: flex-start;
+  }
+
+  .team-settings-permission-summary small {
+    white-space: normal;
+  }
+
+  .team-permission-editor-head {
+    grid-template-columns: 32px minmax(0, 1fr);
+  }
+
+  .team-permission-save-state {
+    grid-column: 2;
+  }
+
+  .team-teacher-permission-detail-inner {
+    padding: 0 12px 12px;
+  }
+
+  .team-discover-controls {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .team-discover-search,
+  .team-discover-filterbar {
+    grid-column: 1 / -1;
+  }
+
+  .team-discover-result-count {
+    grid-column: auto;
+  }
+
+  .team-discover-student-grid.view-list .team-discover-student-card {
+    min-height: 132px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .team-discover-student-grid.view-list .team-discover-card-footer {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 520px) {
+  .team-permission-limit-summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .team-permission-limit-usage {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .team-permission-limit-summary .team-permission-switch {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+
+  .team-permission-entitlement {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .team-settings-permission-summary > button {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+  }
+
+  .team-settings-permission-summary > button > svg {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .team-discover-library,
+  .team-discover-library.phase-entering .team-discover-student-card,
+  html[data-library-view-transition-scope="team-discover"][data-library-view-transition-mode="fallback"] .team-discover-library {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+    transform: none !important;
+  }
+
+  .team-permission-switch > span {
+    transition-duration: 0.01ms !important;
+  }
+}
 .team-hero-copy {
   min-width: 0;
 }
@@ -347,6 +1009,22 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 .team-tab-panel {
   display: grid;
   gap: 14px;
+}
+
+.team-student-profile-parity {
+  display: block;
+}
+
+.team-student-profile-parity > .simple-screen {
+  height: auto;
+  min-height: 100%;
+  padding: 0;
+  overflow: visible;
+  background: transparent;
+}
+
+.team-student-personal-profile .profile-hero {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .team-resource-deferred {
@@ -1809,7 +2487,6 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   color: var(--text-tertiary);
 }
 .team-invite-trigger {
-  min-height: 34px;
   gap: 6px;
   white-space: nowrap;
 }
@@ -2718,7 +3395,8 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
     display: none;
   }
   .atlas-rail.team-rail .rail-active-indicator {
-    display: none;
+    display: block;
+    left: calc(var(--rail-active-index, 0) * 48px - 1px);
   }
 }
 
@@ -5435,7 +6113,7 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   display: grid;
   gap: 20px;
   padding: 18px 16px 14px;
-  zoom: var(--team-relation-zoom);
+  transform: scale(var(--team-relation-zoom));
   transform-origin: top left;
 }
 
@@ -5743,6 +6421,33 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 
 .team-relation-node.student.is-arriving.mode-add {
   border-color: color-mix(in srgb, var(--success) 45%, var(--border));
+}
+
+.team-relation-node.is-located {
+  animation: team-relation-locate 1180ms var(--ease-out) both;
+}
+
+@keyframes team-relation-locate {
+  0%,
+  100% {
+    border-color: var(--border);
+    box-shadow: var(--shadow-xs);
+  }
+  22%,
+  62% {
+    border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+    background: color-mix(in srgb, var(--accent-soft) 58%, var(--surface));
+    box-shadow:
+      0 0 0 5px color-mix(in srgb, var(--accent) 15%, transparent),
+      0 12px 28px color-mix(in srgb, var(--accent) 12%, transparent);
+    transform: translateY(-2px) scale(1.018);
+  }
+  42%,
+  82% {
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 8%, transparent);
+    transform: none;
+  }
 }
 
 .team-relation-node.teacher.is-drop-active {
@@ -8779,6 +9484,7 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 .team-portrait-profile-pane {
+  position: relative;
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -8790,6 +9496,71 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   border-bottom: 1px solid var(--border);
   border-radius: 0;
   box-shadow: none;
+}
+
+.team-portrait-profile-content {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  opacity: 1;
+  transition: opacity 90ms var(--ease-out);
+}
+
+.team-portrait-profile-pane.is-student-loading .team-portrait-profile-content {
+  opacity: 0.82;
+}
+
+.team-portrait-profile-content.is-handoff-a {
+  animation: team-portrait-student-handoff-a 190ms var(--ease-out) both;
+}
+
+.team-portrait-profile-content.is-handoff-b {
+  animation: team-portrait-student-handoff-b 190ms var(--ease-out) both;
+}
+
+@keyframes team-portrait-student-handoff-a {
+  from { opacity: 0.52; }
+  to { opacity: 1; }
+}
+
+@keyframes team-portrait-student-handoff-b {
+  from { opacity: 0.52; }
+  to { opacity: 1; }
+}
+
+.team-portrait-student-loading-line {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 4;
+  height: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  pointer-events: none;
+}
+
+.team-portrait-student-loading-line::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 32%;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  transform: translate3d(-110%, 0, 0);
+  animation: team-portrait-student-loading 760ms var(--ease-out) infinite;
+}
+
+@keyframes team-portrait-student-loading {
+  to { transform: translate3d(420%, 0, 0); }
+}
+
+.team-portrait-profile-content[data-student-portrait-stable='true'] .team-portrait-library-view,
+.team-portrait-profile-content[data-student-portrait-stable='true'] .team-portrait-snippet-card {
+  animation: none;
 }
 
 .team-portrait-dossier-head {
@@ -9487,6 +10258,8 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 .team-portrait-student-list {
+  position: relative;
+  isolation: isolate;
   min-height: 0;
   flex: 1 1 auto;
   margin: 0 -4px;
@@ -9497,8 +10270,44 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   scrollbar-gutter: stable;
 }
 
+.team-portrait-student-selection {
+  position: absolute;
+  top: 0;
+  right: 4px;
+  left: 4px;
+  z-index: 0;
+  height: var(--team-portrait-selection-height, 66px);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  opacity: 0;
+  transform: translate3d(0, var(--team-portrait-selection-y, 0), 0);
+  pointer-events: none;
+  transition:
+    transform var(--duration) var(--ease-out),
+    height var(--duration) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+
+.team-portrait-student-selection::before {
+  content: '';
+  position: absolute;
+  inset: 7px auto 7px 0;
+  width: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+
+.team-portrait-student-selection.is-visible {
+  opacity: 1;
+}
+
+.team-portrait-student-selection.is-moving {
+  will-change: transform;
+}
+
 .team-portrait-student-row {
   position: relative;
+  z-index: 1;
   width: 100%;
   min-width: 0;
   display: grid;
@@ -9541,6 +10350,14 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   background: var(--accent);
 }
 
+.team-portrait-student-list.has-selection-slider .team-portrait-student-row.selected {
+  background: transparent;
+}
+
+.team-portrait-student-list.has-selection-slider .team-portrait-student-row.selected::before {
+  background: transparent;
+}
+
 .team-portrait-student-avatar,
 .team-portrait-identity-avatar {
   display: inline-grid;
@@ -9552,6 +10369,10 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   font-weight: 700;
   box-shadow: inset 0 0 0 1px var(--border);
   overflow: hidden;
+  transition:
+    background-color 180ms var(--ease-out),
+    color 180ms var(--ease-out),
+    box-shadow 180ms var(--ease-out);
 }
 
 .team-portrait-student-avatar {
@@ -10008,6 +10829,7 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 .team-portrait-library-view {
   min-width: 0;
   width: 100%;
+  min-height: var(--library-view-stable-height, 0);
   transform-origin: top center;
   animation: team-portrait-library-view-enter 260ms var(--ease-out) both;
 }
@@ -10188,24 +11010,31 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 .team-portrait-snippet-card-grid {
+  --snippet-stack-card-width: 200px;
+  --snippet-stack-gap: 16px;
   display: flex;
   flex-wrap: wrap;
-  gap: 24px 28px;
+  gap: 20px 16px;
   align-items: start;
   min-width: 0;
   width: 100%;
   overflow-anchor: none;
 }
 
+.team-portrait-snippet-card-grid > .snippet-stack {
+  --snippet-stack-card-width: 200px;
+  --snippet-stack-gap: 16px;
+}
+
 @container team-portrait-library (max-width: 720px) {
   .team-portrait-snippet-card-grid {
-    gap: 20px;
+    gap: 20px 16px;
   }
 }
 
 @media (max-width: 820px) {
   .team-portrait-snippet-card-grid {
-    gap: 20px;
+    gap: 20px 16px;
   }
 }
 
@@ -10681,6 +11510,10 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .team-portrait-student-selection,
+  .team-portrait-student-avatar,
+  .team-portrait-profile-content,
+  .team-portrait-student-loading-line::after,
   .team-portrait-library-view,
   .team-portrait-snippet-card,
   .team-portrait-snippet-deck-card,
@@ -10693,6 +11526,11 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   .team-portrait-preset-actions {
     animation: none !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .team-portrait-student-loading-line::after {
+    width: 100%;
+    transform: none;
   }
 }
 
@@ -10707,6 +11545,13 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   border-radius: var(--radius);
   color: var(--text-secondary);
   text-align: center;
+}
+
+.team-portrait-section-empty > span {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 590;
+  line-height: 1.4;
 }
 
 .team-portrait-section-empty > p {
@@ -10792,6 +11637,41 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   overflow: hidden;
 }
 
+.team-member-avatar-fallback {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, currentColor 12%, var(--border));
+  border-radius: var(--radius);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, currentColor 13%, var(--surface)), var(--surface));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface) 75%, transparent);
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: -0.02em;
+}
+
+.team-member-avatar-fallback.tone-0,
+.team-member-avatar-fallback.tone-5 {
+  color: var(--accent);
+}
+
+.team-member-avatar-fallback.tone-1 {
+  color: var(--success);
+}
+
+.team-member-avatar-fallback.tone-2 {
+  color: var(--warning);
+}
+
+.team-member-avatar-fallback.tone-3 {
+  color: var(--info);
+}
+
+.team-member-avatar-fallback.tone-4 {
+  color: var(--text-secondary);
+}
+
 .team-portrait-preset-popover .team-portrait-presets-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -10833,6 +11713,15 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 
 .team-portrait-presets-head-actions .primary-action {
   min-width: 0;
+  min-height: 30px;
+  padding-inline: 10px;
+  font-size: 12px;
+}
+
+.team-portrait-identity-actions .compact-action {
+  min-height: 30px;
+  padding-inline: 10px;
+  font-size: 12px;
 }
 
 .team-portrait-source-tabs {
@@ -10913,6 +11802,35 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
+}
+
+.team-portrait-preset-results {
+  min-width: 0;
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+  transition:
+    opacity 90ms var(--ease-out),
+    transform 90ms var(--ease-out);
+}
+
+.team-portrait-preset-results.is-exiting {
+  opacity: 0;
+  transform: translate3d(0, -3px, 0);
+}
+
+.team-portrait-preset-results.is-entering {
+  animation: team-portrait-preset-results-in 190ms var(--ease-out) both;
+}
+
+@keyframes team-portrait-preset-results-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 5px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
 }
 
 .team-portrait-preset-row {
@@ -11105,6 +12023,14 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 
 .team-portrait-presets-empty .empty-state-icon {
   margin: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .team-portrait-preset-results,
+  .team-portrait-preset-results.is-entering {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 .team-portrait-empty-students {
@@ -11429,6 +12355,51 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   gap: 3px;
 }
 
+.team-organization-settings-account {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px 8px 6px;
+  border-top: 1px solid var(--border);
+}
+
+.team-organization-settings-avatar {
+  width: 30px;
+  height: 30px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.team-organization-settings-account > span {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.team-organization-settings-account strong,
+.team-organization-settings-account em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-organization-settings-account strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.team-organization-settings-account em {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-style: normal;
+}
+
 .team-organization-settings-index-label {
   display: block;
   padding: 6px 9px 7px;
@@ -11696,6 +12667,10 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   }
 
   .team-organization-settings-index-label {
+    display: none;
+  }
+
+  .team-organization-settings-account {
     display: none;
   }
 
@@ -12382,6 +13357,12 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   gap: 8px;
 }
 
+.team-collaboration-hero-actions .compact-action {
+  min-height: 30px;
+  padding-inline: 10px;
+  font-size: 12px;
+}
+
 .team-collaboration-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -12420,12 +13401,21 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   color: var(--warning);
 }
 
+.team-collaboration-command-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(340px, 440px) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px 0;
+}
+
 .team-collaboration-mode-switch {
   position: relative;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  width: min(440px, calc(100% - 48px));
-  margin: 16px 24px 0;
+  width: 100%;
+  margin: 0;
   padding: 3px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -12504,6 +13494,99 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 
 .team-collaboration-workspace {
   padding: 16px 24px 24px;
+}
+
+.team-collaboration-top-tools {
+  min-width: 0;
+  padding: 0;
+}
+
+.team-collaboration-top-tools .team-collaboration-toolbar {
+  margin-bottom: 0;
+}
+
+.team-collaboration-tool-stage {
+  min-width: 0;
+}
+
+.team-collaboration-workspace-panel,
+.team-member-view-panel {
+  animation: team-collaboration-panel-enter 260ms var(--ease-fluid) backwards;
+}
+
+.team-collaboration-tool-stage.is-exiting,
+.team-collaboration-workspace-panel.is-exiting,
+.team-collaboration-tool-stage.is-entering,
+.team-collaboration-workspace-panel.is-entering {
+  will-change: transform, opacity;
+}
+
+.team-collaboration-tool-stage.is-exiting,
+.team-collaboration-workspace-panel.is-exiting {
+  pointer-events: none;
+  animation: team-collaboration-local-exit-forward 90ms var(--ease-out) both;
+}
+
+.team-collaboration-tool-stage.is-exiting.dir-backward,
+.team-collaboration-workspace-panel.is-exiting.dir-backward {
+  animation-name: team-collaboration-local-exit-backward;
+}
+
+.team-collaboration-tool-stage.is-entering,
+.team-collaboration-workspace-panel.is-entering {
+  animation: team-collaboration-local-enter-forward 190ms var(--ease-out) both;
+}
+
+.team-collaboration-tool-stage.is-entering.dir-backward,
+.team-collaboration-workspace-panel.is-entering.dir-backward {
+  animation-name: team-collaboration-local-enter-backward;
+}
+
+@keyframes team-collaboration-panel-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0) scale(0.998);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes team-collaboration-local-exit-forward {
+  to {
+    opacity: 0;
+    transform: translate3d(-8px, 0, 0);
+  }
+}
+
+@keyframes team-collaboration-local-exit-backward {
+  to {
+    opacity: 0;
+    transform: translate3d(8px, 0, 0);
+  }
+}
+
+@keyframes team-collaboration-local-enter-forward {
+  from {
+    opacity: 0;
+    transform: translate3d(10px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes team-collaboration-local-enter-backward {
+  from {
+    opacity: 0;
+    transform: translate3d(-10px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .team-collaboration-toolbar {
@@ -12800,6 +13883,132 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   color: var(--text-secondary);
 }
 
+.team-delegated-access {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.team-delegated-access-copy,
+.team-delegated-access-copy > span {
+  min-width: 0;
+  display: grid;
+}
+
+.team-delegated-access-copy {
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.team-delegated-access-copy > svg {
+  width: 28px;
+  height: 28px;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.team-delegated-access-copy strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.team-delegated-access-copy em {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.35;
+}
+
+.team-delegated-access-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.team-access-segment {
+  display: inline-flex;
+  gap: 1px;
+  overflow: hidden;
+  padding: 1px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-secondary);
+}
+
+.team-access-segment button {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 1px);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 620;
+  transition: background var(--duration-fast) var(--ease-out),
+              color var(--duration-fast) var(--ease-out),
+              transform 80ms var(--ease-out);
+}
+
+.team-access-segment button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.team-access-segment button.selected {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: var(--shadow-xs);
+}
+
+.team-access-segment button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.team-access-segment button:focus-visible,
+.team-student-pro-limit input:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.team-access-segment button:disabled,
+.team-student-pro-limit input:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.2);
+  opacity: 0.4;
+}
+
+.team-student-pro-limit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.team-student-pro-limit input {
+  width: 54px;
+  height: 30px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  text-align: center;
+}
+
 .team-collaboration-row-actions {
   display: flex;
   align-items: flex-end;
@@ -13027,7 +14236,7 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 
 .team-teacher-picker-trigger-chevron {
   color: var(--text-tertiary);
-  transition: transform var(--duration-fast) var(--ease-out);
+  transition: transform 190ms var(--ease-out);
 }
 
 .team-teacher-picker-trigger.open .team-teacher-picker-trigger-chevron {
@@ -13035,6 +14244,9 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 .team-teacher-picker-popover-shell {
+  --anchored-popover-enter-duration: 190ms;
+  --anchored-popover-exit-duration: 150ms;
+  max-height: min(430px, var(--floating-available-height, calc(100vh - 24px)));
   overflow: hidden;
   padding: 0 !important;
 }
@@ -13129,9 +14341,9 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 .team-teacher-picker-search:focus-within {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   background: var(--surface);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 7%, transparent);
 }
 
 .team-teacher-picker-search input {
@@ -13149,6 +14361,23 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 
 .team-teacher-picker-search input::placeholder {
   color: var(--text-tertiary);
+}
+
+.team-search-field:focus-within,
+.team-member-search:focus-within,
+.team-student-profile-search:focus-within,
+.team-portrait-library-search.search-field:focus-within {
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+.team-search-field input:focus-visible,
+.team-member-search input:focus-visible,
+.team-student-profile-search input:focus-visible,
+.team-teacher-picker-search input:focus-visible,
+.team-portrait-library-search.search-field input:focus-visible {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .team-teacher-picker-options {
@@ -13294,6 +14523,10 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   padding-inline: 11px;
 }
 
+.team-teacher-picker-popover-foot .quiet-action .spin {
+  margin-right: 5px;
+}
+
 .team-teacher-group-create {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -13310,9 +14543,9 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   position: relative;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 4px;
-  margin: 6px 0 0;
-  padding: 4px;
+  gap: 2px;
+  margin: 4px 0 0;
+  padding: 2px;
   border-color: var(--border-strong);
   border-radius: var(--radius);
   background: var(--surface);
@@ -13324,8 +14557,8 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 .team-teacher-group-create.is-inline input {
-  height: 30px;
-  padding: 0 7px;
+  height: 26px;
+  padding: 0 6px;
   border: 0;
   background: transparent;
   font-size: 12px;
@@ -13344,8 +14577,8 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 .team-teacher-group-create-actions button {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
   padding: 0;
@@ -13427,12 +14660,53 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 .team-teacher-group-nav {
+  position: relative;
+  isolation: isolate;
   padding: 8px;
   border-right: 1px solid var(--border);
   background: var(--surface-secondary);
 }
 
+.team-teacher-group-nav-indicator {
+  --team-teacher-group-nav-x: 8px;
+  --team-teacher-group-nav-y: 8px;
+  --team-teacher-group-nav-width: calc(100% - 16px);
+  --team-teacher-group-nav-height: 36px;
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  left: 0;
+  width: var(--team-teacher-group-nav-width);
+  height: var(--team-teacher-group-nav-height);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(
+    var(--team-teacher-group-nav-x),
+    var(--team-teacher-group-nav-y),
+    0
+  );
+  transition:
+    width var(--duration) var(--ease-out),
+    height var(--duration) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration) var(--ease-out);
+}
+
+.team-teacher-group-nav-indicator.is-ready {
+  opacity: 1;
+}
+
+.team-teacher-group-nav-indicator.is-moving {
+  will-change: width, height, transform;
+}
+
 .team-teacher-group-nav button {
+  position: relative;
+  z-index: 1;
   width: 100%;
   min-width: 0;
   min-height: 36px;
@@ -13463,9 +14737,9 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 .team-teacher-group-nav button.active {
-  background: var(--surface);
+  background: transparent;
   color: var(--text);
-  box-shadow: var(--shadow-xs);
+  box-shadow: none;
 }
 
 .team-teacher-group-nav button:active {
@@ -13515,6 +14789,22 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 
 .team-teacher-group-directory {
   min-width: 0;
+}
+
+.team-teacher-group-directory-stage {
+  min-width: 0;
+  animation: team-teacher-group-directory-enter 190ms var(--ease-out) backwards;
+}
+
+@keyframes team-teacher-group-directory-enter {
+  from {
+    opacity: 0.36;
+    transform: translate3d(7px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .team-teacher-group-directory-head {
@@ -13591,7 +14881,7 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 .team-teacher-directory-row {
   min-width: 0;
   display: grid;
-  grid-template-columns: 38px minmax(140px, 1fr) minmax(120px, auto) minmax(120px, 0.8fr) auto;
+  grid-template-columns: 38px minmax(180px, 1fr) 152px 168px auto;
   align-items: center;
   gap: 10px;
   padding: 10px 16px;
@@ -13608,9 +14898,20 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 .team-teacher-directory-load {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 6px;
   color: var(--text-secondary);
   font-size: 11px;
+  line-height: 1;
   white-space: nowrap;
+}
+
+.team-teacher-directory-load svg {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
 }
 
 .team-teacher-directory-groups {
@@ -13635,17 +14936,19 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 .team-teacher-group-toggle {
-  min-width: 86px;
-  height: 30px;
+  min-width: 68px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 4px;
+  padding: 0 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--surface);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 620;
   cursor: pointer;
   transition: border-color var(--duration-fast) var(--ease-out),
               background var(--duration-fast) var(--ease-out),
@@ -13659,7 +14962,7 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 .team-teacher-group-toggle.active {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   background: var(--accent-soft);
   color: var(--accent);
 }
@@ -13674,14 +14977,73 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 .team-teacher-directory-actions {
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
 }
 
+.team-teacher-directory-shortcuts {
+  display: inline-flex;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.team-teacher-directory-shortcut {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    transform 80ms var(--ease-out);
+}
+
+.team-teacher-directory-shortcut + .team-teacher-directory-shortcut {
+  border-left: 1px solid var(--border);
+}
+
+.team-teacher-directory-shortcut:hover {
+  background: var(--surface-secondary);
+  color: var(--text);
+}
+
+.team-teacher-directory-shortcut.is-account:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.team-teacher-directory-shortcut:active {
+  transform: scale(0.94);
+}
+
+.team-teacher-directory-shortcut:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.team-teacher-directory-shortcut:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.2);
+  opacity: 0.4;
+}
+
 .team-teacher-directory-actions .custom-select-root {
-  width: 112px;
+  width: 104px;
 }
 
 .team-teacher-directory-actions > .team-mini-btn {
@@ -13696,6 +15058,24 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 @media (hover: none) {
   .team-teacher-directory-actions > .team-mini-btn {
     opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .team-collaboration-tool-stage,
+  .team-collaboration-workspace-panel,
+  .team-member-view-panel,
+  .team-teacher-group-directory-stage,
+  .team-relation-node.is-located {
+    animation: none !important;
+  }
+
+  .team-teacher-group-nav-indicator {
+    transition: none !important;
+  }
+
+  .team-teacher-group-nav-indicator.is-moving {
+    will-change: auto;
   }
 }
 
@@ -13742,6 +15122,10 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 }
 
 @media (max-width: 1100px) {
+  .team-collaboration-command-row {
+    grid-template-columns: minmax(320px, 400px) minmax(0, 1fr);
+  }
+
   .team-collaboration-toolbar {
     gap: 8px;
   }
@@ -13759,11 +15143,22 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
   }
 
   .team-teacher-directory-row {
-    grid-template-columns: 38px minmax(150px, 1fr) minmax(120px, auto) auto;
+    grid-template-columns: 38px minmax(150px, 1fr) 152px auto;
   }
 
   .team-teacher-directory-groups {
     display: none;
+  }
+}
+
+@media (max-width: 920px) {
+  .team-collaboration-command-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .team-collaboration-mode-switch {
+    width: min(440px, 100%);
   }
 }
 
@@ -13795,9 +15190,15 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
     border-top: 1px solid var(--border);
   }
 
+  .team-collaboration-command-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    padding: 14px 16px 0;
+  }
+
   .team-collaboration-mode-switch {
-    width: calc(100% - 32px);
-    margin: 14px 16px 0;
+    width: 100%;
+    margin: 0;
   }
 
   .team-collaboration-workspace {
@@ -13866,6 +15267,21 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .team-delegated-access,
+  .team-delegated-access-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .team-access-segment {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .team-student-pro-limit {
+    justify-content: space-between;
+  }
+
   .team-collaboration-row-actions {
     align-items: stretch;
     flex-direction: column;
@@ -13931,9 +15347,14 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
     width: 100%;
   }
 
+  .team-collaboration-command-row {
+    gap: 8px;
+    padding: 10px 12px 0;
+  }
+
   .team-collaboration-mode-switch {
-    width: calc(100% - 24px);
-    margin-inline: 12px;
+    width: 100%;
+    margin: 0;
   }
 
   .team-collaboration-workspace {
@@ -16186,5 +17607,394 @@ button.team-logo-action.is-busy .team-logo-action-indicator {
 
   .team-overview-queue-slider {
     will-change: auto;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Team mobile density + touch motion                                           */
+/* Keep narrow workspaces calm: compact controls, no horizontal escape, and a   */
+/* single short feedback cadence shared by collaboration and role workspaces.   */
+/* -------------------------------------------------------------------------- */
+
+@keyframes team-mobile-section-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0) scale(0.996);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (max-width: 820px) {
+  .team-screen,
+  .team-screen :where(.team-tab-panel, .team-layout, .team-panel, .team-section-stage) {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .team-screen {
+    gap: 12px;
+  }
+
+  .team-tab-panel {
+    gap: 10px;
+  }
+
+  .team-section-stage.is-enter,
+  .team-collaboration-workspace-panel,
+  .team-member-view-panel {
+    animation: team-mobile-section-enter 220ms var(--ease-out) both;
+  }
+
+  .team-section-stage.is-exit {
+    animation-duration: 120ms;
+  }
+
+  .team-screen :where(.primary-action, .quiet-action, .danger-action) {
+    min-height: 34px;
+    padding-inline: 10px;
+    gap: 5px;
+    font-size: 12px;
+  }
+
+  .team-screen :where(.team-mini-btn, .team-portrait-icon-btn) {
+    width: 30px;
+    min-width: 30px;
+    height: 30px;
+    min-height: 30px;
+    padding: 0;
+  }
+
+  .team-screen :where(
+    .team-student-profile-actions,
+    .team-student-intake-actions,
+    .team-student-profile-editor-actions,
+    .team-settings-actions,
+    .team-transfer-actions,
+    .team-version-actions,
+    .team-merge-actions
+  ) {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .team-screen :where(
+    .team-student-profile-actions,
+    .team-student-intake-actions,
+    .team-student-profile-editor-actions
+  ) :where(.quiet-action, .primary-action) {
+    width: auto;
+    flex: 0 1 auto;
+  }
+
+  .team-collaboration-panel,
+  .team-contact-profile,
+  .team-contact-profile-summary,
+  .team-collaboration-command-row,
+  .team-collaboration-top-tools,
+  .team-collaboration-toolbar,
+  .team-collaboration-toolbar-actions,
+  .team-collaboration-mode-switch,
+  .team-collaboration-workspace {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .team-contact-profile-copy,
+  .team-contact-profile-readiness,
+  .team-contact-profile-readiness small,
+  .team-contact-profile-readiness strong {
+    min-width: 0;
+  }
+
+  .team-contact-profile-readiness small,
+  .team-contact-profile-readiness strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .team-collaboration-top-tools {
+    padding: 0;
+  }
+
+  .team-collaboration-toolbar .team-member-search,
+  .team-collaboration-toolbar .team-member-view-switch,
+  .team-collaboration-toolbar .team-member-filter-select .custom-select-trigger {
+    height: 34px;
+    min-height: 34px !important;
+  }
+
+  .team-collaboration-toolbar .team-member-view-switch {
+    min-width: 0;
+  }
+
+  .team-collaboration-toolbar .team-member-view-switch button {
+    min-height: 28px !important;
+    padding-inline: 7px;
+    font-size: 11px;
+  }
+
+  .team-collaboration-mode-switch {
+    padding: 2px;
+  }
+
+  .team-collaboration-mode-indicator {
+    top: 2px;
+    bottom: 2px;
+    left: 2px;
+    width: calc((100% - 4px) / 2);
+  }
+
+  .team-collaboration-mode-switch button {
+    height: 32px;
+    padding-inline: 8px;
+  }
+
+  .team-collaboration-mode-switch b {
+    min-width: 18px;
+    height: 18px;
+    padding-inline: 5px;
+  }
+
+  .team-collaboration-row-main,
+  .team-teacher-directory-row,
+  .team-contact-profile-summary {
+    overflow: hidden;
+  }
+}
+
+@media (max-width: 560px) {
+  .team-collaboration-hero {
+    gap: 12px;
+    padding: 14px 12px 12px;
+  }
+
+  .team-collaboration-hero h3 {
+    font-size: 19px;
+  }
+
+  .team-collaboration-hero-actions {
+    width: auto;
+    align-self: flex-start;
+    gap: 6px;
+  }
+
+  .team-collaboration-hero-actions > .anchored-popover {
+    flex: 0 1 auto;
+  }
+
+  .team-collaboration-hero-actions .quiet-action,
+  .team-collaboration-hero-actions .primary-action {
+    width: auto;
+    min-height: 32px;
+    padding-inline: 9px;
+  }
+
+  .team-contact-profile-summary {
+    min-height: 66px;
+    grid-template-columns: 38px minmax(0, 1fr) 24px;
+    grid-template-rows: auto auto;
+    column-gap: 8px;
+    row-gap: 4px;
+    padding: 10px 12px;
+  }
+
+  .team-contact-profile-avatar {
+    width: 38px;
+    height: 38px;
+    grid-row: 1 / span 2;
+  }
+
+  .team-contact-profile-copy {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .team-contact-profile-readiness {
+    grid-column: 2;
+    grid-row: 2;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 3px 6px;
+  }
+
+  .team-contact-profile-readiness strong {
+    max-width: 96px;
+  }
+
+  .team-contact-profile-chevron {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+    justify-self: end;
+  }
+
+  .team-contact-profile-editor form {
+    padding: 12px;
+  }
+
+  .team-contact-profile-form-grid {
+    gap: 10px;
+  }
+
+  .team-contact-profile-form-grid input {
+    height: 36px;
+  }
+
+  .team-contact-profile-actions {
+    gap: 10px;
+    margin-top: 12px;
+    padding-top: 12px;
+  }
+
+  .team-contact-profile-actions > div {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .team-contact-profile-actions button {
+    width: auto;
+    min-width: 72px;
+  }
+
+  .team-collaboration-metrics > span {
+    padding: 10px 12px;
+  }
+
+  .team-collaboration-metrics strong {
+    font-size: 15px;
+  }
+
+  .team-collaboration-top-tools {
+    padding: 0;
+  }
+
+  .team-collaboration-toolbar,
+  .team-collaboration-toolbar.teacher-groups {
+    gap: 8px;
+  }
+
+  .team-collaboration-toolbar .team-member-search {
+    height: 34px;
+    min-height: 34px;
+  }
+
+  .team-collaboration-toolbar-actions {
+    grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+    gap: 6px;
+  }
+
+  .team-collaboration-toolbar .team-member-filter-select,
+  .team-collaboration-toolbar .team-member-view-switch {
+    min-width: 0;
+  }
+
+  .team-collaboration-mode-switch {
+    width: 100%;
+    margin: 0;
+  }
+
+  .team-collaboration-mode-switch button {
+    gap: 5px;
+    height: 31px;
+    padding-inline: 6px;
+  }
+
+  .team-collaboration-mode-switch button > span,
+  .team-collaboration-toolbar .team-member-view-switch button {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .team-collaboration-workspace {
+    padding: 10px 12px 14px;
+  }
+
+  .team-collaboration-row-main {
+    padding-block: 9px;
+  }
+
+  .team-collaboration-assignees {
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+
+  .team-collaboration-detail-inner {
+    margin-inline: 6px;
+    padding-block: 12px 14px;
+  }
+
+  .team-collaboration-primary-actions {
+    width: auto;
+    align-self: flex-start;
+    display: inline-flex;
+    flex-wrap: wrap;
+  }
+
+  .team-collaboration-primary-actions .quiet-action {
+    width: auto;
+    justify-content: center;
+  }
+
+  .team-teacher-group-nav {
+    margin-inline: -12px;
+    padding-inline: 12px;
+    scroll-padding-inline: 12px;
+  }
+
+  .team-teacher-group-nav button {
+    min-height: 32px;
+    padding-inline: 9px;
+  }
+
+  .team-teacher-directory-actions {
+    gap: 6px;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .team-screen :where(
+    .team-hero-metrics span,
+    .team-overview-focus-item,
+    .team-overview-portal-grid button,
+    .team-priority-row,
+    .team-action-stack button,
+    .team-transfer-item,
+    .team-settings-person-card,
+    .team-student-capability-grid button,
+    .team-settings-scope-list button,
+    .team-permission-row,
+    .team-teacher-student-card,
+    .team-contact-card,
+    .team-student-advisor-card,
+    .team-student-activity-list button,
+    .team-teacher-app-card,
+    .team-student-focus-card,
+    .team-action-item,
+    .team-version-row,
+    .team-audit-detail-card,
+    .team-audit-impact-card,
+    .team-audit-decision-card,
+    .team-audit-related-card,
+    .team-student-profile-context-card
+  ):hover {
+    transform: none;
+  }
+
+  .team-collaboration-row:hover:not(.expanded),
+  .team-contact-profile:not(.is-open) .team-contact-profile-summary:hover:not(:focus-visible) {
+    background: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .team-section-stage.is-enter,
+  .team-section-stage.is-exit,
+  .team-collaboration-tool-stage,
+  .team-collaboration-workspace-panel,
+  .team-member-view-panel,
+  .team-teacher-group-directory-stage {
+    animation: none !important;
   }
 }

@@ -40,26 +40,34 @@ export type I18nContextValue = {
 export const today = new Date().toISOString().slice(0, 10)
 
 export function formatDate(value: string, lang: string = 'en') {
+  if (!value) return '—'
   const locale = localeForLanguage(lang)
+  const date = new Date(`${value}T00:00:00`)
+  if (Number.isNaN(date.getTime())) return '—'
   return new Intl.DateTimeFormat(locale, {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
-  }).format(new Date(`${value}T00:00:00`))
+  }).format(date)
 }
 
 export function formatDateFull(value: string, lang: string = 'en') {
+  if (!value) return '—'
   const locale = localeForLanguage(lang)
+  const date = new Date(`${value}T00:00:00`)
+  if (Number.isNaN(date.getTime())) return '—'
   return new Intl.DateTimeFormat(locale, {
     weekday: 'short',
     month: 'short',
     day: 'numeric',
     year: 'numeric',
-  }).format(new Date(`${value}T00:00:00`))
+  }).format(date)
 }
 
 export function daysUntil(value: string) {
+  if (!value) return Number.POSITIVE_INFINITY
   const target = new Date(`${value}T00:00:00`).getTime()
+  if (Number.isNaN(target)) return Number.POSITIVE_INFINITY
   const now = new Date(`${today}T00:00:00`).getTime()
   return Math.ceil((target - now) / 86_400_000)
 }

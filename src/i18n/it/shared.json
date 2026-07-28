@@ -95,6 +95,10 @@
     "INVALID_CREDENTIALS": "L'e-mail o la password non sono corrette.",
     "FORBIDDEN": "Non hai l'autorizzazione per eseguire questa azione.",
     "REGISTRATION_CLOSED": "La registrazione del nuovo utente è disabilitata.",
+    "REGISTRATION_EMAIL_NOT_ALLOWED": "Questo dominio email non è consentito per la registrazione.",
+    "PASSWORD_TOO_WEAK": "Scegli una password di almeno 15 caratteri che non sia comune, prevedibile o compromessa.",
+    "PASSWORD_CHECK_UNAVAILABLE": "La verifica di sicurezza della password non è temporaneamente disponibile.",
+    "HUMAN_VERIFICATION_UNAVAILABLE": "La verifica umana non è temporaneamente disponibile.",
     "EMAIL_EXISTS": "Esiste già un account per questa email.",
     "SMTP_NOT_CONFIGURED": "L'e-mail in uscita non è ancora configurata. Chiedi prima all'amministratore di configurare la posta di sistema.",
     "SMTP_ERROR": "Consegna della posta fallita. Controlla le impostazioni della posta e riprova.",
@@ -211,7 +215,6 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "Scegli sia un team sia uno studente assegnato per la ricerca del team.",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "Il relatore selezionato non dispone di un indirizzo e-mail verificato.",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "Prima di aggiungere questo programma alle candidature sono necessari un profilo e un’e-mail reali del relatore.",
-    "DISCOVER_PROGRAM_NOT_VERIFIED": "Questo programma non dispone di una fonte ufficiale verificata o di una scadenza attuale per la candidatura. Aggiorna la ricerca prima di importarlo.",
     "MAIL_ATTACHMENT_TOO_LARGE": "Un allegato è troppo grande per essere incluso nell’e-mail."
   },
   "apiErrorFields": {
@@ -319,6 +322,13 @@
     "slow": "Connessione lenta",
     "serverUnavailable": "Server non disponibile",
     "panelTitle": "Connessione e stato offline",
+    "launchTitle": "Sei offline",
+    "launchDetail": "L’interfaccia e le risorse statiche già visitate restano disponibili. Riconnettiti per accedere; offline può aprirsi solo uno spazio personale precedentemente autorizzato e ancora valido.",
+    "noLocalCopy": "Su questo dispositivo non è disponibile alcuno spazio locale autorizzato.",
+    "permissionProtected": "I dati offline non vengono mai accettati come autorizzazione. Il server ricontrolla identità, proprietà, accesso e versione prima di ogni sincronizzazione.",
+    "personalScopeValue": "Solo candidature personali di tua proprietà",
+    "accessUntil": "Accesso offline fino al",
+    "authorizationExpired": "L’accesso offline sicuro è terminato. Riconnettiti ed effettua di nuovo l’accesso.",
     "updateReady": "Aggiornamento pronto",
     "offlineDetail": "Puoi continuare a lavorare dalla copia locale. Le modifiche alle applicazioni personali supportate verranno sincronizzate al ripristino della connessione.",
     "workingOffline": "Lavorare offline",
@@ -830,5 +840,21 @@
     "resizeColumn": "Ridimensiona la colonna {column}",
     "actions": "Azioni"
   },
-  "doubleClickToCopy": "Fare doppio clic per copiare {label}"
+  "doubleClickToCopy": "Fare doppio clic per copiare {label}",
+  "projectFooter": {
+    "ariaLabel": "Informazioni sul progetto",
+    "projectName": "PhD Atlas",
+    "authorName": "Jasper Zhou",
+    "projectHome": "Apri la home di PhD Atlas",
+    "by": "Di",
+    "repository": "GitHub",
+    "repositoryAria": "Apri il repository GitHub di PhD Atlas",
+    "support": "Sostieni",
+    "supportAria": "Sostieni PhD Atlas",
+    "dialogTitle": "Dai una piccola spinta a PhD Atlas",
+    "dialogDescription": "Scegli il codice più comodo da scansionare: il tuo supporto diventerà il prossimo piccolo miglioramento.",
+    "wechat": "WeChat Pay",
+    "alipay": "Alipay",
+    "qrAlt": "Codice QR di pagamento {method}"
+  }
 }

@@ -57,7 +57,7 @@
     "installAppBenefitOffline": "Sẵn sàng ngoại tuyến",
     "installAppBenefitQuick": "Khởi động nhanh",
     "installAppOfflineScopeLabel": "Phạm vi ngoại tuyến",
-    "installAppOfflineScope": "Dữ liệu ngoại tuyến vẫn còn trên thiết bị này: bạn có thể xem không gian làm việc được đồng bộ hóa lần cuối và xếp hàng các chỉnh sửa vào hồ sơ đăng ký tuyển sinh của riêng bạn. Các hành động tải lên, email, AI, nhóm, chia sẻ, tài khoản và sao lưu vẫn chỉ ở chế độ trực tuyến.",
+    "installAppOfflineScope": "Dữ liệu ngoại tuyến chỉ ở trên thiết bị này. Chỉ hồ sơ cá nhân do bạn sở hữu được lưu với quyền ngắn hạn, có thời hạn; các chỉnh sửa có thể được xếp hàng. Trước khi đồng bộ, máy chủ kiểm tra lại danh tính, quyền sở hữu, quyền truy cập và phiên bản. Tải lên, email, AI, nhóm, chia sẻ, tài khoản và sao lưu vẫn cần trực tuyến.",
     "installAppStatusAvailable": "Sẵn sàng cài đặt",
     "installAppStatusInstalling": "Đang chờ xác nhận",
     "installAppStatusInstalled": "Đã cài đặt",

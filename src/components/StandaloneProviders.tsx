@@ -3,6 +3,7 @@ import { I18nContext, useI18nValue } from './hooks/useI18n'
 import { ThemeContext, useThemeProvider } from './hooks/useTheme'
 import { applyDocumentLanguage, browserDefaultLanguage, resolveLanguage, type Language } from '../i18n'
 import { FormValidationPrompt } from './shared/FormValidationPrompt'
+import { GlobalOverflowReveal } from './shared/GlobalOverflowReveal'
 import { StandalonePreferencesContext } from './shared/StandalonePreferencesContext'
 
 const STANDALONE_LANGUAGE_PREFERENCE_KEY = 'phd-atlas-language'
@@ -25,6 +26,7 @@ function standaloneNamespaces(pathname = window.location.pathname) {
   if (pathname.startsWith('/asset-upload/')) return ['core', 'shared', 'assetUpload', 'profile', 'share']
   if (pathname.startsWith('/team/accept-invite/') || pathname.startsWith('/team/join/')) return ['core', 'shared', 'team']
   if (pathname.startsWith('/reset-password/')) return ['core', 'shared', 'resetPassword']
+  if (pathname.startsWith('/admin')) return ['core', 'shared', 'admin']
   if (['/upgrade-pro', '/pro', '/membership'].includes(pathname)) return ['core', 'shared', 'upgrade', 'settings']
   return ['core', 'shared']
 }
@@ -54,6 +56,7 @@ export function StandaloneProviders({ children }: { children: ReactNode }) {
       <I18nContext.Provider value={i18nValue}>
         <StandalonePreferencesContext.Provider value={preferenceValue}>
           <FormValidationPrompt />
+          <GlobalOverflowReveal />
           {children}
         </StandalonePreferencesContext.Provider>
       </I18nContext.Provider>

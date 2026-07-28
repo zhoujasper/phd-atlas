@@ -10,11 +10,21 @@ const RELEASE_CACHE_TTL_MS = 5 * 60_000
 const MAX_JSON_BYTES = 1024 * 1024
 const MAX_CHECKSUM_BYTES = 4 * 1024
 const DEFAULT_RELEASE_DOWNLOAD_TIMEOUT_MS = 15 * 60_000
+const DEFAULT_OFFICIAL_DOWNLOAD_GRACE_MS = 1_800
+const DEFAULT_SOURCE_PROBE_TIMEOUT_MS = 4_500
+const DEFAULT_SOURCE_RESPONSE_TIMEOUT_MS = 12_000
+const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 12_000
 const MAX_RELEASE_TAG_LENGTH = 100
 const MAX_RELEASE_ASSET_NAME_LENGTH = 255
 const ALLOWED_DOWNLOAD_HOSTS = new Set([
   'api.github.com',
+  'github.com',
   'release-assets.githubusercontent.com',
+])
+export const RELEASE_DOWNLOAD_MIRRORS = Object.freeze([
+  { id: 'gh-proxy', host: 'gh-proxy.com', prefix: 'https://gh-proxy.com/' },
+  { id: 'ghproxy-net', host: 'ghproxy.net', prefix: 'https://ghproxy.net/' },
+  { id: 'ghpull', host: 'ghpull.com', prefix: 'https://ghpull.com/' },
 ])
 
 let releaseCache = null
@@ -39,6 +49,38 @@ function assertAllowedGithubUrl(value) {
     throw releaseError('UPDATE_DOWNLOAD_FAILED', 'The Release download redirected to an untrusted address.')
   }
   return url
+}
+
+function isAllowedMirrorHost(hostname, mirrorHost) {
+  return hostname === mirrorHost || hostname.endsWith(`.${mirrorHost}`)
+}
+
+function assertAllowedReleaseDownloadUrl(value, source) {
+  const url = value instanceof URL ? value : new URL(String(value))
+  const mirrorHost = source?.kind === 'mirror' ? source.host : ''
+  const allowedHost = ALLOWED_DOWNLOAD_HOSTS.has(url.hostname)
+    || (mirrorHost && isAllowedMirrorHost(url.hostname, mirrorHost))
+  if (
+    url.protocol !== 'https:'
+    || url.username
+    || url.password
+    || url.port
+    || !allowedHost
+  ) {
+    throw releaseError('UPDATE_DOWNLOAD_FAILED', 'The Release download redirected to an untrusted address.')
+  }
+  return url
+}
+
+function emitUpdateStatus(options, status) {
+  try {
+    options.onStatus?.({
+      at: new Date().toISOString(),
+      ...status,
+    })
+  } catch {
+    // Progress reporting must never be able to interrupt a verified update.
+  }
 }
 
 function githubHeaders(accept, currentVersion = 'unknown') {
@@ -101,6 +143,68 @@ async function fetchGithub(url, {
     return response
   }
   throw releaseError('UPDATE_DOWNLOAD_FAILED', 'The GitHub Release download could not be resolved.')
+}
+
+async function fetchReleaseDownload(source, {
+  currentVersion,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = DEFAULT_RELEASE_DOWNLOAD_TIMEOUT_MS,
+  responseTimeoutMs = timeoutMs,
+  range,
+  redirects = 4,
+} = {}) {
+  let current = assertAllowedReleaseDownloadUrl(source.url, source)
+  for (let attempt = 0; attempt <= redirects; attempt += 1) {
+    let response
+    const responseController = new AbortController()
+    const responseTimer = setTimeout(
+      () => responseController.abort(),
+      Math.max(1, Math.min(timeoutMs, responseTimeoutMs)),
+    )
+    responseTimer.unref?.()
+    try {
+      response = await fetchImpl(current, {
+        method: 'GET',
+        headers: {
+          ...githubHeaders('application/octet-stream', currentVersion),
+          ...(range ? { Range: range } : {}),
+        },
+        redirect: 'manual',
+        signal: AbortSignal.any([
+          AbortSignal.timeout(timeoutMs),
+          responseController.signal,
+        ]),
+      })
+    } catch (error) {
+      throw releaseError(
+        'UPDATE_DOWNLOAD_FAILED',
+        error?.name === 'TimeoutError' || error?.name === 'AbortError'
+          ? 'The Release update source timed out.'
+          : 'Could not connect to the Release update source.',
+      )
+    } finally {
+      clearTimeout(responseTimer)
+    }
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location')
+      if (!location || attempt === redirects) {
+        await discardResponseBody(response)
+        throw releaseError('UPDATE_DOWNLOAD_FAILED', 'The Release update source used too many redirects.')
+      }
+      await discardResponseBody(response)
+      current = assertAllowedReleaseDownloadUrl(new URL(location, current), source)
+      continue
+    }
+    if (!response.ok) {
+      await discardResponseBody(response)
+      throw releaseError(
+        'UPDATE_DOWNLOAD_FAILED',
+        `Release update source ${source.id} failed with status ${response.status}.`,
+      )
+    }
+    return response
+  }
+  throw releaseError('UPDATE_DOWNLOAD_FAILED', 'The Release update source could not be resolved.')
 }
 
 async function readBoundedBody(response, limit, code) {
@@ -395,16 +499,132 @@ async function downloadAssetBuffer(asset, currentVersion, options, limit) {
   return readBoundedBody(response, limit, 'UPDATE_DOWNLOAD_FAILED')
 }
 
-async function downloadAssetFile(asset, currentVersion, destinationPath, options) {
-  const response = await fetchGithub(
-    `${GITHUB_API_ROOT}/repos/${RELEASE_REPOSITORY}/releases/assets/${asset.id}`,
+function releasePackageSources(candidate) {
+  const officialBrowserUrl = `https://github.com/${RELEASE_REPOSITORY}/releases/download/${encodeURIComponent(candidate.tagName)}/${encodeURIComponent(candidate.packageAsset.name)}`
+  return [
     {
-      ...options,
-      accept: 'application/octet-stream',
-      currentVersion,
-      timeoutMs: options.downloadTimeoutMs ?? DEFAULT_RELEASE_DOWNLOAD_TIMEOUT_MS,
+      id: 'github',
+      kind: 'official',
+      host: 'api.github.com',
+      url: `${GITHUB_API_ROOT}/repos/${RELEASE_REPOSITORY}/releases/assets/${candidate.packageAsset.id}`,
     },
-  )
+    ...RELEASE_DOWNLOAD_MIRRORS.map((mirror) => ({
+      id: mirror.id,
+      kind: 'mirror',
+      host: mirror.host,
+      url: `${mirror.prefix}${officialBrowserUrl}`,
+    })),
+  ]
+}
+
+async function probeReleaseDownloadSource(source, currentVersion, options, timeoutMs) {
+  const startedAt = Date.now()
+  const response = await fetchReleaseDownload(source, {
+    currentVersion,
+    fetchImpl: options.fetchImpl,
+    timeoutMs,
+    range: 'bytes=0-1',
+  })
+  if (!response.body) throw releaseError('UPDATE_DOWNLOAD_FAILED', 'The Release update source was empty.')
+  const reader = response.body.getReader()
+  const signature = []
+  try {
+    while (signature.length < 2) {
+      const { done, value } = await readReleaseDownloadChunk(reader, timeoutMs)
+      if (done) break
+      for (const byte of value) {
+        signature.push(byte)
+        if (signature.length === 2) break
+      }
+    }
+    await reader.cancel().catch(() => undefined)
+  } finally {
+    reader.releaseLock()
+  }
+  if (signature[0] !== 0x1f || signature[1] !== 0x8b) {
+    throw releaseError('UPDATE_DOWNLOAD_FAILED', 'The Release update source did not return the expected package.')
+  }
+  return {
+    ...source,
+    latencyMs: Math.max(1, Date.now() - startedAt),
+  }
+}
+
+async function rankReleaseDownloadSources(sources, currentVersion, options) {
+  const results = await Promise.allSettled(sources.map((source) => (
+    probeReleaseDownloadSource(
+      source,
+      currentVersion,
+      options,
+      options.sourceProbeTimeoutMs ?? DEFAULT_SOURCE_PROBE_TIMEOUT_MS,
+    )
+  )))
+  const ranked = results
+    .filter((result) => result.status === 'fulfilled')
+    .map((result) => result.value)
+    .sort((left, right) => left.latencyMs - right.latencyMs)
+  if (ranked.length === 0) {
+    throw releaseError('UPDATE_DOWNLOAD_FAILED', 'GitHub and the configured Release mirrors were unreachable.')
+  }
+  return ranked
+}
+
+async function resolveReleaseDownloadSources(candidate, currentVersion, options) {
+  const sources = releasePackageSources(candidate)
+  const official = sources[0]
+  const mirrors = sources.slice(1)
+  emitUpdateStatus(options, { phase: 'probing', source: official.id })
+  try {
+    const result = await probeReleaseDownloadSource(
+      official,
+      currentVersion,
+      options,
+      options.officialGraceMs ?? DEFAULT_OFFICIAL_DOWNLOAD_GRACE_MS,
+    )
+    return {
+      sources: [result],
+      fallbackSources: mirrors,
+    }
+  } catch {
+    emitUpdateStatus(options, { phase: 'probing', source: 'mirrors' })
+    return {
+      sources: await rankReleaseDownloadSources(mirrors, currentVersion, options),
+      fallbackSources: [],
+    }
+  }
+}
+
+function readReleaseDownloadChunk(reader, timeoutMs) {
+  let timer
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(releaseError(
+        'UPDATE_DOWNLOAD_STALLED',
+        'The Release update source stopped making progress.',
+      ))
+    }, Math.max(1, timeoutMs))
+    timer.unref?.()
+  })
+  return Promise.race([reader.read(), timeout]).finally(() => clearTimeout(timer))
+}
+
+async function downloadAssetFile(asset, currentVersion, destinationPath, options, source = null) {
+  const response = source
+    ? await fetchReleaseDownload(source, {
+      currentVersion,
+      fetchImpl: options.fetchImpl,
+      timeoutMs: options.downloadTimeoutMs ?? DEFAULT_RELEASE_DOWNLOAD_TIMEOUT_MS,
+      responseTimeoutMs: options.sourceResponseTimeoutMs ?? DEFAULT_SOURCE_RESPONSE_TIMEOUT_MS,
+    })
+    : await fetchGithub(
+      `${GITHUB_API_ROOT}/repos/${RELEASE_REPOSITORY}/releases/assets/${asset.id}`,
+      {
+        ...options,
+        accept: 'application/octet-stream',
+        currentVersion,
+        timeoutMs: options.downloadTimeoutMs ?? DEFAULT_RELEASE_DOWNLOAD_TIMEOUT_MS,
+      },
+    )
   const declared = Number(response.headers.get('content-length') ?? 0)
   if (
     (Number.isFinite(declared) && declared > MAX_RELEASE_PACKAGE_BYTES)
@@ -417,13 +637,17 @@ async function downloadAssetFile(asset, currentVersion, destinationPath, options
   const handle = await fs.open(destinationPath, 'wx', 0o600)
   const reader = response.body.getReader()
   const hash = createHash('sha256')
+  const stallTimeoutMs = options.downloadStallTimeoutMs ?? DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS
   let size = 0
+  let lastProgressAt = 0
   try {
     while (true) {
       let chunk
       try {
-        chunk = await reader.read()
-      } catch {
+        chunk = await readReleaseDownloadChunk(reader, stallTimeoutMs)
+      } catch (error) {
+        await reader.cancel().catch(() => undefined)
+        if (error?.code === 'UPDATE_DOWNLOAD_STALLED') throw error
         throw releaseError('UPDATE_DOWNLOAD_FAILED', 'The Release update download was interrupted.')
       }
       const { done, value } = chunk
@@ -435,6 +659,15 @@ async function downloadAssetFile(asset, currentVersion, destinationPath, options
       }
       hash.update(value)
       await writeAll(handle, value)
+      if (Date.now() - lastProgressAt >= 120 || size === asset.size) {
+        lastProgressAt = Date.now()
+        emitUpdateStatus(options, {
+          phase: 'downloading',
+          source: source?.id ?? 'github',
+          bytes: size,
+          total: asset.size,
+        })
+      }
     }
   } finally {
     reader.releaseLock()
@@ -471,6 +704,7 @@ export async function downloadReleaseUpdate({
   destinationRoot,
   ...options
 }) {
+  emitUpdateStatus(options, { phase: 'resolving', source: 'github' })
   const candidate = await releaseByTag(tagName, currentVersion, options)
   const current = parseSemver(currentVersion)
   if (
@@ -496,21 +730,67 @@ export async function downloadReleaseUpdate({
   }
   const suffix = randomBytes(8).toString('hex')
   const packagePath = path.join(destinationRoot, `release-update-${Date.now()}-${suffix}.tar.gz`)
+  const useSourceSelection = options.sourceSelection === true
+    || (options.sourceSelection !== false && !options.fetchImpl)
   try {
-    const downloaded = await downloadAssetFile(
-      candidate.packageAsset,
-      currentVersion,
-      packagePath,
-      options,
-    )
-    if (downloaded.sha256 !== expectedSha256) {
-      throw releaseError('UPDATE_INTEGRITY_FAILED', 'The downloaded update package checksum did not match.', 400)
+    const sourcePlan = useSourceSelection
+      ? await resolveReleaseDownloadSources(candidate, currentVersion, options)
+      : { sources: [null], fallbackSources: [] }
+    let sources = sourcePlan.sources
+    let fallbackSources = sourcePlan.fallbackSources
+    let downloaded = null
+    let selectedSource = null
+    let lastError = null
+    while (sources.length > 0 && !downloaded) {
+      for (const source of sources) {
+        await fs.rm(packagePath, { force: true }).catch(() => undefined)
+        emitUpdateStatus(options, {
+          phase: 'downloading',
+          source: source?.id ?? 'github',
+          bytes: 0,
+          total: candidate.packageAsset.size,
+        })
+        try {
+          const result = await downloadAssetFile(
+            candidate.packageAsset,
+            currentVersion,
+            packagePath,
+            options,
+            source,
+          )
+          emitUpdateStatus(options, {
+            phase: 'verifying',
+            source: source?.id ?? 'github',
+            bytes: result.size,
+            total: candidate.packageAsset.size,
+          })
+          if (result.sha256 !== expectedSha256) {
+            throw releaseError('UPDATE_INTEGRITY_FAILED', 'The downloaded update package checksum did not match.', 400)
+          }
+          downloaded = result
+          selectedSource = source
+          break
+        } catch (error) {
+          lastError = error
+        }
+      }
+      if (downloaded || fallbackSources.length === 0) break
+      await fs.rm(packagePath, { force: true }).catch(() => undefined)
+      emitUpdateStatus(options, { phase: 'probing', source: 'mirrors' })
+      sources = await rankReleaseDownloadSources(fallbackSources, currentVersion, options)
+      fallbackSources = []
     }
+    if (!downloaded) throw lastError ?? releaseError('UPDATE_DOWNLOAD_FAILED', 'The Release update package could not be downloaded.')
     return {
       packagePath,
       fileName: candidate.packageAsset.name,
       size: downloaded.size,
       sha256: downloaded.sha256,
+      source: {
+        id: selectedSource?.id ?? 'github',
+        kind: selectedSource?.kind ?? 'official',
+        host: selectedSource?.host ?? 'api.github.com',
+      },
       release: publicReleaseInfo(candidate),
     }
   } catch (error) {

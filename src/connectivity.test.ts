@@ -5,6 +5,7 @@ import {
   probeServerConnectivity,
   reportApiReachable,
   reportApiUnavailable,
+  resolveHealthSocketUrl,
   resetConnectivityForTests,
   setManualOfflineMode,
 } from './connectivity'
@@ -17,6 +18,7 @@ class TestHealthSocket {
   static instances: TestHealthSocket[] = []
 
   readyState = TestHealthSocket.CONNECTING
+  onopen: (() => void) | null = null
   onmessage: ((event: MessageEvent) => void) | null = null
   onclose: (() => void) | null = null
   onerror: (() => void) | null = null
@@ -29,6 +31,7 @@ class TestHealthSocket {
 
   open() {
     this.readyState = TestHealthSocket.OPEN
+    this.onopen?.()
   }
 
   message(payload: unknown) {
@@ -97,11 +100,12 @@ describe('connectivity state', () => {
       serverReachable: true,
       manualOffline: true,
     })
-    expect(localStorage.getItem('phd-atlas-manual-offline:v1')).toBe('1')
+    expect(sessionStorage.getItem('phd-atlas-manual-offline:v1')).toBe('1')
+    expect(localStorage.getItem('phd-atlas-manual-offline:v1')).toBeNull()
     expect(connectivityUnavailable()).toBe(true)
 
     setManualOfflineMode(false)
-    expect(localStorage.getItem('phd-atlas-manual-offline:v1')).toBeNull()
+    expect(sessionStorage.getItem('phd-atlas-manual-offline:v1')).toBeNull()
     expect(getConnectivitySnapshot().mode).toBe('online')
     expect(connectivityUnavailable()).toBe(false)
   })
@@ -113,6 +117,17 @@ describe('connectivity state', () => {
     expect(latestSocket().url).toMatch(/^ws:\/\/localhost(?::\d+)?\/api\/health\/ws$/)
     expect(result.serverReachable).toBe(true)
     expect(result.mode).toBe('online')
+  })
+
+  it('bypasses the Vite WebSocket proxy only for the local development server', () => {
+    expect(resolveHealthSocketUrl('http://localhost:5173/applications', { development: true }))
+      .toBe('ws://localhost:4317/api/health/ws')
+    expect(resolveHealthSocketUrl('http://localhost:5173/applications', {
+      development: true,
+      apiPort: '5317',
+    })).toBe('ws://localhost:5317/api/health/ws')
+    expect(resolveHealthSocketUrl('https://atlas.example/applications', { development: false }))
+      .toBe('wss://atlas.example/api/health/ws')
   })
 
   it('coalesces concurrent health checks behind one socket connection', async () => {
@@ -140,6 +155,25 @@ describe('connectivity state', () => {
 
     await expect(forced).resolves.toMatchObject({ serverReachable: true, mode: 'online' })
     expect(getConnectivitySnapshot().consecutiveFailures).toBe(0)
+  })
+
+  it('retires a replaced connecting socket only after its handshake completes', async () => {
+    const first = probeServerConnectivity({ force: true })
+    const connectingSocket = latestSocket()
+
+    const replacement = probeServerConnectivity({ force: true })
+    const activeSocket = latestSocket()
+
+    expect(activeSocket).not.toBe(connectingSocket)
+    expect(connectingSocket.readyState).toBe(TestHealthSocket.CONNECTING)
+
+    connectingSocket.open()
+    expect(connectingSocket.readyState).toBe(TestHealthSocket.CLOSED)
+
+    activeSocket.open()
+    activeSocket.message({ type: 'ready', ok: true })
+    await expect(replacement).resolves.toMatchObject({ serverReachable: true, mode: 'online' })
+    await expect(first).resolves.toMatchObject({ serverReachable: true, mode: 'online' })
   })
 
   it('marks the server unavailable when the health socket closes before readiness', async () => {

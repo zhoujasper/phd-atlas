@@ -1,5 +1,5 @@
 import { ChevronDown, Check, Lock, Pencil, Plus, Trash2, X } from 'lucide-react'
-import { useState, useRef, useEffect, useCallback, useMemo, type CSSProperties } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { getMotionDelay } from '../hooks/useAnimatedClose'
 import { useI18n } from '../hooks/useI18n'
@@ -22,6 +22,7 @@ export type SelectCreateConfig<T extends string = string> = {
   createAriaLabel: string
   renameAriaLabel: string
   deleteAriaLabel: string
+  maxLength?: number
   onCreate: (value: T) => void
   onRename?: (value: T, nextValue: T) => void
   onDelete?: (value: T) => void
@@ -198,13 +199,10 @@ export function Select<T extends string = string>({
     window.setTimeout(() => searchRef.current?.focus(), 0)
   }, [open, searchable])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open || !editMode) return
-    const frame = window.requestAnimationFrame(() => {
-      editRef.current?.focus()
-      editRef.current?.select()
-    })
-    return () => window.cancelAnimationFrame(frame)
+    editRef.current?.focus()
+    editRef.current?.select()
   }, [editMode, open])
 
   useEffect(() => {
@@ -468,6 +466,7 @@ export function Select<T extends string = string>({
                 ref={editRef}
                 value={editValue}
                 placeholder={create.placeholder}
+                maxLength={create.maxLength}
                 aria-label={editMode === 'rename' ? create.renameAriaLabel : create.createAriaLabel}
                 onChange={(event) => setEditValue(event.target.value)}
                 onKeyDown={(event) => {

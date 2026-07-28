@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -eu
+
+exec node tools/release-preflight.mjs push --hook

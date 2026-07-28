@@ -38,11 +38,7 @@ jobs:
       - name: Validate pull request
         run: |
           npm ci
-          npm run lint
-          npm run i18n:check
-          npm run release:notes:check
-          npx tsc --noEmit
-          npm test
+          npm run verify:tree
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
@@ -63,6 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75
     permissions:
+      actions: read
       contents: read
       packages: write
     steps:
@@ -75,16 +72,39 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
 
-      - name: Validate source
+      - name: Wait for matching CI gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          npm ci
-          npm run lint
-          npm run i18n:check
-          npm run release:notes:check
-          npx tsc --noEmit
-          npm test
+          set -euo pipefail
+          run_id=""
+          for attempt in $(seq 1 60); do
+            run_id="$(
+              gh run list \
+                --repo "$GITHUB_REPOSITORY" \
+                --workflow ci.yml \
+                --commit "$GITHUB_SHA" \
+                --event push \
+                --limit 10 \
+                --json databaseId \
+                --jq '.[0].databaseId // empty'
+            )"
+            if [[ -n "$run_id" ]]; then
+              break
+            fi
+            echo "Waiting for CI on $GITHUB_SHA (attempt $attempt/60)."
+            sleep 10
+          done
+          if [[ -z "$run_id" ]]; then
+            echo "::error title=Missing CI gate::CI did not start for $GITHUB_SHA."
+            exit 1
+          fi
+          gh run watch "$run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --interval 15 \
+            --exit-status
 
       - name: Define candidate and immutable SHA tags
         shell: bash
@@ -164,7 +184,7 @@ jobs:
         env:
           CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
         run: |
-          bash tools/smoke-container-image.sh \
+          node tools/smoke-container-image.mjs \
             "${REGISTRY}/${IMAGE_NAME}@${CANDIDATE_DIGEST}" \
             main-candidate
 
@@ -210,6 +230,6 @@ jobs:
       - name: Smoke test promoted main on amd64 and arm64
         shell: bash
         run: |
-          bash tools/smoke-container-image.sh \
+          node tools/smoke-container-image.mjs \
             "${REGISTRY}/${IMAGE_NAME}:main" \
             main

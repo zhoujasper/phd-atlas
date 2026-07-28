@@ -4,6 +4,7 @@ import {
   getLatestSessionToken,
   phdApi,
   readSessionTokenSubject,
+  sessionTokenIsDefinitelyExpired,
   sessionIdentityMatches,
   setSessionTokenHandler,
   setUnauthorizedHandler,
@@ -122,6 +123,21 @@ describe('phdApi session token tracking', () => {
     expect(sessionIdentityMatches('user_demo', 'user_demo', demoToken)).toBe(true)
     expect(sessionIdentityMatches('user_demo', 'user_teacher', demoToken)).toBe(false)
     expect(sessionIdentityMatches('user_demo', 'user_demo', teacherToken)).toBe(false)
+  })
+
+  it('identifies only explicitly expired JWTs during cold-start preflight', () => {
+    const header = btoa(JSON.stringify({ alg: 'none', typ: 'JWT' }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+    const tokenWithExpiry = (exp: number) => {
+      const payload = btoa(JSON.stringify({ sub: 'user_demo', exp }))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+      return `${header}.${payload}.sig`
+    }
+    const now = Date.UTC(2026, 6, 27, 12, 0, 0)
+
+    expect(sessionTokenIsDefinitelyExpired(tokenWithExpiry(now / 1_000 - 1), now)).toBe(true)
+    expect(sessionTokenIsDefinitelyExpired(tokenWithExpiry(now / 1_000 + 1), now)).toBe(false)
+    expect(sessionTokenIsDefinitelyExpired('opaque-legacy-token', now)).toBe(false)
   })
 
   it('does not let a late same-account 401 from a previous generation fire unauthorized', async () => {
@@ -501,6 +517,19 @@ describe('phdApi session token tracking', () => {
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
       tagName: 'v0.1.0-beta.2',
     })
+  })
+
+  it('reads the persisted server-side update log with a bounded entry limit', async () => {
+    const logs = {
+      fileName: 'system-update.log.jsonl',
+      entries: [],
+    }
+    const fetchMock = vi.fn().mockResolvedValueOnce(envelope(logs))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(phdApi.systemUpdateLogs('admin-token', 25)).resolves.toEqual(logs)
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/admin/system-update/logs?limit=25')
   })
 
   it('sends every selected attachment in one multipart request', async () => {

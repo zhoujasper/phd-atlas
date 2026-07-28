@@ -119,6 +119,11 @@
     "guidanceShowDetails": "{name}의 상세 정보 보기",
     "guidanceOffice": "연구실 / 사무실",
     "guidanceAvailability": "연락 가능 시간",
-    "guidanceSupport": "도움을 드릴 수 있는 부분"
+    "guidanceSupport": "도움을 드릴 수 있는 부분",
+    "guidanceContact": "{name}에게 연락",
+    "guidanceContactOptions": "{name} 연락 방법",
+    "guidanceInApp": "앱 내 메시지",
+    "guidanceMessageTitle": "{name}에게 메시지 보내기",
+    "guidanceMessageSent": "{name}에게 메시지를 보냈습니다."
   }
 }

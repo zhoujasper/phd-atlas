@@ -13,6 +13,10 @@ import {
   installProductionDependencies,
   waitForUpdateCompletion,
 } from './container-entrypoint.mjs'
+import {
+  appendSystemUpdateLog,
+  patchSystemUpdateStatus,
+} from '../server/systemUpdateJournal.js'
 
 const __filename = fileURLToPath(import.meta.url)
 
@@ -42,7 +46,23 @@ export async function runServerWorker() {
   await waitForUpdateCompletion(storageRoot, {
     recoverAbandonedLock: recoverStaleLock,
   })
-  await recoverPendingBoot()
+  const bootRecovery = await recoverPendingBoot()
+  if (bootRecovery?.rolledBack) {
+    await patchSystemUpdateStatus(storageRoot, {
+      phase: 'error',
+      operationInFlight: false,
+      restartPending: false,
+      targetVersion: bootRecovery.result?.toVersion ?? bootRecovery.marker?.toVersion ?? null,
+      errorCode: 'UPDATE_BOOT_ROLLED_BACK',
+      errorMessage: `The updated server did not complete its first boot; ${bootRecovery.version} was restored.`,
+    }).catch(() => undefined)
+    await appendSystemUpdateLog(storageRoot, {
+      level: 'error',
+      phase: 'error',
+      errorCode: 'UPDATE_BOOT_ROLLED_BACK',
+      message: `The updated server did not complete its first boot; restored ${bootRecovery.version}.`,
+    }).catch(() => undefined)
+  }
   await replayActiveUpdateIfNeeded({
     projectRoot,
     storageRoot,
@@ -61,7 +81,28 @@ export async function runServerWorker() {
   const bootConfirmationTimer = pendingBoot
     ? setTimeout(() => {
       void confirmPendingUpdateBoot(storageRoot, process.pid)
-        .catch((error) => console.error('[system-update] Failed to confirm the updated runtime boot:', error))
+        .then(() => Promise.all([
+          patchSystemUpdateStatus(storageRoot, {
+            phase: 'ready',
+            operationInFlight: false,
+            restartPending: false,
+            errorCode: null,
+            errorMessage: null,
+          }),
+          appendSystemUpdateLog(storageRoot, {
+            phase: 'ready',
+            message: 'The updated runtime completed its first-boot confirmation window.',
+          }),
+        ]))
+        .catch(async (error) => {
+          console.error('[system-update] Failed to confirm the updated runtime boot:', error)
+          await appendSystemUpdateLog(storageRoot, {
+            level: 'error',
+            phase: 'restarting',
+            errorCode: error?.code ?? 'UPDATE_BOOT_CONFIRM_FAILED',
+            message: error instanceof Error ? error.message : String(error),
+          }).catch(() => undefined)
+        })
     }, bootConfirmationDelay)
     : null
   bootConfirmationTimer?.unref?.()

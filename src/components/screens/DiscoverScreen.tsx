@@ -184,11 +184,14 @@ export function DiscoverScreen({
         phdApi.listAiKeys(token).catch(() => [] as AiKey[]),
       ])
       applyPayload(payload)
-      setAiKeys(keys)
+      const scopedKeys = teamScope
+        ? keys.filter((key) => key.scope === 'team' && key.teamId === teamScope.teamId)
+        : keys
+      setAiKeys(scopedKeys)
       const preferred = payload.state.preferredAiKeyIds?.length
         ? payload.state.preferredAiKeyIds
         : (payload.state.preferredAiKeyId ? [payload.state.preferredAiKeyId] : [])
-      const usableKeys = keys.filter((key) => key.secretSet)
+      const usableKeys = scopedKeys.filter((key) => key.secretSet)
       const selected = preferred.filter((id) => usableKeys.some((key) => key.id === id))
       if (selected.length) {
         setSelectedKeyIds(selected)
@@ -291,6 +294,39 @@ export function DiscoverScreen({
     })
   }, [lang, onNotify, teamScope, token, tx])
 
+  const enableLocalListStateMany = useCallback((
+    key: 'watchedProgramIds' | 'hiddenProgramIds',
+    ids: string[],
+    applyEntityState: (states: Record<string, boolean>) => void,
+  ) => {
+    const current = stateRef.current
+    const targetIds = [...new Set(ids)].filter(Boolean)
+    if (!current || targetIds.length === 0) return
+    const previousIds = current[key]
+    const previousSet = new Set(previousIds)
+    const nextIds = [...new Set([...previousIds, ...targetIds])]
+    if (nextIds.length === previousIds.length) return
+
+    const nextState = { ...current, [key]: nextIds }
+    stateRef.current = nextState
+    setState(nextState)
+    applyEntityState(Object.fromEntries(targetIds.map((id) => [id, true])))
+
+    void phdApi.updateDiscoverState(token, { [key]: nextIds }, teamScope).catch((reason) => {
+      const latest = stateRef.current
+      const requestStillCurrent = latest
+        && latest[key].length === nextIds.length
+        && latest[key].every((id) => nextIds.includes(id))
+      if (latest && requestStillCurrent) {
+        const rollbackState = { ...latest, [key]: previousIds }
+        stateRef.current = rollbackState
+        setState(rollbackState)
+        applyEntityState(Object.fromEntries(targetIds.map((id) => [id, previousSet.has(id)])))
+      }
+      onNotify(normalizeErrorMessage(reason, lang, tx('discover.loadError')), 'error')
+    })
+  }, [lang, onNotify, teamScope, token, tx])
+
   const toggleProgramWatch = useCallback((id: string) => {
     toggleLocalListState('watchedProgramIds', id, (watched) => {
       setPrograms((current) => current.map((program) => program.id === id ? { ...program, watched } : program))
@@ -302,6 +338,22 @@ export function DiscoverScreen({
       setPrograms((current) => current.map((program) => program.id === id ? { ...program, hidden } : program))
     })
   }, [toggleLocalListState])
+
+  const watchPrograms = useCallback((ids: string[]) => {
+    enableLocalListStateMany('watchedProgramIds', ids, (states) => {
+      setPrograms((current) => current.map((program) => (
+        states[program.id] === undefined ? program : { ...program, watched: states[program.id] }
+      )))
+    })
+  }, [enableLocalListStateMany])
+
+  const hidePrograms = useCallback((ids: string[]) => {
+    enableLocalListStateMany('hiddenProgramIds', ids, (states) => {
+      setPrograms((current) => current.map((program) => (
+        states[program.id] === undefined ? program : { ...program, hidden: states[program.id] }
+      )))
+    })
+  }, [enableLocalListStateMany])
 
   const togglePiHidden = useCallback((id: string) => {
     toggleLocalListState('hiddenPiIds', id, (hidden) => {
@@ -429,7 +481,13 @@ export function DiscoverScreen({
     try {
       const result = await phdApi.importDiscoverProgram(token, { programId, piId: piId || null, includeNotes: true })
       onImported(result.application)
-      onNotify(tx('discover.importedToast'), 'success')
+      const importWarnings = result.warnings ?? []
+      onNotify(
+        importWarnings.length
+          ? tx('discover.partialImportToast', 'Added available details. Official sources or the current deadline are still missing; verify them in the application.')
+          : tx('discover.importedToast'),
+        importWarnings.length ? 'warning' : 'success',
+      )
     } catch (reason) {
       onNotify(normalizeErrorMessage(reason, lang, tx('discover.loadError')), 'error')
     } finally {
@@ -584,10 +642,20 @@ export function DiscoverScreen({
       if (current.length >= 4) { onNotify(tx('discover.compareLimit', 'You can compare up to four programs.'), 'warning'); return current }
       return [...current, id]
     }),
+    addProgramsToCompare: (ids: string[]) => setCompareIds((current) => {
+      const additions = [...new Set(ids)].filter((id) => !current.includes(id))
+      const availableSlots = Math.max(0, 4 - current.length)
+      if (additions.length > availableSlots) {
+        onNotify(tx('discover.compareLimit', 'You can compare up to four programs.'), 'warning')
+      }
+      return [...current, ...additions.slice(0, availableSlots)]
+    }),
     clearCompare: () => setCompareIds([]),
     requestDeletePrograms: (ids: string[]) => setPendingDeleteProgramIds([...new Set(ids)].filter(Boolean)),
     toggleWatch: toggleProgramWatch,
+    watchPrograms,
     toggleProgramHidden,
+    hidePrograms,
     togglePiHidden,
     importProgram: (programId: string, piId?: string | null) => void importProgram(programId, piId),
     updateProgramNote: (id: string, value: string) => setProgramNoteDrafts((current) => ({ ...current, [id]: value })),

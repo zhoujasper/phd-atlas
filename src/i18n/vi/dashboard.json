@@ -119,6 +119,11 @@
     "guidanceShowDetails": "Xem thông tin của {name}",
     "guidanceOffice": "Văn phòng",
     "guidanceAvailability": "Thời gian liên hệ",
-    "guidanceSupport": "Tôi có thể hỗ trợ"
+    "guidanceSupport": "Tôi có thể hỗ trợ",
+    "guidanceContact": "Liên hệ {name}",
+    "guidanceContactOptions": "Các cách liên hệ với {name}",
+    "guidanceInApp": "Tin nhắn trong ứng dụng",
+    "guidanceMessageTitle": "Nhắn tin cho {name}",
+    "guidanceMessageSent": "Đã gửi tin nhắn cho {name}."
   }
 }

@@ -1,4 +1,3 @@
-import bcrypt from 'bcryptjs'
 import compression from 'compression'
 import cors from 'cors'
 import express from 'express'
@@ -15,6 +14,7 @@ import {
 import { Buffer } from 'node:buffer'
 import { spawn } from 'node:child_process'
 import { createHash, randomBytes, randomInt } from 'node:crypto'
+import { once } from 'node:events'
 import { existsSync } from 'node:fs'
 import { readFile, unlink } from 'node:fs/promises'
 import net from 'node:net'
@@ -32,13 +32,18 @@ import {
 import {
   archiveNotification,
   backupRoot,
+  clearSystemEvents,
+  countSystemEvents,
   countUnreadNotifications,
   createBackup,
   configureDatabaseConfiguration,
   createNotificationGroup,
   claimPasswordResetToken,
+  claimSecurityChallenge,
   claimWebAuthnChallenge,
+  clearSecurityRateLimits,
   createPasswordResetToken,
+  createSecurityChallenge,
   createWebAuthnChallenge,
   createWebAuthnPasskey,
   createId,
@@ -60,6 +65,7 @@ import {
   listNotificationGroups,
   listNotifications,
   listPendingNotificationEmails,
+  iterateSystemEvents,
   listWebAuthnPasskeys,
   logEvent,
   markAllNotificationsRead,
@@ -73,6 +79,9 @@ import {
   pruneApplicationBackupsBatch,
   publicSystemSettings,
   publicUser,
+  querySystemEvents,
+  recordSecurityEvent,
+  readSchoolLogoCache,
   readStore,
   reencryptAllEncryptionMaterial,
   resolveBackupFile,
@@ -87,6 +96,7 @@ import {
   uploadRoot,
   withWriteLock,
   writeStore,
+  writeSchoolLogoCache,
   lockedWriteStore,
   createTeam,
   getTeamById,
@@ -133,7 +143,26 @@ import {
   resetAiKeyUsage,
   updateAiKey,
   testDatabaseConfiguration,
+  consumeSecurityRateLimits,
 } from './storage.js'
+import {
+  abuseDigest,
+  canonicalRegistrationEmail,
+  claimSecurityChallengeAnswer,
+  clientAddress,
+  clientNetwork,
+  emailDomain,
+  enforceMinimumDuration,
+  issueSecurityChallenge,
+  registrationEmailPolicy,
+  turnstileConfiguration,
+  verifyTurnstileToken,
+} from './antiAbuse.js'
+import {
+  assertStrongAccountPassword,
+  hashAccountPassword,
+  verifyAccountPassword,
+} from './passwordSecurity.js'
 import { createRealtimeHub, scopesForMutation } from './realtime.js'
 import { attachHealthWebSocket } from './healthWebSocket.js'
 import {
@@ -209,7 +238,18 @@ import {
   hasOfflineReplayConflict,
 } from './validation.js'
 import { buildDefaultChecklistMaterials } from './checklist-template.js'
+import {
+  incrementTeamMemberUsage,
+  mergeTeamMemberPermissions,
+  normalizeStudentPermissions,
+  normalizeTeacherPermissions,
+} from './teamPermissions.js'
+import {
+  applyOfflineReplayAuthorityBoundary,
+  offlineReplayScopeAllowed,
+} from './offlineReplay.js'
 import { resolveSchoolLogoAsset } from './schoolLogoResolver.js'
+import { schoolLogoWebsiteCacheKey } from './schoolLogoCacheKey.js'
 import { MailerError, sendMail, verifySmtpConnection } from './mailer.js'
 import { deliverSystemEmail, deliverUserComposedEmail } from './mailDelivery.js'
 import { MailFetchError, fetchImapMessages, mailAccountKey, mailMessageKey, verifyImapConnection } from './mailFetch.js'
@@ -291,9 +331,20 @@ import {
 } from './discover-application-enrichment.js'
 import {
   clearUpdateLock,
+  readUpdateLockState,
   validateUpdatePackage,
   writeUpdateLock,
 } from './systemUpdate.js'
+import {
+  appendSystemUpdateLog,
+  createSystemUpdateStatus,
+  flushSystemUpdateJournal,
+  isSystemUpdateActivePhase,
+  readSystemUpdateLogs,
+  readSystemUpdateStatus,
+  writeSystemUpdateStatus,
+} from './systemUpdateJournal.js'
+import { usesSystemUpdateMutationBudget } from './systemUpdateHttpPolicy.js'
 import {
   checkForReleaseUpdate,
   downloadReleaseUpdate,
@@ -317,6 +368,13 @@ const distRoot = path.join(projectRoot, 'dist')
 // Resolve secrets: env vars → persisted file → auto-generate on first boot
 const { jwtSecret } = resolveBootstrapSecrets()
 const MIN_JWT_SECRET_LENGTH = 32
+const SESSION_JWT_ALGORITHM = 'HS256'
+const SESSION_JWT_ISSUER = 'phd-atlas'
+const SESSION_JWT_AUDIENCE = 'phd-atlas-api'
+const antiAbuseSecret = createHash('sha256')
+  .update(`phd-atlas-anti-abuse-v1\u001f${jwtSecret}`)
+  .digest('hex')
+const turnstile = turnstileConfiguration()
 if (process.env.NODE_ENV === 'production' && (!jwtSecret || jwtSecret.length < MIN_JWT_SECRET_LENGTH)) {
   console.error('FATAL: JWT_SECRET must be at least ' + MIN_JWT_SECRET_LENGTH + ' characters in production.')
   process.exit(1)
@@ -337,6 +395,8 @@ const MIN_SESSION_MINUTES = 5
 const MAX_SESSION_MINUTES = 43_200
 const DEFAULT_USER_SESSION_MINUTES = 720
 const DEFAULT_ADMIN_SESSION_MINUTES = 120
+const ADMIN_ENTRY_COOKIE = 'phd_atlas_admin_entry'
+const ADMIN_ENTRY_REMEMBER_SECONDS = 180 * 24 * 60 * 60
 const SESSION_REFRESH_MIN_SECONDS = 60
 const SESSION_REFRESH_MAX_SECONDS = 15 * 60
 const DEFAULT_APPLICATION_QUOTA = 3
@@ -873,11 +933,18 @@ function createSessionToken(user, scope = 'app', systemSettings, extraClaims = {
         email: user.email,
         scope: normalizedScope,
         mode: 'sliding',
+        authVersion: Number(user.settings?.authVersion ?? 0),
         ...extraClaims,
         iat: issuedAtSeconds,
         exp: expiresAtSeconds,
       },
       jwtSecret,
+      {
+        algorithm: SESSION_JWT_ALGORITHM,
+        issuer: SESSION_JWT_ISSUER,
+        audience: SESSION_JWT_AUDIENCE,
+        jwtid: randomBytes(18).toString('base64url'),
+      },
     ),
     expiresAt: new Date(expiresAtSeconds * 1000).toISOString(),
     durationMinutes,
@@ -903,32 +970,56 @@ function signToken(user, scope, systemSettings, extraClaims = {}) {
   return createSessionToken(user, scope, systemSettings, extraClaims).token
 }
 
-function signCaptcha(answer) {
-  return jwt.sign({ purpose: 'register-captcha', answer }, jwtSecret, { expiresIn: '10m' })
+function adminEntryVersion(settings) {
+  return createHash('sha256')
+    .update(`${settings?.adminEntryCodeHash ?? ''}:${settings?.adminEntryCodeSalt ?? ''}`)
+    .digest('base64url')
 }
 
-function verifyCaptcha(token, answer) {
+function cookieValue(request, name) {
+  const source = String(request.headers.cookie ?? '')
+  for (const part of source.split(';')) {
+    const separator = part.indexOf('=')
+    if (separator < 0) continue
+    const key = part.slice(0, separator).trim()
+    if (key !== name) continue
+    try {
+      return decodeURIComponent(part.slice(separator + 1).trim())
+    } catch {
+      return ''
+    }
+  }
+  return ''
+}
+
+function hasAdminEntryAccess(request, settings) {
+  if (!settings?.adminEntryHidden) return true
+  const token = cookieValue(request, ADMIN_ENTRY_COOKIE)
+  if (!token) return false
   try {
-    const payload = jwt.verify(token, jwtSecret)
-    return payload?.purpose === 'register-captcha' && String(payload.answer) === String(answer).trim()
+    const payload = jwt.verify(token, jwtSecret, { algorithms: [SESSION_JWT_ALGORITHM] })
+    return payload?.purpose === 'admin-entry'
+      && payload.version === adminEntryVersion(settings)
   } catch {
     return false
   }
 }
 
-function signEmailCode(email, code) {
-  return jwt.sign({ purpose: 'register-email-verify', email, code }, jwtSecret, { expiresIn: '10m' })
-}
-
-function verifyEmailCode(token, email, code) {
-  try {
-    const payload = jwt.verify(token, jwtSecret)
-    return payload?.purpose === 'register-email-verify'
-      && payload.email === String(email).trim().toLowerCase()
-      && String(payload.code) === String(code).trim()
-  } catch {
-    return false
-  }
+function setAdminEntryAccessCookie(request, response, settings, remember) {
+  const expiresIn = remember ? ADMIN_ENTRY_REMEMBER_SECONDS : 12 * 60 * 60
+  const token = jwt.sign({
+    purpose: 'admin-entry',
+    version: adminEntryVersion(settings),
+  }, jwtSecret, { algorithm: SESSION_JWT_ALGORITHM, expiresIn })
+  const attributes = [
+    `${ADMIN_ENTRY_COOKIE}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Strict',
+  ]
+  if (isHttpsRequest(request)) attributes.push('Secure')
+  if (remember) attributes.push(`Max-Age=${ADMIN_ENTRY_REMEMBER_SECONDS}`)
+  response.setHeader('Set-Cookie', attributes.join('; '))
 }
 
 function initialSetupSmtpFingerprint(input) {
@@ -944,37 +1035,18 @@ function initialSetupSmtpFingerprint(input) {
     .digest('base64url')
 }
 
-function signInitialSetupSmtpVerification(input, code) {
-  return jwt.sign({
-    purpose: 'initial-setup-smtp-verification',
-    fingerprint: initialSetupSmtpFingerprint(input),
-    code,
-  }, jwtSecret, { expiresIn: '10m' })
-}
-
-function verifyInitialSetupSmtpVerification(token, input, code) {
-  try {
-    const payload = jwt.verify(token, jwtSecret)
-    return payload?.purpose === 'initial-setup-smtp-verification'
-      && payload.fingerprint === initialSetupSmtpFingerprint(input)
-      && (code === undefined || String(payload.code) === String(code).trim())
-  } catch {
-    return false
-  }
-}
-
 function signReceiveEmailVerification(user, email) {
   return jwt.sign({
     purpose: 'receive-email-verify',
     userId: user.id,
     email: String(email).trim().toLowerCase(),
     language: user.settings?.language === 'zh' ? 'zh' : 'en',
-  }, jwtSecret, { expiresIn: '24h' })
+  }, jwtSecret, { algorithm: SESSION_JWT_ALGORITHM, expiresIn: '24h' })
 }
 
 function verifyReceiveEmailVerification(token) {
   try {
-    const payload = jwt.verify(token, jwtSecret)
+    const payload = jwt.verify(token, jwtSecret, { algorithms: [SESSION_JWT_ALGORITHM] })
     if (
       payload?.purpose !== 'receive-email-verify'
       || !payload.userId
@@ -1174,6 +1246,146 @@ function generateTeamJoinCode() {
 
 function isProUser(user) {
   return userPlan(user) !== 'free'
+}
+
+function teamMemberAccessLevel(member) {
+  return member?.relationships?.accessLevel === 'standard' ? 'standard' : 'pro'
+}
+
+function teacherStudentProLimit(member) {
+  const value = Number(member?.relationships?.studentProLimit)
+  return Number.isInteger(value) ? Math.max(0, Math.min(TEAM_STUDENT_SEAT_LIMIT, value)) : TEAM_STUDENT_SEAT_LIMIT
+}
+
+function requestTeamMembership(request, teamId) {
+  return (request.teamMemberships ?? []).find((membership) => (
+    membership.teamId === teamId && membership.status === 'active'
+  )) ?? null
+}
+
+function requestTeacherPermissions(request, teamId) {
+  return normalizeTeacherPermissions(requestTeamMembership(request, teamId)?.relationships?.teacherPermissions)
+}
+
+function applicationLiteralTeamRole(request, application) {
+  if (!application?.teamId || !applicationMatchesTeamImpersonationLock(request, application)) return null
+  if (isAdminUser(request.user)) return 'owner'
+  const team = request.store.teams?.find((candidate) => candidate.id === application.teamId)
+  if (team?.ownerId === request.user.id) return 'owner'
+  return requestTeamMembership(request, application.teamId)?.role ?? null
+}
+
+function studentTeamApplicationCount(store, teamId, ownerId) {
+  return store.applications.filter((application) => (
+    application.ownerId === ownerId
+    && (
+      application.teamId === teamId
+      || (
+        !application.teamId
+        && application.teamTransferRequest?.teamId === teamId
+        && application.teamTransferRequest?.direction === 'join'
+        && application.teamTransferRequest?.status === 'pending'
+      )
+    )
+  )).length
+}
+
+function studentTeamActiveShareCount(store, teamId, ownerId) {
+  return store.applications
+    .filter((application) => application.teamId === teamId && application.ownerId === ownerId)
+    .reduce((total, application) => (
+      total + (application.shares ?? []).filter((share) => (
+        !isExpiredShare(share) && share.createdBy === ownerId
+      )).length
+    ), 0)
+}
+
+async function incrementStudentTeamUsage(store, member, field) {
+  if (!member || member.role !== 'member') return member
+  const nextRelationships = incrementTeamMemberUsage(member.relationships, member.role, field)
+  const activeBaseline = field === 'applicationsCreated'
+    ? studentTeamApplicationCount(store, member.teamId, member.userId)
+    : studentTeamActiveShareCount(store, member.teamId, member.userId)
+  nextRelationships.usage[field] = Math.max(
+    nextRelationships.usage[field],
+    activeBaseline,
+  )
+  return updateTeamMemberRelationships(
+    member.id,
+    nextRelationships,
+  )
+}
+
+function studentApplicationLimitFailure(store, member) {
+  if (!member?.userId || member.role !== 'member') return null
+  const permissions = normalizeStudentPermissions(member.relationships?.studentPermissions)
+  const activeCount = studentTeamApplicationCount(store, member.teamId, member.userId)
+  const lifetimeCount = Math.max(
+    Number(member.relationships?.usage?.applicationsCreated ?? 0),
+    activeCount,
+  )
+  if (permissions.activeApplicationLimit !== null && activeCount >= permissions.activeApplicationLimit) {
+    return {
+      code: 'APPLICATION_LIMIT_REACHED',
+      message: `This student cannot have more than ${permissions.activeApplicationLimit} active Team applications.`,
+    }
+  }
+  if (permissions.lifetimeApplicationLimit !== null && lifetimeCount >= permissions.lifetimeApplicationLimit) {
+    return {
+      code: 'APPLICATION_CREATE_LIMIT_REACHED',
+      message: `This student cannot create more than ${permissions.lifetimeApplicationLimit} Team applications in total.`,
+    }
+  }
+  return null
+}
+
+function studentShareLimitFailure(store, member) {
+  if (!member?.userId || member.role !== 'member') return null
+  const permissions = normalizeStudentPermissions(member.relationships?.studentPermissions)
+  const activeCount = studentTeamActiveShareCount(store, member.teamId, member.userId)
+  const lifetimeCount = Math.max(
+    Number(member.relationships?.usage?.sharesCreated ?? 0),
+    activeCount,
+  )
+  if (permissions.activeShareLimit !== null && activeCount >= permissions.activeShareLimit) {
+    return {
+      code: 'TEAM_SHARE_LIMIT_REACHED',
+      message: `This student cannot have more than ${permissions.activeShareLimit} active Team share links.`,
+    }
+  }
+  if (permissions.lifetimeShareLimit !== null && lifetimeCount >= permissions.lifetimeShareLimit) {
+    return {
+      code: 'TEAM_SHARE_CREATE_LIMIT_REACHED',
+      message: `This student cannot create more than ${permissions.lifetimeShareLimit} Team share links in total.`,
+    }
+  }
+  return null
+}
+
+async function syncUserTeamAccessPlan(store, userId) {
+  if (!userId) return
+  const user = store.users.find((candidate) => candidate.id === userId)
+  if (!user || normalizeUserRole(user.role) === 'admin') return
+  const memberships = await listActiveTeamMembershipsForUser(userId)
+  const hasTeamPro = memberships.some((membership) => teamMemberAccessLevel(membership) === 'pro')
+  const currentSettings = user.settings ?? {}
+  const personalPlan = currentSettings.membershipPlan === 'team'
+    ? (currentSettings.personalMembershipPlan === 'pro' ? 'pro' : 'free')
+    : (currentSettings.membershipPlan === 'pro' ? 'pro' : 'free')
+  const effectivePlan = hasTeamPro ? 'team' : personalPlan
+  const proLike = effectivePlan === 'team' || personalPlan === 'pro'
+  user.settings = {
+    ...currentSettings,
+    planQuotaVersion: PLAN_QUOTA_VERSION,
+    membershipPlan: effectivePlan,
+    personalMembershipPlan: personalPlan,
+    autoBackup: proLike && Boolean(currentSettings.autoBackup),
+    applicationQuota: proLike ? DEFAULT_PRO_APPLICATION_QUOTA : DEFAULT_APPLICATION_QUOTA,
+    applicationCreateQuota: proLike ? MAX_APPLICATION_QUOTA : DEFAULT_APPLICATION_QUOTA,
+    shareQuota: proLike ? DEFAULT_PRO_SHARE_ACTIVE_QUOTA : DEFAULT_FREE_SHARE_ACTIVE_QUOTA,
+    shareCreateQuota: proLike ? DEFAULT_PRO_SHARE_CREATE_QUOTA : DEFAULT_FREE_SHARE_CREATE_QUOTA,
+    storageQuotaMb: proLike ? DEFAULT_PRO_STORAGE_QUOTA_MB : DEFAULT_FREE_STORAGE_QUOTA_MB,
+  }
 }
 
 function normalizePositiveInt(value, fallback, max = UNLIMITED_QUOTA) {
@@ -1448,7 +1660,11 @@ function authRequired(request, response, next) {
   }
 
   try {
-    request.auth = jwt.verify(token, jwtSecret)
+    request.auth = jwt.verify(token, jwtSecret, {
+      algorithms: [SESSION_JWT_ALGORITHM],
+      issuer: SESSION_JWT_ISSUER,
+      audience: SESSION_JWT_AUDIENCE,
+    })
     next()
   } catch {
     fail(response, 401, 'TOKEN_EXPIRED', 'Your session expired. Please sign in again.')
@@ -1496,6 +1712,10 @@ async function hydrateUser(request, response, next) {
   }
   if (user.disabledAt) {
     fail(response, 401, 'ACCOUNT_DISABLED', 'This account has been disabled.')
+    return
+  }
+  if (Number(request.auth.authVersion ?? 0) !== Number(user.settings?.authVersion ?? 0)) {
+    fail(response, 401, 'TOKEN_EXPIRED', 'Your session is no longer valid. Please sign in again.')
     return
   }
   if (PUBLIC_EDITION && request.auth.act) {
@@ -1655,8 +1875,53 @@ function applicationTeamFeedbackRole(request, application) {
 }
 
 function requireApplicationEditAccess(request, response, application) {
-  const role = applicationTeamRole(request, application)
-  return Boolean(role || application.ownerId === request.user.id)
+  if (!application.teamId) return application.ownerId === request.user.id
+  const role = applicationLiteralTeamRole(request, application)
+  let allowed = false
+  if (role === 'owner') {
+    allowed = true
+  } else if (role === 'admin') {
+    allowed = requestTeacherPermissions(request, application.teamId).editStudentApplications
+  } else if (role === 'member' && application.ownerId === request.user.id) {
+    const membership = requestTeamMembership(request, application.teamId)
+    allowed = normalizeStudentPermissions(
+      membership?.relationships?.studentPermissions,
+    ).editApplications
+  }
+  if (!allowed) {
+    fail(
+      response,
+      403,
+      'TEAM_ROLE_FORBIDDEN',
+      'Your Team permissions do not allow editing this application.',
+    )
+  }
+  return allowed
+}
+
+function requireApplicationShareAccess(request, response, application) {
+  if (!application.teamId) return requireApplicationEditAccess(request, response, application)
+  const role = applicationLiteralTeamRole(request, application)
+  let allowed = false
+  if (role === 'owner') {
+    allowed = true
+  } else if (role === 'admin') {
+    allowed = requestTeacherPermissions(request, application.teamId).manageStudentShares
+  } else if (role === 'member' && application.ownerId === request.user.id) {
+    const membership = requestTeamMembership(request, application.teamId)
+    allowed = normalizeStudentPermissions(
+      membership?.relationships?.studentPermissions,
+    ).createShareLinks
+  }
+  if (!allowed) {
+    fail(
+      response,
+      403,
+      'TEAM_ROLE_FORBIDDEN',
+      'Your Team permissions do not allow creating or managing share links.',
+    )
+  }
+  return allowed
 }
 
 function isRecommendationMaterial(material) {
@@ -2501,7 +2766,12 @@ async function adminNotificationRecipients(store, input, groups) {
   return uniqueUsersById(selected)
 }
 
-function teamNotificationAllowedMembers(members, callerRole, callerUserId) {
+export function teamNotificationAllowedMembers(
+  members,
+  callerRole,
+  callerUserId,
+  callerMembership = null,
+) {
   if (callerRole === 'owner') return members.filter((member) => member.status === 'active' && member.userId)
   if (callerRole === 'admin') {
     return members.filter((member) => (
@@ -2514,11 +2784,36 @@ function teamNotificationAllowedMembers(members, callerRole, callerUserId) {
       )
     ))
   }
+  if (callerRole === 'member') {
+    const assignedTeacherIds = new Set(teamMemberTeacherIds(callerMembership))
+    return members.filter((member) => (
+      member.status === 'active'
+      && member.userId
+      && member.userId !== callerUserId
+      && (
+        member.role === 'owner'
+        || (member.role === 'admin' && assignedTeacherIds.has(member.userId))
+      )
+    ))
+  }
   return []
 }
 
-function teamNotificationRecipients(store, input, members, groups, callerRole, callerUserId) {
-  const allowed = teamNotificationAllowedMembers(members, callerRole, callerUserId)
+function teamNotificationRecipients(
+  store,
+  input,
+  members,
+  groups,
+  callerRole,
+  callerUserId,
+  callerMembership = null,
+) {
+  const allowed = teamNotificationAllowedMembers(
+    members,
+    callerRole,
+    callerUserId,
+    callerMembership,
+  )
   const allowedByMemberId = new Map(allowed.map((member) => [member.id, member]))
   const selectedMembers = []
   const directMemberIds = new Set(input.memberIds)
@@ -2799,6 +3094,10 @@ function escapeCsv(value) {
     return `"${text.replaceAll('"', '""')}"`
   }
   return text
+}
+
+async function writeResponseChunk(response, chunk) {
+  if (!response.write(chunk)) await once(response, 'drain')
 }
 
 function exportText(value) {
@@ -3629,6 +3928,8 @@ export function sharedApplicationPayload(application, share) {
       homepage: includeOverview ? application.professor.homepage : '',
       research: includeOverview ? application.professor.research : '',
       lab: includeOverview ? application.professor.lab : '',
+      labUrl: includeOverview ? application.professor.labUrl || '' : '',
+      projectUrl: includeOverview ? application.professor.projectUrl || '' : '',
     },
     program: application.program,
     status: application.status,
@@ -3804,6 +4105,8 @@ function applySharedOverviewPatch(application, patch) {
       homepage: sharedString(patch.professor.homepage, application.professor.homepage, 500),
       research: sharedRequiredString(patch.professor.research, application.professor.research, 5000),
       lab: sharedString(patch.professor.lab, application.professor.lab, 240),
+      labUrl: sharedString(patch.professor.labUrl, application.professor.labUrl || '', 500),
+      projectUrl: sharedString(patch.professor.projectUrl, application.professor.projectUrl || '', 500),
     }
   }
   if (patch.program !== undefined) application.program = sharedRequiredString(patch.program, application.program, 180)
@@ -4028,10 +4331,13 @@ function rateLimitIdentity(value) {
 }
 
 function rateLimitClientIp(request) {
-  return request.ip || request.socket?.remoteAddress || 'unknown'
+  return clientNetwork(request.ip || request.socket?.remoteAddress || 'unknown', {
+    ipv4Prefix: 32,
+    ipv6Prefix: 56,
+  })
 }
 
-function createRateLimit({ name, windowMs, max, identity }) {
+function createRateLimit({ name, windowMs, max, identity, exposeHeaders = true }) {
   return function limitRequest(request, response, next) {
     if (process.env.RATE_LIMIT_DISABLED === '1') {
       next()
@@ -4051,9 +4357,11 @@ function createRateLimit({ name, windowMs, max, identity }) {
     rateLimitBuckets.set(key, bucket)
 
     const resetSeconds = Math.ceil((bucket.startedAt + windowMs) / 1000)
-    response.setHeader('RateLimit-Limit', String(max))
-    response.setHeader('RateLimit-Remaining', String(Math.max(0, max - bucket.count)))
-    response.setHeader('RateLimit-Reset', String(resetSeconds))
+    if (exposeHeaders) {
+      response.setHeader('RateLimit-Limit', String(max))
+      response.setHeader('RateLimit-Remaining', String(Math.max(0, max - bucket.count)))
+      response.setHeader('RateLimit-Reset', String(resetSeconds))
+    }
 
     if (bucket.count > max) {
       const retryAfter = Math.max(1, Math.ceil((windowMs - (now - bucket.startedAt)) / 1000))
@@ -4108,6 +4416,7 @@ const authChallengeRateLimit = createRateLimit({
   name: 'auth-challenge',
   windowMs: 5 * 60_000,
   max: 30,
+  exposeHeaders: false,
 })
 
 const authEmailRateLimit = createRateLimit({
@@ -4115,6 +4424,7 @@ const authEmailRateLimit = createRateLimit({
   windowMs: 10 * 60_000,
   max: 5,
   identity: (request) => request.body?.email,
+  exposeHeaders: false,
 })
 
 const authCredentialRateLimit = createRateLimit({
@@ -4122,6 +4432,7 @@ const authCredentialRateLimit = createRateLimit({
   windowMs: 10 * 60_000,
   max: 8,
   identity: (request) => request.body?.email,
+  exposeHeaders: false,
 })
 
 const passwordResetRateLimit = createRateLimit({
@@ -4129,6 +4440,7 @@ const passwordResetRateLimit = createRateLimit({
   windowMs: 15 * 60_000,
   max: 5,
   identity: (request) => request.body?.email,
+  exposeHeaders: false,
 })
 
 const initialSetupRateLimit = createRateLimit({
@@ -4136,6 +4448,124 @@ const initialSetupRateLimit = createRateLimit({
   windowMs: 60 * 60_000,
   max: 8,
 })
+
+const adminEntryActivationRateLimit = createRateLimit({
+  name: 'admin-entry-activation',
+  windowMs: 15 * 60_000,
+  max: 8,
+})
+
+function positiveIntegerEnv(name, fallback) {
+  const value = Number(process.env[name])
+  return Number.isInteger(value) && value > 0 ? value : fallback
+}
+
+function persistentAntiAbuseEnabled() {
+  if (process.env.RATE_LIMIT_DISABLED === '1') return false
+  return process.env.NODE_ENV !== 'test' || process.env.ANTI_ABUSE_TEST_MODE === '1'
+}
+
+function securityRateEntry(bucketName, identity, windowMs, max, blockMs = windowMs) {
+  return {
+    bucketName,
+    keyHash: abuseDigest(antiAbuseSecret, 'rate-limit-v1', bucketName, identity),
+    windowMs,
+    max,
+    blockMs,
+  }
+}
+
+function loginSecurityRateEntries(request, email) {
+  const network = rateLimitClientIp(request)
+  const account = canonicalRegistrationEmail(email)
+  return [
+    securityRateEntry('login-network', network, 15 * 60_000, positiveIntegerEnv('LOGIN_MAX_FAILURES_PER_NETWORK', 30)),
+    securityRateEntry('login-account', account, 15 * 60_000, positiveIntegerEnv('LOGIN_MAX_FAILURES_PER_ACCOUNT', 10)),
+    securityRateEntry('login-pair', `${network}\u001f${account}`, 15 * 60_000, positiveIntegerEnv('LOGIN_MAX_FAILURES_PER_PAIR', 5)),
+  ]
+}
+
+function signupEmailSecurityRateEntries(request, email) {
+  const network = rateLimitClientIp(request)
+  const canonicalEmail = canonicalRegistrationEmail(email)
+  const domain = emailDomain(canonicalEmail)
+  return [
+    securityRateEntry('signup-email-network', network, 10 * 60_000, positiveIntegerEnv('REGISTRATION_EMAIL_MAX_PER_NETWORK_10M', 8)),
+    securityRateEntry('signup-email-address', canonicalEmail, 30 * 60_000, positiveIntegerEnv('REGISTRATION_EMAIL_MAX_PER_ADDRESS_30M', 3)),
+    securityRateEntry('signup-email-domain', domain, 60 * 60_000, positiveIntegerEnv('REGISTRATION_EMAIL_MAX_PER_DOMAIN_HOUR', 40)),
+    securityRateEntry('signup-email-global', 'global', 60 * 60_000, positiveIntegerEnv('REGISTRATION_EMAIL_MAX_GLOBAL_HOUR', 250)),
+  ]
+}
+
+function signupCompletionSecurityRateEntries(request, email) {
+  const rawIp = clientAddress(request.ip || request.socket?.remoteAddress)
+  const subnet = clientNetwork(rawIp, { ipv4Prefix: 24, ipv6Prefix: 56 })
+  const domain = emailDomain(email)
+  return [
+    securityRateEntry('signup-complete-ip', rawIp, 24 * 60 * 60_000, positiveIntegerEnv('REGISTRATION_MAX_PER_IP_DAY', 5)),
+    securityRateEntry('signup-complete-subnet', subnet, 24 * 60 * 60_000, positiveIntegerEnv('REGISTRATION_MAX_PER_SUBNET_DAY', 20)),
+    securityRateEntry('signup-complete-domain', domain, 24 * 60 * 60_000, positiveIntegerEnv('REGISTRATION_MAX_PER_DOMAIN_DAY', 50)),
+    securityRateEntry('signup-complete-global', 'global', 24 * 60 * 60_000, positiveIntegerEnv('REGISTRATION_MAX_GLOBAL_DAY', 500)),
+  ]
+}
+
+function passwordResetSecurityRateEntries(request, email) {
+  const network = rateLimitClientIp(request)
+  const account = canonicalRegistrationEmail(email)
+  return [
+    securityRateEntry('password-reset-network', network, 15 * 60_000, positiveIntegerEnv('PASSWORD_RESET_MAX_PER_NETWORK_15M', 10)),
+    securityRateEntry('password-reset-account', account, 60 * 60_000, positiveIntegerEnv('PASSWORD_RESET_MAX_PER_ACCOUNT_HOUR', 3)),
+    securityRateEntry('password-reset-global', 'global', 60 * 60_000, positiveIntegerEnv('PASSWORD_RESET_MAX_GLOBAL_HOUR', 250)),
+  ]
+}
+
+const securityAlertCooldown = new Map()
+
+async function reportSecurityLimit(result, request) {
+  const key = `${result.bucketName}:${rateLimitClientIp(request)}`
+  const now = Date.now()
+  if (securityAlertCooldown.size > 2_000) {
+    for (const [candidate, expiresAt] of securityAlertCooldown) {
+      if (Number(expiresAt) <= now) securityAlertCooldown.delete(candidate)
+    }
+  }
+  if (Number(securityAlertCooldown.get(key) ?? 0) > now) return
+  securityAlertCooldown.set(key, now + 15 * 60_000)
+  await recordSecurityEvent('Anti-abuse rate limit activated', {
+    bucket: result.bucketName,
+    networkHash: abuseDigest(antiAbuseSecret, 'audit-network', rateLimitClientIp(request)).slice(0, 20),
+  }).catch(() => undefined)
+}
+
+async function checkSecurityBudget(request, response, entries, increment = false) {
+  if (!persistentAntiAbuseEnabled()) return true
+  const result = await consumeSecurityRateLimits(entries, { increment })
+  if (result.allowed) return true
+  response.setHeader('Retry-After', String(result.retryAfterSeconds))
+  await reportSecurityLimit(result, request)
+  fail(response, 429, 'RATE_LIMITED', 'Too many attempts. Please try again later.')
+  return false
+}
+
+function authenticatedAbusePolicy(request) {
+  const pathname = request.originalUrl.split('?')[0]
+  if (/^\/api\/discover\/research(?:\/start)?\/?$/.test(pathname)) {
+    return { name: 'user-discover-research', windowMs: 60 * 60_000, max: positiveIntegerEnv('DISCOVER_RESEARCH_MAX_PER_USER_HOUR', 12) }
+  }
+  if (/^\/api\/ai\/draft\/?$/.test(pathname)) {
+    return { name: 'user-ai-draft', windowMs: 60 * 60_000, max: positiveIntegerEnv('AI_DRAFT_MAX_PER_USER_HOUR', 60) }
+  }
+  if (/^\/api\/applications\/[^/]+\/communications\/send\/?$/.test(pathname)) {
+    return { name: 'user-email-send', windowMs: 60 * 60_000, max: positiveIntegerEnv('OUTGOING_EMAIL_MAX_PER_USER_HOUR', 30) }
+  }
+  if (/^\/api\/backups(?:\/[^/]+\/restore)?\/?$/.test(pathname) && request.method !== 'GET') {
+    return { name: 'user-backup-mutation', windowMs: 60 * 60_000, max: positiveIntegerEnv('BACKUP_MUTATIONS_MAX_PER_USER_HOUR', 12) }
+  }
+  if (/^\/api\/admin\/notifications\/publish\/?$/.test(pathname)) {
+    return { name: 'admin-notification-publish', windowMs: 60 * 60_000, max: positiveIntegerEnv('NOTIFICATION_PUBLISH_MAX_PER_ADMIN_HOUR', 30) }
+  }
+  return null
+}
 
 function hostFromUrl(value) {
   try {
@@ -4267,6 +4697,14 @@ function parseTrustProxySetting(value) {
 }
 
 const trustProxySetting = parseTrustProxySetting(process.env.TRUST_PROXY)
+if (
+  process.env.NODE_ENV === 'production'
+  && trustProxySetting === true
+  && process.env.ALLOW_UNSAFE_TRUST_PROXY !== '1'
+) {
+  console.error('FATAL: TRUST_PROXY=true trusts every forwarding hop and enables client-IP spoofing. Configure a hop count, CIDR, or named subnet instead.')
+  process.exit(1)
+}
 
 function trustsForwardedProto() {
   return Boolean(trustProxySetting)
@@ -4602,12 +5040,33 @@ export function createApp() {
       if (queuedJob.teamId) {
         queuedTeam = snapshotStore.teams.find((candidate) => candidate.id === queuedJob.teamId) || null
         const role = await getCallerTeamRole(queuedTeam, requester)
+        const requesterMembership = queuedTeam
+          ? await findTeamMembershipForUser(queuedTeam.id, requester.id)
+          : null
         const targetMembership = await findTeamMembershipForUser(queuedJob.teamId, userId)
+        const canUseDiscover = role === 'owner'
+          || (
+            role === 'admin'
+            && normalizeTeacherPermissions(
+              requesterMembership?.relationships?.teacherPermissions,
+            ).useDiscover
+          )
+          || (
+            role === 'member'
+            && normalizeStudentPermissions(
+              requesterMembership?.relationships?.studentPermissions,
+            ).useDiscover
+          )
         const canResearchTarget = targetMembership?.status === 'active'
           && targetMembership.role === 'member'
-          && (role === 'owner' || (role === 'admin' && isTeacherAssignedToStudent(targetMembership, requester.id)))
+          && canUseDiscover
+          && (
+            role === 'owner'
+            || (role === 'admin' && isTeacherAssignedToStudent(targetMembership, requester.id))
+            || (role === 'member' && requester.id === userId)
+          )
         if (!queuedTeam || !canResearchTarget) {
-          throw new AiProviderError('TEAM_DISCOVER_TARGET_FORBIDDEN', 'The selected student is no longer available to this teacher.')
+          throw new AiProviderError('TEAM_DISCOVER_TARGET_FORBIDDEN', 'The selected student is no longer available to this requester.')
         }
       } else if (requester.id !== userId || personalUserPlan(requester) === 'free') {
         throw new AiProviderError('PRO_REQUIRED', 'Discover research requires a personal Pro account.')
@@ -4628,8 +5087,8 @@ export function createApp() {
         if (!(await aiKeyAccessForRequest({ user: requester, store: snapshotStore }, aiKey))) {
           throw new AiProviderError('AI_KEY_NOT_FOUND', 'A configured Discover AI key is no longer accessible.')
         }
-        if (queuedTeam && aiKey.scope === 'team' && aiKey.teamId !== queuedTeam.id) {
-          throw new AiProviderError('TEAM_DISCOVER_KEY_FORBIDDEN', 'The selected Team AI key belongs to another workspace.')
+        if (queuedTeam && (aiKey.scope !== 'team' || aiKey.teamId !== queuedTeam.id)) {
+          throw new AiProviderError('TEAM_DISCOVER_KEY_FORBIDDEN', 'Team Discover requires an AI key configured for this workspace.')
         }
       }
       await publishDiscoverResearchProgress(userId, jobId, { message: 'Preparing official-source research…', errorCode: null })
@@ -4958,15 +5417,16 @@ export function createApp() {
         directives: {
           defaultSrc: ["'self'"],
           baseUri: ["'self'"],
-          scriptSrc: ["'self'"],
+          scriptSrc: ["'self'", ...(turnstile.configured ? ['https://challenges.cloudflare.com'] : [])],
           scriptSrcAttr: ["'none'"],
           styleSrc: ["'self'", "'unsafe-inline'"],
           imgSrc: ["'self'", 'data:', 'blob:'],
-          connectSrc: ["'self'"],
+          connectSrc: ["'self'", ...(turnstile.configured ? ['https://challenges.cloudflare.com'] : [])],
           fontSrc: ["'self'"],
+          frameSrc: turnstile.configured ? ['https://challenges.cloudflare.com'] : ["'none'"],
           objectSrc: ["'none'"],
           formAction: ["'self'"],
-          frameAncestors: ["'self'"],
+          frameAncestors: ["'none'"],
         },
       },
     }),
@@ -4990,6 +5450,16 @@ export function createApp() {
     credentials: true,
     exposedHeaders: ['X-Request-Id', 'X-Session-Token', 'X-Session-Expires-At', 'X-Session-Duration-Minutes', 'ETag', 'Cache-Control', 'Server-Timing'],
   }))
+  app.use((request, response, next) => {
+    const site = String(request.get('sec-fetch-site') ?? '').toLowerCase()
+    const method = request.method.toUpperCase()
+    const unsafe = !['GET', 'HEAD', 'OPTIONS'].includes(method)
+    if (unsafe && site === 'cross-site') {
+      fail(response, 403, 'FORBIDDEN', 'Cross-site state-changing requests are not allowed.')
+      return
+    }
+    next()
+  })
   app.use(express.json({ limit: '1mb' }))
   app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'))
   if (PUBLIC_EDITION) {
@@ -5062,6 +5532,7 @@ export function createApp() {
   app.use('/api/setup/smtp-verification', authEmailRateLimit)
   app.use('/api/auth/register', authCredentialRateLimit)
   app.use('/api/auth/password-reset', passwordResetRateLimit)
+  app.use('/api/admin-access/activate', adminEntryActivationRateLimit)
   app.post('/api/setup', initialSetupRateLimit)
   app.use('/api/share/:token/materials/:materialId/file', publicUploadRateLimit)
   app.use('/api/share/:token/tasks/:taskId/file', publicUploadRateLimit)
@@ -5071,6 +5542,53 @@ export function createApp() {
   app.use('/api/teams/invites/:token', publicTokenRateLimit)
   app.use('/api/teams/join-codes/:code', publicTokenRateLimit)
   app.use('/api/calendar/feed', publicTokenRateLimit)
+
+  app.get('/api/admin-access/status', asyncHandler(async (request, response) => {
+    setNoStoreHeaders(response)
+    const store = await readStore()
+    const hidden = Boolean(store.settings?.adminEntryHidden)
+    ok(response, {
+      hidden,
+      allowed: !hidden || hasAdminEntryAccess(request, store.settings),
+    })
+  }))
+
+  app.post('/api/admin-access/activate', asyncHandler(async (request, response) => {
+    setNoStoreHeaders(response)
+    const store = await readStore()
+    const settings = store.settings ?? {}
+    if (!settings.adminEntryHidden) {
+      ok(response, { hidden: false, allowed: true })
+      return
+    }
+    const code = String(request.body?.code ?? '').trim()
+    if (
+      !settings.adminEntryCodeHash
+      || !settings.adminEntryCodeSalt
+      || !verifyPassword(code, settings.adminEntryCodeSalt, settings.adminEntryCodeHash)
+    ) {
+      fail(response, 404, 'NOT_FOUND', 'Administrator entry not found.')
+      return
+    }
+    setAdminEntryAccessCookie(request, response, settings, false)
+    ok(response, { hidden: true, allowed: true })
+  }))
+
+  app.post('/api/admin-access/remember', asyncHandler(async (request, response) => {
+    setNoStoreHeaders(response)
+    const store = await readStore()
+    const settings = store.settings ?? {}
+    if (!settings.adminEntryHidden) {
+      ok(response, { hidden: false, allowed: true })
+      return
+    }
+    if (!hasAdminEntryAccess(request, settings)) {
+      fail(response, 404, 'NOT_FOUND', 'Administrator entry not found.')
+      return
+    }
+    setAdminEntryAccessCookie(request, response, settings, true)
+    ok(response, { hidden: true, allowed: true })
+  }))
   app.use('/api/settings/verify-receive-email', publicTokenRateLimit)
 
   app.get('/api/health', asyncHandler(async (_request, response) => {
@@ -5154,6 +5672,15 @@ export function createApp() {
     }
 
     const code = String(randomInt(100000, 1000000))
+    const verificationToken = await issueSecurityChallenge({
+      secret: antiAbuseSecret,
+      kind: 'initial-setup-smtp-code',
+      subject: initialSetupSmtpFingerprint(input),
+      answer: code,
+      ttlMs: 10 * 60_000,
+      maxAttempts: 5,
+      create: createSecurityChallenge,
+    })
     const zh = input.language === 'zh'
     const template = buildNotificationEmailTemplate('initial-setup-smtp-verification', {
       subject: zh ? '验证 PhD Atlas 发件邮箱' : 'Verify your PhD Atlas outgoing email',
@@ -5181,7 +5708,7 @@ export function createApp() {
     }
 
     ok(response, {
-      token: signInitialSetupSmtpVerification(input, code),
+      token: verificationToken,
       expiresInSeconds: 600,
     })
   }))
@@ -5197,11 +5724,28 @@ export function createApp() {
       fail(response, 409, 'SETUP_ALREADY_COMPLETED', 'Initial setup has already been completed.')
       return
     }
-    if (!verifyInitialSetupSmtpVerification(input.token, input, input.code)) {
+    const verification = await claimSecurityChallengeAnswer({
+      secret: antiAbuseSecret,
+      kind: 'initial-setup-smtp-code',
+      token: input.token,
+      subject: initialSetupSmtpFingerprint(input),
+      answer: input.code,
+      claim: claimSecurityChallenge,
+    })
+    if (!verification.ok) {
       fail(response, 400, 'INVALID_EMAIL_CODE', 'Email verification code is incorrect or has expired.', 'code')
       return
     }
-    ok(response, { verified: true })
+    const grantToken = await issueSecurityChallenge({
+      secret: antiAbuseSecret,
+      kind: 'initial-setup-smtp-grant',
+      subject: initialSetupSmtpFingerprint(input),
+      answer: 'verified',
+      ttlMs: 10 * 60_000,
+      maxAttempts: 1,
+      create: createSecurityChallenge,
+    })
+    ok(response, { verified: true, token: grantToken })
   }))
 
   app.post('/api/setup', asyncHandler(async (request, response) => {
@@ -5214,10 +5758,6 @@ export function createApp() {
     const initialStore = await readStore()
     if (activeAdminCount(initialStore) > 0) {
       fail(response, 409, 'SETUP_ALREADY_COMPLETED', 'Initial setup has already been completed.')
-      return
-    }
-    if (!verifyInitialSetupSmtpVerification(input.smtpVerificationToken, input)) {
-      fail(response, 400, 'INVALID_EMAIL_CODE', 'Email verification code is incorrect or has expired.', 'smtpVerificationToken')
       return
     }
     try {
@@ -5244,8 +5784,26 @@ export function createApp() {
       fail(response, status, `SMTP_${error.code}`, error.message, 'smtpHost')
       return
     }
+    await assertStrongAccountPassword(input.password, {
+      email: input.email,
+      name: input.name,
+    })
+    const smtpGrant = await claimSecurityChallengeAnswer({
+      secret: antiAbuseSecret,
+      kind: 'initial-setup-smtp-grant',
+      token: input.smtpVerificationToken,
+      subject: initialSetupSmtpFingerprint(input),
+      answer: 'verified',
+      claim: claimSecurityChallenge,
+    })
+    if (!smtpGrant.ok) {
+      fail(response, 400, 'INVALID_EMAIL_CODE', 'Email verification is invalid or has expired.', 'smtpVerificationToken')
+      return
+    }
+    const initialAdminPasswordHash = await hashAccountPassword(input.password)
 
     let createdSession = null
+    let createdAdminEntrySettings = null
     await withWriteLock(async () => {
       const store = await readStore()
       if (activeAdminCount(store) > 0) {
@@ -5269,12 +5827,13 @@ export function createApp() {
         name: input.name,
         email: input.email,
         role: 'admin',
-        passwordHash: await bcrypt.hash(input.password, 12),
+        passwordHash: initialAdminPasswordHash,
         createdAt: now,
         lastLoginAt: now,
         disabledAt: null,
         settings: {
           language: input.language,
+          authVersion: 0,
           highContrast: false,
           themeAccent: '#0071e3',
           sendFrom: input.smtpUser,
@@ -5314,8 +5873,14 @@ export function createApp() {
         },
       }
       store.users.push(admin)
+      const adminEntryVerifier = input.adminEntryHidden
+        ? createPasswordVerifier(input.adminEntryCode, newPasswordSalt())
+        : { hash: '', salt: '' }
       store.settings = {
         ...store.settings,
+        adminEntryHidden: input.adminEntryHidden,
+        adminEntryCodeHash: adminEntryVerifier.hash,
+        adminEntryCodeSalt: adminEntryVerifier.salt,
         notificationMailbox: input.notificationMailbox,
         smtpHost: input.smtpHost,
         smtpPort: input.smtpPort,
@@ -5331,6 +5896,7 @@ export function createApp() {
           edition: 'public',
           smtpHost: input.smtpHost,
           smtpPort: input.smtpPort,
+          adminEntryHidden: input.adminEntryHidden,
         },
       })
       markPublicSetupComplete(store)
@@ -5352,32 +5918,53 @@ export function createApp() {
         user: publicUser(admin),
         settings: publicSystemSettings(store.settings),
       }
+      createdAdminEntrySettings = store.settings
     })
 
+    if (createdAdminEntrySettings?.adminEntryHidden) {
+      setAdminEntryAccessCookie(request, response, createdAdminEntrySettings, true)
+    }
     ok(response, createdSession, 201)
   }))
 
   app.post('/api/auth/login', asyncHandler(async (request, response) => {
+    const startedAt = Date.now()
     const credentials = parseOrThrow(UserAuthSchema, request.body)
+    const securityEntries = loginSecurityRateEntries(request, credentials.email)
+    if (!(await checkSecurityBudget(request, response, securityEntries))) return
     const store = await readStore()
     const user = store.users.find((candidate) => candidate.email === credentials.email)
     const dummyHash = '$2a$12$AAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
-    const valid = await bcrypt.compare(credentials.password, user ? user.passwordHash : dummyHash)
+    const verification = await verifyAccountPassword(
+      credentials.password,
+      user ? user.passwordHash : dummyHash,
+    )
+    const authorized = Boolean(
+      user
+      && verification.valid
+      && !user.disabledAt
+      && (credentials.scope !== 'admin' || normalizeUserRole(user.role) === 'admin'),
+    )
 
-    if (!user || !valid) {
+    if (!authorized) {
+      if (persistentAntiAbuseEnabled()) {
+        const result = await consumeSecurityRateLimits(securityEntries)
+        if (!result.allowed) {
+          response.setHeader('Retry-After', String(result.retryAfterSeconds))
+          await reportSecurityLimit(result, request)
+          fail(response, 429, 'RATE_LIMITED', 'Too many attempts. Please try again later.')
+          return
+        }
+      }
+      await enforceMinimumDuration(startedAt, process.env.NODE_ENV === 'production' ? 350 : 0, 75)
       fail(response, 401, 'INVALID_CREDENTIALS', 'Email or password is incorrect.')
-      return
-    }
-    if (user.disabledAt) {
-      fail(response, 403, 'ACCOUNT_DISABLED', 'This account has been disabled.')
-      return
-    }
-    if (credentials.scope === 'admin' && normalizeUserRole(user.role) !== 'admin') {
-      fail(response, 403, 'FORBIDDEN', 'Administrator access is required.')
       return
     }
 
     user.lastLoginAt = nowStamp()
+    if (verification.needsRehash) {
+      user.passwordHash = await hashAccountPassword(credentials.password)
+    }
     logEvent(store, {
       actorId: user.id,
       scope: 'Authentication',
@@ -5385,7 +5972,11 @@ export function createApp() {
     })
     await pruneApplicationTrash(user)
     await lockedWriteStore(store)
+    if (persistentAntiAbuseEnabled()) {
+      await clearSecurityRateLimits(securityEntries.slice(1).map((entry) => entry.keyHash))
+    }
     const backups = await listBackups()
+    await enforceMinimumDuration(startedAt, process.env.NODE_ENV === 'production' ? 350 : 0, 75)
 
     ok(response, {
       token: signToken(user, credentials.scope, store.settings),
@@ -5395,30 +5986,120 @@ export function createApp() {
     })
   }))
 
-  app.get('/api/auth/captcha', asyncHandler(async (_request, response) => {
+  app.get('/api/auth/captcha', asyncHandler(async (request, response) => {
+    const challengeBudget = [
+      securityRateEntry(
+        'signup-human-global',
+        'global',
+        60 * 60_000,
+        positiveIntegerEnv('HUMAN_CHALLENGE_MAX_GLOBAL_HOUR', 5_000),
+      ),
+    ]
+    if (!(await checkSecurityBudget(request, response, challengeBudget, true))) return
+    if (turnstile.configured) {
+      ok(response, {
+        provider: 'turnstile',
+        siteKey: turnstile.siteKey,
+        action: 'signup',
+        expiresInSeconds: 300,
+      })
+      return
+    }
+    if (turnstile.required) {
+      fail(response, 503, 'HUMAN_VERIFICATION_UNAVAILABLE', 'Human verification is not configured.')
+      return
+    }
     const left = 2 + Math.floor(Math.random() * 8)
     const right = 2 + Math.floor(Math.random() * 8)
+    const token = await issueSecurityChallenge({
+      secret: antiAbuseSecret,
+      kind: 'signup-human',
+      answer: left + right,
+      ttlMs: 10 * 60_000,
+      minimumAgeMs: 500,
+      maxAttempts: 5,
+      create: createSecurityChallenge,
+    })
     ok(response, {
+      provider: 'math',
       question: `${left} + ${right}`,
-      token: signCaptcha(left + right),
+      token,
       expiresInSeconds: 600,
     })
   }))
 
   app.post('/api/auth/register/email-code', asyncHandler(async (request, response) => {
+    const startedAt = Date.now()
     const input = parseOrThrow(SendEmailCodeSchema, request.body)
+    let humanVerified = false
+    if (input.captchaProvider === 'turnstile' && turnstile.configured) {
+      const configuredHost = hostFromUrl(process.env.BASE_URL)
+      const expectedHostname = (configuredHost || trustedHost(request)).split(':')[0]
+      const result = await verifyTurnstileToken({
+        secretKey: turnstile.secretKey,
+        token: input.captchaToken,
+        remoteIp: clientAddress(request.ip || request.socket?.remoteAddress),
+        expectedAction: 'signup',
+        expectedHostname,
+      })
+      humanVerified = result.ok
+    } else if (input.captchaProvider === 'math' && !turnstile.configured && !turnstile.required) {
+      const result = await claimSecurityChallengeAnswer({
+        secret: antiAbuseSecret,
+        kind: 'signup-human',
+        token: input.captchaToken,
+        answer: input.captchaAnswer,
+        claim: claimSecurityChallenge,
+      })
+      humanVerified = result.ok
+    }
+    if (!humanVerified) {
+      await enforceMinimumDuration(startedAt, 500, 100)
+      fail(response, 400, 'INVALID_CAPTCHA', 'Human verification failed.', 'captchaAnswer')
+      return
+    }
+
+    const emailSecurityEntries = signupEmailSecurityRateEntries(request, input.email)
+    if (!(await checkSecurityBudget(request, response, emailSecurityEntries, true))) return
     const store = await readStore()
 
     if (!store.settings.allowRegistration) {
       fail(response, 403, 'REGISTRATION_CLOSED', 'New user registration is disabled.')
       return
     }
-    if (store.users.some((user) => user.email === input.email)) {
-      fail(response, 409, 'EMAIL_EXISTS', 'An account already exists for this email.')
+    const emailPolicy = registrationEmailPolicy(input.email)
+    if (!emailPolicy.allowed) {
+      await enforceMinimumDuration(startedAt, 600, 120)
+      fail(response, 400, 'REGISTRATION_EMAIL_NOT_ALLOWED', 'This email domain is not allowed for registration.', 'email')
+      return
+    }
+
+    const canonicalEmail = canonicalRegistrationEmail(input.email)
+    const existingUser = store.users.some(
+      (user) => canonicalRegistrationEmail(user.email) === canonicalEmail,
+    )
+    if (existingUser) {
+      await enforceMinimumDuration(startedAt, 650, 150)
+      ok(response, {
+        token: randomBytes(32).toString('base64url'),
+        expiresInSeconds: 600,
+      })
       return
     }
 
     const code = String(randomInt(100000, 1000000))
+    const emailCodeToken = await issueSecurityChallenge({
+      secret: antiAbuseSecret,
+      kind: 'signup-email',
+      subject: canonicalEmail,
+      answer: code,
+      ttlMs: 10 * 60_000,
+      maxAttempts: 5,
+      create: createSecurityChallenge,
+      metadata: {
+        domainHash: abuseDigest(antiAbuseSecret, 'email-domain', emailPolicy.domain).slice(0, 20),
+      },
+    })
     const zh = input.language === 'zh'
     const template = buildNotificationEmailTemplate('register-email-code', {
       subject: zh ? '你的 PhD Atlas 验证码' : 'Your PhD Atlas verification code',
@@ -5431,109 +6112,150 @@ export function createApp() {
         : `<p>Your verification code is <strong style="font-size:22px;letter-spacing:.14em;white-space:nowrap">${escapeHtml(code)}</strong>. It expires in 10 minutes. If you didn't request this, you can ignore this email.</p>`,
     }, input.language)
 
-    let deliveryResult
-    try {
-      deliveryResult = await deliverSystemEmail(store, {
-        to: input.email,
-        subject: template.subject,
-        text: template.text,
-        html: template.html,
-        scope: 'Authentication',
-        metadata: { kind: 'register-email-code' },
+    const requestId = response.locals.requestId
+    queueMicrotask(() => {
+      void (async () => {
+        try {
+          await deliverSystemEmail(store, {
+            to: input.email,
+            subject: template.subject,
+            text: template.text,
+            html: template.html,
+            scope: 'Authentication',
+            metadata: { kind: 'register-email-code' },
+          })
+        } catch (error) {
+          logEvent(store, {
+            scope: 'Authentication',
+            message: 'Registration verification email could not be delivered',
+            metadata: {
+              errorCode: error?.code ?? 'MAIL_DELIVERY_FAILED',
+              domainHash: abuseDigest(antiAbuseSecret, 'email-domain', emailPolicy.domain).slice(0, 20),
+            },
+          })
+        }
+        await lockedWriteStore(store)
+      })().catch((error) => {
+        console.error(`[${requestId}] Failed to persist registration email delivery audit: ${error.message}`)
       })
-    } catch (error) {
-      await lockedWriteStore(store)
-      if (!(error instanceof MailerError)) throw error
-      const status = error.code === 'AUTH_FAILED' ? 422 : 502
-      fail(response, status, `SMTP_${error.code}`, error.message)
-      return
-    }
-    await lockedWriteStore(store)
-
-    if (!deliveryResult.sent) {
-      fail(response, 503, 'SMTP_NOT_CONFIGURED', 'Outgoing email is not configured yet. Ask the administrator to set up system mail before registering.')
-      return
-    }
-
+    })
+    await enforceMinimumDuration(startedAt, 650, 150)
     ok(response, {
-      token: signEmailCode(input.email, code),
+      token: emailCodeToken,
       expiresInSeconds: 600,
     })
   }))
 
   app.post('/api/auth/register', asyncHandler(async (request, response) => {
     const input = parseOrThrow(RegisterSchema, request.body)
-    const store = await readStore()
-
-    if (!verifyCaptcha(input.captchaToken, input.captchaAnswer)) {
-      fail(response, 400, 'INVALID_CAPTCHA', 'Verification code is incorrect.', 'captchaAnswer')
+    const emailPolicy = registrationEmailPolicy(input.email)
+    if (!emailPolicy.allowed) {
+      fail(response, 400, 'REGISTRATION_EMAIL_NOT_ALLOWED', 'This email domain is not allowed for registration.', 'email')
       return
     }
-
-    if (!verifyEmailCode(input.emailCodeToken, input.email, input.emailCode)) {
+    const canonicalEmail = canonicalRegistrationEmail(input.email)
+    await assertStrongAccountPassword(input.password, {
+      email: input.email,
+      name: input.name,
+    })
+    const emailChallenge = await claimSecurityChallengeAnswer({
+      secret: antiAbuseSecret,
+      kind: 'signup-email',
+      token: input.emailCodeToken,
+      subject: canonicalEmail,
+      answer: input.emailCode,
+      claim: claimSecurityChallenge,
+    })
+    if (!emailChallenge.ok) {
       fail(response, 400, 'INVALID_EMAIL_CODE', 'Email verification code is incorrect or has expired.', 'emailCode')
       return
     }
 
-    if (!store.settings.allowRegistration) {
-      fail(response, 403, 'REGISTRATION_CLOSED', 'New user registration is disabled.')
-      return
-    }
+    const signupSecurityEntries = signupCompletionSecurityRateEntries(request, canonicalEmail)
+    if (!(await checkSecurityBudget(request, response, signupSecurityEntries, true))) return
+    const passwordHash = await hashAccountPassword(input.password)
+    let store
+    let user
+    let rejection
+    await withWriteLock(async () => {
+      const latest = await readStore()
+      if (!latest.settings.allowRegistration) {
+        rejection = {
+          status: 403,
+          code: 'REGISTRATION_CLOSED',
+          message: 'New user registration is disabled.',
+        }
+        return
+      }
+      if (latest.users.some(
+        (candidate) => canonicalRegistrationEmail(candidate.email) === canonicalEmail,
+      )) {
+        rejection = {
+          status: 409,
+          code: 'EMAIL_EXISTS',
+          message: 'An account already exists for this email.',
+        }
+        return
+      }
 
-    if (store.users.some((user) => user.email === input.email)) {
-      fail(response, 409, 'EMAIL_EXISTS', 'An account already exists for this email.')
-      return
-    }
-
-    const now = nowStamp()
-    const user = {
-      id: createId('user'),
-      name: input.name,
-      email: input.email,
-      role: 'user',
-      passwordHash: await bcrypt.hash(input.password, 12),
-      createdAt: now,
-      lastLoginAt: now,
-      settings: {
-        language: input.language,
-        highContrast: false,
-        themeAccent: '#0071e3',
-        sendFrom: input.email,
-        receiveAt: input.email,
-        receiveEmails: [{ address: input.email, isPrimary: true, notify: true, verified: true }],
-        planQuotaVersion: PLAN_QUOTA_VERSION,
-        membershipPlan: 'free',
-        autoBackup: false,
-        backupFrequency: DEFAULT_BACKUP_FREQUENCY,
-        maxBackupsPerApp: DEFAULT_MAX_BACKUPS_PER_APP,
-        smtpHost: '',
-        smtpPort: 587,
-        smtpUser: '',
-        smtpPass: '',
-        smtpTls: true,
-        incomingProtocol: 'imap',
-        incomingHost: '',
-        incomingPort: 993,
-        incomingUser: input.email,
-        incomingPass: '',
-        incomingTls: true,
-        storageQuotaMb: DEFAULT_FREE_STORAGE_QUOTA_MB,
-        applicationQuota: DEFAULT_APPLICATION_QUOTA,
-        applicationCreateQuota: DEFAULT_APPLICATION_QUOTA,
-        applicationCreatedCount: 0,
-        shareQuota: DEFAULT_FREE_SHARE_ACTIVE_QUOTA,
-        shareCreateQuota: DEFAULT_FREE_SHARE_CREATE_QUOTA,
-        shareCreatedCount: 0,
-        trashRetentionDays: DEFAULT_TRASH_RETENTION_DAYS,
-        sessionDurationMinutes: DEFAULT_USER_SESSION_MINUTES,
-      },
-    }
-    store.users.push(user)
-    logEvent(store, {
-      actorId: user.id,
-      scope: 'Authentication',
-      message: 'New user registered',
+      const now = nowStamp()
+      user = {
+        id: createId('user'),
+        name: input.name,
+        email: input.email,
+        role: 'user',
+        passwordHash,
+        createdAt: now,
+        lastLoginAt: now,
+        settings: {
+          language: input.language,
+          highContrast: false,
+          themeAccent: '#0071e3',
+          sendFrom: input.email,
+          receiveAt: input.email,
+          receiveEmails: [{ address: input.email, isPrimary: true, notify: true, verified: true }],
+          planQuotaVersion: PLAN_QUOTA_VERSION,
+          membershipPlan: 'free',
+          autoBackup: false,
+          backupFrequency: DEFAULT_BACKUP_FREQUENCY,
+          maxBackupsPerApp: DEFAULT_MAX_BACKUPS_PER_APP,
+          smtpHost: '',
+          smtpPort: 587,
+          smtpUser: '',
+          smtpPass: '',
+          smtpTls: true,
+          incomingProtocol: 'imap',
+          incomingHost: '',
+          incomingPort: 993,
+          incomingUser: input.email,
+          incomingPass: '',
+          incomingTls: true,
+          storageQuotaMb: DEFAULT_FREE_STORAGE_QUOTA_MB,
+          applicationQuota: DEFAULT_APPLICATION_QUOTA,
+          applicationCreateQuota: DEFAULT_APPLICATION_QUOTA,
+          applicationCreatedCount: 0,
+          shareQuota: DEFAULT_FREE_SHARE_ACTIVE_QUOTA,
+          shareCreateQuota: DEFAULT_FREE_SHARE_CREATE_QUOTA,
+          shareCreatedCount: 0,
+          trashRetentionDays: DEFAULT_TRASH_RETENTION_DAYS,
+          sessionDurationMinutes: DEFAULT_USER_SESSION_MINUTES,
+          authVersion: 0,
+        },
+      }
+      latest.users.push(user)
+      logEvent(latest, {
+        actorId: user.id,
+        scope: 'Authentication',
+        message: 'New user registered',
+      })
+      await writeStore(latest)
+      store = latest
     })
+    if (rejection) {
+      fail(response, rejection.status, rejection.code, rejection.message)
+      return
+    }
+
     const welcomeTemplate = buildNotificationEmailTemplate('welcome', {
       subject: input.language === 'zh' ? '欢迎使用 PhD Atlas' : 'Welcome to PhD Atlas',
       title: input.language === 'zh' ? '账号已创建' : 'Your account is ready',
@@ -5570,6 +6292,12 @@ export function createApp() {
 
   app.post('/api/auth/password-reset/request', asyncHandler(async (request, response) => {
     const input = parseOrThrow(PasswordResetRequestSchema, request.body)
+    if (!(await checkSecurityBudget(
+      request,
+      response,
+      passwordResetSecurityRateEntries(request, input.email),
+      true,
+    ))) return
     const store = await readStore()
     const user = store.users.find(
       (candidate) => getPrimaryRecoveryEmail(candidate) === input.email,
@@ -5625,6 +6353,7 @@ export function createApp() {
 
   app.post('/api/auth/password-reset/confirm', asyncHandler(async (request, response) => {
     const input = parseOrThrow(PasswordResetConfirmSchema, request.body)
+    await assertStrongAccountPassword(input.password)
     const claimed = await claimPasswordResetToken(input.token)
     if (!claimed) {
       fail(response, 404, 'NOT_FOUND', 'Password reset link is invalid or has expired.')
@@ -5637,7 +6366,11 @@ export function createApp() {
       return
     }
 
-    user.passwordHash = await bcrypt.hash(input.password, 12)
+    user.passwordHash = await hashAccountPassword(input.password)
+    user.settings = {
+      ...user.settings,
+      authVersion: Number(user.settings?.authVersion ?? 0) + 1,
+    }
     logEvent(store, {
       actorId: user.id,
       scope: 'Account recovery',
@@ -6476,6 +7209,22 @@ export function createApp() {
 
   app.use('/api', authRequired, asyncHandler(hydrateUser))
 
+  app.use('/api', asyncHandler(async (request, response, next) => {
+    const policy = authenticatedAbusePolicy(request)
+    if (!policy) {
+      next()
+      return
+    }
+    const entry = securityRateEntry(
+      policy.name,
+      request.auth?.act?.sub ?? request.auth?.sub ?? 'unknown',
+      policy.windowMs,
+      policy.max,
+    )
+    if (!(await checkSecurityBudget(request, response, [entry], true))) return
+    next()
+  }))
+
   app.get('/api/events', (request, response) => {
     realtimeHub.subscribe(request, response)
   })
@@ -6518,11 +7267,21 @@ export function createApp() {
   app.use('/api/applications/:id/tasks/:taskId/file', authenticatedUploadRateLimit)
   app.use('/api/applications/:id/communications/send', authenticatedUploadRateLimit)
   app.use('/api/profile-assets/:id/files', authenticatedUploadRateLimit)
-  app.use('/api/admin/system-update', authenticatedUploadRateLimit)
   app.use('/api/admin/system-update', (request, response, next) => {
-    // Release downloads, package validation, and the pre-update workspace
-    // backup all finish before the response. Keep this admin-only route alive
-    // without weakening the short timeout used by ordinary API requests.
+    // Progress, log, and Release-check reads are intentionally polled while an
+    // update is running. Counting those GETs against the one-hour upload budget
+    // locks the administrator out in under a minute and hides a successful
+    // restart behind repeated 429 responses.
+    if (!usesSystemUpdateMutationBudget(request.method)) {
+      next()
+      return
+    }
+    authenticatedUploadRateLimit(request, response, next)
+  })
+  app.use('/api/admin/system-update', (request, response, next) => {
+    // Manual multipart uploads may legitimately take longer than ordinary API
+    // requests. Automatic Release installs return after durable background-job
+    // acceptance, but share this authenticated route boundary.
     request.setTimeout(SYSTEM_UPDATE_HTTP_TIMEOUT_MS)
     response.setTimeout(SYSTEM_UPDATE_HTTP_TIMEOUT_MS)
     next()
@@ -6777,8 +7536,8 @@ export function createApp() {
         fail(response, 404, 'AI_KEY_NOT_FOUND', 'AI key not found.')
         return
       }
-      if (owner.isTeamDiscover && aiKey.scope === 'team' && aiKey.teamId !== owner.team.id) {
-        fail(response, 403, 'TEAM_DISCOVER_KEY_FORBIDDEN', 'Team Discover can only use a key from the selected team.')
+      if (owner.isTeamDiscover && (aiKey.scope !== 'team' || aiKey.teamId !== owner.team.id)) {
+        fail(response, 403, 'TEAM_DISCOVER_KEY_FORBIDDEN', 'Team Discover requires an AI key configured for this workspace.')
         return
       }
       selectedAiKeys.push(aiKey)
@@ -7119,7 +7878,6 @@ export function createApp() {
     const application = findApplicationOr404(request, response)
     if (!application) return
     if (!requireApplicationEditAccess(request, response, application)) {
-      fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'You do not have permission to enrich this application.')
       return
     }
 
@@ -7241,7 +7999,6 @@ export function createApp() {
     const existing = findApplicationOr404(request, response)
     if (!existing) return
     if (!requireApplicationEditAccess(request, response, existing)) {
-      fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'You do not have permission to enrich this application.')
       return
     }
     if (input.proposal.applicationId !== existing.id) {
@@ -7306,10 +8063,6 @@ export function createApp() {
       fail(response, 404, 'DISCOVER_PI_NOT_FOUND', 'Advisor not found for this program.')
       return
     }
-    if (!program.sources?.length || !program.website?.startsWith('https://') || !program.deadlineIso) {
-      fail(response, 409, 'DISCOVER_PROGRAM_NOT_VERIFIED', 'This program is missing a verified official source or current application deadline. Refresh research before importing it.')
-      return
-    }
     if (!pi || !pi.name || !pi.url?.startsWith('https://') || !pi.email?.includes('@') || /example\.|phd-atlas\.local$/i.test(pi.email)) {
       fail(response, 409, 'DISCOVER_ADVISOR_NOT_VERIFIED', 'A real advisor profile and email are required before this program can be added to applications.')
       return
@@ -7319,6 +8072,10 @@ export function createApp() {
       programNote: state.programNotes?.[program.id] || '',
       piNote: pi ? state.piNotes?.[pi.id] || '' : '',
     })
+    const warnings = [
+      ...(!program.sources?.length || !program.website?.startsWith('https://') ? ['missingOfficialSource'] : []),
+      ...(!payload.deadline ? ['missingDeadline'] : []),
+    ]
 
     const activeQuota = userApplicationQuota(request.user)
     const createQuota = userApplicationCreateQuota(request.user)
@@ -7358,6 +8115,9 @@ export function createApp() {
       },
       request.user.id,
     )
+    if (!application.deadline) {
+      application.tasks = []
+    }
     application.professor.research = payload.researchSeed || application.professor.research
     application.tags = Array.from(new Set([...(payload.tagsSeed || []), 'discover-import'])).slice(0, 12)
     application.timeline = [
@@ -7369,7 +8129,7 @@ export function createApp() {
       },
       ...(application.timeline || []),
     ]
-    if (program.stipendLocal) {
+    if (program.stipendLocal && application.deadline) {
       application.scholarships = [
         {
           id: createId('sch'),
@@ -7412,10 +8172,11 @@ export function createApp() {
         applicationId: application.id,
         programId: program.id,
         piId: pi?.id || null,
+        warnings,
       },
     })
     await lockedWriteStore(request.store)
-    ok(response, { application, programId: program.id, piId: pi?.id || null }, 201)
+    ok(response, { application, programId: program.id, piId: pi?.id || null, warnings }, 201)
   }))
 
   app.get('/api/auth/passkeys', asyncHandler(async (request, response) => {
@@ -7692,6 +8453,7 @@ export function createApp() {
     let ownerUser = request.user
     let teamId = null
     let pendingTeamImportId = null
+    let studentTeamMembership = null
 
     if (input.ownerId && input.ownerId !== request.user.id) {
       const targetUser = request.store.users.find((candidate) => candidate.id === input.ownerId)
@@ -7712,8 +8474,21 @@ export function createApp() {
         fail(response, 403, 'TEAM_STUDENT_FORBIDDEN', 'You can only create applications for students you manage.')
         return
       }
+      const actorMembership = actorMemberships.find((entry) => (
+        entry.teamId === manageableMembership.teamId && entry.status === 'active'
+      ))
+      if (
+        actorMembership?.role === 'admin'
+        && !normalizeTeacherPermissions(
+          actorMembership.relationships?.teacherPermissions,
+        ).createStudentApplications
+      ) {
+        fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'Your Team permissions do not allow creating student applications.')
+        return
+      }
       ownerUser = targetUser
       teamId = manageableMembership.teamId
+      studentTeamMembership = manageableMembership
     } else if (input.visibleToTeam) {
       const studentMembership = (request.teamMemberships ?? []).find((membership) => (
         membership.role === 'member'
@@ -7723,7 +8498,21 @@ export function createApp() {
         fail(response, 403, 'TEAM_STUDENT_REQUIRED', 'Only student team accounts can share their own new application with a team.')
         return
       }
+      const permissions = normalizeStudentPermissions(
+        studentMembership.relationships?.studentPermissions,
+      )
+      if (!permissions.createApplications || !permissions.requestTeamTransfers) {
+        fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'Your Team permissions do not allow creating Team applications.')
+        return
+      }
       pendingTeamImportId = studentMembership.teamId
+      studentTeamMembership = studentMembership
+    }
+
+    const teamLimitFailure = studentApplicationLimitFailure(request.store, studentTeamMembership)
+    if (teamLimitFailure) {
+      fail(response, 409, teamLimitFailure.code, teamLimitFailure.message)
+      return
     }
 
     const activeQuota = userApplicationQuota(ownerUser)
@@ -7797,6 +8586,13 @@ export function createApp() {
       return
     }
     request.store.applications.unshift(application)
+    if (studentTeamMembership) {
+      studentTeamMembership = await incrementStudentTeamUsage(
+        request.store,
+        studentTeamMembership,
+        'applicationsCreated',
+      )
+    }
     if (!pendingTeamImportId && !teamId) {
       ownerUser.settings = {
         ...(ownerUser.settings ?? {}),
@@ -7943,15 +8739,51 @@ export function createApp() {
     const application = findApplicationOr404(request, response)
     if (!application) return
     if (!requireApplicationEditAccess(request, response, application)) {
-      fail(response, 403, 'FORBIDDEN', 'You do not have permission to edit this application.')
       return
     }
     const input = parseOrThrow(SchoolLogoResolveSchema, request.body)
-    const resolved = await resolveSchoolLogoAsset({
-      website: input.website,
-      imageUrl: input.imageUrl,
-      schoolName: application.school.name,
-    })
+    const requestedCacheKey = input.website
+      ? schoolLogoWebsiteCacheKey(input.website)
+      : ''
+    const cachedEntry = requestedCacheKey && !input.refresh
+      ? await readSchoolLogoCache(requestedCacheKey)
+      : null
+    const cached = cachedEntry && (
+      !cachedEntry.found
+      || Boolean(cachedEntry.dataUrl && cachedEntry.sourceUrl)
+    )
+      ? cachedEntry
+      : null
+    const resolved = cached
+      ? {
+          found: cached.found,
+          dataUrl: cached.dataUrl,
+          sourceUrl: cached.sourceUrl,
+          candidateKind: cached.candidateKind,
+          cacheKey: cached.cacheKey,
+          websiteUrl: cached.websiteUrl,
+          cacheHit: true,
+          reason: cached.found ? undefined : 'not-found',
+        }
+      : await resolveSchoolLogoAsset({
+          website: input.website,
+          imageUrl: input.imageUrl,
+          schoolName: application.school.name,
+        })
+    if (input.website && !cached && resolved.cacheKey && resolved.websiteUrl) {
+      const cacheEntry = {
+        cacheKey: resolved.cacheKey,
+        websiteUrl: resolved.websiteUrl,
+        dataUrl: resolved.dataUrl,
+        sourceUrl: resolved.sourceUrl,
+        candidateKind: resolved.candidateKind,
+        found: resolved.found,
+      }
+      await writeSchoolLogoCache(cacheEntry)
+      if (requestedCacheKey && requestedCacheKey !== resolved.cacheKey) {
+        await writeSchoolLogoCache({ ...cacheEntry, cacheKey: requestedCacheKey })
+      }
+    }
     ok(response, resolved)
   }))
 
@@ -7959,7 +8791,6 @@ export function createApp() {
     const existing = findApplicationOr404(request, response)
     if (!existing) return
     if (!requireApplicationEditAccess(request, response, existing)) {
-      fail(response, 403, 'FORBIDDEN', 'You do not have permission to edit this application.')
       return
     }
 
@@ -8174,6 +9005,25 @@ export function createApp() {
     }
 
     const replayMetadata = parseOrThrow(OfflineReplayMetadataSchema, request.body)
+    const isOfflineReplay = Boolean(replayMetadata.clientBaseUpdatedAt)
+    if (
+      isOfflineReplay
+      && !offlineReplayScopeAllowed({
+        application: existing,
+        requestUserId: request.user.id,
+        requestUserRole: normalizeUserRole(request.user.role),
+        requestScope: request.sessionScope,
+        impersonation: request.impersonation,
+      })
+    ) {
+      fail(
+        response,
+        403,
+        'TEAM_ROLE_FORBIDDEN',
+        'Offline replay is limited to the owner of a personal application.',
+      )
+      return
+    }
     if (hasOfflineReplayConflict(existing.updatedAt, replayMetadata.clientBaseUpdatedAt)) {
       fail(
         response,
@@ -8190,6 +9040,9 @@ export function createApp() {
       id: existing.id,
       ownerId: existing.ownerId,
     })
+    const boundedParsed = isOfflineReplay
+      ? applyOfflineReplayAuthorityBoundary(existing, parsed)
+      : parsed
     const clientBaseApplication = request.body?.clientBaseApplication && typeof request.body.clientBaseApplication === 'object'
       ? parseOrThrow(ApplicationSchema, {
           ...request.body.clientBaseApplication,
@@ -8202,9 +9055,13 @@ export function createApp() {
     // backup settings or charge the edit against the wrong person's storage allowance.
     const ownerUser = ownerUserFor(request, existing)
     let updated = normalizeApplication({
-      ...parsed,
+      ...boundedParsed,
       ownerId: existing.ownerId,
       teamId: existing.teamId ?? null,
+      // Share links are capability handles managed only by the dedicated share
+      // routes. Content editors must not create, revoke, or reassign them by
+      // submitting an otherwise valid application update.
+      shares: existing.shares ?? [],
       createdAt: existing.createdAt,
       updatedAt: nowStamp(),
     }, ownerUser.settings, request.store.settings, ownerUser)
@@ -8262,6 +9119,19 @@ export function createApp() {
         updatedAt: nowStamp(),
       }, ownerUser.settings, request.store.settings, ownerUser)
       autoMergeInfo = mergeInfo
+    }
+    const schoolWebsiteChanged = (
+      String(existing.school.website || '').trim() !== String(updated.school.website || '').trim()
+    )
+    if (schoolWebsiteChanged && updated.school.logo?.source === 'website') {
+      const { logo: _staleWebsiteLogo, ...schoolWithoutLogo } = updated.school
+      updated = normalizeApplication({
+        ...updated,
+        school: {
+          ...schoolWithoutLogo,
+          logoAutoDetect: existing.school.logoAutoDetect !== false,
+        },
+      }, ownerUser.settings, request.store.settings, ownerUser)
     }
     const additionalBytes = Math.max(0, jsonBytes(updated) - jsonBytes(existing))
     if (!(await ensureQuotaForApplication(request, response, existing, additionalBytes, ownerUser))) {
@@ -8901,7 +9771,7 @@ export function createApp() {
     if (!application) {
       return
     }
-    if (!requireApplicationEditAccess(request, response, application)) {
+    if (!requireApplicationShareAccess(request, response, application)) {
       return
     }
     // Personal projects bill the owner's personal share quota.
@@ -8910,6 +9780,16 @@ export function createApp() {
     const ownerUser = ownerUserFor(request, application)
     const pruned = pruneExpiredSharesForUser(request.store, ownerUser.id)
     const isTeamApp = Boolean(application.teamId)
+    const actorRole = isTeamApp ? applicationLiteralTeamRole(request, application) : null
+    const studentMembership = isTeamApp && actorRole === 'member'
+      ? await findTeamMembershipForUser(application.teamId, request.user.id)
+      : null
+    const studentLimitFailure = studentShareLimitFailure(request.store, studentMembership)
+    if (studentLimitFailure) {
+      if (pruned) await lockedWriteStore(request.store)
+      fail(response, 409, studentLimitFailure.code, studentLimitFailure.message)
+      return
+    }
     let activeQuota
     let createQuota
     let activeShareCount
@@ -8956,6 +9836,7 @@ export function createApp() {
     const share = {
       id: createId('share'),
       token,
+      createdBy: request.user.id,
       createdAt: nowStamp(),
       expiresAt,
       permission,
@@ -8966,6 +9847,9 @@ export function createApp() {
     }
     application.shares.unshift(share)
     application.updatedAt = nowStamp()
+    if (studentMembership) {
+      await incrementStudentTeamUsage(request.store, studentMembership, 'sharesCreated')
+    }
     if (!isTeamApp) {
       ownerUser.settings = {
         ...(ownerUser.settings ?? {}),
@@ -8984,7 +9868,7 @@ export function createApp() {
     if (!application) {
       return
     }
-    if (!requireApplicationEditAccess(request, response, application)) {
+    if (!requireApplicationShareAccess(request, response, application)) {
       return
     }
     pruneExpiredShares(application)
@@ -9194,7 +10078,7 @@ export function createApp() {
     if (!application) {
       return
     }
-    if (!requireApplicationEditAccess(request, response, application)) {
+    if (!requireApplicationShareAccess(request, response, application)) {
       return
     }
     pruneExpiredShares(application)
@@ -9318,9 +10202,18 @@ export function createApp() {
     return Array.from(new Set([
       ...request.store.teams.filter((team) => team.ownerId === request.user.id).map((team) => team.id),
       ...(request.teamMemberships ?? [])
-        // Shared AI credentials are a teacher/organization capability. A
-        // student never receives the key list merely by joining a team.
-        .filter((membership) => membership.status === 'active' && (membership.role === 'owner' || membership.role === 'admin'))
+        .filter((membership) => {
+          if (membership.status !== 'active') return false
+          if (membership.role === 'owner') return true
+          if (membership.role === 'admin') {
+            return normalizeTeacherPermissions(
+              membership.relationships?.teacherPermissions,
+            ).useDiscover
+          }
+          return normalizeStudentPermissions(
+            membership.relationships?.studentPermissions,
+          ).useDiscover
+        })
         .map((membership) => membership.teamId),
     ]))
   }
@@ -9334,10 +10227,19 @@ export function createApp() {
     const role = await getCallerTeamRole(team, request.user)
     if (!role) return false
     if (manage) return role === 'owner'
-    return role === 'owner' || role === 'admin'
+    if (role === 'owner') return true
+    const membership = await findTeamMembershipForUser(team.id, request.user.id)
+    if (role === 'admin') {
+      return normalizeTeacherPermissions(
+        membership?.relationships?.teacherPermissions,
+      ).useDiscover
+    }
+    return normalizeStudentPermissions(
+      membership?.relationships?.studentPermissions,
+    ).useDiscover
   }
 
-  /** Resolve the state owner for a teacher-led Team Discover request. */
+  /** Resolve the state owner for an authorized Team Discover request. */
   async function resolveDiscoverOwner(request, response, { teamId, targetUserId } = {}) {
     const normalizedTeamId = String(teamId || '').trim()
     const normalizedTargetUserId = String(targetUserId || '').trim()
@@ -9354,14 +10256,34 @@ export function createApp() {
     }
     const team = request.store.teams.find((candidate) => candidate.id === normalizedTeamId) ?? await getTeamById(normalizedTeamId)
     const role = await getCallerTeamRole(team, request.user)
-    if (!team || (role !== 'owner' && role !== 'admin')) {
-      fail(response, 403, 'TEAM_DISCOVER_FORBIDDEN', 'Only team owners and teachers can run Team Discover.')
+    const callerMembership = team
+      ? await findTeamMembershipForUser(team.id, request.user.id)
+      : null
+    const callerCanDiscover = role === 'owner'
+      || (
+        role === 'admin'
+        && normalizeTeacherPermissions(
+          callerMembership?.relationships?.teacherPermissions,
+        ).useDiscover
+      )
+      || (
+        role === 'member'
+        && normalizeStudentPermissions(
+          callerMembership?.relationships?.studentPermissions,
+        ).useDiscover
+      )
+    if (!team || !callerCanDiscover) {
+      fail(response, 403, 'TEAM_DISCOVER_FORBIDDEN', 'Your Team permissions do not allow using Discover.')
       return null
     }
     const membership = await findTeamMembershipForUser(team.id, normalizedTargetUserId)
     const isAllowedStudent = membership?.status === 'active'
       && membership.role === 'member'
-      && (role === 'owner' || isTeacherAssignedToStudent(membership, request.user.id))
+      && (
+        role === 'owner'
+        || (role === 'admin' && isTeacherAssignedToStudent(membership, request.user.id))
+        || (role === 'member' && normalizedTargetUserId === request.user.id)
+      )
     const user = request.store.users.find((candidate) => candidate.id === normalizedTargetUserId && !candidate.disabledAt)
     if (!isAllowedStudent || !user) {
       fail(response, 403, 'TEAM_DISCOVER_TARGET_FORBIDDEN', 'You can only research an assigned active student.')
@@ -9942,6 +10864,9 @@ export function createApp() {
     const scopedStorageApplications = teamStorageApplications(store, team.id)
       .filter((application) => scopedOwnerIds.has(application.ownerId))
     const scopedApplicationIds = new Set(scopedApplications.map((application) => application.id))
+    const scopedStudentMemberIds = new Set(scopedMembers
+      .filter((member) => member.role === 'member')
+      .map((member) => member.id))
     const roleCounts = scopedMembers.reduce((counts, member) => {
       counts[member.role] = (counts[member.role] ?? 0) + 1
       return counts
@@ -10040,6 +10965,11 @@ export function createApp() {
         activeShareCount: memberApplications.reduce((total, application) => (
           total + (application.shares ?? []).filter((share) => !isExpiredShare(share)).length
         ), 0),
+        studentActiveShareCount: memberApplications.reduce((total, application) => (
+          total + (application.shares ?? []).filter((share) => (
+            !isExpiredShare(share) && share.createdBy === member.userId
+          )).length
+        ), 0),
         storageUsedBytes: calculateApplicationsStorageBytes(memberStorageApplications),
         // Team members never have an individual team-storage cap. Every project
         // bills the single organization quota exposed through `capacity`.
@@ -10053,7 +10983,11 @@ export function createApp() {
       .filter((event) => {
         const metadata = event.metadata ?? {}
         if (metadata.applicationId) return scopedApplicationIds.has(metadata.applicationId)
-        return metadata.teamId === team.id
+        if (metadata.teamId !== team.id) return false
+        if (viewerRole === 'owner') return true
+        return scopedOwnerIds.has(metadata.ownerId)
+          || scopedOwnerIds.has(metadata.targetUserId)
+          || scopedStudentMemberIds.has(metadata.memberId)
       })
       .slice(0, 20)
     return {
@@ -10447,6 +11381,20 @@ export function createApp() {
         return null
       }
     }
+    const permissions = normalizeStudentPermissions(
+      membership.relationships?.studentPermissions,
+    )
+    if (!permissions.requestTeamTransfers) {
+      fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'Your Team permissions do not allow moving applications into or out of the Team workspace.')
+      return null
+    }
+    if (direction === 'join') {
+      const limitFailure = studentApplicationLimitFailure(request.store, membership)
+      if (limitFailure) {
+        fail(response, 409, limitFailure.code, limitFailure.message)
+        return null
+      }
+    }
     const team = await getTeamById(membership.teamId)
     if (!team) {
       fail(response, 404, 'NOT_FOUND', 'Organization not found.')
@@ -10476,7 +11424,8 @@ export function createApp() {
     const role = await getCallerTeamRole(team, request.user)
     const canMoveAssignedStudent = role === 'owner' || (
       role === 'admin' &&
-      request.teamVisibleOwnerIds.has(application.ownerId)
+      request.teamVisibleOwnerIds.has(application.ownerId) &&
+      requestTeacherPermissions(request, team.id).editStudentApplications
     )
     if (!canMoveAssignedStudent) {
       fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'You cannot move this student application.')
@@ -11249,7 +12198,11 @@ export function createApp() {
         }
       }
     }
+    const deletedTeamMembers = await listTeamMembers(team.id)
     await deleteTeam(team.id)
+    for (const member of deletedTeamMembers) {
+      if (member.userId) await syncUserTeamAccessPlan(request.store, member.userId)
+    }
     // Revert the owner's membershipPlan so they don't retain team-plan quotas
     // without a team -- analogous to how Pro→Free changes admin-granted.
     const owner = request.store.users.find((candidate) => candidate.id === team.ownerId)
@@ -11374,14 +12327,25 @@ export function createApp() {
     const team = await findTeamOr404(request, response)
     if (!team) return
     const role = await getCallerTeamRole(team, request.user)
-    if (role !== 'owner' && role !== 'admin') {
-      fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'Only the team owner or an admin can send team notifications.')
+    if (!role) {
+      fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'Only active team members can send team notifications.')
       return
     }
     const input = parseOrThrow(NotificationPublishSchema, request.body)
     const members = await listTeamMembers(team.id)
+    const callerMembership = role === 'member'
+      ? members.find((member) => member.userId === request.user.id && member.status === 'active') ?? null
+      : null
     const groups = await listNotificationGroups({ scope: 'team', teamId: team.id })
-    const recipients = teamNotificationRecipients(request.store, input, members, groups, role, request.user.id)
+    const recipients = teamNotificationRecipients(
+      request.store,
+      input,
+      members,
+      groups,
+      role,
+      request.user.id,
+      callerMembership,
+    )
     if (recipients.length === 0) {
       fail(response, 400, 'VALIDATION_ERROR', 'Choose at least one notification recipient.', 'recipients')
       return
@@ -11429,17 +12393,7 @@ export function createApp() {
       }
       return
     }
-    if (result.credential.role === 'owner') {
-      const personalMembershipPlan = request.user.settings?.personalMembershipPlan === 'pro'
-        || request.user.settings?.membershipPlan === 'pro'
-        ? 'pro'
-        : 'free'
-      request.user.settings = {
-        ...(request.user.settings ?? {}),
-        membershipPlan: 'team',
-        personalMembershipPlan,
-      }
-    }
+    await syncUserTeamAccessPlan(request.store, request.user.id)
     logEvent(request.store, {
       actorId: request.user.id,
       scope: 'Team invite',
@@ -11471,6 +12425,15 @@ export function createApp() {
     if ((!callerRole && !systemAdmin) || callerRole === 'member') {
       fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'Students cannot generate team join codes.')
       return
+    }
+    if (callerRole === 'admin') {
+      const callerMembership = await findTeamMembershipForUser(team.id, request.user.id)
+      if (!normalizeTeacherPermissions(
+        callerMembership?.relationships?.teacherPermissions,
+      ).inviteStudents) {
+        fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'Your Team permissions do not allow inviting students.')
+        return
+      }
     }
     if (input.role === 'owner') {
       if (!systemAdmin || !isProvisioningTeam(team, request.store)) {
@@ -11541,6 +12504,15 @@ export function createApp() {
     if (role !== 'owner' && role !== 'admin') {
       fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'Only the team owner or an admin can invite members.')
       return
+    }
+    if (role === 'admin') {
+      const callerMembership = await findTeamMembershipForUser(team.id, request.user.id)
+      if (!normalizeTeacherPermissions(
+        callerMembership?.relationships?.teacherPermissions,
+      ).inviteStudents) {
+        fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'Your Team permissions do not allow inviting students.')
+        return
+      }
     }
     const input = parseOrThrow(TeamInviteCreateSchema, request.body)
     // Only the institution admin (owner) may bring on other teachers (admin).
@@ -11695,12 +12667,24 @@ export function createApp() {
       return
     }
     const input = parseOrThrow(TeamMemberRolePatchSchema, request.body)
+    const callerMembership = role === 'admin'
+      ? await findTeamMembershipForUser(team.id, request.user.id)
+      : null
     const teacherMayCollaborate = role === 'admin'
       && target.role === 'member'
       && input.role === undefined
       && input.invitedBy === undefined
-      && input.teacherIds !== undefined
+      && input.studentProLimit === undefined
+      && input.teacherPermissions === undefined
+      && (
+        input.teacherIds !== undefined
+        || input.accessLevel !== undefined
+        || input.studentPermissions !== undefined
+      )
       && isTeacherAssignedToStudent(target, request.user.id)
+      && normalizeTeacherPermissions(
+        callerMembership?.relationships?.teacherPermissions,
+      ).manageStudentPermissions
     if (role !== 'owner' && !teacherMayCollaborate) {
       fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'Only the team owner can change roles; assigned teachers may update a student collaboration team.')
       return
@@ -11708,6 +12692,18 @@ export function createApp() {
     const allMembers = await listTeamMembers(team.id)
     const activeById = new Map(allMembers.filter((member) => member.status === 'active').map((member) => [member.id, member]))
     const finalRole = input.role ?? target.role
+    if (input.studentPermissions !== undefined && finalRole !== 'member') {
+      fail(response, 400, 'VALIDATION_ERROR', 'Student permissions can only be assigned to student members.', 'studentPermissions')
+      return
+    }
+    if (input.teacherPermissions !== undefined && (role !== 'owner' || finalRole !== 'admin')) {
+      fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'Only the institution administrator can change teacher permissions.')
+      return
+    }
+    if (input.studentProLimit !== undefined && (role !== 'owner' || finalRole !== 'admin')) {
+      fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'Only the institution administrator can set a teacher student-Pro limit.')
+      return
+    }
     const requestedTeacherMemberIds = input.teacherIds ?? (input.invitedBy ? [input.invitedBy] : null)
     let requestedTeacherUserIds = null
     if (requestedTeacherMemberIds) {
@@ -11726,6 +12722,28 @@ export function createApp() {
       }
       requestedTeacherUserIds = teachers.map((teacher) => teacher.userId)
     }
+    if (role === 'admin' && input.accessLevel === 'pro') {
+      const callerMembership = allMembers.find((member) => (
+        member.userId === request.user.id
+        && member.role === 'admin'
+        && member.status === 'active'
+      ))
+      if (!callerMembership || teamMemberAccessLevel(callerMembership) !== 'pro') {
+        fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'This teacher cannot grant Team Pro access.')
+        return
+      }
+      const assignedProStudents = allMembers.filter((member) => (
+        member.id !== target.id
+        && member.role === 'member'
+        && member.status === 'active'
+        && isTeacherAssignedToStudent(member, request.user.id)
+        && teamMemberAccessLevel(member) === 'pro'
+      )).length
+      if (assignedProStudents >= teacherStudentProLimit(callerMembership)) {
+        fail(response, 409, 'SEAT_LIMIT_REACHED', 'This teacher has reached the maximum number of Team Pro students they may grant.')
+        return
+      }
+    }
 
     let updated = target
     const changes = []
@@ -11736,15 +12754,56 @@ export function createApp() {
         await removeMemberFromTeacherGroups(team, target.id)
       }
     }
-    if (requestedTeacherUserIds) {
-      if (requestedTeacherUserIds[0]) {
+    if (
+      requestedTeacherUserIds
+      || input.accessLevel !== undefined
+      || input.studentProLimit !== undefined
+      || input.studentPermissions !== undefined
+      || input.teacherPermissions !== undefined
+    ) {
+      if (requestedTeacherUserIds?.[0]) {
         updated = await updateTeamMemberInvitedBy(target.id, requestedTeacherUserIds[0])
       }
+      const baseRelationships = {
+        ...(updated?.relationships ?? target.relationships ?? {}),
+        ...(requestedTeacherUserIds
+          ? withTeamMemberTeacherIds(updated?.relationships ?? target.relationships, requestedTeacherUserIds)
+          : {}),
+        ...(input.accessLevel !== undefined ? { accessLevel: input.accessLevel } : {}),
+        ...(input.studentProLimit !== undefined ? { studentProLimit: input.studentProLimit } : {}),
+      }
+      if (finalRole === 'member' && target.userId) {
+        baseRelationships.usage = {
+          applicationsCreated: Math.max(
+            Number(baseRelationships.usage?.applicationsCreated ?? 0),
+            studentTeamApplicationCount(request.store, team.id, target.userId),
+          ),
+          sharesCreated: Math.max(
+            Number(baseRelationships.usage?.sharesCreated ?? 0),
+            studentTeamActiveShareCount(request.store, team.id, target.userId),
+          ),
+        }
+      }
+      const nextRelationships = mergeTeamMemberPermissions(
+        baseRelationships,
+        finalRole,
+        {
+          studentPermissions: input.studentPermissions,
+          teacherPermissions: input.teacherPermissions,
+        },
+      )
       updated = await updateTeamMemberRelationships(
         target.id,
-        withTeamMemberTeacherIds(target.relationships, requestedTeacherUserIds),
+        nextRelationships,
       )
-      changes.push(`teachers:${requestedTeacherUserIds.length}`)
+      if (requestedTeacherUserIds) changes.push(`teachers:${requestedTeacherUserIds.length}`)
+      if (input.accessLevel !== undefined) changes.push(`access:${input.accessLevel}`)
+      if (input.studentProLimit !== undefined) changes.push(`studentProLimit:${input.studentProLimit}`)
+      if (input.studentPermissions !== undefined) changes.push('studentPermissions')
+      if (input.teacherPermissions !== undefined) changes.push('teacherPermissions')
+    }
+    if (target.userId && input.accessLevel !== undefined) {
+      await syncUserTeamAccessPlan(request.store, target.userId)
     }
     const targetUser = target.userId
       ? request.store.users.find((user) => user.id === target.userId && !user.disabledAt)
@@ -11819,6 +12878,9 @@ export function createApp() {
       ? request.store.users.find((user) => user.id === target.userId && !user.disabledAt)
       : null
     await removeTeamMember(target.id)
+    if (target.userId) {
+      await syncUserTeamAccessPlan(request.store, target.userId)
+    }
     if (target.role === 'admin') {
       await removeMemberFromTeacherGroups(team, target.id)
     }
@@ -11888,12 +12950,7 @@ export function createApp() {
       fail(response, 404, 'NOT_FOUND', 'Application not found.')
       return
     }
-    if (
-      role !== 'owner' &&
-      application.ownerId !== request.user.id &&
-      !(role === 'admin' && request.teamVisibleOwnerIds.has(application.ownerId))
-    ) {
-      fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'You cannot restore this application.')
+    if (!requireApplicationEditAccess(request, response, application)) {
       return
     }
 
@@ -11903,6 +12960,7 @@ export function createApp() {
       id: application.id,
       ownerId: application.ownerId,
       teamId: application.teamId,
+      shares: application.shares ?? [],
       createdAt: application.createdAt,
       updatedAt: nowStamp(),
     }, ownerUser.settings, request.store.settings, ownerUser)
@@ -12003,12 +13061,7 @@ export function createApp() {
       fail(response, 404, 'NOT_FOUND', 'Application not found.')
       return
     }
-    if (
-      role !== 'owner' &&
-      application.ownerId !== request.user.id &&
-      !(role === 'admin' && request.teamVisibleOwnerIds.has(application.ownerId))
-    ) {
-      fail(response, 403, 'TEAM_ROLE_FORBIDDEN', 'You cannot apply this application merge.')
+    if (!requireApplicationEditAccess(request, response, application)) {
       return
     }
 
@@ -12034,6 +13087,7 @@ export function createApp() {
       id: application.id,
       ownerId: application.ownerId,
       teamId: application.teamId,
+      shares: application.shares ?? [],
       createdAt: application.createdAt,
       updatedAt: nowStamp(),
     }, ownerUser.settings, request.store.settings, ownerUser)
@@ -12151,6 +13205,7 @@ export function createApp() {
       return
     }
     const accepted = await acceptTeamInvite(invite.id, request.user.id)
+    await syncUserTeamAccessPlan(request.store, request.user.id)
     logEvent(request.store, {
       actorId: request.user.id,
       scope: 'Team invite',
@@ -13360,6 +14415,8 @@ export function createApp() {
     const nextDisabledAt = 'disabled' in input
       ? (input.disabled ? target.disabledAt ?? nowStamp() : null)
       : target.disabledAt ?? null
+    const securityIdentityChanged = nextRole !== normalizeUserRole(target.role)
+      || Boolean(nextDisabledAt) !== Boolean(target.disabledAt)
     const removingActiveAdmin = isActiveAdminUser(target) && (
       nextRole !== 'admin' || Boolean(nextDisabledAt)
     )
@@ -13374,6 +14431,12 @@ export function createApp() {
     if (input.role) target.role = input.role
     if ('disabled' in input) {
       target.disabledAt = input.disabled ? target.disabledAt ?? nowStamp() : null
+    }
+    if (securityIdentityChanged) {
+      target.settings = {
+        ...target.settings,
+        authVersion: Number(target.settings?.authVersion ?? 0) + 1,
+      }
     }
     if ('storageQuotaMb' in input) {
       target.settings = {
@@ -13485,11 +14548,19 @@ export function createApp() {
   }))
 
   app.get('/api/admin/logs', asyncHandler(async (request, response) => {
-    ok(response, request.store.systemEvents)
+    ok(response, await querySystemEvents({
+      page: request.query.page,
+      pageSize: request.query.pageSize,
+      search: request.query.search,
+      scope: request.query.scope,
+      actor: request.query.actor,
+      sortField: request.query.sortField,
+      direction: request.query.direction,
+    }))
   }))
 
   app.delete('/api/admin/logs', asyncHandler(async (request, response) => {
-    const deleted = request.store.systemEvents.length
+    const deleted = await clearSystemEvents()
     request.store.systemEvents = []
     logEvent(request.store, {
       actorId: request.user.id,
@@ -13500,27 +14571,34 @@ export function createApp() {
     await lockedWriteStore(request.store)
     ok(response, {
       deleted,
-      logs: request.store.systemEvents,
+      logs: await querySystemEvents({ pageSize: 10 }),
     })
   }))
 
   app.get('/api/admin/logs/export', asyncHandler(async (request, response) => {
     const format = String(request.query.format ?? 'csv')
-    const logs = request.store.systemEvents
+    const logs = await iterateSystemEvents()
     setNoStoreHeaders(response)
     if (format === 'json') {
       response.setHeader('Content-Type', 'application/json')
       response.setHeader('Content-Disposition', 'attachment; filename="phd-atlas-system-log.json"')
-      response.send(JSON.stringify(logs, null, 2))
+      await writeResponseChunk(response, '[\n')
+      let first = true
+      for (const event of logs) {
+        await writeResponseChunk(response, `${first ? '' : ',\n'}${JSON.stringify(event)}`)
+        first = false
+      }
+      response.end('\n]')
       return
     }
-    const rows = [
-      ['time', 'scope', 'actorId', 'message'],
-      ...logs.map((event) => [event.time, event.scope, event.actorId ?? '', event.message]),
-    ]
     response.setHeader('Content-Type', 'text/csv; charset=utf-8')
     response.setHeader('Content-Disposition', 'attachment; filename="phd-atlas-system-log.csv"')
-    response.send(rows.map(function(row) { return row.map(function(cell) { return escapeCsv(cell) }).join(',') }).join('\n'))
+    await writeResponseChunk(response, 'time,scope,actorId,message\n')
+    for (const event of logs) {
+      const row = [event.time, event.scope, event.actorId ?? '', event.message]
+      await writeResponseChunk(response, `${row.map((cell) => escapeCsv(cell)).join(',')}\n`)
+    }
+    response.end()
   }))
 
   app.get('/api/admin/database', asyncHandler(async (_request, response) => {
@@ -13602,16 +14680,39 @@ export function createApp() {
       encryptionPasswordSalt = ''
     }
 
+    let adminEntryCodeHash = previous.adminEntryCodeHash ?? ''
+    let adminEntryCodeSalt = previous.adminEntryCodeSalt ?? ''
+    if (patch.adminEntryCode) {
+      const verifier = createPasswordVerifier(patch.adminEntryCode, newPasswordSalt())
+      adminEntryCodeHash = verifier.hash
+      adminEntryCodeSalt = verifier.salt
+    }
+    const nextAdminEntryHidden = patch.adminEntryHidden !== undefined
+      ? Boolean(patch.adminEntryHidden)
+      : Boolean(previous.adminEntryHidden)
+    if (!nextAdminEntryHidden) {
+      adminEntryCodeHash = ''
+      adminEntryCodeSalt = ''
+    }
+    if (nextAdminEntryHidden && (!adminEntryCodeHash || !adminEntryCodeSalt)) {
+      fail(response, 400, 'VALIDATION_ERROR', 'Set an activation code before hiding the administrator entry.', 'adminEntryCode')
+      return
+    }
+
     // Strip password fields before merging into stored settings.
     const {
       encryptionPassword: _pw,
       encryptionCurrentPassword: _cur,
+      adminEntryCode: _adminEntryCode,
       ...safePatch
     } = patch
 
     request.store.settings = {
       ...request.store.settings,
       ...safePatch,
+      adminEntryHidden: nextAdminEntryHidden,
+      adminEntryCodeHash,
+      adminEntryCodeSalt,
       encryptionAtRest: nextAtRest,
       encryptionAlgorithm: nextAtRest ? nextAlgorithm : normalizeAlgorithm(previous.encryptionAlgorithm),
       encryptionPasswordEnabled: nextAtRest ? nextPasswordEnabled : false,
@@ -13673,6 +14774,7 @@ export function createApp() {
       metadata: {
         ...safePatch,
         smtpPass: patch.smtpPass ? '(changed)' : undefined,
+        adminEntryCode: patch.adminEntryCode ? '(changed)' : undefined,
         encryptionPassword: patch.encryptionPassword ? '(changed)' : undefined,
         encryptionRekeyed: algorithmChanged || passwordChanged || atRestChanged || sqliteChanged,
       },
@@ -13876,16 +14978,24 @@ export function createApp() {
       fail(response, 400, 'VALIDATION_ERROR', 'Current password and new password are required.')
       return
     }
-    if (typeof newPassword !== 'string' || newPassword.length < 8 || newPassword.length > 128) {
-      fail(response, 400, 'VALIDATION_ERROR', 'New password must be 8-128 characters.')
+    if (typeof newPassword !== 'string' || newPassword.length < 15 || newPassword.length > 128) {
+      fail(response, 400, 'PASSWORD_TOO_WEAK', 'New password must be at least 15 characters.')
       return
     }
-    const valid = await bcrypt.compare(currentPassword, request.user.passwordHash)
-    if (!valid) {
+    const verification = await verifyAccountPassword(currentPassword, request.user.passwordHash)
+    if (!verification.valid) {
       fail(response, 401, 'INVALID_CREDENTIALS', 'Current password is incorrect.')
       return
     }
-    request.user.passwordHash = await bcrypt.hash(newPassword, 12)
+    await assertStrongAccountPassword(newPassword, {
+      email: request.user.email,
+      name: request.user.name,
+    })
+    request.user.passwordHash = await hashAccountPassword(newPassword)
+    request.user.settings = {
+      ...request.user.settings,
+      authVersion: Number(request.user.settings?.authVersion ?? 0) + 1,
+    }
     logEvent(request.store, {
       actorId: request.user.id,
       scope: 'Admin security',
@@ -14016,7 +15126,7 @@ export function createApp() {
       counts: {
         users: request.store.users.length,
         applications: request.store.applications.length,
-        systemEvents: request.store.systemEvents.length,
+        systemEvents: await countSystemEvents(),
         profileAssets: request.store.profileAssets.length,
       },
       databasePath,
@@ -14060,6 +15170,50 @@ export function createApp() {
 
   let systemUpdateOperationInFlight = false
   let systemUpdateRestartPending = false
+  let systemUpdateStatus = createSystemUpdateStatus()
+
+  const systemUpdatePhaseMessages = {
+    resolving: 'Resolving the requested public Release.',
+    probing: 'Selecting a reachable verified package source.',
+    downloading: 'Downloading the Release update package.',
+    verifying: 'Verifying the GitHub-declared package size and SHA-256.',
+    preparing: 'Validating and preparing the update package.',
+    installing: 'Installing server runtime dependencies.',
+    restarting: 'Handing the verified update to the detached installer and server supervisor.',
+    stored: 'The verified update was stored; automatic restart is disabled.',
+    ready: 'The requested PhD Atlas version is running.',
+    timeout: 'The update restart exceeded the browser wait window.',
+    error: 'The system update failed.',
+  }
+
+  function setSystemUpdateStatus(patch, options = {}) {
+    const previous = systemUpdateStatus
+    systemUpdateStatus = createSystemUpdateStatus({
+      ...systemUpdateStatus,
+      ...patch,
+      updatedAt: patch.updatedAt ?? patch.at ?? new Date().toISOString(),
+    })
+    const writes = [writeSystemUpdateStatus(storageRoot, systemUpdateStatus)]
+    const phaseChanged = previous.phase !== systemUpdateStatus.phase
+    const sourceChanged = previous.source !== systemUpdateStatus.source
+    if (options.logMessage || phaseChanged || sourceChanged) {
+      writes.push(appendSystemUpdateLog(storageRoot, {
+        jobId: systemUpdateStatus.jobId,
+        level: options.level ?? (systemUpdateStatus.phase === 'error' ? 'error' : 'info'),
+        phase: systemUpdateStatus.phase,
+        errorCode: systemUpdateStatus.errorCode,
+        message: options.logMessage
+          ?? systemUpdatePhaseMessages[systemUpdateStatus.phase]
+          ?? 'System update status changed.',
+        detail: options.detail ?? null,
+      }))
+    }
+    return Promise.all(writes)
+  }
+
+  function systemUpdateJobId() {
+    return `update-${Date.now()}-${randomBytes(6).toString('hex')}`
+  }
 
   async function installedSystemVersion() {
     try {
@@ -14119,21 +15273,38 @@ export function createApp() {
     }
   }
 
-  function scheduleStoredSystemUpdate(update, actorId) {
+  function scheduleStoredSystemUpdate(update, actorId, jobId = systemUpdateStatus.jobId) {
     const restartScheduled = process.env.NODE_ENV === 'production'
       && process.env.PHD_ATLAS_DISABLE_UPDATE_RESTART !== '1'
     if (!restartScheduled) return false
     systemUpdateRestartPending = true
+    void setSystemUpdateStatus({
+      jobId,
+      phase: 'restarting',
+      targetVersion: update.manifest.version,
+      bytes: update.size,
+      total: update.size,
+      errorCode: null,
+      errorMessage: null,
+      operationInFlight: false,
+      restartPending: true,
+    }).catch((error) => console.error('Failed to persist the system update restart status:', error))
     setTimeout(async () => {
       const updateStorageRoot = storageRoot
       const helperPath = path.join(projectRoot, 'tools', 'apply-update.mjs')
       try {
         await writeUpdateLock(updateStorageRoot, {
+          updateId: jobId,
           version: update.manifest.version,
           packagePath: update.packagePath,
           requestedAt: new Date().toISOString(),
           requestedBy: actorId,
           previousPid: process.pid,
+        })
+        await appendSystemUpdateLog(updateStorageRoot, {
+          jobId,
+          phase: 'restarting',
+          message: 'Starting the detached update helper; closing the browser will not interrupt the installation.',
         })
         const child = spawn(process.execPath, [
           helperPath,
@@ -14148,19 +15319,55 @@ export function createApp() {
           stdio: 'ignore',
         })
         let exitTimer
-        child.once('error', () => {
+        let childFailed = false
+        child.once('error', (error) => {
+          childFailed = true
           if (exitTimer) clearTimeout(exitTimer)
           systemUpdateRestartPending = false
-          void clearUpdateLock(updateStorageRoot)
+          void setSystemUpdateStatus({
+            phase: 'error',
+            errorCode: 'UPDATE_RESTART_FAILED',
+            errorMessage: error instanceof Error ? error.message : String(error),
+            operationInFlight: false,
+            restartPending: false,
+          }, {
+            level: 'error',
+            logMessage: 'The detached update helper could not be started.',
+            detail: error?.stack ?? String(error),
+          }).catch((statusError) => console.error(
+            'Failed to persist the detached update helper error:',
+            statusError,
+          ))
+          void clearUpdateLock(updateStorageRoot).catch(() => undefined)
         })
         child.once('spawn', () => {
-          exitTimer = setTimeout(() => process.exit(75), 250)
+          void (async () => {
+            await appendSystemUpdateLog(updateStorageRoot, {
+              jobId,
+              phase: 'restarting',
+              message: 'Detached update helper started; stopping the old server worker for installation.',
+            }).catch(() => undefined)
+            await flushSystemUpdateJournal(updateStorageRoot).catch(() => undefined)
+            if (childFailed) return
+            exitTimer = setTimeout(() => process.exit(75), 75)
+          })()
         })
         child.unref()
         // systemd, WinSW, and the Docker supervisor all treat 75 as the
         // intentional hand-off to the verified update helper.
       } catch (error) {
         systemUpdateRestartPending = false
+        await setSystemUpdateStatus({
+          phase: 'error',
+          errorCode: error?.code ?? 'UPDATE_RESTART_FAILED',
+          errorMessage: error instanceof Error ? error.message : String(error),
+          operationInFlight: false,
+          restartPending: false,
+        }, {
+          level: 'error',
+          logMessage: 'The update restart handoff could not be scheduled.',
+          detail: error?.stack ?? String(error),
+        }).catch(() => undefined)
         await clearUpdateLock(updateStorageRoot).catch(() => {})
         console.error('Failed to schedule system update:', error)
       }
@@ -14168,23 +15375,23 @@ export function createApp() {
     return true
   }
 
-  async function recordStoredSystemUpdate(request, update, source) {
+  async function recordStoredSystemUpdate(actorId, update, source) {
     try {
       const snapshotStore = await readStore()
-      const backup = await uploadVault.withExclusive(() => createBackup(snapshotStore, request.user.id))
+      const backup = await uploadVault.withExclusive(() => createBackup(snapshotStore, actorId))
       const retention = systemBackupLimit(snapshotStore.settings)
       const stale = (await listBackups({ kind: 'workspace' })).slice(retention)
       await Promise.all(stale.map((candidate) => deleteBackup(candidate.fileName).catch(() => null)))
       await withWriteLock(async () => {
         const store = await readStore()
         logEvent(store, {
-          actorId: request.user.id,
+          actorId,
           scope: 'Backup',
           message: `Created pre-update backup checkpoint for ${backup.fileName}`,
           metadata: { fileName: backup.fileName, kind: 'workspace', retention },
         })
         logEvent(store, {
-          actorId: request.user.id,
+          actorId,
           scope: 'System update',
           message: `System update package uploaded: ${update.fileName}`,
           metadata: {
@@ -14205,7 +15412,7 @@ export function createApp() {
     }
   }
 
-  function systemUpdateResponse(update, restartScheduled) {
+  function systemUpdateResponse(update, restartScheduled, source = null) {
     return {
       received: true,
       fileName: update.fileName,
@@ -14214,11 +15421,109 @@ export function createApp() {
       version: update.manifest.version,
       verified: true,
       restartScheduled,
+      source,
       message: restartScheduled
         ? 'Update verified. The server will restart, install dependencies, and restore the previous runtime if installation fails.'
         : 'Update verified and stored. Automatic restart is disabled in this environment.',
     }
   }
+
+  async function currentSystemUpdateStatus() {
+    const [persisted, currentVersion, updateLock] = await Promise.all([
+      readSystemUpdateStatus(storageRoot).catch((error) => {
+        console.error('Failed to read the persisted system update status:', error)
+        return createSystemUpdateStatus()
+      }),
+      installedSystemVersion(),
+      readUpdateLockState(storageRoot).catch(() => null),
+    ])
+    if (
+      Date.parse(persisted.updatedAt || '') > Date.parse(systemUpdateStatus.updatedAt || '')
+      || (!systemUpdateStatus.jobId && persisted.jobId)
+    ) {
+      systemUpdateStatus = persisted
+    }
+    if (['ready', 'stored', 'error'].includes(systemUpdateStatus.phase)) {
+      systemUpdateOperationInFlight = false
+      systemUpdateRestartPending = false
+    }
+
+    const installedTarget = Boolean(
+      systemUpdateStatus.targetVersion
+      && systemUpdateStatus.targetVersion === currentVersion,
+    )
+    if (
+      installedTarget
+      && systemUpdateStatus.phase !== 'ready'
+      && systemUpdateStatus.phase !== 'stored'
+      && systemUpdateStatus.phase !== 'error'
+    ) {
+      systemUpdateOperationInFlight = false
+      systemUpdateRestartPending = false
+      await setSystemUpdateStatus({
+        phase: 'ready',
+        bytes: systemUpdateStatus.total || systemUpdateStatus.bytes,
+        operationInFlight: false,
+        restartPending: false,
+        errorCode: null,
+        errorMessage: null,
+      }, {
+        logMessage: `PhD Atlas ${currentVersion} is running after the update.`,
+      }).catch(() => undefined)
+    } else if (
+      !systemUpdateOperationInFlight
+      && !systemUpdateRestartPending
+      && !updateLock
+      && isSystemUpdateActivePhase(systemUpdateStatus.phase)
+    ) {
+      await setSystemUpdateStatus({
+        phase: 'error',
+        operationInFlight: false,
+        restartPending: false,
+        errorCode: 'UPDATE_BACKGROUND_INTERRUPTED',
+        errorMessage: 'The server process stopped before the background update completed.',
+      }, {
+        level: 'error',
+        logMessage: 'The server recovered an unfinished background update without a live installer lock.',
+      }).catch(() => undefined)
+    } else {
+      systemUpdateStatus = createSystemUpdateStatus({
+        ...systemUpdateStatus,
+        operationInFlight: systemUpdateOperationInFlight
+          || (systemUpdateStatus.operationInFlight && isSystemUpdateActivePhase(systemUpdateStatus.phase)),
+        restartPending: systemUpdateRestartPending
+          || Boolean(updateLock)
+          || (systemUpdateStatus.restartPending && systemUpdateStatus.phase === 'restarting'),
+      })
+    }
+
+    const {
+      formatVersion: _formatVersion,
+      requestedBy: _requestedBy,
+      ...publicStatus
+    } = systemUpdateStatus
+    return {
+      ...publicStatus,
+      currentVersion,
+    }
+  }
+
+  async function isSystemUpdateBusy() {
+    const status = await currentSystemUpdateStatus()
+    return status.operationInFlight
+      || status.restartPending
+      || isSystemUpdateActivePhase(status.phase)
+  }
+
+  app.get('/api/admin/system-update/status', asyncHandler(async (_request, response) => {
+    ok(response, await currentSystemUpdateStatus())
+  }))
+
+  app.get('/api/admin/system-update/logs', asyncHandler(async (request, response) => {
+    ok(response, await readSystemUpdateLogs(storageRoot, {
+      limit: request.query.limit,
+    }))
+  }))
 
   app.get('/api/admin/system-update/check', asyncHandler(async (_request, response) => {
     if (!PUBLIC_DISTRIBUTION) {
@@ -14229,25 +15534,38 @@ export function createApp() {
     ok(response, await checkForReleaseUpdate(currentVersion))
   }))
 
-  app.post('/api/admin/system-update/install-release', asyncHandler(async (request, response) => {
-    if (!PUBLIC_DISTRIBUTION) {
-      fail(response, 404, 'NOT_FOUND', 'Public GitHub Release updates are not available in this edition.')
-      return
-    }
-    if (systemUpdateOperationInFlight || systemUpdateRestartPending) {
-      fail(response, 409, 'UPDATE_IN_PROGRESS', 'Another system update is already in progress.')
-      return
-    }
-    systemUpdateOperationInFlight = true
+  async function runReleaseSystemUpdate({
+    actorId,
+    jobId,
+    tagName,
+  }) {
     let downloadedPath = ''
     try {
       const currentVersion = await installedSystemVersion()
       const downloaded = await downloadReleaseUpdate({
-        tagName: String(request.body?.tagName ?? ''),
+        tagName,
         currentVersion,
         destinationRoot: path.join(storageRoot, 'update-incoming'),
+        onStatus: (patch) => {
+          void setSystemUpdateStatus({
+            ...patch,
+            jobId,
+            operationInFlight: true,
+            restartPending: false,
+          }).catch((error) => console.error('Failed to persist system update progress:', error))
+        },
       })
       downloadedPath = downloaded.packagePath
+      await setSystemUpdateStatus({
+        jobId,
+        phase: 'preparing',
+        source: downloaded.source.id,
+        bytes: downloaded.size,
+        total: downloaded.size,
+        targetVersion: downloaded.release.version,
+        operationInFlight: true,
+        restartPending: false,
+      })
       const update = await validateAndStoreSystemUpdate({
         incomingPath: downloaded.packagePath,
         originalName: downloaded.fileName,
@@ -14255,13 +15573,110 @@ export function createApp() {
         expectedVersion: downloaded.release.version,
       })
       downloadedPath = ''
-      await recordStoredSystemUpdate(request, update, 'github-release')
-      const restartScheduled = scheduleStoredSystemUpdate(update, request.user.id)
-      ok(response, systemUpdateResponse(update, restartScheduled), 202)
+      await recordStoredSystemUpdate(actorId, update, `github-release:${downloaded.source.id}`)
+      const restartScheduled = scheduleStoredSystemUpdate(update, actorId, jobId)
+      if (!restartScheduled) {
+        await setSystemUpdateStatus({
+          jobId,
+          phase: 'stored',
+          targetVersion: update.manifest.version,
+          bytes: update.size,
+          total: update.size,
+          operationInFlight: false,
+          restartPending: false,
+        })
+      }
+    } catch (error) {
+      systemUpdateRestartPending = false
+      await setSystemUpdateStatus({
+        jobId,
+        phase: 'error',
+        errorCode: error?.code ?? 'UPDATE_DOWNLOAD_FAILED',
+        errorMessage: error instanceof Error ? error.message : String(error),
+        operationInFlight: false,
+        restartPending: false,
+      }, {
+        level: 'error',
+        logMessage: error instanceof Error ? error.message : String(error),
+        detail: error?.stack ?? String(error),
+      }).catch(() => undefined)
+      console.error('Background system update failed:', error)
     } finally {
       systemUpdateOperationInFlight = false
-      if (downloadedPath) await unlink(downloadedPath).catch(() => {})
+      if (downloadedPath) await unlink(downloadedPath).catch(() => undefined)
+      await flushSystemUpdateJournal(storageRoot).catch(() => undefined)
     }
+  }
+
+  app.post('/api/admin/system-update/install-release', asyncHandler(async (request, response) => {
+    if (!PUBLIC_DISTRIBUTION) {
+      fail(response, 404, 'NOT_FOUND', 'Public GitHub Release updates are not available in this edition.')
+      return
+    }
+    if (await isSystemUpdateBusy()) {
+      fail(response, 409, 'UPDATE_IN_PROGRESS', 'Another system update is already in progress.')
+      return
+    }
+    const tagName = String(request.body?.tagName ?? '').trim()
+    if (
+      tagName.length > 100
+      || !/^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/.test(tagName)
+    ) {
+      fail(response, 400, 'VALIDATION_ERROR', 'A valid PhD Atlas Release tag is required.', 'tagName')
+      return
+    }
+    const targetVersion = tagName.replace(/^v/, '')
+    const jobId = systemUpdateJobId()
+    const actorId = request.user.id
+    const restartScheduled = process.env.NODE_ENV === 'production'
+      && process.env.PHD_ATLAS_DISABLE_UPDATE_RESTART !== '1'
+    systemUpdateOperationInFlight = true
+    try {
+      await setSystemUpdateStatus({
+        jobId,
+        phase: 'resolving',
+        source: 'github',
+        bytes: 0,
+        total: 0,
+        targetVersion,
+        errorCode: null,
+        errorMessage: null,
+        operationInFlight: true,
+        restartPending: false,
+        requestedAt: new Date().toISOString(),
+        requestedBy: actorId,
+      }, {
+        logMessage: `Administrator queued public Release ${tagName} as a server-side background update.`,
+      })
+    } catch (error) {
+      systemUpdateOperationInFlight = false
+      throw error
+    }
+    setImmediate(() => {
+      void runReleaseSystemUpdate({
+        actorId,
+        jobId,
+        tagName,
+      })
+    })
+    ok(response, {
+      received: true,
+      accepted: true,
+      background: true,
+      jobId,
+      fileName: `phd-atlas-update-${targetVersion}-release.tar.gz`,
+      size: 0,
+      storedAs: '',
+      version: targetVersion,
+      verified: false,
+      restartScheduled,
+      source: {
+        id: 'github',
+        kind: 'official',
+        host: 'api.github.com',
+      },
+      message: 'The server accepted the update job. It will continue if the browser closes; progress and errors are persisted in the update log.',
+    }, 202)
   }))
 
   app.post('/api/admin/system-update', systemUpdateUpload.single('package'), asyncHandler(async (request, response) => {
@@ -14270,28 +15685,81 @@ export function createApp() {
       fail(response, 400, 'VALIDATION_ERROR', 'Upgrade package file is required.', 'package')
       return
     }
-    if (systemUpdateOperationInFlight || systemUpdateRestartPending) {
+    if (await isSystemUpdateBusy()) {
       await unlink(file.path).catch(() => {})
       fail(response, 409, 'UPDATE_IN_PROGRESS', 'Another system update is already in progress.')
       return
     }
+    const jobId = systemUpdateJobId()
     systemUpdateOperationInFlight = true
+    try {
+      await setSystemUpdateStatus({
+        jobId,
+        phase: 'preparing',
+        source: 'manual',
+        bytes: file.size,
+        total: file.size,
+        targetVersion: null,
+        errorCode: null,
+        errorMessage: null,
+        operationInFlight: true,
+        restartPending: false,
+        requestedAt: new Date().toISOString(),
+        requestedBy: request.user.id,
+      })
+    } catch (error) {
+      systemUpdateOperationInFlight = false
+      await unlink(file.path).catch(() => undefined)
+      throw error
+    }
     try {
       const update = await validateAndStoreSystemUpdate({
         incomingPath: file.path,
         originalName: file.originalname,
         size: file.size,
       })
-      await recordStoredSystemUpdate(request, update, 'manual-upload')
-      const restartScheduled = scheduleStoredSystemUpdate(update, request.user.id)
-      ok(response, systemUpdateResponse(update, restartScheduled), 202)
+      await recordStoredSystemUpdate(request.user.id, update, 'manual-upload')
+      const restartScheduled = scheduleStoredSystemUpdate(update, request.user.id, jobId)
+      if (!restartScheduled) {
+        await setSystemUpdateStatus({
+          jobId,
+          phase: 'stored',
+          targetVersion: update.manifest.version,
+          bytes: update.size,
+          total: update.size,
+          operationInFlight: false,
+          restartPending: false,
+        })
+      }
+      ok(response, {
+        ...systemUpdateResponse(update, restartScheduled, {
+          id: 'manual',
+          kind: 'manual',
+          host: null,
+        }),
+        jobId,
+      }, 202)
+    } catch (error) {
+      await setSystemUpdateStatus({
+        jobId,
+        phase: 'error',
+        errorCode: error?.code ?? 'INVALID_UPDATE_PACKAGE',
+        errorMessage: error instanceof Error ? error.message : String(error),
+        operationInFlight: false,
+        restartPending: false,
+      }, {
+        level: 'error',
+        logMessage: error instanceof Error ? error.message : String(error),
+        detail: error?.stack ?? String(error),
+      })
+      throw error
     } finally {
       systemUpdateOperationInFlight = false
     }
   }))
 
   app.delete('/api/admin/system-update/:storedAs', asyncHandler(async (request, response) => {
-    if (systemUpdateOperationInFlight || systemUpdateRestartPending) {
+    if (await isSystemUpdateBusy()) {
       fail(response, 409, 'UPDATE_IN_PROGRESS', 'Another system update is already in progress.')
       return
     }

@@ -95,6 +95,10 @@
     "INVALID_CREDENTIALS": "이메일이나 비밀번호가 올바르지 않습니다.",
     "FORBIDDEN": "이 작업을 수행할 권한이 없습니다.",
     "REGISTRATION_CLOSED": "신규 사용자 등록이 비활성화되었습니다.",
+    "REGISTRATION_EMAIL_NOT_ALLOWED": "이 이메일 도메인은 가입에 사용할 수 없습니다.",
+    "PASSWORD_TOO_WEAK": "15자 이상이며 흔하거나 예측 가능하거나 유출된 적이 없는 비밀번호를 선택하세요.",
+    "PASSWORD_CHECK_UNAVAILABLE": "비밀번호 안전성 검사를 일시적으로 사용할 수 없습니다.",
+    "HUMAN_VERIFICATION_UNAVAILABLE": "사람 인증을 일시적으로 사용할 수 없습니다.",
     "EMAIL_EXISTS": "이 이메일에 대한 계정이 이미 존재합니다.",
     "SMTP_NOT_CONFIGURED": "보내는 이메일이 아직 구성되지 않았습니다. 먼저 관리자에게 시스템 메일 설정을 요청하세요.",
     "SMTP_ERROR": "메일 전달에 실패했습니다. 메일 설정을 확인하고 다시 시도하세요.",
@@ -211,7 +215,6 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "팀 탐색을 위해 팀과 할당된 학생을 모두 선택하세요.",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "선택한 지도교수에게 확인된 이메일 주소가 없습니다.",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "이 프로그램을 지원서에 추가하려면 실제 지도교수 프로필과 이메일이 필요합니다.",
-    "DISCOVER_PROGRAM_NOT_VERIFIED": "이 프로그램에는 확인된 공식 출처 또는 현재 지원 마감일이 없습니다. 가져오기 전에 조사를 새로 고치세요.",
     "MAIL_ATTACHMENT_TOO_LARGE": "첨부 파일이 너무 커서 이메일에 추가할 수 없습니다."
   },
   "apiErrorFields": {
@@ -321,6 +324,13 @@
     "workingOffline": "오프라인으로 작업",
     "serverUnavailable": "서버를 사용할 수 없음",
     "panelTitle": "연결 및 오프라인 상태",
+    "launchTitle": "현재 오프라인입니다",
+    "launchDetail": "앱 화면과 이전에 방문한 정적 리소스는 계속 열 수 있습니다. 다시 연결하면 로그인할 수 있으며, 오프라인에서는 이전에 승인된 유효한 개인 작업공간만 열립니다.",
+    "noLocalCopy": "이 기기에는 사용할 수 있는 승인된 로컬 작업공간이 없습니다.",
+    "permissionProtected": "오프라인 데이터는 권한으로 인정되지 않습니다. 동기화할 때마다 서버가 신원, 소유권, 접근 권한 및 버전을 다시 확인합니다.",
+    "personalScopeValue": "본인 소유의 개인 지원서만",
+    "accessUntil": "오프라인 접근 만료",
+    "authorizationExpired": "안전한 오프라인 접근이 종료되었습니다. 다시 연결하여 로그인하세요.",
     "manualDetail": "오프라인으로 작업하기로 선택하셨습니다. 개인 응용 프로그램 편집 내용은 로컬에 저장되며 온라인 모드를 다시 시작할 때까지 기다립니다.",
     "server": "섬기는 사람",
     "slowDetail": "서버에 연결할 수 있지만 응답이 평소보다 오래 걸립니다. 로컬 변경 사항은 보호된 상태로 유지됩니다.",
@@ -830,5 +840,21 @@
     "showColumn": "열 표시",
     "actions": "행위"
   },
-  "doubleClickToCopy": "복사하려면 두 번 클릭하세요. {label}"
+  "doubleClickToCopy": "복사하려면 두 번 클릭하세요. {label}",
+  "projectFooter": {
+    "ariaLabel": "프로젝트 정보",
+    "projectName": "PhD Atlas",
+    "authorName": "Jasper Zhou",
+    "projectHome": "PhD Atlas 홈 열기",
+    "by": "제작",
+    "repository": "GitHub",
+    "repositoryAria": "PhD Atlas GitHub 저장소 열기",
+    "support": "후원",
+    "supportAria": "PhD Atlas 후원",
+    "dialogTitle": "PhD Atlas에 작은 힘을 보태 주세요",
+    "dialogDescription": "편한 코드를 골라 스캔해 주세요. 보내 주신 마음은 다음 작은 업데이트의 힘이 됩니다.",
+    "wechat": "WeChat Pay",
+    "alipay": "Alipay",
+    "qrAlt": "{method} 결제 QR 코드"
+  }
 }

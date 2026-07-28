@@ -76,11 +76,11 @@ describe('correspondence and mailbox validation', () => {
     const registration = parseOrThrow(RegisterSchema, {
       name: 'Jasper',
       email: 'new-user@example.com',
-      password: 'demo123456',
+      password: 'Atlas-demo-2026!',
       language: 'zh',
       captchaToken: 'captcha-token-long-enough',
       captchaAnswer: '10',
-      emailCodeToken: 'email-code-token-long-enough',
+      emailCodeToken: 'email-code-token-long-enough-for-test',
       emailCode: '123456',
     })
 
@@ -88,14 +88,14 @@ describe('correspondence and mailbox validation', () => {
       email: 'new-user@example.com',
       language: 'zh',
       captchaAnswer: '10',
-      emailCodeToken: 'email-code-token-long-enough',
+      emailCodeToken: 'email-code-token-long-enough-for-test',
       emailCode: '123456',
     })
 
     expect(() => parseOrThrow(RegisterSchema, {
       name: 'Jasper',
       email: 'new-user@example.com',
-      password: 'demo123456',
+      password: 'Atlas-demo-2026!',
       language: 'zh',
     })).toThrow()
   })

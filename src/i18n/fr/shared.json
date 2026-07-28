@@ -95,6 +95,10 @@
     "INVALID_CREDENTIALS": "L'e-mail ou le mot de passe est incorrect.",
     "FORBIDDEN": "Vous n'êtes pas autorisé à effectuer cette action.",
     "REGISTRATION_CLOSED": "L'enregistrement d'un nouvel utilisateur est désactivé.",
+    "REGISTRATION_EMAIL_NOT_ALLOWED": "Ce domaine de messagerie n'est pas autorisé pour l'inscription.",
+    "PASSWORD_TOO_WEAK": "Choisissez un mot de passe d'au moins 15 caractères, ni courant, ni prévisible, ni compromis.",
+    "PASSWORD_CHECK_UNAVAILABLE": "La vérification de sécurité du mot de passe est temporairement indisponible.",
+    "HUMAN_VERIFICATION_UNAVAILABLE": "La vérification humaine est temporairement indisponible.",
     "EMAIL_EXISTS": "Un compte existe déjà pour cet email.",
     "SMTP_NOT_CONFIGURED": "Le courrier électronique sortant n'est pas encore configuré. Demandez à l'administrateur de configurer d'abord la messagerie système.",
     "SMTP_ERROR": "La livraison du courrier a échoué. Vérifiez les paramètres de messagerie et réessayez.",
@@ -211,7 +215,6 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "Choisissez à la fois une équipe et un étudiant attribué pour la recherche d’équipe.",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "Le directeur de thèse sélectionné ne possède pas d’adresse e-mail vérifiée.",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "Un profil et une adresse e-mail réels du directeur de thèse sont requis avant d’ajouter ce programme aux candidatures.",
-    "DISCOVER_PROGRAM_NOT_VERIFIED": "Ce programme ne dispose pas d’une source officielle vérifiée ou d’une date limite de candidature actuelle. Actualisez la recherche avant de l’importer.",
     "MAIL_ATTACHMENT_TOO_LARGE": "Une pièce jointe est trop volumineuse pour être ajoutée à l’e-mail."
   },
   "apiErrorFields": {
@@ -321,6 +324,13 @@
     "checking": "Vérification de la connexion",
     "offlineDetail": "Vous pouvez continuer à travailler à partir de la copie locale. Les modifications des applications personnelles prises en charge seront synchronisées au retour de la connexion.",
     "panelTitle": "Connexion et statut hors ligne",
+    "launchTitle": "Vous êtes hors ligne",
+    "launchDetail": "L’interface et les ressources statiques déjà consultées restent disponibles. Reconnectez-vous pour vous identifier ; hors ligne, seul un espace personnel précédemment autorisé et encore valide peut s’ouvrir.",
+    "noLocalCopy": "Aucun espace local autorisé n’est disponible sur cet appareil.",
+    "permissionProtected": "Les données hors ligne ne servent jamais d’autorisation. Le serveur revérifie l’identité, la propriété, l’accès et la version avant chaque synchronisation.",
+    "personalScopeValue": "Candidatures personnelles dont vous êtes propriétaire",
+    "accessUntil": "Accès hors ligne jusqu’au",
+    "authorizationExpired": "L’accès hors ligne sécurisé a expiré. Reconnectez-vous et identifiez-vous de nouveau.",
     "manualDetail": "Vous avez choisi de travailler hors ligne. Les modifications de l'application personnelle sont enregistrées localement et attendront jusqu'à ce que vous reveniez au mode en ligne.",
     "slowDetail": "Le serveur est joignable, mais les réponses mettent plus de temps que d'habitude. Les modifications locales restent protégées.",
     "serverUnavailableDetail": "Cet appareil a accès à Internet, mais PhD Atlas ne peut pas accéder à son serveur. Le travail local reste disponible.",
@@ -830,5 +840,21 @@
     "resizeColumn": "Redimensionner la colonne {column}",
     "actions": "Actes"
   },
-  "doubleClickToCopy": "Double-cliquez pour copier {label}"
+  "doubleClickToCopy": "Double-cliquez pour copier {label}",
+  "projectFooter": {
+    "ariaLabel": "Informations sur le projet",
+    "projectName": "PhD Atlas",
+    "authorName": "Jasper Zhou",
+    "projectHome": "Ouvrir l’accueil de PhD Atlas",
+    "by": "Par",
+    "repository": "GitHub",
+    "repositoryAria": "Ouvrir le dépôt GitHub de PhD Atlas",
+    "support": "Soutenir",
+    "supportAria": "Soutenir PhD Atlas",
+    "dialogTitle": "Donner un peu d’élan à PhD Atlas",
+    "dialogDescription": "Choisissez le code le plus pratique à scanner : votre soutien deviendra la prochaine petite amélioration.",
+    "wechat": "WeChat Pay",
+    "alipay": "Alipay",
+    "qrAlt": "Code QR de paiement {method}"
+  }
 }

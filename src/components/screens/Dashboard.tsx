@@ -34,6 +34,7 @@ import {
   LayoutGrid,
   Mail,
   MapPin,
+  MessageCircle,
   PieChart,
   Phone,
   Plus,
@@ -41,7 +42,11 @@ import {
   Users,
 } from 'lucide-react'
 import { UserAvatar } from '../shared/UserAvatar'
-import type { ApplicationRecord, ApplicationStatus } from '../../data/applications'
+import {
+  applicationStatusOrder,
+  type ApplicationRecord,
+  type ApplicationStatus,
+} from '../../data/applications'
 import { countryDisplayName } from '../../data/countries'
 import { daysUntil, formatDate, priorityToLevel, priorityTone } from '../../appModel'
 import type { DetailTab } from '../../appModel'
@@ -53,11 +58,10 @@ import { useI18n } from '../hooks/useI18n'
 import { getMotionDelay } from '../hooks/useAnimatedClose'
 import { CollapsiblePanel } from '../shared/CollapsiblePanel'
 import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/ExplorerContextMenu'
+import { AnchoredPopover } from '../shared/AnchoredPopover'
+import { GuidanceMessageDialog } from '../shared/GuidanceMessageDialog'
+import { ProjectFooter } from '../shared/ProjectFooter'
 import { safeExternalHttpUrl, safeMailtoHref, safeTelHref } from '../../safeLinks'
-
-const statusOrder: ApplicationStatus[] = [
-  'Draft', 'Preparing', 'Submitted', 'Interview', 'Accepted', 'Rejected', 'Waitlist',
-]
 
 type StatusViewMode = 'bars' | 'donut' | 'grid'
 type StatSwitchDirection = 'left' | 'right' | 'none'
@@ -66,7 +70,7 @@ type DashboardPanelKey = 'guidance' | 'byStudent' | 'priority' | 'tasks' | 'rece
 const statusViewModes: StatusViewMode[] = ['bars', 'donut', 'grid']
 
 /** Donut / bar chart strokes — distinct pipeline colors (not the muted pill text tokens). */
-const statusStrokeColor: Record<ApplicationStatus, string> = {
+const statusStrokeColor: Partial<Record<ApplicationStatus, string>> = {
   Draft: 'var(--status-chart-draft)',
   Preparing: 'var(--status-chart-preparing)',
   Submitted: 'var(--status-chart-submitted)',
@@ -74,6 +78,10 @@ const statusStrokeColor: Record<ApplicationStatus, string> = {
   Waitlist: 'var(--status-chart-waitlist)',
   Accepted: 'var(--status-chart-accepted)',
   Rejected: 'var(--status-chart-rejected)',
+}
+
+function statusChartColor(status: ApplicationStatus) {
+  return statusStrokeColor[status] ?? 'var(--status-chart-custom)'
 }
 export type DashboardJumpTarget = {
   tab: DetailTab
@@ -100,6 +108,20 @@ export type DashboardGuidanceMember = {
 export type DashboardGuidanceTeam = {
   teamName: string
   members: DashboardGuidanceMember[]
+}
+
+function guidanceAvatarIdentity(member: DashboardGuidanceMember) {
+  const words = member.name
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((word) => !/^(?:dr|prof|professor|mr|mrs|ms)\.?$/i.test(word))
+  const initials = words.length > 1
+    ? `${words[0]?.[0] ?? ''}${words.at(-1)?.[0] ?? ''}`
+    : (words[0]?.slice(0, 2) || member.email?.slice(0, 2) || '?')
+  const identity = `${member.id}:${member.name}:${member.email ?? ''}`
+  const tone = [...identity].reduce((total, character) => total + character.charCodeAt(0), 0) % 6
+  return { initials: initials.toLocaleUpperCase(), tone }
 }
 
 const dossierJumpTarget: DashboardJumpTarget = { tab: 'dossier', targetId: 'dossier-config-card' }
@@ -142,6 +164,8 @@ const DASHBOARD_DEADLINE_BATCH_SIZE = 10
 const DASHBOARD_DEADLINE_INITIAL_COUNT = DASHBOARD_DEADLINE_BATCH_SIZE
 const DASHBOARD_TASK_INITIAL_COUNT = 10
 const DASHBOARD_TASK_BATCH_SIZE = 10
+const DASHBOARD_GUIDANCE_INITIAL_COUNT = 5
+const DASHBOARD_GUIDANCE_BATCH_SIZE = 5
 /** Strikethrough grace window before a completed task leaves the list. */
 /** How long a completed checklist row stays visible before it leaves (user can undo). */
 const DASHBOARD_TASK_COMPLETE_GRACE_MS = 3000
@@ -281,6 +305,7 @@ function DashboardPanel({
             aria-expanded={open}
             aria-controls={panelId}
             aria-label={format(labelTemplate, { title })}
+            title={format(labelTemplate, { title })}
           >
             <ChevronDown size={15} aria-hidden="true" className="dashboard-panel-chevron" />
           </button>
@@ -312,6 +337,7 @@ export function Dashboard({
   onNew,
   onOpenDiscover,
   guidanceTeam,
+  onSendGuidanceMessage,
   ownerNames,
   ownerDirectory,
   ownerAvatars,
@@ -348,6 +374,8 @@ export function Dashboard({
   onOpenDiscover?: () => void
   /** Student-only, permission-scoped organization contacts shown on the personal dashboard. */
   guidanceTeam?: DashboardGuidanceTeam
+  /** Student-only direct message to an assigned teacher or organization owner. */
+  onSendGuidanceMessage?: (memberId: string, title: string, body: string) => Promise<void>
   // applicationId -> owner display name, populated only when this Dashboard is showing the
   // team-scoped list (multiple owners); absent in the personal dashboard.
   ownerNames?: Record<string, string>
@@ -368,8 +396,12 @@ export function Dashboard({
   const [statusViewDirection, setStatusViewDirection] = useState<StatSwitchDirection>('none')
   const [openPanels, setOpenPanels] = useState<Record<DashboardPanelKey, boolean>>(dashboardPanelDefaults)
   const [expandedGuidanceMemberId, setExpandedGuidanceMemberId] = useState<string | null>(null)
+  const [guidanceVisibleCount, setGuidanceVisibleCount] = useState(DASHBOARD_GUIDANCE_INITIAL_COUNT)
+  const [guidanceComposerMember, setGuidanceComposerMember] = useState<DashboardGuidanceMember | null>(null)
   const [contextMenu, setContextMenu] = useState<ExplorerContextMenuState | null>(null)
   const [deadlineDetailed, setDeadlineDetailed] = useState(loadDeadlineDetailMode)
+  const [renderedDeadlineDetailed, setRenderedDeadlineDetailed] = useState(deadlineDetailed)
+  const [deadlineViewPhase, setDeadlineViewPhase] = useState<'idle' | 'exiting' | 'entering'>('idle')
   const [deadlineVisibleCount, setDeadlineVisibleCount] = useState(DASHBOARD_DEADLINE_INITIAL_COUNT)
   const [taskVisibleCount, setTaskVisibleCount] = useState(DASHBOARD_TASK_INITIAL_COUNT)
   const [showExpiredTasks, setShowExpiredTasks] = useState(loadShowExpiredTasks)
@@ -378,7 +410,9 @@ export function Dashboard({
   const applicationScrollerRef = useRef<HTMLDivElement | null>(null)
   const deadlineListRef = useRef<HTMLDivElement | null>(null)
   const taskListRef = useRef<HTMLDivElement | null>(null)
+  const guidanceListRef = useRef<HTMLDivElement | null>(null)
   const taskCompletionTimersRef = useRef<Map<string, number[]>>(new Map())
+  const deadlineModeTimersRef = useRef<number[]>([])
   const [applicationScrollState, setApplicationScrollState] = useState({ canScrollLeft: false, canScrollRight: false })
   const [renderedApplicationCount, setRenderedApplicationCount] = useState(DASHBOARD_APPLICATION_FALLBACK_ROW)
   const maxRevealPhase = ownerDirectory ? 6 : 5
@@ -396,6 +430,13 @@ export function Dashboard({
     [applications, renderedApplicationCount],
   )
   const hasMoreApplications = renderedApplicationCount < totalApps
+  const visibleGuidanceMembers = useMemo(
+    () => guidanceTeam?.members.slice(0, guidanceVisibleCount) ?? [],
+    [guidanceTeam?.members, guidanceVisibleCount],
+  )
+  const hasMoreGuidanceMembers = Boolean(
+    guidanceTeam && guidanceVisibleCount < guidanceTeam.members.length,
+  )
   const localize = (value: string) => localizeStaticText(value, lang)
   const versionLabel = (version: string) => version.startsWith('v') ? version : `v${version}`
   const professorDisplayName = (application: ApplicationRecord) =>
@@ -511,42 +552,16 @@ export function Dashboard({
   ), [dashboardChecklistItems, sortChecklistItems])
 
   const expiredTaskCount = expiredTaskItems.length
-  const [expiredTasksMounted, setExpiredTasksMounted] = useState(showExpiredTasks && expiredTaskCount > 0)
-  const [expiredTasksOpen, setExpiredTasksOpen] = useState(showExpiredTasks && expiredTaskCount > 0)
 
-  useEffect(() => {
-    if (expiredTaskCount === 0) {
-      setExpiredTasksOpen(false)
-      setExpiredTasksMounted(false)
-      return undefined
-    }
-    if (showExpiredTasks) {
-      setExpiredTasksMounted(true)
-      let frame2 = 0
-      const frame1 = window.requestAnimationFrame(() => {
-        frame2 = window.requestAnimationFrame(() => setExpiredTasksOpen(true))
-      })
-      return () => {
-        window.cancelAnimationFrame(frame1)
-        window.cancelAnimationFrame(frame2)
-      }
-    }
-
-    setExpiredTasksOpen(false)
-    const timer = window.setTimeout(() => {
-      setExpiredTasksMounted(false)
-    }, getMotionDelay(340))
-    return () => window.clearTimeout(timer)
-  }, [expiredTaskCount, showExpiredTasks])
-
-  // Visible upcoming rows only (expired block animates as a group above).
+  // Visible upcoming rows only. The expired block stays mounted and collapses as
+  // one surface so toggling it does not schedule mount/open/unmount render waves.
   const visibleTaskItems = useMemo(
     () => upcomingTaskItems.slice(0, taskVisibleCount),
     [upcomingTaskItems, taskVisibleCount],
   )
   const hasMoreTasks = taskVisibleCount < upcomingTaskItems.length
-  const openTaskCount = upcomingTaskItems.length + (showExpiredTasks || expiredTasksMounted ? expiredTaskCount : 0)
-  const hasVisibleTaskRows = visibleTaskItems.length > 0 || (expiredTasksMounted && expiredTaskCount > 0)
+  const openTaskCount = upcomingTaskItems.length + (showExpiredTasks ? expiredTaskCount : 0)
+  const hasVisibleTaskRows = visibleTaskItems.length > 0 || (showExpiredTasks && expiredTaskCount > 0)
 
 
   useEffect(() => {
@@ -563,6 +578,14 @@ export function Dashboard({
       return Math.min(Math.max(current, DASHBOARD_TASK_INITIAL_COUNT), upcomingTaskItems.length)
     })
   }, [upcomingTaskItems.length])
+
+  useEffect(() => {
+    setGuidanceVisibleCount((current) => {
+      const total = guidanceTeam?.members.length ?? 0
+      if (total === 0) return DASHBOARD_GUIDANCE_INITIAL_COUNT
+      return Math.min(total, Math.max(current, Math.min(DASHBOARD_GUIDANCE_INITIAL_COUNT, total)))
+    })
+  }, [guidanceTeam?.members.length])
 
   const clearTaskCompletionTimers = useCallback((key: string) => {
     const timers = taskCompletionTimersRef.current.get(key)
@@ -591,11 +614,36 @@ export function Dashboard({
     loadMoreTasksIfNeeded()
   }, [loadMoreTasksIfNeeded])
 
+  const loadMoreGuidanceMembersIfNeeded = useCallback(() => {
+    const scroller = guidanceListRef.current
+    const total = guidanceTeam?.members.length ?? 0
+    if (!scroller || !hasMoreGuidanceMembers) return
+    const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+    if (remaining <= 56 || scroller.scrollHeight <= scroller.clientHeight + 4) {
+      setGuidanceVisibleCount((current) => Math.min(total, current + DASHBOARD_GUIDANCE_BATCH_SIZE))
+    }
+  }, [guidanceTeam?.members.length, hasMoreGuidanceMembers])
+
+  const handleGuidanceListScroll = useCallback(() => {
+    loadMoreGuidanceMembersIfNeeded()
+  }, [loadMoreGuidanceMembersIfNeeded])
+
   useEffect(() => {
     if (!hasMoreTasks) return undefined
     const frame = window.requestAnimationFrame(loadMoreTasksIfNeeded)
     return () => window.cancelAnimationFrame(frame)
   }, [hasMoreTasks, taskVisibleCount, loadMoreTasksIfNeeded])
+
+  useEffect(() => {
+    if (!hasMoreGuidanceMembers || !openPanels.guidance) return undefined
+    const frame = window.requestAnimationFrame(loadMoreGuidanceMembersIfNeeded)
+    return () => window.cancelAnimationFrame(frame)
+  }, [
+    guidanceVisibleCount,
+    hasMoreGuidanceMembers,
+    loadMoreGuidanceMembersIfNeeded,
+    openPanels.guidance,
+  ])
 
   /** Ensure the first visible row is fully populated (+ one peek card when more exist). */
   const ensureApplicationFirstRow = useCallback(() => {
@@ -659,7 +707,7 @@ export function Dashboard({
   const upcomingSummary = useMemo(
     () =>
       deadlinesReady ? applications
-        .filter((a) => daysUntil(a.deadline) >= 0 && isActiveApplication(a))
+        .filter((a) => Boolean(a.deadline) && daysUntil(a.deadline) >= 0 && isActiveApplication(a))
         .sort((a, b) => a.deadline.localeCompare(b.deadline)) : [],
     [applications, deadlinesReady],
   )
@@ -761,7 +809,7 @@ export function Dashboard({
     return items.sort((a, b) => a.date.localeCompare(b.date) || a.schoolName.localeCompare(b.schoolName))
   }, [applications, deadlinesReady, format, lang, tx])
 
-  const deadlineTotalCount = deadlineDetailed ? upcomingDetailed.length : upcomingSummary.length
+  const deadlineTotalCount = renderedDeadlineDetailed ? upcomingDetailed.length : upcomingSummary.length
   const visibleDetailedDeadlines = useMemo(
     () => upcomingDetailed.slice(0, deadlineVisibleCount),
     [upcomingDetailed, deadlineVisibleCount],
@@ -788,18 +836,29 @@ export function Dashboard({
     }
   }, [showExpiredTasks])
 
-  useEffect(() => {
-    setTaskVisibleCount(DASHBOARD_TASK_INITIAL_COUNT)
-    const scroller = taskListRef.current
-    if (scroller) scroller.scrollTop = 0
-  }, [showExpiredTasks])
+  const changeDeadlineMode = useCallback((nextDetailed: boolean) => {
+    if (nextDetailed === deadlineDetailed) return
+    setDeadlineDetailed(nextDetailed)
+    deadlineModeTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+    deadlineModeTimersRef.current = []
+    setDeadlineViewPhase('exiting')
 
-  // Reset progressive window when switching detailed/summary or the dataset shrinks.
-  useEffect(() => {
-    setDeadlineVisibleCount(DASHBOARD_DEADLINE_INITIAL_COUNT)
-    const scroller = deadlineListRef.current
-    if (scroller) scroller.scrollTop = 0
+    const swapTimer = window.setTimeout(() => {
+      setRenderedDeadlineDetailed(nextDetailed)
+      setDeadlineViewPhase('entering')
+      const settleTimer = window.setTimeout(() => {
+        setDeadlineViewPhase('idle')
+        deadlineModeTimersRef.current = []
+      }, getMotionDelay(190))
+      deadlineModeTimersRef.current = [settleTimer]
+    }, getMotionDelay(72))
+    deadlineModeTimersRef.current = [swapTimer]
   }, [deadlineDetailed])
+
+  useEffect(() => () => {
+    deadlineModeTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+    deadlineModeTimersRef.current = []
+  }, [])
 
   useEffect(() => {
     setDeadlineVisibleCount((current) => {
@@ -874,7 +933,7 @@ export function Dashboard({
 
   const statusCounts = useMemo(
     () =>
-      statusReady ? statusOrder.map((s) => ({
+      statusReady ? applicationStatusOrder(applications.map((application) => application.status)).map((s) => ({
         status: s,
         count: applications.filter((a) => a.status === s).length,
       })) : [],
@@ -1260,7 +1319,9 @@ export function Dashboard({
               const openTasks = application.tasks.filter((task) => !task.done).length
               const due = daysUntil(application.deadline)
               const deadlineTone = due < 0 ? 'past' : due <= 7 ? 'urgent' : due <= 30 ? 'warning' : 'safe'
-              const deadlineRelative = due < 0
+              const deadlineRelative = !application.deadline
+                ? '—'
+                : due < 0
                 ? format(tx('workspace.daysPast'), { count: Math.abs(due) })
                 : due === 0
                   ? tx('dashboard.today')
@@ -1568,7 +1629,7 @@ export function Dashboard({
   }
 
   const renderTaskChecklist = () => {
-    const renderTaskRow = (item: (typeof dashboardChecklistItems)[number], indexInGroup = 0) => {
+    const renderTaskRow = (item: (typeof dashboardChecklistItems)[number]) => {
       const completionState = taskCompletionState[item.key]
       const isPendingComplete = completionState === 'pending' || completionState === 'exiting'
       const hasDueDate = Boolean(item.due)
@@ -1597,7 +1658,6 @@ export function Dashboard({
         <li
           key={item.key}
           className={`stat-task-item${isPendingComplete ? ' is-pending-done' : ''}${completionState === 'exiting' ? ' is-exiting' : ''}${isExpired ? ' is-expired' : ''}${item.kind === 'material' ? ' is-material' : ''}${item.scope === 'scholarship' ? ' is-scholarship' : ''}`}
-          style={isExpired ? { ['--expired-stagger' as string]: `${Math.min(indexInGroup, 8) * 28}ms` } : undefined}
           tabIndex={0}
           data-dashboard-checklist-key={item.key}
           aria-label={`${itemTitle}, ${item.application.school.name}, ${dueLabel}`}
@@ -1703,40 +1763,48 @@ export function Dashboard({
           </div>
         )}
       >
-        {!hasVisibleTaskRows ? (
-          <div className="dashboard-empty-panel compact">
-            <span className="empty-state-icon" aria-hidden="true"><CheckCheck size={18} /></span>
-            <strong>
-              {expiredTaskCount > 0 && !showExpiredTasks
-                ? tx('dashboard.noOpenTasksHiddenExpired', 'No upcoming items. Turn on expired to review overdue work.')
-                : tx('dashboard.noOpenTasks', 'No open tasks.')}
-            </strong>
-            {expiredTaskCount > 0 && !showExpiredTasks ? (
-              <button
-                type="button"
-                className="quiet-action"
-                onClick={() => setShowExpiredTasks(true)}
-              >
-                {format(tx('dashboard.showExpiredCount', 'Show expired ({count})'), { count: expiredTaskCount })}
-              </button>
-            ) : null}
+        <div
+          className={`dashboard-task-empty-shell${!hasVisibleTaskRows ? ' is-open' : ''}`}
+          aria-hidden={hasVisibleTaskRows}
+          inert={hasVisibleTaskRows || undefined}
+        >
+          <div className="dashboard-task-empty-clip">
+            <div className="dashboard-empty-panel compact">
+              <span className="empty-state-icon" aria-hidden="true"><CheckCheck size={18} /></span>
+              <strong>
+                {expiredTaskCount > 0 && !showExpiredTasks
+                  ? tx('dashboard.noOpenTasksHiddenExpired', 'No upcoming items. Turn on expired to review overdue work.')
+                  : tx('dashboard.noOpenTasks', 'No open tasks.')}
+              </strong>
+              {expiredTaskCount > 0 && !showExpiredTasks ? (
+                <button
+                  type="button"
+                  className="quiet-action"
+                  onClick={() => setShowExpiredTasks(true)}
+                >
+                  {format(tx('dashboard.showExpiredCount', 'Show expired ({count})'), { count: expiredTaskCount })}
+                </button>
+              ) : null}
+            </div>
           </div>
-        ) : (
-          <div className="stat-task-panel">
+        </div>
+        <div className={`stat-task-panel${hasVisibleTaskRows ? ' has-visible-rows' : ''}`}>
             <div
               ref={taskListRef}
               className="stat-task-list-scroll deadline-list-scroll"
               onScroll={handleTaskListScroll}
             >
               <ul className="stat-task-list">
-                {expiredTasksMounted && expiredTaskCount > 0 ? (
+                {expiredTaskCount > 0 ? (
                   <li
-                    className={`stat-task-expired-shell${expiredTasksOpen ? ' is-open' : ''}`}
+                    className={`stat-task-expired-shell${showExpiredTasks ? ' is-open' : ''}`}
                     aria-label={tx('dashboard.showExpiredTasks', 'Show expired')}
+                    aria-hidden={!showExpiredTasks}
+                    inert={!showExpiredTasks || undefined}
                   >
                     <div className="stat-task-expired-clip">
                       <ul className="stat-task-expired-list">
-                        {expiredTaskItems.map((item, index) => renderTaskRow(item, index))}
+                        {expiredTaskItems.map((item) => renderTaskRow(item))}
                       </ul>
                     </div>
                   </li>
@@ -1751,8 +1819,7 @@ export function Dashboard({
                 </div>
               ) : null}
             </div>
-          </div>
-        )}
+        </div>
       </DashboardPanel>
     )
   }
@@ -1789,7 +1856,9 @@ export function Dashboard({
           {priorityApplications.map((app) => {
             const priorityLevel = priorityToLevel(app.priority)
             const due = daysUntil(app.deadline)
-            const dueLabel = due < 0
+            const dueLabel = !app.deadline
+              ? '—'
+              : due < 0
               ? format(tx('workspace.daysPast'), { count: Math.abs(due) })
               : due === 0
                 ? tx('dashboard.today')
@@ -1799,8 +1868,8 @@ export function Dashboard({
                 key={app.id}
                 type="button"
                 className="priority-card dashboard-openable"
-                onClick={() => openDashboardApplication(app.id)}
-                onContextMenu={(event) => openDashboardApplicationContextMenu(event, app)}
+                onClick={() => openDashboardApplication(app.id, dossierJumpTarget)}
+                onContextMenu={(event) => openDashboardApplicationContextMenu(event, app, dossierJumpTarget)}
               >
                 <span className={`priority-dot ${priorityTone(app.priority)}`} aria-hidden="true" />
                 <span className="priority-card-copy">
@@ -1844,16 +1913,16 @@ export function Dashboard({
           </span>
           <SwitchControl
             checked={deadlineDetailed}
-            onChange={setDeadlineDetailed}
+            onChange={changeDeadlineMode}
             label={tx('dashboard.deadlineModeSwitch', 'Show detailed deadlines')}
           />
         </label>
       )}
     >
-      <div className="deadline-view-stage" data-mode={deadlineDetailed ? 'detailed' : 'summary'}>
+      <div className="deadline-view-stage" data-mode={renderedDeadlineDetailed ? 'detailed' : 'summary'}>
         <div
-          key={deadlineDetailed ? 'detailed' : 'summary'}
-          className="deadline-view-panel"
+          key={renderedDeadlineDetailed ? 'detailed' : 'summary'}
+          className={`deadline-view-panel is-${deadlineViewPhase}`}
         >
           {deadlineTotalCount === 0 ? (
             <div className="dashboard-empty-panel compact">
@@ -1866,7 +1935,7 @@ export function Dashboard({
               className="deadline-list deadline-list-scroll"
               onScroll={handleDeadlineListScroll}
             >
-              {deadlineDetailed
+              {renderedDeadlineDetailed
                 ? visibleDetailedDeadlines.map((item) => {
                     const due = daysUntil(item.date)
                     const urgent = due <= 7
@@ -1968,8 +2037,13 @@ export function Dashboard({
             </div>
           </div>
         ) : (
-          <div className="dashboard-guidance-list">
-            {guidanceTeam.members.map((member) => {
+          <div
+            ref={guidanceListRef}
+            className={`dashboard-guidance-list${guidanceTeam.members.length > DASHBOARD_GUIDANCE_INITIAL_COUNT ? ' is-scrollable' : ''}`}
+            onScroll={handleGuidanceListScroll}
+          >
+            {visibleGuidanceMembers.map((member) => {
+              const avatarIdentity = guidanceAvatarIdentity(member)
               const roleLabel = member.role === 'owner'
                 ? tx('dashboard.guidanceRoleOwner', 'Institution administrator')
                 : tx('dashboard.guidanceRoleTeacher', 'Teacher')
@@ -1983,11 +2057,20 @@ export function Dashboard({
               return (
                 <article key={member.id} className={`dashboard-guidance-member${expanded ? ' is-expanded' : ''}`}>
                   <div className="dashboard-guidance-main">
-                    <UserAvatar
-                      avatarUrl={member.avatarUrl}
-                      name={member.name}
-                      className="dashboard-guidance-avatar"
-                    />
+                    {member.avatarUrl ? (
+                      <UserAvatar
+                        avatarUrl={member.avatarUrl}
+                        name={member.name}
+                        className="dashboard-guidance-avatar"
+                      />
+                    ) : (
+                      <span
+                        className={`dashboard-guidance-avatar dashboard-guidance-avatar-fallback tone-${avatarIdentity.tone}`}
+                        aria-hidden="true"
+                      >
+                        {avatarIdentity.initials}
+                      </span>
+                    )}
                     {hasDetails ? (
                       <button
                         type="button"
@@ -1996,44 +2079,82 @@ export function Dashboard({
                         aria-expanded={expanded}
                         aria-controls={detailId}
                       >
-                        <strong>{member.name}</strong>
-                        <span>{[member.title || roleLabel, member.department].filter(Boolean).join(' · ')}</span>
+                        <span className="dashboard-guidance-name-row">
+                          <strong>{member.name}</strong>
+                          {member.title ? <b>{member.title}</b> : null}
+                        </span>
+                        <span>{[roleLabel, member.department].filter(Boolean).join(' · ')}</span>
                       </button>
                     ) : (
                       <div className="dashboard-guidance-identity">
-                        <strong>{member.name}</strong>
-                        <span>{[member.title || roleLabel, member.department].filter(Boolean).join(' · ')}</span>
+                        <span className="dashboard-guidance-name-row">
+                          <strong>{member.name}</strong>
+                          {member.title ? <b>{member.title}</b> : null}
+                        </span>
+                        <span>{[roleLabel, member.department].filter(Boolean).join(' · ')}</span>
                       </div>
                     )}
                     <div className="dashboard-guidance-actions">
-                      {emailHref ? (
-                        <a
-                          href={emailHref}
-                          aria-label={format(tx('dashboard.guidanceEmail', 'Email {name}'), { name: member.name })}
+                      {onSendGuidanceMessage || emailHref || phoneHref || websiteHref ? (
+                        <AnchoredPopover
+                          trigger={<MessageCircle size={14} aria-hidden="true" />}
+                          triggerAriaLabel={format(tx('dashboard.guidanceContact', 'Contact {name}'), { name: member.name })}
+                          popoverAriaLabel={format(tx('dashboard.guidanceContactOptions', 'Contact options for {name}'), { name: member.name })}
+                          triggerClassName="dashboard-guidance-contact-trigger"
+                          popoverClassName="dashboard-guidance-contact-menu"
+                          width={190}
+                          estimatedHeight={164}
+                          align="end"
                         >
-                          <Mail size={14} aria-hidden="true" />
-                          <span>{tx('dashboard.guidanceEmailShort', 'Email')}</span>
-                        </a>
-                      ) : null}
-                      {phoneHref ? (
-                        <a
-                          href={phoneHref}
-                          aria-label={format(tx('dashboard.guidanceCall', 'Call {name}'), { name: member.name })}
-                        >
-                          <Phone size={14} aria-hidden="true" />
-                          <span>{tx('dashboard.guidanceCallShort', 'Call')}</span>
-                        </a>
-                      ) : null}
-                      {websiteHref ? (
-                        <a
-                          href={websiteHref}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          aria-label={format(tx('dashboard.guidanceWebsite', 'Open {name}’s website'), { name: member.name })}
-                        >
-                          <Globe2 size={14} aria-hidden="true" />
-                          <span>{tx('dashboard.guidanceWebsiteShort', 'Website')}</span>
-                        </a>
+                          {(close) => (
+                            <div className="dashboard-guidance-contact-options">
+                              {onSendGuidanceMessage ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    close()
+                                    setGuidanceComposerMember(member)
+                                  }}
+                                >
+                                  <MessageCircle size={14} aria-hidden="true" />
+                                  <span>{tx('dashboard.guidanceInApp', 'In-app message')}</span>
+                                </button>
+                              ) : null}
+                              {emailHref ? (
+                                <a
+                                  href={emailHref}
+                                  aria-label={format(tx('dashboard.guidanceEmail', 'Email {name}'), { name: member.name })}
+                                  onClick={() => close()}
+                                >
+                                  <Mail size={14} aria-hidden="true" />
+                                  <span>{tx('dashboard.guidanceEmailShort', 'Email')}</span>
+                                </a>
+                              ) : null}
+                              {phoneHref ? (
+                                <a
+                                  href={phoneHref}
+                                  aria-label={format(tx('dashboard.guidanceCall', 'Call {name}'), { name: member.name })}
+                                  onClick={() => close()}
+                                >
+                                  <Phone size={14} aria-hidden="true" />
+                                  <span>{tx('dashboard.guidanceCallShort', 'Call')}</span>
+                                </a>
+                              ) : null}
+                              {websiteHref ? (
+                                <a
+                                  href={websiteHref}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  aria-label={format(tx('dashboard.guidanceWebsite', 'Open {name}’s website'), { name: member.name })}
+                                  onClick={() => close()}
+                                >
+                                  <Globe2 size={14} aria-hidden="true" />
+                                  <span>{tx('dashboard.guidanceWebsiteShort', 'Website')}</span>
+                                </a>
+                              ) : null}
+                            </div>
+                          )}
+                        </AnchoredPopover>
                       ) : null}
                     </div>
                     {hasDetails ? (
@@ -2088,6 +2209,13 @@ export function Dashboard({
                 </article>
               )
             })}
+            {hasMoreGuidanceMembers ? (
+              <div className="dashboard-guidance-sentinel" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </div>
+            ) : null}
           </div>
         )}
       </DashboardPanel>
@@ -2095,7 +2223,8 @@ export function Dashboard({
   }
 
   return (
-    <section className="dashboard" aria-label={tx('dashboard.title')} data-tour="dashboard-overview">
+    <>
+      <section className="dashboard" aria-label={tx('dashboard.title')} data-tour="dashboard-overview">
       <header className="dashboard-header" data-tour="dashboard-header">
         <div>
           <span className="eyebrow">{eyebrow ?? tx('dashboard.overview')}</span>
@@ -2118,15 +2247,17 @@ export function Dashboard({
       </header>
 
       <div className="dashboard-grid">
-        <section
-          className="dashboard-card dashboard-application-snapshot"
-          aria-label={tx('dashboard.applicationSnapshot', 'Application snapshot')}
-          data-tour="dashboard-stats"
-        >
-          {renderApplicationSnapshot()}
-        </section>
+        <div className={`dashboard-lead-row${guidanceTeam ? ' has-guidance' : ''}`}>
+          <section
+            className="dashboard-card dashboard-application-snapshot"
+            aria-label={tx('dashboard.applicationSnapshot', 'Application snapshot')}
+            data-tour="dashboard-stats"
+          >
+            {renderApplicationSnapshot()}
+          </section>
 
-        {renderGuidancePanel()}
+          {renderGuidancePanel()}
+        </div>
 
         <div
           className="dashboard-triple-row dashboard-focus-row"
@@ -2262,7 +2393,7 @@ export function Dashboard({
                           className="status-bar-fill"
                           style={{
                             width: `${(count / maxCount) * 100}%`,
-                            background: statusStrokeColor[status],
+                            background: statusChartColor(status),
                           }}
                         />
                       </div>
@@ -2304,12 +2435,12 @@ export function Dashboard({
                               cx="60"
                               cy="60"
                               r={radius}
-                              stroke={statusStrokeColor[status]}
+                              stroke={statusChartColor(status)}
                               strokeDasharray={`${length} ${circumference - length}`}
                               strokeDashoffset={dashOffset}
                               style={{
                                 '--status-stagger': `${index * 50}ms`,
-                                color: statusStrokeColor[status],
+                                color: statusChartColor(status),
                               } as CSSProperties}
                             />
                           )
@@ -2329,12 +2460,12 @@ export function Dashboard({
                           key={status}
                           style={{
                             '--status-stagger': `${index * 35}ms`,
-                            color: statusStrokeColor[status],
+                            color: statusChartColor(status),
                           } as CSSProperties}
                         >
                           <span
                             className="status-donut-swatch"
-                            style={{ background: statusStrokeColor[status] }}
+                            style={{ background: statusChartColor(status) }}
                           />
                           <StatusPill status={status} />
                           <em>{count}</em>
@@ -2356,7 +2487,7 @@ export function Dashboard({
                         className="status-grid-tile"
                         style={{
                           '--status-stagger': `${index * 35}ms`,
-                          '--status-tone': statusStrokeColor[status],
+                          '--status-tone': statusChartColor(status),
                         } as CSSProperties}
                       >
                         <div className="status-grid-tile-head">
@@ -2470,7 +2601,18 @@ export function Dashboard({
           </DashboardPanel> : null}
         </div>
       </div>
+      <ProjectFooter />
       <ExplorerContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} />
-    </section>
+      </section>
+      <GuidanceMessageDialog
+        open={Boolean(guidanceComposerMember)}
+        recipientName={guidanceComposerMember?.name ?? ''}
+        onClose={() => setGuidanceComposerMember(null)}
+        onSend={async (messageTitle, messageBody) => {
+          if (!guidanceComposerMember || !onSendGuidanceMessage) return
+          await onSendGuidanceMessage(guidanceComposerMember.id, messageTitle, messageBody)
+        }}
+      />
+    </>
   )
 }

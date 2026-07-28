@@ -56,12 +56,12 @@ type TeamPortraitPointerState = {
 
 const TEAM_PORTRAIT_TURN_DURATION = 280
 const TEAM_PORTRAIT_RAPID_TURN_DURATION = 180
-const TEAM_PORTRAIT_GESTURE_TURN_DURATION = 240
+const TEAM_PORTRAIT_GESTURE_TURN_DURATION = 260
 const TEAM_PORTRAIT_SETTLE_BUFFER = 32
 const TEAM_PORTRAIT_MIN_DECK_HEIGHT = 164
 const TEAM_PORTRAIT_SWIPE_THRESHOLD = 44
-const TEAM_PORTRAIT_CARD_WIDTH = 224
-const TEAM_PORTRAIT_CARD_GAP = 28
+const TEAM_PORTRAIT_CARD_WIDTH = 200
+const TEAM_PORTRAIT_CARD_GAP = 16
 const TEAM_PORTRAIT_MOBILE_CARD_HEIGHT = 224
 const TEAM_PORTRAIT_MOBILE_CARD_GAP = 16
 const TEAM_PORTRAIT_COLLAPSED_OFFSET = 8
@@ -106,16 +106,20 @@ function TeamPortraitFamilyDeckComponent({
   family,
   familyIndex,
   open,
+  preferredVersionId,
   deletingAssetId,
   onToggle,
+  onRootChange,
   onOpen,
   onDelete,
 }: {
   family: ProfileAssetFamily
   familyIndex: number
   open: boolean
+  preferredVersionId?: string | null
   deletingAssetId: string | null
   onToggle: () => void
+  onRootChange?: (node: HTMLElement | null) => void
   onOpen: (asset: ProfileAsset) => void
   onDelete: (asset: ProfileAsset) => void
 }) {
@@ -279,6 +283,26 @@ function TeamPortraitFamilyDeckComponent({
   }, [])
 
   const versionIdentity = family.versions.map((version) => version.id).join('\u0000')
+  useLayoutEffect(() => {
+    if (
+      !preferredVersionId
+      || preferredVersionId === activeVersionIdRef.current
+      || !versionsRef.current.some((version) => version.id === preferredVersionId)
+    ) return
+
+    turnTokenRef.current += 1
+    if (turnTimerRef.current !== null) window.clearTimeout(turnTimerRef.current)
+    if (queuedTurnFrameRef.current !== null) window.cancelAnimationFrame(queuedTurnFrameRef.current)
+    turnTimerRef.current = null
+    queuedTurnFrameRef.current = null
+    turnSettlerRef.current = null
+    pendingTurnRef.current = null
+    turnLockedRef.current = false
+    activeVersionIdRef.current = preferredVersionId
+    setActiveVersionId(preferredVersionId)
+    setTurn(null)
+  }, [preferredVersionId, versionIdentity])
+
   useEffect(() => {
     const versions = versionsRef.current
     const activeStillExists = versions.some((version) => version.id === activeVersionIdRef.current)
@@ -377,7 +401,10 @@ function TeamPortraitFamilyDeckComponent({
   return (
     <Fragment>
       <article
-        ref={rootRef}
+        ref={(node) => {
+          rootRef.current = node
+          onRootChange?.(node)
+        }}
         className={clsx(
           'snippet-stack',
           'team-portrait-profile-stack',
@@ -391,6 +418,7 @@ function TeamPortraitFamilyDeckComponent({
           turn?.fromGesture && 'is-gesture-turn',
         )}
         role="listitem"
+        data-library-motion-key={`family:${family.familyId}`}
         style={{
           ['--team-library-card-index' as string]: String(Math.min(familyIndex, 8)),
           ['--snippet-stack-expanded-width' as string]: `${expandedStackWidth}px`,

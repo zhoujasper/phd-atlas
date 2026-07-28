@@ -14,7 +14,7 @@ COPY index.html tsconfig.json tsconfig.app.json tsconfig.node.json vite.config.t
 COPY public ./public
 COPY src ./src
 COPY server ./server
-COPY tools ./tools
+COPY tools/start-server.mjs tools/apply-update.mjs tools/container-entrypoint.mjs tools/stamp-service-worker.mjs ./tools/
 
 RUN npm run build \
   && mkdir -p bootstrap \
@@ -63,20 +63,7 @@ RUN npm run build \
     -name 'spec' -o \
     -name 'man' -o \
     -name '.github' \
-  \) -prune -exec rm -rf {} + 2>/dev/null || true \
-  # Remove frontend-only packages from runtime node_modules.
-  # The Vite-built dist/ already contains all frontend code; these packages
-  # are never imported by server/ or tools/. DB drivers (mssql/mysql2/pg)
-  # are dynamically imported — do NOT remove them.
-  && rm -rf \
-    node_modules/react node_modules/react-dom node_modules/scheduler \
-    node_modules/lucide-react \
-    node_modules/lexical node_modules/@lexical \
-    node_modules/@dnd-kit \
-    node_modules/xlsx node_modules/echarts node_modules/jszip \
-    node_modules/clsx node_modules/docx-preview \
-    node_modules/@aiden0z node_modules/@simplewebauthn/browser \
-    2>/dev/null || true
+  \) -prune -exec rm -rf {} + 2>/dev/null || true
 
 FROM node:24-alpine AS runtime
 ENV NODE_ENV=production \

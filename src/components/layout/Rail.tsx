@@ -86,6 +86,12 @@ export function Rail({
         const studentSections: Array<{ section: TeamSection; label: string; shortLabel: string; icon: typeof LayoutList }> = [
           { section: 'overview', label: tx('nav.dashboard'), shortLabel: tx('navShort.dashboard', tx('nav.dashboard')), icon: ClipboardList },
           { section: 'applications', label: tx('nav.applications'), shortLabel: tx('navShort.applications', tx('nav.applications')), icon: LayoutList },
+          ...(canUseDiscover ? [{
+            section: 'discover' as const,
+            label: tx('nav.discover', tx('discover.nav', 'Discover')),
+            shortLabel: tx('navShort.discover', tx('discover.navShort', 'Find')),
+            icon: Compass,
+          }] : []),
           { section: 'resources', label: tx('nav.profile'), shortLabel: tx('navShort.profile', tx('nav.profile')), icon: UserRound },
         ]
         return studentSections.map((item) => ({ screen: 'team' as const, ...item }))
@@ -109,7 +115,14 @@ export function Rail({
       }
       const sections: TeamSection[] = teamViewerRole === 'owner'
         ? ['overview', 'applications', 'members', 'resources', 'discover', 'audit', 'settings']
-        : ['overview', 'applications', 'members', 'resources', 'discover']
+        : [
+            'overview',
+            'applications',
+            'members',
+            'resources',
+            ...(canUseDiscover ? ['discover' as const] : []),
+            'audit',
+          ]
       const shortLabelFor = (section: TeamSection) => {
         if (section === 'overview') return tx('navShort.teamOverview', tx('navShort.dashboard', labelFor(section)))
         if (section === 'applications') return tx('navShort.teamApplications', tx('navShort.applications', labelFor(section)))
@@ -189,6 +202,7 @@ export function Rail({
   const activeIndicatorStyle = {
     '--rail-active-y': `${activeIndex * railStep}px`,
     '--rail-active-x': `${activeIndex * (100 / items.length)}%`,
+    '--rail-active-index': activeIndex,
     '--rail-item-count': items.length,
   } as CSSProperties
 

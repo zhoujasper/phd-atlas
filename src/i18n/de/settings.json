@@ -52,7 +52,7 @@
     "installAppBenefitOffline": "Offline-fähig",
     "installAppBenefitQuick": "Schnellstart",
     "installAppOfflineScopeLabel": "Offline-Umfang",
-    "installAppOfflineScope": "Offlinedaten bleiben auf diesem Gerät: Sie können die zuletzt synchronisierten Arbeitsbereichs- und Warteschlangenänderungen an Ihren eigenen Bewerbungen anzeigen. Uploads, E-Mail-, KI-, Team-, Freigabe-, Konto- und Backup-Aktionen bleiben nur online möglich.",
+    "installAppOfflineScope": "Offlinedaten bleiben auf diesem Gerät. Nur Ihre eigenen persönlichen Bewerbungen werden mit einer kurzen, ablaufenden Berechtigung zwischengespeichert; Änderungen können vorgemerkt werden. Vor der Synchronisierung prüft der Server Identität, Eigentum, Rechte und Version erneut. Uploads, E-Mail, KI, Team, Freigaben, Konto und Backups bleiben online.",
     "installAppStatusAvailable": "Installationsbereit",
     "installAppStatusInstalling": "Bestätigung ausstehend",
     "installAppStatusInstalled": "Installiert",

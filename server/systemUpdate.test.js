@@ -39,7 +39,12 @@ async function scratch(label) {
 }
 
 afterEach(async () => {
-  await Promise.all([...scratchRoots].map((root) => fs.rm(root, { recursive: true, force: true })))
+  await Promise.all([...scratchRoots].map((root) => fs.rm(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  })))
   scratchRoots.clear()
 })
 

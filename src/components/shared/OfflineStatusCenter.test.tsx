@@ -29,6 +29,9 @@ const labels: Record<string, string> = {
   'offlineStatus.pending': '{count} pending',
   'offlineStatus.blocked': '{count} review',
   'offlineStatus.snapshot': 'Offline snapshot',
+  'offlineStatus.accessUntil': 'Offline access until',
+  'offlineStatus.personalScopeValue': 'Your personal applications only',
+  'offlineStatus.permissionProtected': 'The server rechecks permissions before sync.',
 }
 
 const baseConnectivity: ConnectivitySnapshot = {
@@ -50,6 +53,7 @@ function renderCenter(overrides: Partial<ConnectivitySnapshot> = {}) {
       language="en"
       snapshotActive
       snapshotSavedAt="2026-07-19T09:30:00.000Z"
+      offlineAccessExpiresAt="2026-07-19T21:30:00.000Z"
       pendingCount={2}
       blockedCount={0}
       syncing={false}
@@ -73,6 +77,8 @@ describe('OfflineStatusCenter', () => {
 
     expect(screen.getByRole('dialog', { name: 'Connection and offline status' })).toBeTruthy()
     expect(screen.getByText('The server cannot be reached.')).toBeTruthy()
+    expect(screen.getByText('Your personal applications only')).toBeTruthy()
+    expect(screen.getByText('The server rechecks permissions before sync.')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Work offline' }))
     expect(onToggleOffline).toHaveBeenCalledTimes(1)
   })

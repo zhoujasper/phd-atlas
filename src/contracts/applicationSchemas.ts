@@ -1,14 +1,24 @@
 import { z } from 'zod'
 
-export const ApplicationStatusSchema = z.enum([
-  'Draft',
-  'Preparing',
-  'Submitted',
-  'Interview',
-  'Accepted',
-  'Rejected',
-  'Waitlist',
+const builtInApplicationStatuses = new Map([
+  ['draft', 'Draft'],
+  ['preparing', 'Preparing'],
+  ['submitted', 'Submitted'],
+  ['interview', 'Interview'],
+  ['accepted', 'Accepted'],
+  ['rejected', 'Rejected'],
+  ['waitlist', 'Waitlist'],
 ])
+
+export const ApplicationStatusSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .refine((status) => {
+    const canonical = builtInApplicationStatuses.get(status.toLocaleLowerCase())
+    return canonical === undefined || canonical === status
+  }, 'Built-in application statuses must use their canonical value.')
 
 export const MaterialStatusSchema = z.string().trim().min(1).max(64)
 
@@ -19,6 +29,10 @@ const SchoolLogoSchema = z.object({
   dataUrl: z.string().max(260_000).regex(/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/),
   source: z.enum(['website', 'link', 'upload']),
   sourceUrl: z.url().max(2_048).refine((value) => value.startsWith('https://')).optional(),
+  websiteUrl: z.url().max(2_048).refine((value) => value.startsWith('https://')).optional(),
+  cacheKey: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  assetKey: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  candidateKind: z.string().max(64).optional(),
   updatedAt: z.string().max(64),
 })
 
@@ -241,6 +255,8 @@ export const ApplicationSchema = z.object({
     homepage: OptionalUrlSchema,
     research: z.string().min(1),
     lab: z.string().min(1),
+    labUrl: OptionalUrlSchema.optional(),
+    projectUrl: OptionalUrlSchema.optional(),
   }),
   school: z.object({
     name: z.string().min(1),
@@ -250,12 +266,12 @@ export const ApplicationSchema = z.object({
     logoAutoDetect: z.boolean().optional(),
   }),
   program: z.string().min(1),
-  deadline: z.iso.date(),
+  deadline: ReminderDateSchema,
   status: ApplicationStatusSchema,
   progress: z.number().min(0).max(100),
   priority: z.number().min(0).max(100),
   tags: z.array(z.string()),
-  nextReminder: z.iso.date(),
+  nextReminder: ReminderDateSchema,
   result: z.string(),
   dossierCards: z.array(DossierCardSchema).optional(),
   materials: z.array(MaterialSchema),
@@ -358,6 +374,8 @@ export const SystemSettingsSchema = z.object({
   smtpPass: z.string().optional(),
   smtpTls: z.boolean().optional(),
   adminSessionDurationMinutes: z.number().int().optional(),
+  adminEntryHidden: z.boolean().optional(),
+  adminEntryCodeSet: z.boolean().optional(),
 })
 
 export const AuthSessionSchema = z.object({

@@ -2,7 +2,10 @@ import http from 'node:http'
 import https from 'node:https'
 
 const healthUrl = new URL(process.env.API_HEALTH_URL || 'http://127.0.0.1:4317/api/health')
-const timeoutMs = 30_000
+const configuredTimeoutMs = Number.parseInt(process.env.API_HEALTH_TIMEOUT_MS ?? '', 10)
+const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs >= 1_000
+  ? configuredTimeoutMs
+  : 90_000
 const retryDelayMs = 250
 const deadline = Date.now() + timeoutMs
 let ready = false

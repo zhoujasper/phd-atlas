@@ -13,6 +13,7 @@ vi.mock('./mailer.js', () => ({
 }))
 
 import { deliverSystemEmail, deliverUserComposedEmail } from './mailDelivery.js'
+import { MailerError } from './mailer.js'
 
 const message = {
   to: 'recipient@example.com',
@@ -67,5 +68,21 @@ describe('mail delivery transport policy', () => {
       from: 'author@example.com',
       to: 'recipient@example.com',
     }))
+  })
+
+  it('never stores a verification body or full recipient when SMTP is unavailable', async () => {
+    sendMail.mockRejectedValue(new MailerError('NOT_CONFIGURED', 'SMTP is not configured'))
+    const store = { settings: {}, systemEvents: [] }
+
+    await deliverSystemEmail(store, {
+      ...message,
+      text: 'Secret code: 123456',
+      html: '<p>Secret code: 123456</p>',
+    })
+
+    const audit = JSON.stringify(store.systemEvents)
+    expect(audit).not.toContain('123456')
+    expect(audit).not.toContain('recipient@example.com')
+    expect(audit).toContain('r***@example.com')
   })
 })

@@ -108,6 +108,10 @@
     "INVALID_CREDENTIALS": "メールアドレスまたはパスワードが間違っています。",
     "FORBIDDEN": "このアクションを実行する権限がありません。",
     "REGISTRATION_CLOSED": "新規ユーザー登録は無効となっております。",
+    "REGISTRATION_EMAIL_NOT_ALLOWED": "このメールドメインは登録に使用できません。",
+    "PASSWORD_TOO_WEAK": "15文字以上で、一般的・予測可能・漏えい済みではないパスワードを選んでください。",
+    "PASSWORD_CHECK_UNAVAILABLE": "パスワードの安全性確認は一時的に利用できません。",
+    "HUMAN_VERIFICATION_UNAVAILABLE": "人間による操作の確認は一時的に利用できません。",
     "EMAIL_EXISTS": "このメールのアカウントはすでに存在します。",
     "EMAIL_ALREADY_VERIFIED": "この受信メールはすでに確認されています。",
     "EMAIL_LIMIT_REACHED": "受信メールアドレスは5件まで保存できます。",
@@ -223,7 +227,6 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "チーム探索では、チームと割り当てられた学生の両方を選択してください。",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "選択した指導教員には確認済みのメールアドレスがありません。",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "このプログラムを出願に追加する前に、有効な指導教員プロフィールとメールアドレスが必要です。",
-    "DISCOVER_PROGRAM_NOT_VERIFIED": "このプログラムには確認済みの公式ソースまたは現在の出願締切がありません。インポート前に調査を更新してください。",
     "MAIL_ATTACHMENT_TOO_LARGE": "添付ファイルのサイズが大きすぎるため、メールに追加できません。"
   },
   "apiErrorFields": {
@@ -333,6 +336,13 @@
     "serverUnavailable": "サーバーが利用できません",
     "updateReady": "アップデートの準備ができました",
     "panelTitle": "接続とオフラインの状態",
+    "launchTitle": "現在オフラインです",
+    "launchDetail": "アプリ画面と閲覧済みの静的リソースは引き続き開けます。再接続するとサインインでき、オフラインでは以前に承認された有効期限内の個人ワークスペースだけを開けます。",
+    "noLocalCopy": "この端末には利用可能な承認済みローカルワークスペースがありません。",
+    "permissionProtected": "オフラインデータを権限として扱うことはありません。同期のたびにサーバーが本人確認、所有権、アクセス権、バージョンを再確認します。",
+    "personalScopeValue": "本人所有の個人出願のみ",
+    "accessUntil": "オフラインアクセス期限",
+    "authorizationExpired": "安全なオフラインアクセスが終了しました。再接続してサインインしてください。",
     "offlineDetail": "ローカル コピーから作業を続けることができます。サポートされている個人アプリケーションの編集は、接続が戻ったときに同期されます。",
     "manualDetail": "オフラインで作業することを選択しました。個人的なアプリケーションの編集はローカルに保存され、オンライン モードを再開するまで待機します。",
     "serverUnavailableDetail": "このデバイスはインターネットにアクセスできますが、PhD Atlas はサーバーにアクセスできません。ローカルでの作業は引き続き可能です。",
@@ -830,5 +840,21 @@
     "moveBoardCardRight": "フォーカスされたボードカードを右に移動します",
     "deleteSelected": "選択した項目を削除します",
     "clearSelection": "現在の選択をクリア"
+  },
+  "projectFooter": {
+    "ariaLabel": "プロジェクト情報",
+    "projectName": "PhD Atlas",
+    "authorName": "Jasper Zhou",
+    "projectHome": "PhD Atlas のホームを開く",
+    "by": "作者",
+    "repository": "GitHub",
+    "repositoryAria": "PhD Atlas の GitHub リポジトリを開く",
+    "support": "支援",
+    "supportAria": "PhD Atlas を支援",
+    "dialogTitle": "PhD Atlas に少しだけパワーを",
+    "dialogDescription": "使いやすいほうをスキャンしてください。応援が次の小さなアップデートの力になります。",
+    "wechat": "WeChat Pay",
+    "alipay": "Alipay",
+    "qrAlt": "{method} の決済用QRコード"
   }
 }

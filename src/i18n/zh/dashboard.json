@@ -119,6 +119,11 @@
     "guidanceShowDetails": "查看{name}的详情",
     "guidanceOffice": "办公室",
     "guidanceAvailability": "可联系时间",
-    "guidanceSupport": "我可以提供的帮助"
+    "guidanceSupport": "我可以提供的帮助",
+    "guidanceContact": "联系{name}",
+    "guidanceContactOptions": "联系{name}的方式",
+    "guidanceInApp": "站内消息",
+    "guidanceMessageTitle": "给{name}发消息",
+    "guidanceMessageSent": "已向{name}发送消息。"
   }
 }

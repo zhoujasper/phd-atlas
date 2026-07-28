@@ -231,7 +231,7 @@ adapter 冒烟测试。
 Beta 更新包执行同样的运行时代码安装和回滚测试，但不承诺不同 Beta 版本之间的
 数据库结构或已存数据兼容。每次 Beta 更新前必须备份整个工作空间。
 
-已经运行 `v0.1.0-beta.2` 或更高版本的 Docker、Windows 原生或 Linux 原生部署：
+已经运行 `v0.1.0-beta.6` 或更高版本的 Docker、Windows 原生或 Linux 原生部署：
 
 1. 在 Admin 创建完整工作空间备份，并备份停止状态的 `storage/`。
 2. 打开 **管理后台 → 系统信息 → 系统更新**，点击 **检查更新**，检查公开
@@ -239,6 +239,12 @@ Beta 更新包执行同样的运行时代码安装和回滚测试，但不承诺
 3. 服务器无法连接 GitHub 时，展开 **手动更新**；在可信设备下载 `.tar.gz`
    和 `.sha256`、验证 checksum，再上传更新包。
 4. 等待服务重启，重新登录并确认版本、健康状态和一次代表性读写。
+
+**Beta.6 一次性迁移：** Beta.5 及更早版本必须在可信设备下载 Beta.6 Release 的
+`.tar.gz` 资产，再通过**手动更新**上传；本次不要依赖旧版“检查更新 → 安装”的
+交接流程。成功运行 Beta.6 后，后续 Release 才使用持久化全自动更新器。Beta.6
+更新包还会携带经过完整性校验的完整生产依赖图，并为未来服务端扩展保留有界的
+国际/国内镜像回退。
 
 已经发布的 `v0.1.0-beta.1` 早于这套受保护更新流程。Docker 用户必须先固定或
 选择已经发布的 beta.2 镜像，再运行 `docker compose pull` 和
@@ -275,12 +281,11 @@ DEPLOYMENT.zh-CN.md   中文多平台部署指南
 提交前请运行：
 
 ```bash
-npm run lint
-npm run i18n:check
-npx tsc --noEmit
-npm test
-npm run build
+npm run verify:tree
 ```
+
+发布维护者还必须运行 `npm run verify:release`；它会复现更新包，并在发布标签前
+实际启动 amd64 与 arm64 生产容器。
 
 ## 许可证
 

@@ -1,5 +1,5 @@
 import { AlertTriangle, Check, Copy } from 'lucide-react'
-import { useState, useCallback } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '../hooks/useI18n'
 import { copyToClipboard } from './clipboard'
 
@@ -8,15 +8,22 @@ export function CopyButton({
   label,
   size = 14,
   className = '',
+  onNotify,
 }: {
   value: string
   label: string
   size?: number
   className?: string
+  onNotify?: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
 }) {
   const { tx, format } = useI18n()
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const resetTimerRef = useRef<number | null>(null)
   const copyLabel = format(tx('copy'), { label })
+
+  useEffect(() => () => {
+    if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current)
+  }, [])
 
   const handleCopy = useCallback(
     async (e: React.MouseEvent) => {
@@ -24,9 +31,14 @@ export function CopyButton({
       e.preventDefault()
       const ok = await copyToClipboard(value)
       setState(ok ? 'copied' : 'failed')
-      setTimeout(() => setState('idle'), 1800)
+      if (!ok) onNotify?.(tx('copyFailed'), 'error')
+      if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current)
+      resetTimerRef.current = window.setTimeout(() => {
+        resetTimerRef.current = null
+        setState('idle')
+      }, 1800)
     },
-    [value],
+    [onNotify, tx, value],
   )
 
   const stateLabel = state === 'copied' ? tx('copiedBang') : state === 'failed' ? tx('copyFailed') : copyLabel
@@ -39,13 +51,17 @@ export function CopyButton({
       aria-label={stateLabel}
       title={stateLabel}
     >
-      {state === 'copied' ? (
-        <Check size={size} aria-hidden="true" className="copy-check" />
-      ) : state === 'failed' ? (
-        <AlertTriangle size={size} aria-hidden="true" />
-      ) : (
-        <Copy size={size} aria-hidden="true" />
-      )}
+      <span className="copy-button-icon-stage" aria-hidden="true">
+        <span className={`copy-button-state-icon idle${state === 'idle' ? ' is-active' : ''}`}>
+          <Copy size={size} />
+        </span>
+        <span className={`copy-button-state-icon copied${state === 'copied' ? ' is-active' : ''}`}>
+          <Check size={size} />
+        </span>
+        <span className={`copy-button-state-icon failed${state === 'failed' ? ' is-active' : ''}`}>
+          <AlertTriangle size={size} />
+        </span>
+      </span>
     </button>
   )
 }

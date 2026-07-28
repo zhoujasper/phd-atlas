@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { AuthSession } from '../../api/phdApi'
@@ -175,7 +175,7 @@ describe('SettingsScreen share scope editor', () => {
               id: 'share_1',
               token: 'scope-test-token',
               createdAt: '2026-07-21T09:00:00.000Z',
-              expiresAt: '2026-07-28T09:00:00.000Z',
+              expiresAt: '2099-07-28T09:00:00.000Z',
               permission: 'view',
               sections: ['overview', 'materials'],
             },
@@ -197,7 +197,7 @@ describe('SettingsScreen share scope editor', () => {
     expect(onUpdateShare).toHaveBeenCalledWith(
       'application_1',
       'share_1',
-      '2026-07-28T09:00:00.000Z',
+      '2099-07-28T09:00:00.000Z',
       'view',
       ['overview', 'materials', 'tasks'],
     )
@@ -219,7 +219,7 @@ describe('SettingsScreen share scope editor', () => {
               token: 'upload-test-token',
               url: '/asset-upload/upload-test-token',
               createdAt: '2026-07-21T09:00:00.000Z',
-              expiresAt: '2026-07-28T09:00:00.000Z',
+              expiresAt: '2099-07-28T09:00:00.000Z',
             },
           }]}
           onLanguage={vi.fn()}
@@ -891,9 +891,12 @@ describe('SettingsScreen receiving delivery and passkey editing', () => {
     const input = screen.getByRole('textbox', { name: 'Device name' })
     await user.clear(input)
     await user.type(input, 'Office MacBook')
-    await user.click(screen.getByRole('button', { name: 'Save name' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save name' }))
+      await Promise.resolve()
+    })
 
-    await waitFor(() => expect(onRenamePasskey).toHaveBeenCalledWith('passkey-1', 'Office MacBook'))
+    expect(onRenamePasskey).toHaveBeenCalledWith('passkey-1', 'Office MacBook')
     expect(input.closest('.passkey-row')).toHaveClass('is-rename-closing')
   })
 

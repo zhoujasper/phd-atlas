@@ -102,15 +102,16 @@ afterEach(() => {
 })
 
 describe('TeamScreen organization settings access', () => {
-  it('shows owners only the organization name, quotas, and shared key sections', async () => {
+  it('shows owners the organization identity, permission summary, quotas, and shared key sections', async () => {
     vi.spyOn(phdApi, 'teamNotificationGroups').mockResolvedValue([])
     const view = renderSettings(ownerSession, summaryFor('owner'))
 
     expect(await screen.findByRole('heading', { name: 'Organization settings' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Organization name' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Member permissions' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Organization quotas' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Shared organization keys' })).toBeInTheDocument()
-    expect(view.container.querySelectorAll('.team-organization-settings-section')).toHaveLength(3)
+    expect(view.container.querySelectorAll('.team-organization-settings-section')).toHaveLength(4)
     expect(view.container.querySelector('.team-role-labels-panel')).not.toBeInTheDocument()
     expect(view.container.querySelector('.team-permission-matrix')).not.toBeInTheDocument()
     expect(view.container.querySelector('.team-profile-preset-settings')).not.toBeInTheDocument()

@@ -12,6 +12,11 @@ import {
   releasePendingUpdateBootClaim,
   replayActiveUpdateIfNeeded,
 } from '../server/systemUpdate.js'
+import {
+  appendSystemUpdateLog,
+  patchSystemUpdateStatus,
+} from '../server/systemUpdateJournal.js'
+import { runProductionDependencyInstall } from '../server/dependencyInstall.js'
 
 export const UPDATE_RESTART_EXIT_CODE = 75
 
@@ -155,30 +160,21 @@ export async function waitForUpdateCompletion(storageRoot, options = {}) {
 }
 
 export function installProductionDependencies(cwd, options = {}) {
-  const spawnProcess = options.spawnProcess ?? spawn
-  return new Promise((resolve, reject) => {
-    const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-    const child = spawnProcess(npmCommand, ['ci', '--omit=dev', '--no-audit', '--no-fund'], {
-      cwd,
-      env: process.env,
-      windowsHide: true,
-      stdio: 'inherit',
-    })
-    let settled = false
-    child.once('error', (error) => {
-      if (settled) return
-      settled = true
-      reject(error)
-    })
-    child.once('exit', (code, signal) => {
-      if (settled) return
-      settled = true
-      if (code === 0) {
-        resolve()
-        return
-      }
-      reject(new Error(`npm ci failed with ${signal ? `signal ${signal}` : `exit code ${code}`}.`))
-    })
+  return runProductionDependencyInstall(cwd, {
+    ...options,
+    storageRoot: options.storageRoot
+      ?? process.env.PHD_ATLAS_STORAGE_ROOT
+      ?? path.join(cwd, 'storage'),
+    onAttempt: options.onAttempt ?? (({ source, index, total }) => {
+      console.log(`[dependency-install] source ${index + 1}/${total}: ${source.label}`)
+    }),
+    onAttemptFailure: options.onAttemptFailure ?? (({ source, error }) => {
+      console.error(`[dependency-install] ${source.label} failed: ${error?.message ?? error}`)
+    }),
+    onLine: options.onLine ?? (({ streamName, message }) => {
+      const write = streamName === 'stderr' ? console.error : console.log
+      write(`[dependency-install] ${message}`)
+    }),
   })
 }
 
@@ -212,6 +208,25 @@ export async function runContainerSupervisor(options = {}) {
   const installDependencies = options.installDependencies
     ?? ((cwd) => installProductionDependencies(cwd))
   const processExists = options.processExists
+  const recordBootRollback = options.recordBootRollback ?? (async (recovery) => {
+    if (!recovery?.rolledBack) return
+    const failedVersion = recovery.result?.toVersion ?? recovery.marker?.toVersion ?? null
+    const message = `The updated server did not complete its first boot; restored ${recovery.version}.`
+    await patchSystemUpdateStatus(storageRoot, {
+      phase: 'error',
+      operationInFlight: false,
+      restartPending: false,
+      targetVersion: failedVersion,
+      errorCode: 'UPDATE_BOOT_ROLLED_BACK',
+      errorMessage: message,
+    }).catch(() => undefined)
+    await appendSystemUpdateLog(storageRoot, {
+      level: 'error',
+      phase: 'error',
+      errorCode: 'UPDATE_BOOT_ROLLED_BACK',
+      message,
+    }).catch(() => undefined)
+  })
   const recoverPendingRuntime = options.recoverPendingRuntime
     ?? (() => recoverAbandonedPendingUpdateBoot({
       projectRoot,
@@ -240,7 +255,7 @@ export async function runContainerSupervisor(options = {}) {
   )
   const baseVersion = options.baseVersion ?? imageRuntime.version
   const prepareRuntime = options.prepareRuntime ?? (async () => {
-    await recoverPendingRuntime()
+    await recordBootRollback(await recoverPendingRuntime())
     const baseRuntimeVerified = options.baseRuntimeVerified !== undefined
       ? options.baseRuntimeVerified
       : await verifyImageRuntime(projectRoot, imageRuntime)
@@ -326,6 +341,7 @@ export async function runContainerSupervisor(options = {}) {
         try {
           const recovery = await recoverPendingRuntime()
           if (recovery?.rolledBack) {
+            await recordBootRollback(recovery)
             const retryDelay = restartDelayMs(++rapidRestartCount)
             logger.error(
               `[container-entrypoint] The updated runtime failed before boot confirmation; restored ${recovery.version} and retrying in ${retryDelay}ms.`,
@@ -350,6 +366,19 @@ export async function runContainerSupervisor(options = {}) {
         await waitForUpdate(storageRoot)
       } catch (error) {
         logger.error('[container-entrypoint] Update helper did not finish cleanly; runtime preparation will remain fail-closed.', error)
+        await patchSystemUpdateStatus(storageRoot, {
+          phase: 'error',
+          operationInFlight: false,
+          restartPending: false,
+          errorCode: error?.code ?? 'UPDATE_HELPER_FAILED',
+          errorMessage: error instanceof Error ? error.message : String(error),
+        }).catch(() => undefined)
+        await appendSystemUpdateLog(storageRoot, {
+          level: 'error',
+          phase: 'error',
+          errorCode: error?.code ?? 'UPDATE_HELPER_FAILED',
+          message: error instanceof Error ? error.message : String(error),
+        }).catch(() => undefined)
       }
       const retryDelay = restartDelayMs(rapidRestartCount)
       logger.info(`[container-entrypoint] Update restart requested; restarting the server worker in ${retryDelay}ms.`)

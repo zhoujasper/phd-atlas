@@ -3,7 +3,7 @@ import Database from 'better-sqlite3'
 import tar from 'tar-fs'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { Buffer } from 'node:buffer'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
@@ -49,6 +49,7 @@ import {
   verifyDatabaseConnection,
   writeExternalDatabaseState,
 } from './databaseConnection.js'
+import { normalizeTeamMemberRelationships } from './teamPermissions.js'
 import {
   DEFAULT_ADMIN_EMAIL,
   DEFAULT_ADMIN_PASSWORD,
@@ -136,6 +137,7 @@ const storeBaselineSymbol = Symbol('phd-atlas-store-baseline')
 const backupInfoCache = new Map()
 let backupListCache = null
 let backupListCacheDirectoryStamp = null
+let backupListCacheArchiveSignature = null
 let backupListCacheGeneration = 0
 let backupListScan = null
 let activeDatabaseConfiguration = { type: 'sqlite', sqlitePath: databasePath }
@@ -178,6 +180,10 @@ const DEFAULT_FREE_SHARE_CREATE_QUOTA = 5
 const DEFAULT_PRO_SHARE_ACTIVE_QUOTA = 1000
 const DEFAULT_PRO_SHARE_CREATE_QUOTA = 5000
 const DEFAULT_SHARE_QUOTA = DEFAULT_FREE_SHARE_ACTIVE_QUOTA
+const MAX_SCHOOL_LOGO_CACHE_ENTRIES = 512
+const MAX_SCHOOL_LOGO_CACHE_DATA_URL_LENGTH = 1_400_000
+const SYSTEM_EVENT_WORKING_SET_LIMIT = 500
+const MAX_SYSTEM_LOG_RETENTION_DAYS = 3650
 const MAX_SHARE_QUOTA = 10_000
 const DEFAULT_TRASH_RETENTION_DAYS = 30
 const PLAN_QUOTA_VERSION = 2
@@ -191,7 +197,7 @@ const MAX_BACKUPS_PER_APP_LIMIT = 100
 const MIN_SYSTEM_BACKUP_LIMIT = 1
 const MAX_SYSTEM_BACKUP_LIMIT = 20
 const DEMO_TEAM_ID = 'team_demo_phd_atlas'
-const DEMO_TEAM_SEAT_LIMIT = 12
+const DEMO_TEAM_SEAT_LIMIT = 16
 const DEMO_TEAM_MEMBER_ACCOUNTS = [
   {
     key: 'teacher',
@@ -199,6 +205,15 @@ const DEMO_TEAM_MEMBER_ACCOUNTS = [
     name: 'Dr. Mei Chen',
     email: 'teacher@phd-atlas.local',
     teamRole: 'admin',
+    contactProfile: {
+      title: 'Director of Graduate Research',
+      department: 'Department of Computer Science',
+      phone: '+44 20 7946 0808',
+      website: 'https://example.edu/mei-chen',
+      office: 'Research Building 5.02',
+      availability: 'Monday 13:00–15:00 · Application strategy, research statements, and supervisor outreach',
+      bio: 'Leads graduate mentoring across trustworthy AI, robotics, and interdisciplinary computing.',
+    },
   },
   {
     key: 'teacherB',
@@ -206,6 +221,47 @@ const DEMO_TEAM_MEMBER_ACCOUNTS = [
     name: 'Prof. Alex Rivera',
     email: 'teacher.alex@phd-atlas.local',
     teamRole: 'admin',
+    contactProfile: {
+      title: 'Professor of Human-Centred AI',
+      department: 'School of Computing',
+      phone: '+44 20 7946 0821',
+      website: 'https://example.edu/alex-rivera',
+      office: 'Innovation Building 4.18',
+      availability: 'Tuesday 14:00–16:00 · Research-fit reviews, HCI portfolios, and interview preparation',
+      bio: 'Works on human-AI collaboration, accessible systems, and responsible evaluation.',
+    },
+  },
+  {
+    key: 'teacherC',
+    id: 'user_demo_teacher_sofia',
+    name: 'Dr. Sofia Berg',
+    email: 'teacher.sofia@phd-atlas.local',
+    teamRole: 'admin',
+    contactProfile: {
+      title: 'Associate Professor of Computational Biology',
+      department: 'Department of Life Sciences',
+      phone: '+44 20 7946 0834',
+      website: 'https://example.edu/sofia-berg',
+      office: 'Bioinformatics Centre 2.11',
+      availability: 'Wednesday 10:00–12:00 · Research proposals, methods design, and fellowship strategy',
+      bio: 'Supervises interdisciplinary work in single-cell modelling, causal inference, and scientific machine learning.',
+    },
+  },
+  {
+    key: 'teacherD',
+    id: 'user_demo_teacher_kwame',
+    name: 'Dr. Kwame Mensah',
+    email: 'teacher.kwame@phd-atlas.local',
+    teamRole: 'admin',
+    contactProfile: {
+      title: 'Senior Lecturer in Sustainable Systems',
+      department: 'Department of Engineering',
+      phone: '+44 20 7946 0860',
+      website: 'https://example.edu/kwame-mensah',
+      office: 'Energy Lab 3.06',
+      availability: 'Friday 09:30–11:30 · Funding plans, quantitative methods, and mock interviews',
+      bio: 'Researches energy systems, climate adaptation, and decision-making under uncertainty.',
+    },
   },
   {
     key: 'studentA',
@@ -213,6 +269,7 @@ const DEMO_TEAM_MEMBER_ACCOUNTS = [
     name: 'Lina Zhao',
     email: 'student.lina@phd-atlas.local',
     teamRole: 'member',
+    teacherKeys: ['teacher', 'teacherB'],
   },
   {
     key: 'studentB',
@@ -220,6 +277,55 @@ const DEMO_TEAM_MEMBER_ACCOUNTS = [
     name: 'Omar Patel',
     email: 'student.omar@phd-atlas.local',
     teamRole: 'member',
+    teacherKeys: ['teacher'],
+  },
+  {
+    key: 'studentC',
+    id: 'user_demo_student_hana',
+    name: 'Hana Suzuki',
+    email: 'student.hana@phd-atlas.local',
+    teamRole: 'member',
+    teacherKeys: ['teacherB', 'teacherC'],
+  },
+  {
+    key: 'studentD',
+    id: 'user_demo_student_diego',
+    name: 'Diego Morales',
+    email: 'student.diego@phd-atlas.local',
+    teamRole: 'member',
+    teacherKeys: ['teacher', 'teacherD'],
+  },
+  {
+    key: 'studentE',
+    id: 'user_demo_student_amina',
+    name: 'Amina Okafor',
+    email: 'student.amina@phd-atlas.local',
+    teamRole: 'member',
+    teacherKeys: ['teacherC'],
+  },
+  {
+    key: 'studentF',
+    id: 'user_demo_student_minseo',
+    name: 'Minseo Park',
+    email: 'student.minseo@phd-atlas.local',
+    teamRole: 'member',
+    teacherKeys: ['teacherB', 'teacherD'],
+  },
+  {
+    key: 'studentG',
+    id: 'user_demo_student_eva',
+    name: 'Eva Müller',
+    email: 'student.eva@phd-atlas.local',
+    teamRole: 'member',
+    teacherKeys: ['teacher', 'teacherB', 'teacherC'],
+  },
+  {
+    key: 'studentH',
+    id: 'user_demo_student_noah',
+    name: 'Noah Williams',
+    email: 'student.noah@phd-atlas.local',
+    teamRole: 'member',
+    teacherKeys: [],
   },
 ]
 
@@ -283,6 +389,37 @@ function normalizeMembershipPlan(value, role) {
   if (role === 'admin') return 'pro'
   if (value === 'team' || value === 'pro') return value
   return 'free'
+}
+
+const BUILT_IN_APPLICATION_STATUS_KEYS = new Set([
+  'draft',
+  'preparing',
+  'submitted',
+  'interview',
+  'accepted',
+  'rejected',
+  'waitlist',
+])
+
+function normalizeCustomApplicationStatuses(value) {
+  if (!Array.isArray(value)) return []
+  const statuses = []
+  const seen = new Set()
+  for (const candidate of value) {
+    if (statuses.length >= 30) break
+    if (typeof candidate !== 'string') continue
+    const status = candidate.trim().replace(/\s+/g, ' ')
+    const key = status.toLocaleLowerCase()
+    if (
+      !status
+      || status.length > 64
+      || BUILT_IN_APPLICATION_STATUS_KEYS.has(key)
+      || seen.has(key)
+    ) continue
+    seen.add(key)
+    statuses.push(status)
+  }
+  return statuses
 }
 
 function migrateStoredQuotaSettings(user) {
@@ -461,6 +598,7 @@ function normalizeUserSettings(user) {
     snippetPhraseTailZh: settings.snippetPhraseTailZh ?? '',
     snippetPhraseLeadEn: settings.snippetPhraseLeadEn ?? '',
     snippetPhraseTailEn: settings.snippetPhraseTailEn ?? '',
+    customApplicationStatuses: normalizeCustomApplicationStatuses(settings.customApplicationStatuses),
     aiProfile,
     profilePresets: Array.isArray(settings.profilePresets) ? settings.profilePresets : undefined,
   }
@@ -536,7 +674,7 @@ function mergeStoreChanges(latest, proposed, baseline) {
       .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))),
     systemEvents: mergeEntityChanges(latest.systemEvents, proposed.systemEvents, baseline.systemEvents)
       .sort((a, b) => String(b.time).localeCompare(String(a.time)))
-      .slice(0, 500),
+      .slice(0, SYSTEM_EVENT_WORKING_SET_LIMIT),
   }
 }
 
@@ -546,6 +684,19 @@ function boolInt(value) {
 
 function intBool(value) {
   return Boolean(value)
+}
+
+export function normalizeSystemLogRetentionDays(value) {
+  if (value === null || value === undefined || value === '' || Number(value) === 0) return null
+  const numeric = Number(value)
+  if (!Number.isInteger(numeric)) return null
+  return Math.min(MAX_SYSTEM_LOG_RETENTION_DAYS, Math.max(1, numeric))
+}
+
+function systemLogRetentionCutoff(value, now = Date.now()) {
+  const days = normalizeSystemLogRetentionDays(value)
+  if (days === null) return null
+  return new Date(now - (days * 24 * 60 * 60 * 1000)).toISOString()
 }
 
 function backupFileError(status, code, message) {
@@ -1423,7 +1574,11 @@ function getDb() {
     CREATE TABLE IF NOT EXISTS system_settings (
       id TEXT PRIMARY KEY,
       allow_registration INTEGER NOT NULL,
+      admin_entry_hidden INTEGER NOT NULL DEFAULT 0,
+      admin_entry_code_hash TEXT NOT NULL DEFAULT '',
+      admin_entry_code_salt TEXT NOT NULL DEFAULT '',
       notification_mailbox TEXT NOT NULL,
+      system_log_retention_days INTEGER NOT NULL DEFAULT 0,
       backup_frequency TEXT NOT NULL,
       max_backups_per_app_limit INTEGER NOT NULL DEFAULT 20,
       encryption_at_rest INTEGER NOT NULL,
@@ -1463,6 +1618,22 @@ function getDb() {
     CREATE INDEX IF NOT EXISTS idx_applications_owner_status
       ON applications(owner_id, status);
 
+    CREATE TABLE IF NOT EXISTS school_logo_cache (
+      cache_key TEXT PRIMARY KEY,
+      website_url TEXT NOT NULL,
+      data_url TEXT,
+      source_url TEXT,
+      candidate_kind TEXT,
+      found INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS school_logo_assets (
+      asset_key TEXT PRIMARY KEY,
+      data_url TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS profile_assets (
       id TEXT PRIMARY KEY,
       owner_id TEXT NOT NULL,
@@ -1496,6 +1667,37 @@ function getDb() {
 
     CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash
       ON password_reset_tokens(token_hash);
+
+    CREATE TABLE IF NOT EXISTS security_challenges (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      subject_hash TEXT NOT NULL DEFAULT '',
+      context_hash TEXT NOT NULL DEFAULT '',
+      verifier_hash TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 5,
+      created_at TEXT NOT NULL,
+      not_before_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_security_challenges_expiry
+      ON security_challenges(expires_at);
+
+    CREATE TABLE IF NOT EXISTS security_rate_limits (
+      key_hash TEXT PRIMARY KEY,
+      bucket_name TEXT NOT NULL,
+      window_started_at INTEGER NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      blocked_until INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_security_rate_limits_updated
+      ON security_rate_limits(updated_at);
 
     CREATE TABLE IF NOT EXISTS webauthn_passkeys (
       id TEXT PRIMARY KEY,
@@ -1736,6 +1938,10 @@ function getDb() {
   addSystemColumn('encryption_password_hash', "TEXT NOT NULL DEFAULT ''")
   addSystemColumn('encryption_password_salt', "TEXT NOT NULL DEFAULT ''")
   addSystemColumn('sqlite_encryption', 'INTEGER NOT NULL DEFAULT 0')
+  addSystemColumn('admin_entry_hidden', 'INTEGER NOT NULL DEFAULT 0')
+  addSystemColumn('admin_entry_code_hash', "TEXT NOT NULL DEFAULT ''")
+  addSystemColumn('admin_entry_code_salt', "TEXT NOT NULL DEFAULT ''")
+  addSystemColumn('system_log_retention_days', 'INTEGER NOT NULL DEFAULT 0')
 
   const aiKeyColumns = new Set(
     db.prepare('PRAGMA table_info(ai_api_keys)').all().map((column) => column.name),
@@ -1854,7 +2060,11 @@ function getDb() {
 function settingsFromRow(row) {
   return {
     allowRegistration: intBool(row.allow_registration),
+    adminEntryHidden: intBool(row.admin_entry_hidden ?? 0),
+    adminEntryCodeHash: row.admin_entry_code_hash ?? '',
+    adminEntryCodeSalt: row.admin_entry_code_salt ?? '',
     notificationMailbox: row.notification_mailbox,
+    systemLogRetentionDays: normalizeSystemLogRetentionDays(row.system_log_retention_days),
     backupFrequency: normalizeBackupFrequency(row.backup_frequency),
     maxBackupsPerAppLimit: Math.min(
       MAX_SYSTEM_BACKUP_LIMIT,
@@ -1881,8 +2091,14 @@ function settingsFromRow(row) {
 /** Masks the system SMTP secret before the settings object is sent to any client. */
 export function publicSystemSettings(settings) {
   if (!settings) return settings
+  const {
+    adminEntryCodeHash: _adminEntryCodeHash,
+    adminEntryCodeSalt: _adminEntryCodeSalt,
+    ...publicSettings
+  } = settings
   return {
-    ...settings,
+    ...publicSettings,
+    adminEntryCodeSet: Boolean(settings.adminEntryCodeHash && settings.adminEntryCodeSalt),
     smtpPass: '',
     smtpPassSet: Boolean(settings.smtpPass),
     // Never return password material to the client.
@@ -1917,15 +2133,70 @@ function userFromRow(row) {
   return user
 }
 
-function applicationFromRow(row) {
-  const payload = decodePayloadFromStorage(row.payload_json)
+function schoolLogoCacheEntryFromRow(row) {
+  if (!row) return null
   return {
-    ...payload,
+    cacheKey: row.cache_key,
+    websiteUrl: row.website_url,
+    dataUrl: row.data_url || undefined,
+    sourceUrl: row.source_url || undefined,
+    candidateKind: row.candidate_kind || undefined,
+    found: Boolean(row.found),
+    updatedAt: row.updated_at,
+  }
+}
+
+function applicationFromRow(row, schoolLogoAssets = new Map()) {
+  const payload = decodePayloadFromStorage(row.payload_json)
+  const storedLogo = payload.school?.logo
+  const cachedDataUrl = storedLogo?.assetKey
+    ? schoolLogoAssets.get(storedLogo.assetKey)
+    : null
+  const hydratedPayload = storedLogo?.assetKey && !storedLogo.dataUrl && cachedDataUrl
+    ? {
+        ...payload,
+        school: {
+          ...payload.school,
+          logo: {
+            ...storedLogo,
+            dataUrl: cachedDataUrl,
+          },
+        },
+      }
+    : payload
+  return {
+    ...hydratedPayload,
     id: row.id,
     ownerId: row.owner_id,
     teamId: row.team_id ?? null,
-    createdAt: payload.createdAt,
+    createdAt: hydratedPayload.createdAt,
     updatedAt: row.updated_at,
+  }
+}
+
+function validSchoolLogoCacheKey(value) {
+  return /^[a-f0-9]{64}$/u.test(String(value || ''))
+}
+
+function schoolLogoApplicationForStorage(application, assetStatement) {
+  const logo = application.school?.logo
+  if (logo?.source !== 'website' || !logo.dataUrl) return application
+  const assetKey = createHash('sha256').update(logo.dataUrl).digest('hex')
+  assetStatement.run(
+    assetKey,
+    logo.dataUrl,
+    logo.updatedAt ?? nowStamp(),
+  )
+  const { dataUrl: _dataUrl, ...storedLogo } = logo
+  return {
+    ...application,
+    school: {
+      ...application.school,
+      logo: {
+        ...storedLogo,
+        assetKey,
+      },
+    },
   }
 }
 
@@ -1986,7 +2257,11 @@ async function createSeedStore() {
     },
     settings: {
       allowRegistration: true,
+      adminEntryHidden: false,
+      adminEntryCodeHash: '',
+      adminEntryCodeSalt: '',
       notificationMailbox: PUBLIC_DISTRIBUTION ? '' : 'admin-alerts@phd-atlas.local',
+      systemLogRetentionDays: null,
       backupFrequency: DEFAULT_BACKUP_FREQUENCY,
       maxBackupsPerAppLimit: DEFAULT_PRO_MAX_BACKUPS_PER_APP,
       encryptionAtRest: true,
@@ -2360,7 +2635,17 @@ function ensureDemoUser(database, account, passwordHash, now) {
   return userId
 }
 
-function ensureDemoTeamMember(database, { key, teamId, userId, email, role, invitedBy, now }) {
+function ensureDemoTeamMember(database, {
+  key,
+  teamId,
+  userId,
+  email,
+  role,
+  invitedBy,
+  relationships = {},
+  contactProfile = {},
+  now,
+}) {
   const normalizedEmail = email.toLowerCase()
   let existing = database
     .prepare('SELECT * FROM team_members WHERE team_id = ? AND user_id = ?')
@@ -2376,10 +2661,20 @@ function ensureDemoTeamMember(database, { key, teamId, userId, email, role, invi
       .prepare(
         `UPDATE team_members
          SET user_id = ?, invited_email = ?, role = ?, status = 'active', invited_by = ?,
-             invite_token_hash = NULL, invite_expires_at = NULL, removed_at = NULL, updated_at = ?
+             invite_token_hash = NULL, invite_expires_at = NULL, relationship_json = ?,
+             profile_json = ?, removed_at = NULL, updated_at = ?
          WHERE id = ?`,
       )
-      .run(userId, normalizedEmail, role, invitedBy, now, existing.id)
+      .run(
+        userId,
+        normalizedEmail,
+        role,
+        invitedBy,
+        toJson(relationships),
+        toJson(contactProfile),
+        now,
+        existing.id,
+      )
     return existing.id
   }
 
@@ -2398,19 +2693,101 @@ function ensureDemoTeamMember(database, { key, teamId, userId, email, role, invi
         invited_by,
         invite_token_hash,
         invite_expires_at,
+        relationship_json,
+        profile_json,
         created_at,
         updated_at,
         removed_at
       )
-      VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, NULL, ?, ?, NULL)`,
+      VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, NULL, ?, ?, ?, ?, NULL)`,
     )
-    .run(memberId, teamId, userId, normalizedEmail, role, invitedBy, now, now)
+    .run(
+      memberId,
+      teamId,
+      userId,
+      normalizedEmail,
+      role,
+      invitedBy,
+      toJson(relationships),
+      toJson(contactProfile),
+      now,
+      now,
+    )
   return memberId
 }
 
 function demoTeamApplications(teamId, users, now) {
   const teacherId = users.teacher
   const secondTeacherId = users.teacherB
+  const compactApplication = ({
+    id,
+    ownerId,
+    school,
+    country,
+    website,
+    program,
+    professor,
+    email,
+    research,
+    deadline,
+    status,
+    progress,
+    priority,
+    teacher,
+    task,
+  }) => ({
+    id,
+    ownerId,
+    teamId,
+    professor: {
+      english: professor,
+      chinese: '',
+      email,
+      phone: '',
+      social: '',
+      homepage: website,
+      research,
+      lab: `${research.split(',')[0]} Lab`,
+    },
+    school: { name: school, country, website },
+    program,
+    deadline,
+    status,
+    progress,
+    priority,
+    tags: [research.split(',')[0], status.toLowerCase(), 'team-review'],
+    nextReminder: '2026-08-05',
+    result: 'Team review in progress',
+    materials: [
+      { id: `${id}-sop`, name: 'Statement of Purpose', type: 'DOCX', status: progress > 60 ? 'Submitted' : 'Draft', version: 'v2', updatedAt: '2026-07-24', versions: [] },
+      { id: `${id}-proposal`, name: 'Research Proposal', type: 'PDF', status: progress > 70 ? 'Submitted' : 'Needs revision', version: 'v3', updatedAt: '2026-07-23', versions: [] },
+      { id: `${id}-cv`, name: 'Academic CV', type: 'PDF', status: 'Submitted', version: 'v4', updatedAt: '2026-07-20', versions: [] },
+    ],
+    communications: [
+      { id: `${id}-mail`, subject: 'Supervisor discussion', channel: 'Email', date: '2026-07-22', summary: 'The prospective supervisor requested a sharper methods and contribution statement.' },
+    ],
+    scholarships: [],
+    tasks: [
+      { id: `${id}-task`, title: task, due: '2026-08-05', done: false },
+    ],
+    timeline: [
+      { id: `${id}-timeline`, title: 'Collaborative review started', date: '2026-07-22', note: 'The student shared the application with the organization mentoring team.' },
+    ],
+    versions: [],
+    shares: [],
+    reviewComments: [
+      {
+        id: `${id}-review`,
+        authorId: teacher,
+        authorName: teacher === users.teacherC ? 'Dr. Sofia Berg' : teacher === users.teacherD ? 'Dr. Kwame Mensah' : 'Prof. Alex Rivera',
+        body: 'Please connect the proposed method to one concrete evaluation milestone and explain the fallback plan.',
+        createdAt: '2026-07-24T10:00:00.000Z',
+        targetTab: 'dossier',
+      },
+    ],
+    createdAt: now,
+    updatedAt: '2026-07-24T10:00:00.000Z',
+  })
   return [
     {
       id: 'team-demo-lina-mit-robotics',
@@ -2660,6 +3037,74 @@ function demoTeamApplications(teamId, users, now) {
       createdAt: now,
       updatedAt: '2026-07-05T11:05:00.000Z',
     },
+    compactApplication({
+      id: 'team-demo-hana-eth-bioai',
+      ownerId: users.studentC,
+      school: 'ETH Zürich',
+      country: 'Switzerland',
+      website: 'https://ethz.ch/en/doctorate.html',
+      program: 'Computational Biology PhD',
+      professor: 'Prof. Elena Rossi',
+      email: 'elena.rossi@ethz.ch',
+      research: 'single-cell modelling, causal representation learning',
+      deadline: '2026-12-01',
+      status: 'Preparing',
+      progress: 47,
+      priority: 88,
+      teacher: users.teacherC,
+      task: 'Strengthen the biological validation plan',
+    }),
+    compactApplication({
+      id: 'team-demo-diego-imperial-energy',
+      ownerId: users.studentD,
+      school: 'Imperial College London',
+      country: 'United Kingdom',
+      website: 'https://www.imperial.ac.uk/study/courses/postgraduate-taught/',
+      program: 'Sustainable Energy Futures PhD',
+      professor: 'Dr. Priya Nair',
+      email: 'priya.nair@imperial.ac.uk',
+      research: 'energy systems, robust optimisation',
+      deadline: '2026-09-30',
+      status: 'Draft',
+      progress: 39,
+      priority: 79,
+      teacher: users.teacherD,
+      task: 'Add the uncertainty-aware policy experiment',
+    }),
+    compactApplication({
+      id: 'team-demo-amina-cambridge-genomics',
+      ownerId: users.studentE,
+      school: 'University of Cambridge',
+      country: 'United Kingdom',
+      website: 'https://www.postgraduate.study.cam.ac.uk/',
+      program: 'Genomic Medicine PhD',
+      professor: 'Prof. Alice Morgan',
+      email: 'alice.morgan@cam.ac.uk',
+      research: 'population genomics, equitable clinical prediction',
+      deadline: '2026-10-15',
+      status: 'Submitted',
+      progress: 84,
+      priority: 93,
+      teacher: users.teacherC,
+      task: 'Prepare responses for the methods interview',
+    }),
+    compactApplication({
+      id: 'team-demo-eva-stanford-hai',
+      ownerId: users.studentG,
+      school: 'Stanford University',
+      country: 'United States',
+      website: 'https://gradadmissions.stanford.edu/',
+      program: 'Computer Science PhD',
+      professor: 'Prof. Jordan Lee',
+      email: 'jordan.lee@stanford.edu',
+      research: 'human-AI decision making, evaluation science',
+      deadline: '2026-11-30',
+      status: 'Interview',
+      progress: 72,
+      priority: 96,
+      teacher: users.teacherB,
+      task: 'Run a cross-disciplinary mock interview',
+    }),
   ]
 }
 
@@ -2744,7 +3189,8 @@ async function ensureDemoTeamWorkspace(database) {
       team = { ...team, seat_limit: DEMO_TEAM_SEAT_LIMIT }
     }
 
-    ensureDemoTeamMember(database, {
+    const demoMemberIds = {}
+    demoMemberIds.owner = ensureDemoTeamMember(database, {
       key: 'owner',
       teamId: team.id,
       userId: owner.id,
@@ -2754,16 +3200,53 @@ async function ensureDemoTeamWorkspace(database) {
       now,
     })
     for (const account of DEMO_TEAM_MEMBER_ACCOUNTS) {
-      ensureDemoTeamMember(database, {
+      const teacherUserIds = account.teamRole === 'member'
+        ? (account.teacherKeys ?? ['teacher']).map((key) => users[key]).filter(Boolean)
+        : []
+      demoMemberIds[account.key] = ensureDemoTeamMember(database, {
         key: account.key,
         teamId: team.id,
         userId: users[account.key],
         email: account.email,
         role: account.teamRole,
-        invitedBy: account.teamRole === 'member' ? users.teacher : owner.id,
+        invitedBy: account.teamRole === 'member' ? (teacherUserIds[0] ?? users.teacher) : owner.id,
+        relationships: account.teamRole === 'member' ? { teacherIds: teacherUserIds } : {},
+        contactProfile: account.contactProfile ?? {},
         now,
       })
     }
+
+    const storedTeacherGroups = normalizeTeamTeacherGroups(fromJson(team.teacher_groups_json, []))
+    const demoTeacherGroups = [
+      {
+        id: 'tgroup_demo_writing',
+        name: 'Writing & Research Statements',
+        memberIds: [demoMemberIds.teacher, demoMemberIds.teacherB],
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'tgroup_demo_methods',
+        name: 'Methods & Data',
+        memberIds: [demoMemberIds.teacherB, demoMemberIds.teacherC],
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'tgroup_demo_funding',
+        name: 'Funding & Interviews',
+        memberIds: [demoMemberIds.teacher, demoMemberIds.teacherD],
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]
+    const mergedTeacherGroups = [
+      ...storedTeacherGroups,
+      ...demoTeacherGroups.filter((group) => !storedTeacherGroups.some((existing) => existing.id === group.id)),
+    ]
+    database
+      .prepare('UPDATE teams SET teacher_groups_json = ?, updated_at = ? WHERE id = ?')
+      .run(toJson(mergedTeacherGroups), now, team.id)
 
     const seedApplicationIds = seedApplications.map((application) => application.id)
     if (seedApplicationIds.length > 0) {
@@ -2834,7 +3317,7 @@ export function logEvent(store, event) {
       : metadata,
   }
   store.systemEvents.unshift(nextEvent)
-  store.systemEvents = store.systemEvents.slice(0, 500)
+  store.systemEvents = store.systemEvents.slice(0, SYSTEM_EVENT_WORKING_SET_LIMIT)
   return nextEvent
 }
 
@@ -2968,12 +3451,18 @@ function readStoreFromDatabase(database) {
   const applications = database
     .prepare('SELECT * FROM applications ORDER BY deadline ASC')
     .all()
+  const schoolLogoAssets = new Map(
+    database
+      .prepare('SELECT asset_key, data_url FROM school_logo_assets')
+      .all()
+      .map((row) => [row.asset_key, row.data_url]),
+  )
   const profileAssets = database
     .prepare('SELECT * FROM profile_assets ORDER BY updated_at DESC')
     .all()
   const systemEvents = database
-    .prepare('SELECT * FROM system_events ORDER BY time DESC LIMIT 500')
-    .all()
+    .prepare('SELECT * FROM system_events ORDER BY time DESC LIMIT ?')
+    .all(SYSTEM_EVENT_WORKING_SET_LIMIT)
 
   return attachStoreBaseline({
     meta: {
@@ -2984,7 +3473,7 @@ function readStoreFromDatabase(database) {
     settings: settingsFromRow(settingsRow),
     users: users.map(userFromRow),
     teams: teamsFromDatabase(database),
-    applications: applications.map(applicationFromRow),
+    applications: applications.map((row) => applicationFromRow(row, schoolLogoAssets)),
     profileAssets: profileAssets.map(profileAssetFromRow),
     systemEvents: systemEvents.map(eventFromRow),
   })
@@ -3006,6 +3495,164 @@ export async function readStore(options = {}) {
   sharedStoreCache = store
   sharedStoreDataVersion = dataVersion
   return store
+}
+
+export async function querySystemEvents(options = {}) {
+  await ensureStorage()
+  const database = getDb()
+  const page = Math.max(0, Math.floor(Number(options.page) || 0))
+  const pageSize = Math.min(100, Math.max(1, Math.floor(Number(options.pageSize) || 10)))
+  const search = String(options.search ?? '').trim().toLowerCase()
+  const scope = String(options.scope ?? '').trim()
+  const actor = options.actor === 'admin' || options.actor === 'system' ? options.actor : 'all'
+  const sortColumns = {
+    time: 'time',
+    scope: 'scope',
+    message: 'message',
+    actorId: 'actor_id',
+  }
+  const sortField = Object.hasOwn(sortColumns, options.sortField) ? options.sortField : 'time'
+  const direction = options.direction === 'asc' ? 'ASC' : 'DESC'
+  const clauses = []
+  const values = []
+
+  if (scope && scope !== 'all') {
+    clauses.push('scope = ?')
+    values.push(scope)
+  }
+  if (actor === 'admin') clauses.push('actor_id IS NOT NULL')
+  if (actor === 'system') clauses.push('actor_id IS NULL')
+  if (search) {
+    clauses.push(
+      `LOWER(
+        id || ' ' || time || ' ' || scope || ' ' ||
+        COALESCE(actor_id, '') || ' ' || message || ' ' || metadata_json
+      ) LIKE ?`,
+    )
+    values.push(`%${search}%`)
+  }
+
+  const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''
+  const total = Number(
+    database.prepare(`SELECT COUNT(*) AS count FROM system_events ${where}`).get(...values)?.count ?? 0,
+  )
+  const retainedTotal = Number(
+    database.prepare('SELECT COUNT(*) AS count FROM system_events').get()?.count ?? 0,
+  )
+  const rows = database
+    .prepare(
+      `SELECT * FROM system_events
+       ${where}
+       ORDER BY ${sortColumns[sortField]} ${direction}, id ${direction}
+       LIMIT ? OFFSET ?`,
+    )
+    .all(...values, pageSize, page * pageSize)
+  const scopes = database
+    .prepare('SELECT DISTINCT scope FROM system_events WHERE scope <> ? ORDER BY scope ASC')
+    .all('')
+    .map((row) => row.scope)
+
+  return {
+    items: rows.map(eventFromRow),
+    total,
+    retainedTotal,
+    page,
+    pageSize,
+    scopes,
+  }
+}
+
+export async function iterateSystemEvents() {
+  await ensureStorage()
+  const rows = getDb()
+    .prepare('SELECT * FROM system_events ORDER BY time DESC, id DESC')
+    .iterate()
+  return (function * mapSystemEventRows() {
+    for (const row of rows) yield eventFromRow(row)
+  })()
+}
+
+export async function countSystemEvents() {
+  await ensureStorage()
+  return Number(getDb().prepare('SELECT COUNT(*) AS count FROM system_events').get()?.count ?? 0)
+}
+
+export async function clearSystemEvents() {
+  await ensureStorage()
+  return withWriteLock(async () => {
+    const deleted = Number(getDb().prepare('DELETE FROM system_events').run().changes ?? 0)
+    invalidateSharedStoreCache()
+    await synchronizeExternalDatabase({ force: true })
+    return deleted
+  })
+}
+
+export async function readSchoolLogoCache(cacheKey) {
+  if (!validSchoolLogoCacheKey(cacheKey)) return null
+  await ensureStorage()
+  const row = getDb()
+    .prepare('SELECT * FROM school_logo_cache WHERE cache_key = ?')
+    .get(cacheKey)
+  return schoolLogoCacheEntryFromRow(row)
+}
+
+export async function readSchoolLogoAsset(assetKey) {
+  if (!validSchoolLogoCacheKey(assetKey)) return null
+  await ensureStorage()
+  return getDb()
+    .prepare('SELECT asset_key, data_url, updated_at FROM school_logo_assets WHERE asset_key = ?')
+    .get(assetKey) ?? null
+}
+
+export async function writeSchoolLogoCache(entry) {
+  if (!validSchoolLogoCacheKey(entry?.cacheKey) || !entry?.websiteUrl) return null
+  if (
+    entry.dataUrl
+    && String(entry.dataUrl).length > MAX_SCHOOL_LOGO_CACHE_DATA_URL_LENGTH
+  ) return null
+  await ensureStorage()
+  return withWriteLock(async () => {
+    const updatedAt = entry.updatedAt ?? nowStamp()
+    const database = getDb()
+    database.prepare(
+      `INSERT INTO school_logo_cache (
+        cache_key,
+        website_url,
+        data_url,
+        source_url,
+        candidate_kind,
+        found,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(cache_key) DO UPDATE SET
+        website_url = excluded.website_url,
+        data_url = excluded.data_url,
+        source_url = excluded.source_url,
+        candidate_kind = excluded.candidate_kind,
+        found = excluded.found,
+        updated_at = excluded.updated_at`,
+    ).run(
+      entry.cacheKey,
+      entry.websiteUrl,
+      entry.dataUrl ?? null,
+      entry.sourceUrl ?? null,
+      entry.candidateKind ?? null,
+      entry.found ? 1 : 0,
+      updatedAt,
+    )
+    database.prepare(
+      `DELETE FROM school_logo_cache
+       WHERE cache_key NOT IN (
+         SELECT cache_key
+         FROM school_logo_cache
+         ORDER BY updated_at DESC
+         LIMIT ?
+       )`,
+    ).run(MAX_SCHOOL_LOGO_CACHE_ENTRIES)
+    invalidateSharedStoreCache()
+    return { ...entry, updatedAt }
+  })
 }
 
 export async function writeStore(store) {
@@ -3042,7 +3689,11 @@ export async function writeStore(store) {
         `INSERT INTO system_settings (
           id,
           allow_registration,
+          admin_entry_hidden,
+          admin_entry_code_hash,
+          admin_entry_code_salt,
           notification_mailbox,
+          system_log_retention_days,
           backup_frequency,
           max_backups_per_app_limit,
           encryption_at_rest,
@@ -3059,10 +3710,14 @@ export async function writeStore(store) {
           admin_session_duration_minutes,
           updated_at
         )
-        VALUES ('global', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES ('global', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           allow_registration = excluded.allow_registration,
+          admin_entry_hidden = excluded.admin_entry_hidden,
+          admin_entry_code_hash = excluded.admin_entry_code_hash,
+          admin_entry_code_salt = excluded.admin_entry_code_salt,
           notification_mailbox = excluded.notification_mailbox,
+          system_log_retention_days = excluded.system_log_retention_days,
           backup_frequency = excluded.backup_frequency,
           max_backups_per_app_limit = excluded.max_backups_per_app_limit,
           encryption_at_rest = excluded.encryption_at_rest,
@@ -3079,7 +3734,11 @@ export async function writeStore(store) {
            admin_session_duration_minutes = excluded.admin_session_duration_minutes,
            updated_at = excluded.updated_at
          WHERE system_settings.allow_registration <> excluded.allow_registration
+            OR system_settings.admin_entry_hidden <> excluded.admin_entry_hidden
+            OR system_settings.admin_entry_code_hash <> excluded.admin_entry_code_hash
+            OR system_settings.admin_entry_code_salt <> excluded.admin_entry_code_salt
             OR system_settings.notification_mailbox <> excluded.notification_mailbox
+            OR system_settings.system_log_retention_days <> excluded.system_log_retention_days
             OR system_settings.backup_frequency <> excluded.backup_frequency
             OR system_settings.max_backups_per_app_limit <> excluded.max_backups_per_app_limit
             OR system_settings.encryption_at_rest <> excluded.encryption_at_rest
@@ -3097,7 +3756,11 @@ export async function writeStore(store) {
       )
       .run(
         boolInt(store.settings.allowRegistration),
+        boolInt(store.settings.adminEntryHidden),
+        store.settings.adminEntryCodeHash ?? '',
+        store.settings.adminEntryCodeSalt ?? '',
         store.settings.notificationMailbox,
+        normalizeSystemLogRetentionDays(store.settings.systemLogRetentionDays) ?? 0,
         normalizeBackupFrequency(store.settings.backupFrequency),
         Math.min(
           MAX_SYSTEM_BACKUP_LIMIT,
@@ -3186,6 +3849,16 @@ export async function writeStore(store) {
     const existingApplicationIds = new Set(
       database.prepare('SELECT id FROM applications').all().map((row) => row.id),
     )
+    const upsertSchoolLogoAsset = database.prepare(
+      `INSERT INTO school_logo_assets (
+        asset_key,
+        data_url,
+        updated_at
+      )
+      VALUES (?, ?, ?)
+      ON CONFLICT(asset_key) DO UPDATE SET
+        updated_at = excluded.updated_at`,
+    )
     const upsertApplication = database.prepare(
       `INSERT INTO applications (
         id,
@@ -3224,6 +3897,7 @@ export async function writeStore(store) {
         ...application,
         updatedAt: application.updatedAt ?? now,
       }
+      const storageApplication = schoolLogoApplicationForStorage(normalized, upsertSchoolLogoAsset)
       nextApplicationIds.add(normalized.id)
       upsertApplication.run(
         normalized.id,
@@ -3236,7 +3910,7 @@ export async function writeStore(store) {
         normalized.progress,
         normalized.priority,
         normalized.updatedAt,
-        encodePayloadForStorage(normalized),
+        encodePayloadForStorage(storageApplication),
         normalized.teamId ?? null,
       )
     }
@@ -3284,9 +3958,6 @@ export async function writeStore(store) {
       if (!nextAssetIds.has(id)) deleteAsset.run(id)
     }
 
-    const existingEventIds = new Set(
-      database.prepare('SELECT id FROM system_events').all().map((row) => row.id),
-    )
     const upsertEvent = database.prepare(
       `INSERT INTO system_events (
         id,
@@ -3309,9 +3980,7 @@ export async function writeStore(store) {
          OR system_events.message <> excluded.message
          OR system_events.metadata_json <> excluded.metadata_json`,
     )
-    const nextEventIds = new Set()
-    for (const event of store.systemEvents.slice(0, 500)) {
-      nextEventIds.add(event.id)
+    for (const event of store.systemEvents.slice(0, SYSTEM_EVENT_WORKING_SET_LIMIT)) {
       upsertEvent.run(
         event.id,
         event.time,
@@ -3321,9 +3990,9 @@ export async function writeStore(store) {
         toJson(event.metadata ?? {}),
       )
     }
-    const deleteEvent = database.prepare('DELETE FROM system_events WHERE id = ?')
-    for (const id of existingEventIds) {
-      if (!nextEventIds.has(id)) deleteEvent.run(id)
+    const retentionCutoff = systemLogRetentionCutoff(store.settings.systemLogRetentionDays)
+    if (retentionCutoff) {
+      database.prepare('DELETE FROM system_events WHERE time < ?').run(retentionCutoff)
     }
   })
 
@@ -3334,6 +4003,10 @@ export async function writeStore(store) {
   // from reparsing every application payload on the Node.js main thread.
   store.meta = nextMeta
   store.teams = teamsFromDatabase(database)
+  const retentionCutoff = systemLogRetentionCutoff(store.settings.systemLogRetentionDays)
+  if (retentionCutoff) {
+    store.systemEvents = store.systemEvents.filter((event) => event.time >= retentionCutoff)
+  }
   attachStoreBaseline(store)
   sharedStoreCache = store
   sharedStoreDataVersion = databaseDataVersion(database)
@@ -3492,7 +4165,23 @@ function invalidateBackupListCache(fileName) {
   backupListCacheGeneration += 1
   backupListCache = null
   backupListCacheDirectoryStamp = null
+  backupListCacheArchiveSignature = null
   if (fileName) backupInfoCache.delete(fileName)
+}
+
+function backupArchiveEntries(entries) {
+  return entries.filter(
+    (entry) =>
+      entry.isFile()
+      && isBackupArchiveName(entry.name)
+      && !entry.name.endsWith('.meta'),
+  )
+}
+
+function backupArchiveSignature(entries) {
+  // A NUL cannot occur in a file name, so this is an unambiguous, stable
+  // directory-membership signature without opening every backup payload.
+  return entries.map((entry) => entry.name).sort().join('\0')
 }
 
 function backupInfoFromMetadata(fileName, stat, metadata, applicationName) {
@@ -3687,22 +4376,33 @@ export async function listBackups(filters = {}) {
   await fs.mkdir(backupRoot, { recursive: true })
   let backups
   while (!backups) {
-    const directoryStat = await fs.stat(backupRoot)
-    const directoryStamp = `${directoryStat.mtimeMs}:${directoryStat.ctimeMs}`
-    if (backupListCache && backupListCacheDirectoryStamp === directoryStamp) {
-      backups = backupListCache
-      break
-    }
-
     const generation = backupListCacheGeneration
     let scan = backupListScan
     if (!scan || scan.generation !== generation) {
       const promise = (async () => {
         const entries = await fs.readdir(backupRoot, { withFileTypes: true })
+        const archiveEntries = backupArchiveEntries(entries)
+        const archiveSignature = backupArchiveSignature(archiveEntries)
+        const directoryStat = await fs.stat(backupRoot)
+        const directoryStamp = `${directoryStat.mtimeMs}:${directoryStat.ctimeMs}`
+        // Windows directory timestamps can remain unchanged across a fast
+        // cross-process create/delete, and their behavior varies by volume.
+        // Always verify the inexpensive archive-name signature. Keep the
+        // timestamp as a second signal for same-name atomic replacements.
+        if (
+          backupListCache
+          && backupListCacheArchiveSignature === archiveSignature
+          && backupListCacheDirectoryStamp === directoryStamp
+        ) {
+          return {
+            backups: backupListCache,
+            archiveSignature,
+            settledDirectoryStamp: directoryStamp,
+            generation,
+          }
+        }
         const nextBackups = (await Promise.all(
-          entries
-            .filter((entry) => entry.isFile() && isBackupArchiveName(entry.name) && !entry.name.endsWith('.meta'))
-            .map(readBackupInfoIfPresent),
+          archiveEntries.map(readBackupInfoIfPresent),
         ))
           .filter(Boolean)
           .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
@@ -3710,7 +4410,12 @@ export async function listBackups(filters = {}) {
         // the directory timestamp. Cache the settled timestamp after all writes.
         const settledStat = await fs.stat(backupRoot)
         const settledDirectoryStamp = `${settledStat.mtimeMs}:${settledStat.ctimeMs}`
-        return { backups: nextBackups, settledDirectoryStamp, generation }
+        return {
+          backups: nextBackups,
+          archiveSignature,
+          settledDirectoryStamp,
+          generation,
+        }
       })()
       scan = { generation, promise }
       backupListScan = scan
@@ -3726,6 +4431,7 @@ export async function listBackups(filters = {}) {
     // of publishing a stale directory snapshot.
     if (result.generation !== backupListCacheGeneration) continue
     backupListCache = result.backups
+    backupListCacheArchiveSignature = result.archiveSignature
     backupListCacheDirectoryStamp = result.settledDirectoryStamp
     backups = result.backups
   }
@@ -3854,6 +4560,220 @@ export async function markPasswordResetTokenUsed(token) {
        WHERE token_hash = ?`,
     )
     .run(nowStamp(), hashResetToken(token))
+}
+
+export async function createSecurityChallenge(challenge) {
+  await ensureStorage()
+  const database = getDb()
+  const now = Date.now()
+  const transaction = database.transaction(() => {
+    database.prepare(
+      `INSERT INTO security_challenges (
+        id,
+        kind,
+        token_hash,
+        subject_hash,
+        context_hash,
+        verifier_hash,
+        attempts,
+        max_attempts,
+        created_at,
+        not_before_at,
+        expires_at,
+        consumed_at,
+        metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, NULL, ?)`,
+    ).run(
+      challenge.id,
+      challenge.kind,
+      challenge.tokenHash,
+      challenge.subjectHash || '',
+      challenge.contextHash || '',
+      challenge.verifierHash,
+      Math.max(1, Number(challenge.maxAttempts ?? 5)),
+      new Date(challenge.createdAtMs ?? now).toISOString(),
+      new Date(challenge.notBeforeAtMs ?? now).toISOString(),
+      new Date(challenge.expiresAtMs).toISOString(),
+      toJson(challenge.metadata ?? {}),
+    )
+    database.prepare(
+      `DELETE FROM security_challenges
+       WHERE expires_at < ? OR (consumed_at IS NOT NULL AND consumed_at < ?)`,
+    ).run(
+      new Date(now - 60_000).toISOString(),
+      new Date(now - 60 * 60_000).toISOString(),
+    )
+  })
+  transaction()
+}
+
+export async function claimSecurityChallenge(input) {
+  await ensureStorage()
+  const database = getDb()
+  const nowMs = Number(input.nowMs ?? Date.now())
+  const now = new Date(nowMs).toISOString()
+  const transaction = database.transaction(() => {
+    const row = database.prepare(
+      `SELECT *
+       FROM security_challenges
+       WHERE token_hash = ? AND kind = ?`,
+    ).get(input.tokenHash, input.kind)
+
+    if (!row || row.consumed_at || row.expires_at <= now || row.not_before_at > now) {
+      return { ok: false, reason: 'invalid' }
+    }
+
+    const digestMatches = (left, right) => {
+      const leftBuffer = Buffer.from(String(left ?? ''))
+      const rightBuffer = Buffer.from(String(right ?? ''))
+      return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer)
+    }
+    const identityMatches = digestMatches(row.subject_hash, input.subjectHash)
+      && digestMatches(row.context_hash, input.contextHash)
+    const verifierMatches = digestMatches(row.verifier_hash, input.verifierHash)
+    if (!identityMatches || !verifierMatches) {
+      const attempts = Number(row.attempts ?? 0) + 1
+      const consumedAt = attempts >= Number(row.max_attempts) ? now : null
+      database.prepare(
+        `UPDATE security_challenges
+         SET attempts = ?, consumed_at = COALESCE(consumed_at, ?)
+         WHERE id = ?`,
+      ).run(attempts, consumedAt, row.id)
+      return { ok: false, reason: 'invalid' }
+    }
+
+    const claimed = database.prepare(
+      `UPDATE security_challenges
+       SET consumed_at = ?
+       WHERE id = ? AND consumed_at IS NULL
+       RETURNING id`,
+    ).get(now, row.id)
+    return claimed ? { ok: true, id: claimed.id } : { ok: false, reason: 'invalid' }
+  })
+  return transaction()
+}
+
+function normalizeSecurityRateLimitEntry(entry) {
+  return {
+    keyHash: String(entry.keyHash),
+    bucketName: String(entry.bucketName),
+    windowMs: Math.max(1_000, Number(entry.windowMs)),
+    max: Math.max(1, Number(entry.max)),
+    blockMs: Math.max(1_000, Number(entry.blockMs ?? entry.windowMs)),
+  }
+}
+
+export async function consumeSecurityRateLimits(entries, options = {}) {
+  await ensureStorage()
+  const database = getDb()
+  const nowMs = Number(options.nowMs ?? Date.now())
+  const increment = options.increment !== false
+  const normalized = entries.map(normalizeSecurityRateLimitEntry)
+  const transaction = database.transaction(() => {
+    const rows = normalized.map((entry) => {
+      const existing = database.prepare(
+        `SELECT key_hash, window_started_at, count, blocked_until
+         FROM security_rate_limits
+         WHERE key_hash = ?`,
+      ).get(entry.keyHash)
+      const windowExpired = !existing || nowMs - Number(existing.window_started_at) >= entry.windowMs
+      return {
+        entry,
+        windowExpired,
+        count: windowExpired ? 0 : Number(existing.count),
+        windowStartedAt: windowExpired ? nowMs : Number(existing.window_started_at),
+        blockedUntil: windowExpired ? 0 : Number(existing.blocked_until),
+      }
+    })
+    const denied = rows.find(({ entry, count, blockedUntil }) => blockedUntil > nowMs || count >= entry.max)
+    if (denied) {
+      const retryAt = Math.max(
+        denied.blockedUntil,
+        denied.windowStartedAt + denied.entry.windowMs,
+      )
+      return {
+        allowed: false,
+        bucketName: denied.entry.bucketName,
+        retryAfterSeconds: Math.max(1, Math.ceil((retryAt - nowMs) / 1000)),
+      }
+    }
+
+    if (increment) {
+      const statement = database.prepare(
+        `INSERT INTO security_rate_limits (
+          key_hash,
+          bucket_name,
+          window_started_at,
+          count,
+          blocked_until,
+          updated_at
+        ) VALUES (?, ?, ?, 1, 0, ?)
+        ON CONFLICT(key_hash) DO UPDATE SET
+          bucket_name = excluded.bucket_name,
+          window_started_at = excluded.window_started_at,
+          count = security_rate_limits.count + 1,
+          blocked_until = CASE
+            WHEN security_rate_limits.count + 1 >= ?
+              THEN MAX(security_rate_limits.blocked_until, ?)
+            ELSE security_rate_limits.blocked_until
+          END,
+          updated_at = excluded.updated_at`,
+      )
+      for (const row of rows) {
+        if (row.windowExpired) {
+          database.prepare('DELETE FROM security_rate_limits WHERE key_hash = ?').run(row.entry.keyHash)
+        }
+        statement.run(
+          row.entry.keyHash,
+          row.entry.bucketName,
+          row.windowStartedAt,
+          nowMs,
+          row.entry.max,
+          nowMs + row.entry.blockMs,
+        )
+      }
+      database.prepare(
+        'DELETE FROM security_rate_limits WHERE updated_at < ?',
+      ).run(nowMs - 7 * 24 * 60 * 60_000)
+    }
+    return { allowed: true }
+  })
+  return transaction()
+}
+
+export async function clearSecurityRateLimits(keyHashes) {
+  await ensureStorage()
+  const normalized = [...new Set(keyHashes.map((value) => String(value)).filter(Boolean))]
+  if (normalized.length === 0) return
+  const database = getDb()
+  const statement = database.prepare('DELETE FROM security_rate_limits WHERE key_hash = ?')
+  database.transaction(() => {
+    for (const keyHash of normalized) statement.run(keyHash)
+  })()
+}
+
+export async function recordSecurityEvent(message, metadata = {}) {
+  await ensureStorage()
+  const database = getDb()
+  database.prepare(
+    `INSERT INTO system_events (
+      id,
+      time,
+      scope,
+      actor_id,
+      message,
+      metadata_json
+    ) VALUES (?, ?, 'Security', NULL, ?, ?)`,
+  ).run(createId('event'), nowStamp(), String(message).slice(0, 500), toJson(metadata))
+  const retention = database
+    .prepare('SELECT system_log_retention_days FROM system_settings WHERE id = ?')
+    .get('global')
+  const retentionCutoff = systemLogRetentionCutoff(retention?.system_log_retention_days)
+  if (retentionCutoff) {
+    database.prepare('DELETE FROM system_events WHERE time < ?').run(retentionCutoff)
+  }
+  invalidateSharedStoreCache()
+  scheduleExternalDatabaseSync()
 }
 
 function hashWebAuthnChallenge(challenge) {
@@ -4720,6 +5640,11 @@ function teamFromRow(row) {
 }
 
 function teamMemberFromRow(row) {
+  const storedRelationships = fromJson(row.relationship_json, {})
+  const rawRelationships = storedRelationships && typeof storedRelationships === 'object'
+    ? storedRelationships
+    : {}
+  const relationships = normalizeTeamMemberRelationships(rawRelationships, row.role)
   return {
     id: row.id,
     teamId: row.team_id,
@@ -4728,7 +5653,20 @@ function teamMemberFromRow(row) {
     role: row.role,
     status: row.status,
     invitedBy: row.invited_by,
-    relationships: fromJson(row.relationship_json, {}),
+    relationships: {
+      ...relationships,
+      // Team membership has always behaved as the paid collaboration tier.
+      // Make that legacy default explicit at the API boundary without forcing
+      // a destructive data migration.
+      accessLevel: relationships.accessLevel === 'standard' ? 'standard' : 'pro',
+      ...(row.role === 'admin'
+        ? {
+            studentProLimit: Number.isInteger(relationships.studentProLimit)
+              ? Math.max(0, Math.min(100, relationships.studentProLimit))
+              : 100,
+          }
+        : {}),
+    },
     contactProfile: fromJson(row.profile_json, {}),
     inviteExpiresAt: row.invite_expires_at,
     createdAt: row.created_at,

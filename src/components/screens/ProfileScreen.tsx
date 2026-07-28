@@ -15,6 +15,7 @@ import {
 import {
   Fragment,
   lazy,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -38,6 +39,7 @@ import { contentLanguagesFromSettings } from '../../contentLanguages'
 import { localeForLanguage, localizeStaticText } from '../../i18n'
 import {
   groupProfileAssetsIntoFamilies,
+  profileAssetFamilyId,
   profileKindLabel,
 } from '../../profileAssets'
 import {
@@ -53,8 +55,13 @@ import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/Ex
 import { ProfilePresetEditorDialog, type ProfilePresetEditorValue } from '../shared/ProfilePresetEditorDialog'
 import { ProfilePresetIcon } from '../shared/ProfilePresetIcon'
 import { InfoTooltip } from '../shared/InfoTooltip'
+import {
+  LibraryInsertionMotionBoundary,
+  type LibraryInsertionMotionItem,
+} from '../shared/LibraryInsertionMotion'
 import { LibraryViewSwitch, type LibraryViewMode } from '../shared/LibraryViewSwitch'
 import { LazyOverlayBoundary } from '../shared/LazyOverlayBoundary'
+import { ProjectFooter } from '../shared/ProjectFooter'
 import {
   consumeStackedCardWheelDelta,
   normalizeStackedCardWheelDelta,
@@ -181,6 +188,8 @@ export function ProfileScreen({
   onUpdateSettings,
   onCopy,
   deferProgressiveReveal = false,
+  presetsOverride,
+  mode = 'personal',
 }: {
   assets: ProfileAsset[]
   session: AuthSession
@@ -200,6 +209,9 @@ export function ProfileScreen({
   onCopy?: (value: string, label: string) => void
   /** Hold large asset and preset grids until the enclosing screen handoff ends. */
   deferProgressiveReveal?: boolean
+  /** Organization-student mode keeps the personal layout but uses only organization-provided templates. */
+  presetsOverride?: ProfilePreset[]
+  mode?: 'personal' | 'organization-student'
 }) {
   const { tx, lang, format } = useI18n()
   const contentLanguages = useMemo(
@@ -277,9 +289,10 @@ export function ProfileScreen({
 
   const personalPresets = useMemo(
     // Dual-slot insert copy follows content languages; card titles still use UI lang via profilePresetText.
-    () => effectiveProfilePresets(session.user.settings.profilePresets, contentLanguages),
-    [contentLanguages, session.user.settings.profilePresets],
+    () => presetsOverride ?? effectiveProfilePresets(session.user.settings.profilePresets, contentLanguages),
+    [contentLanguages, presetsOverride, session.user.settings.profilePresets],
   )
+  const organizationStudentMode = mode === 'organization-student'
   const personalPresetsRef = useRef(personalPresets)
   personalPresetsRef.current = personalPresets
   const editingPreset = editingPresetId
@@ -304,6 +317,41 @@ export function ProfileScreen({
 
   const filteredAssets = useMemo(() => filtered.map((item) => item.raw), [filtered])
   const families = useMemo(() => groupProfileAssetsIntoFamilies(filteredAssets), [filteredAssets])
+  const libraryMotionItems = useMemo<LibraryInsertionMotionItem[]>(
+    () => libraryView === 'cards'
+      ? [
+          ...families.map((family) => ({
+            key: `family:${family.familyId}`,
+            assetIds: family.versions.map((version) => version.id),
+          })),
+          { key: 'action:add', assetIds: [] },
+        ]
+      : filtered.map(({ raw }) => ({
+          key: `asset:${raw.id}`,
+          assetIds: [raw.id],
+        })),
+    [families, filtered, libraryView],
+  )
+  const revealAddedAssets = useCallback((addedAssetIds: string[]) => {
+    const addedIds = new Set(addedAssetIds)
+    const nextActiveByFamily = new Map<string, string>()
+    assets.forEach((asset) => {
+      if (addedIds.has(asset.id)) nextActiveByFamily.set(profileAssetFamilyId(asset), asset.id)
+    })
+    if (nextActiveByFamily.size === 0) return
+
+    setActiveFamilyVersionIds((current) => {
+      let changed = false
+      const next = new Map(current)
+      nextActiveByFamily.forEach((assetId, familyId) => {
+        if (next.get(familyId) === assetId) return
+        next.set(familyId, assetId)
+        changed = true
+      })
+      if (changed) activeFamilyVersionIdsRef.current = next
+      return changed ? next : current
+    })
+  }, [assets])
 
   useEffect(() => () => {
     familyTurnTimersRef.current.forEach((timer) => window.clearTimeout(timer))
@@ -887,7 +935,7 @@ export function ProfileScreen({
   }
 
   return (
-    <section className="simple-screen">
+    <section className={clsx('simple-screen', organizationStudentMode && 'team-student-personal-profile')}>
       <div className="profile-hero">
         <header>
           <div className="profile-heading-row">
@@ -904,10 +952,12 @@ export function ProfileScreen({
           <p className="profile-hero-subtitle muted">{tx('profile.subtitle')}</p>
         </header>
 
-        <AiProfilePanel
-          value={session.user.settings.aiProfile}
-          onUpdate={onUpdateSettings}
-        />
+        {!organizationStudentMode ? (
+          <AiProfilePanel
+            value={session.user.settings.aiProfile}
+            onUpdate={onUpdateSettings}
+          />
+        ) : null}
       </div>
 
       <div className="profile-toolbar">
@@ -960,18 +1010,25 @@ export function ProfileScreen({
               transitionScope="profile"
               controlsId="profile-library-view"
             />
-            <button
-              type="button"
-              className="icon-action"
-              title={tx('profile.snippetPhraseSettingsTitle')}
-              onClick={openPhraseSettings}
-            >
-              <Settings size={14} aria-hidden="true" />
-            </button>
+            {!organizationStudentMode ? (
+              <button
+                type="button"
+                className="icon-action"
+                title={tx('profile.snippetPhraseSettingsTitle')}
+                onClick={openPhraseSettings}
+              >
+                <Settings size={14} aria-hidden="true" />
+              </button>
+            ) : null}
             <span className="profile-count-badge">{filtered.length}</span>
           </div>
         </div>
 
+        <LibraryInsertionMotionBoundary
+          assetIds={assets.map((asset) => asset.id)}
+          items={libraryMotionItems}
+          onAssetsAdded={revealAddedAssets}
+        >
         {filtered.length === 0 ? (
           <div className="empty-list">
             <FileText size={24} aria-hidden="true" style={{ opacity: 0.3 }} />
@@ -1022,6 +1079,7 @@ export function ProfileScreen({
                     if (node) familyStackRefs.current.set(family.familyId, node)
                     else familyStackRefs.current.delete(family.familyId)
                   }}
+                  data-library-motion-key={`family:${family.familyId}`}
                   className={clsx(
                     'snippet-stack',
                     multi && 'has-stack',
@@ -1157,9 +1215,11 @@ export function ProfileScreen({
                             <button type="button" tabIndex={isActive ? undefined : -1} className="icon-action" title={tx('profile.editSnippet')} onClick={() => openEdit(version)}>
                               <Pencil size={13} aria-hidden="true" />
                             </button>
-                            <button type="button" tabIndex={isActive ? undefined : -1} className="icon-action" title={tx('profile.shareUpload')} onClick={() => openEdit(version, { share: true })}>
-                              <ExternalLink size={13} aria-hidden="true" />
-                            </button>
+                            {!organizationStudentMode ? (
+                              <button type="button" tabIndex={isActive ? undefined : -1} className="icon-action" title={tx('profile.shareUpload')} onClick={() => openEdit(version, { share: true })}>
+                                <ExternalLink size={13} aria-hidden="true" />
+                              </button>
+                            ) : null}
                             <button type="button" tabIndex={isActive ? undefined : -1} className="icon-action" title={tx('profile.deleteSnippet')} onClick={() => onDeleteAsset(version)}>
                               <Trash2 size={13} aria-hidden="true" />
                             </button>
@@ -1274,9 +1334,11 @@ export function ProfileScreen({
                                     <button type="button" className="icon-action" title={tx('profile.editSnippet')} onClick={() => openEdit(version)}>
                                       <Pencil size={13} aria-hidden="true" />
                                     </button>
-                                    <button type="button" className="icon-action" title={tx('profile.shareUpload')} onClick={() => openEdit(version, { share: true })}>
-                                      <ExternalLink size={13} aria-hidden="true" />
-                                    </button>
+                                    {!organizationStudentMode ? (
+                                      <button type="button" className="icon-action" title={tx('profile.shareUpload')} onClick={() => openEdit(version, { share: true })}>
+                                        <ExternalLink size={13} aria-hidden="true" />
+                                      </button>
+                                    ) : null}
                                     {(version.attachments?.length ?? 0) > 0 ? (
                                       <button
                                         type="button"
@@ -1305,7 +1367,12 @@ export function ProfileScreen({
                 </Fragment>
               )
             })}
-            <button type="button" className="snippet-card snippet-card-add" onClick={() => openCreate()}>
+            <button
+              type="button"
+              className="snippet-card snippet-card-add"
+              data-library-motion-key="action:add"
+              onClick={() => openCreate()}
+            >
               <Plus size={20} aria-hidden="true" />
               <span>{tx('profile.addSnippet')}</span>
             </button>
@@ -1324,6 +1391,7 @@ export function ProfileScreen({
                 return (
                   <article
                     key={asset.id}
+                    data-library-motion-key={`asset:${asset.id}`}
                     className={clsx(
                       'profile-snippet-list-row',
                       removingAssetIds?.has(asset.id) && 'is-removing',
@@ -1368,9 +1436,11 @@ export function ProfileScreen({
                       <button type="button" className="icon-action" title={tx('profile.editSnippet')} onClick={() => openEdit(asset)}>
                         <Pencil size={13} aria-hidden="true" />
                       </button>
-                      <button type="button" className="icon-action" title={tx('profile.shareUpload')} onClick={() => openEdit(asset, { share: true })}>
-                        <ExternalLink size={13} aria-hidden="true" />
-                      </button>
+                      {!organizationStudentMode ? (
+                        <button type="button" className="icon-action" title={tx('profile.shareUpload')} onClick={() => openEdit(asset, { share: true })}>
+                          <ExternalLink size={13} aria-hidden="true" />
+                        </button>
+                      ) : null}
                       {attachmentCount > 0 ? (
                         <button
                           type="button"
@@ -1394,6 +1464,7 @@ export function ProfileScreen({
             </div>
           </div>
         )}
+        </LibraryInsertionMotionBoundary>
       </section>
 
       <section className="profile-preset-section" aria-labelledby="profile-preset-title">
@@ -1453,7 +1524,7 @@ export function ProfileScreen({
                   <em>{display.description}</em>
                   <span className="profile-preset-action"><Plus size={12} aria-hidden="true" /> {tx('profile.usePreset')}</span>
                 </button>
-                {!preset.builtIn ? (
+                {!organizationStudentMode && !preset.builtIn ? (
                   <div className="profile-preset-card-actions">
                     <button type="button" className="icon-action" title={tx('profile.editPreset')} onClick={() => openPresetEditor(preset)}>
                       <Pencil size={13} aria-hidden="true" />
@@ -1466,16 +1537,20 @@ export function ProfileScreen({
               </article>
             )
           })}
-          <button type="button" className="profile-preset-card profile-preset-add-card" onClick={() => openPresetEditor()}>
-            <span className="profile-preset-icon"><Plus size={16} aria-hidden="true" /></span>
-            <strong>{tx('profile.addPreset')}</strong>
-            <em>{tx('profile.addPresetHint')}</em>
-            <span className="profile-preset-action">{tx('profile.customType')}</span>
-          </button>
+          {!organizationStudentMode ? (
+            <button type="button" className="profile-preset-card profile-preset-add-card" onClick={() => openPresetEditor()}>
+              <span className="profile-preset-icon"><Plus size={16} aria-hidden="true" /></span>
+              <strong>{tx('profile.addPreset')}</strong>
+              <em>{tx('profile.addPresetHint')}</em>
+              <span className="profile-preset-action">{tx('profile.customType')}</span>
+            </button>
+          ) : null}
         </div>
       </section>
         </>
       )}
+
+      <ProjectFooter />
 
       {dialogOpen ? (
         <LazyOverlayBoundary namespaces={['core', 'shared', 'profile']}>

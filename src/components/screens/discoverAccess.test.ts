@@ -34,9 +34,18 @@ describe('Discover access policy', () => {
     ['owner', true],
     ['admin', true],
     ['member', false],
-  ])('limits Team Discover for %s', (role, expected) => {
+  ])('uses the default Team Discover policy for %s', (role, expected) => {
     expect(hasTeamDiscoverAccess(role)).toBe(expected)
     expect(canAccessDiscover('team', session({ membershipPlan: 'team' }), role)).toBe(expected)
+  })
+
+  it('honors per-member Team Discover permissions', () => {
+    expect(hasTeamDiscoverAccess('member', {
+      studentPermissions: { useDiscover: true },
+    })).toBe(true)
+    expect(hasTeamDiscoverAccess('admin', {
+      teacherPermissions: { useDiscover: false },
+    })).toBe(false)
   })
 
   it('limits a teacher target picker to assigned students while an owner sees the organization', () => {
@@ -57,6 +66,6 @@ describe('Discover access policy', () => {
 
     expect(discoverStudentMembers(members, 'admin', 'teacher-a').map((member) => member.id)).toEqual(['student-a', 'student-joint'])
     expect(discoverStudentMembers(members, 'owner', 'owner').map((member) => member.id)).toEqual(['student-a', 'student-b', 'student-joint'])
-    expect(discoverStudentMembers(members, 'member', 'user-a')).toEqual([])
+    expect(discoverStudentMembers(members, 'member', 'user-a').map((member) => member.id)).toEqual(['student-a'])
   })
 })

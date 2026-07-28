@@ -52,7 +52,7 @@
     "installAppBenefitOffline": "オフライン対応",
     "installAppBenefitQuick": "クイック起動",
     "installAppOfflineScopeLabel": "オフライン範囲",
-    "installAppOfflineScope": "オフライン データはこのデバイスに残ります。最後に同期されたワークスペースを表示し、独自の出願の編集をキューに入れることができます。アップロード、電子メール、AI、チーム、共有、アカウント、およびバックアップのアクションは引き続きオンラインのみです。",
+    "installAppOfflineScope": "オフラインデータはこのデバイス内に保存されます。短期間で失効する権限の範囲で、自分が所有する個人の出願だけをキャッシュし、編集を待機できます。同期前にサーバーが本人確認、所有者、権限、バージョンを再検証します。アップロード、メール、AI、チーム、共有、アカウント、バックアップはオンライン専用です。",
     "installAppStatusAvailable": "インストール可能",
     "installAppStatusInstalling": "確認待ち",
     "installAppStatusInstalled": "インストール済み",

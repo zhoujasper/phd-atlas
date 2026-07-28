@@ -38,6 +38,9 @@ function expectedContentType(url) {
 function isSafeCacheableResponse(response, requestUrl) {
   if (!response || response.status !== 200 || !response.ok || response.redirected) return false
   if (response.type !== 'basic' && response.type !== 'default') return false
+  const cacheControl = (response.headers.get('cache-control') || '').toLowerCase()
+  if (/(?:^|,)\s*(?:no-store|private)(?:\s|,|=|$)/.test(cacheControl)) return false
+  if (response.headers.has('set-cookie')) return false
 
   const responseUrl = new URL(response.url || requestUrl.href, self.location.origin)
   if (requestUrl.origin !== self.location.origin || responseUrl.origin !== self.location.origin) return false
@@ -239,9 +242,9 @@ function isStaticRequest(url) {
   return (
     url.pathname.startsWith('/assets/') ||
     url.pathname.startsWith('/i18n/') ||
+    url.pathname === ASSET_MANIFEST_URL ||
     url.pathname.endsWith('.js') ||
     url.pathname.endsWith('.css') ||
-    url.pathname.endsWith('.json') ||
     url.pathname.endsWith('.svg') ||
     url.pathname.endsWith('.png') ||
     url.pathname.endsWith('.ico') ||

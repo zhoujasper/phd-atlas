@@ -86,6 +86,11 @@ describe('installable PWA contract', () => {
     expect(serviceWorker).toContain("const ASSET_MANIFEST_URL = '/asset-manifest.json'")
     expect(serviceWorker).toContain(`const BUILD_ID = '${BUILD_ID_TOKEN}'`)
     expect(serviceWorker).toContain('isSafeCacheableResponse')
+    expect(serviceWorker).toContain("url.pathname.startsWith('/api/')")
+    expect(serviceWorker).toContain("(?:no-store|private)")
+    expect(serviceWorker).toContain("response.headers.has('set-cookie')")
+    const staticRequestBody = serviceWorker.match(/function isStaticRequest\(url\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
+    expect(staticRequestBody).not.toContain("url.pathname.endsWith('.json')")
     expect(serviceWorker).toContain('caches.match(request, { ignoreVary: true })')
     expect(serviceWorker).toContain('NAVIGATION_NETWORK_TIMEOUT_MS')
     expect(serviceWorker).toContain('fetch(request, { signal: controller.signal })')

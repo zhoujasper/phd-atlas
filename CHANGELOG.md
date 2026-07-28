@@ -8,6 +8,160 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0-beta.6] - 2026-07-28
+
+### Added
+
+- Added `npm run verify:published-update -- --from <version> --tag <tag>` as a
+  repeatable post-publication canary. It downloads through the production
+  updater and then replays package validation, installation, active-package
+  metadata, and rollback safety.
+- Added Release-bundled, integrity-pinned archives for the complete production
+  dependency graph, including a real empty-cache offline `npm ci` publication
+  gate.
+
+### Changed
+
+- Release transport now has independent bounded waits for response headers and
+  for every no-progress interval while streaming the package. Continuously
+  advancing slow downloads remain valid.
+- Mirror probing remains delayed until the official attempt is unreachable or
+  stalls. A failed official attempt is cancelled and its partial file removed
+  before the fastest gzip-signature-verified HTTPS mirror is selected.
+- Production dependencies are derived automatically from standard manifest and
+  lockfile fields instead of a handwritten runtime allowlist. Publishing and
+  legacy recovery use bounded original-source, npmjs, npmmirror, Yarn, and
+  applicable GitHub mirror fallback without weakening lockfile integrity.
+- Frontend libraries compiled into `dist/` are classified as build
+  dependencies, while every newly declared server dependency enters future
+  update packages automatically.
+
+### Fixed
+
+- Fixed a successful two-byte official gzip probe being treated as proof that
+  the complete package body would keep arriving. An official response that
+  later stops producing bytes now falls back instead of waiting for the much
+  longer whole-download timeout and ending without trying mirrors.
+- Fixed backup-list cache invalidation after another process creates or removes
+  an archive on a Windows volume whose directory timestamp does not advance.
+  Concurrent readers still share one directory scan and cached file metadata.
+- Fixed dependency installation being able to wait forever: source attempts
+  now emit durable heartbeats, have finite no-progress/attempt/total bounds,
+  terminate stuck process trees, and retain verified rollback.
+
+### Added
+
+- Added durable server-side update jobs whose download, validation, backup,
+  dependency installation, restart, and first-boot handoff continue after the
+  administrator closes the browser.
+- Added a privacy-redacted, size-bounded update journal with persisted phase,
+  progress, failure details, npm output, boot rollback diagnostics, and an
+  administrator log viewer that survives page and server restarts.
+
+### Changed
+
+- Release update packages now contain only the dependency graph required by
+  the server runtime. Frontend-only packages already bundled into `dist/`,
+  including the external SheetJS archive, are no longer downloaded during an
+  in-place server update.
+- Update dependency installs reuse a persistent npm cache and prefer cached
+  packages while retaining exact lockfile installation, runtime preflight,
+  first-boot confirmation, and automatic rollback.
+- The public/private release workflow pins Draft and final Release metadata to
+  the canonical version tag and tagged public commit.
+- Public main container publication now waits for the exact matching successful
+  CI run instead of repeating the full tree gate. The MSSQL release gate and
+  final publication also share one runner and one dependency install, avoiding
+  a second runner queue after the gate has passed.
+
+### Fixed
+
+- Fixed automatic-update status, log, and Release-check reads incorrectly
+  consuming the 80-per-hour authenticated upload budget. The old 650 ms status
+  poll could otherwise receive repeated `429` responses in under a minute and
+  make a successful update appear stuck.
+- Fixed Beta-to-Beta updates failing during post-download `npm ci` when a
+  deployment could reach GitHub or a configured mirror but could not reach a
+  frontend-only package CDN.
+- Fixed update failures exposing only a generic error after the old server had
+  stopped; dependency, helper-spawn, runtime-preflight, and first-boot rollback
+  failures now leave actionable durable diagnostics.
+- Fixed delayed anchored-popover focus restoration surviving owner unmount and
+  touching a destroyed browser/test window.
+
+### Added
+
+- Added privacy-preserving registration, login, recovery, and setup challenges
+  with one-time opaque records, bounded attempts, expiry, persistent
+  network/account/domain/subnet/global budgets, optional Turnstile, and
+  enumeration-safe registration responses.
+- Added granular Team student and teacher capabilities for applications,
+  Discover, invitations, sharing, transfers, and optional active/lifetime
+  limits, with server-authoritative assignment and quota enforcement.
+- Added secure personal-only offline snapshot/queue v3, a maximum 72-hour
+  authorization lease, an offline launch surface, and server-authoritative
+  conflict/ownership validation during replay.
+- Added durable administrator system-log pagination, search, sorting, streaming
+  CSV/JSON export, and configurable forever-or-bounded retention.
+- Added an interactive signed-out product workspace, a matching Pro capacity
+  demo, in-flow project identity footers, and an accessible support dialog.
+- Added account-scoped custom application statuses, laboratory/project dossier
+  links, application-targeted deep-link cues, and global clipped-text reveal
+  and copy interactions.
+
+### Changed
+
+- New passwords now use stronger contextual/blocklist checks, optional HIBP
+  k-anonymity screening, and Argon2id storage; successful legacy bcrypt logins
+  migrate in place.
+- Team Discover now uses only the selected organization's administrator-managed
+  key, teacher audit access is limited to assigned students, and public/private
+  builds retain one shared Team authorization model.
+- Offline mode now reduces the already-mounted workspace immediately; the
+  production service worker caches only the shell and explicit static assets,
+  never API, cookie-bearing, private, no-store, or arbitrary JSON responses.
+- The automatic updater now reports resolving, probing, downloading,
+  verification, preparation, restart, and retryable failure states. Official
+  GitHub metadata and SHA-256 remain authoritative when bounded HTTPS mirrors
+  are used for package transport.
+- School logos now prefer compact official marks and content-addressed assets;
+  Team boards, portrait libraries, application handoffs, anchored popovers, and
+  mobile controls received scoped reduced-motion-safe interaction refinements.
+- Release validation now shares strict source/public tree gates, forced
+  TypeScript build-mode checks, independent public installs, deterministic
+  update packages, Compose validation, and real amd64/arm64 production smoke.
+
+### Fixed
+
+- Fixed indefinite application-transfer checking, stale jump-intent replay,
+  clipped-value access, card/list bounce, Team masonry gaps, popover
+  re-anchoring/exit flashes, local fixed-port startup timing, and several PWA
+  passkey/push failure states.
+- Fixed public setup and Team test/runtime boundaries so production starts from
+  the one-time administrator flow while development and tests retain
+  deterministic fixtures.
+
+### Security
+
+- CAPTCHA answers, email/setup codes, reset links, and SMTP verification codes
+  are no longer exposed through browser-readable JWT claims or mail audit
+  bodies; security and SMTP audit metadata is privacy-safe.
+- Password, role, and disabled-state changes revoke sessions through
+  `authVersion`; JWT algorithms/issuer/audience are pinned, unsafe cross-site
+  Fetch Metadata writes are rejected, and unsafe blanket proxy trust fails
+  closed in production.
+- Offline replay restores server-owned capability fields from the current
+  record, and browser-local integrity data is never treated as authorization or
+  confidentiality against a compromised device.
+
+### Performance
+
+- High-frequency selection, pan, zoom, and layout motion now uses scoped refs,
+  CSS variables, batched geometry reads, bounded compositor transitions, and
+  cleanup of temporary layers without React render churn.
+- Updated mail parsing, spreadsheet handling, and development tooling; the
+  dependency audit is clean.
+
 ## [0.1.0-beta.5] - 2026-07-26
 
 ### Added
@@ -182,5 +336,9 @@ the selected external database when applicable.
   light/dark themes, and twelve language packs.
 - Published the first GitHub Release update archive and SHA-256 sidecar.
 
+[0.1.0-beta.6]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.6
+[0.1.0-beta.5]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.5
+[0.1.0-beta.4]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.4
+[0.1.0-beta.3]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.3
 [0.1.0-beta.2]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.2
 [0.1.0-beta.1]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.1

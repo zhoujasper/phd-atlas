@@ -208,6 +208,8 @@ export type UserSettings = {
   snippetPhraseTailZh?: string
   snippetPhraseLeadEn?: string
   snippetPhraseTailEn?: string
+  /** Account-scoped application statuses shown after the canonical pipeline. */
+  customApplicationStatuses?: ApplicationStatus[]
   aiProfile?: AiUserProfile
   /** Personal-workspace presets only. Organization presets live on their team workspace. */
   profilePresets?: ProfilePreset[]
@@ -284,7 +286,15 @@ export type DatabaseConfiguration = Omit<DatabaseConnectionInput, 'password'> & 
 
 export type AdminSettings = {
   allowRegistration: boolean
+  /** Hide the administrator entry route until this browser is activated. */
+  adminEntryHidden?: boolean
+  /** True when an activation code verifier is stored; the code itself is never returned. */
+  adminEntryCodeSet?: boolean
+  /** Patch-only: set or rotate the path activation code. */
+  adminEntryCode?: string
   notificationMailbox: string
+  /** Null keeps the full system log indefinitely. */
+  systemLogRetentionDays?: number | null
   backupFrequency: BackupFrequency
   maxBackupsPerAppLimit?: number
   encryptionAtRest: boolean
@@ -356,6 +366,8 @@ export type InitialAdminSetupInput = {
   name: string
   email: string
   password: string
+  adminEntryHidden: boolean
+  adminEntryCode?: string
   notificationMailbox: string
   smtpHost: string
   smtpPort: number
@@ -517,12 +529,51 @@ export type AdminUser = PublicUser & {
 export type TeamRole = 'owner' | 'admin' | 'member'
 export type TeamMemberStatus = 'pending' | 'active' | 'removed'
 
+export type TeamStudentPermissions = {
+  editApplications: boolean
+  createApplications: boolean
+  useDiscover: boolean
+  createShareLinks: boolean
+  requestTeamTransfers: boolean
+  activeApplicationLimit: number | null
+  lifetimeApplicationLimit: number | null
+  activeShareLimit: number | null
+  lifetimeShareLimit: number | null
+}
+
+export type TeamTeacherPermissions = {
+  inviteStudents: boolean
+  manageStudentPermissions: boolean
+  useDiscover: boolean
+  createStudentApplications: boolean
+  editStudentApplications: boolean
+  manageStudentShares: boolean
+}
+
+export type TeamMemberUsage = {
+  applicationsCreated: number
+  sharesCreated: number
+}
+
 export type TeamMemberRelationships = {
   /**
    * User ids of every teacher/institution admin jointly responsible for this
    * student. Missing keeps the legacy `invitedBy` fallback; [] is unassigned.
    */
   teacherIds?: string[]
+  /**
+   * Team-funded feature entitlement. Missing is intentionally Pro-compatible
+   * so existing Team accounts keep the full productivity toolset.
+   */
+  accessLevel?: 'pro' | 'standard'
+  /**
+   * Teachers only: maximum number of assigned students who may receive the
+   * Team Pro entitlement from this teacher.
+   */
+  studentProLimit?: number
+  studentPermissions?: Partial<TeamStudentPermissions>
+  teacherPermissions?: Partial<TeamTeacherPermissions>
+  usage?: TeamMemberUsage
 }
 
 export type TeamMemberContactProfile = {
@@ -654,6 +705,8 @@ export type TeamMemberStats = {
   watchCount: number
   dueSoonCount: number
   activeShareCount: number
+  /** Active links created by this student; used by per-student share limits. */
+  studentActiveShareCount?: number
   storageUsedBytes: number
   storageQuotaBytes: number | null
   reviewCommentCount: number
@@ -751,6 +804,25 @@ export type SystemEvent = {
   metadata: Record<string, unknown>
 }
 
+export type SystemLogQuery = {
+  page?: number
+  pageSize?: number
+  search?: string
+  scope?: string
+  actor?: 'all' | 'admin' | 'system'
+  sortField?: 'time' | 'scope' | 'message' | 'actorId'
+  direction?: 'asc' | 'desc'
+}
+
+export type SystemLogPage = {
+  items: SystemEvent[]
+  total: number
+  retainedTotal: number
+  page: number
+  pageSize: number
+  scopes: string[]
+}
+
 export type TeamEventRestoreResult = {
   restored: boolean
   eventId: string
@@ -840,13 +912,52 @@ export type SystemInfo = {
 
 export type SystemUpdateResult = {
   received: boolean
+  accepted?: boolean
+  background?: boolean
+  jobId?: string
   fileName: string
   size: number
   storedAs: string
   version: string
   verified: boolean
   restartScheduled: boolean
+  source?: {
+    id: string
+    kind: 'official' | 'mirror' | 'manual'
+    host: string | null
+  } | null
   message: string
+}
+
+export type SystemUpdateStatus = {
+  phase: 'idle' | 'resolving' | 'probing' | 'downloading' | 'verifying' | 'preparing' | 'installing' | 'restarting' | 'stored' | 'ready' | 'timeout' | 'error'
+  jobId?: string | null
+  source: string | null
+  bytes: number
+  total: number
+  targetVersion: string | null
+  errorCode: string | null
+  errorMessage?: string | null
+  requestedAt?: string | null
+  updatedAt: string
+  currentVersion: string
+  operationInFlight: boolean
+  restartPending: boolean
+}
+
+export type SystemUpdateLogEntry = {
+  at: string
+  jobId: string | null
+  level: 'debug' | 'info' | 'warning' | 'error'
+  phase: string | null
+  message: string
+  errorCode: string | null
+  detail: string | null
+}
+
+export type SystemUpdateLogs = {
+  entries: SystemUpdateLogEntry[]
+  fileName: string
 }
 
 export type ReleaseUpdateInfo = {
@@ -1004,6 +1115,8 @@ export type SharedApplicationPayload = {
     homepage: string
     research: string
     lab?: string
+    labUrl?: string
+    projectUrl?: string
   }
   program: string
   status: ApplicationStatus
@@ -1077,6 +1190,7 @@ export type CreateApplicationInput = {
 export type SchoolLogoResolveInput = {
   website?: string
   imageUrl?: string
+  refresh?: boolean
 }
 
 export type SchoolLogoResolveResult = {
@@ -1084,6 +1198,9 @@ export type SchoolLogoResolveResult = {
   dataUrl?: string
   sourceUrl?: string
   candidateKind?: string
+  cacheKey?: string
+  websiteUrl?: string
+  cacheHit?: boolean
   reason?: 'invalid-url' | 'unavailable' | 'unreachable' | 'not-found'
 }
 
@@ -1240,12 +1357,7 @@ export function getClientSessionGeneration() {
   return clientSessionGeneration
 }
 
-/**
- * Read the JWT `sub` claim without verifying the signature. Used only as a
- * client-side guard so a refreshed token for user B can never be chained onto
- * user A's source token (account mix-up / 串号).
- */
-export function readSessionTokenSubject(token?: string | null): string | null {
+function readSessionTokenClaims(token?: string | null): Record<string, unknown> | null {
   if (!token) return null
   try {
     const payload = token.split('.')[1]
@@ -1262,11 +1374,38 @@ export function readSessionTokenSubject(token?: string | null): string | null {
       if (!bufferCtor) return null
       json = bufferCtor.from(padded, 'base64').toString('utf8')
     }
-    const claims = JSON.parse(json) as { sub?: unknown }
-    return typeof claims.sub === 'string' && claims.sub ? claims.sub : null
+    const claims = JSON.parse(json) as unknown
+    return claims && typeof claims === 'object' && !Array.isArray(claims)
+      ? claims as Record<string, unknown>
+      : null
   } catch {
     return null
   }
+}
+
+/**
+ * Read the JWT `sub` claim without verifying the signature. Used only as a
+ * client-side guard so a refreshed token for user B can never be chained onto
+ * user A's source token (account mix-up / 串号).
+ */
+export function readSessionTokenSubject(token?: string | null): string | null {
+  const subject = readSessionTokenClaims(token)?.sub
+  return typeof subject === 'string' && subject ? subject : null
+}
+
+/**
+ * Returns true only when an otherwise parseable JWT explicitly says it has
+ * expired. This is a cold-start noise guard, not authentication: opaque/legacy
+ * tokens and non-expired JWTs still go to the server for authoritative checks.
+ */
+export function sessionTokenIsDefinitelyExpired(
+  token?: string | null,
+  now = Date.now(),
+): boolean {
+  const expiresAt = readSessionTokenClaims(token)?.exp
+  return typeof expiresAt === 'number'
+    && Number.isFinite(expiresAt)
+    && expiresAt * 1_000 <= now
 }
 
 function sameSessionSubject(leftToken?: string | null, rightToken?: string | null) {
@@ -1946,7 +2085,26 @@ function discoverScopePath(path: string, scope?: DiscoverResearchScope) {
   return `${path}?${params.toString()}`
 }
 
+export type AdminAccessStatus = {
+  hidden: boolean
+  allowed: boolean
+}
+
 export const phdApi = {
+  adminAccessStatus: () =>
+    request<AdminAccessStatus>('/api/admin-access/status', undefined, {}, 10_000),
+
+  activateAdminAccess: (code: string) =>
+    request<AdminAccessStatus>('/api/admin-access/activate', undefined, {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }, 10_000),
+
+  rememberAdminAccess: () =>
+    request<AdminAccessStatus>('/api/admin-access/remember', undefined, {
+      method: 'POST',
+    }, 10_000),
+
   initialSetupStatus: () =>
     request<InitialSetupStatus>('/api/setup/status', undefined, {}, 10_000),
 
@@ -1963,7 +2121,7 @@ export const phdApi = {
     }, 30_000),
 
   verifyInitialSetupSmtpVerification: (input: InitialSetupSmtpVerificationInput & { token: string; code: string }) =>
-    request<{ verified: true }>('/api/setup/smtp-verification/check', undefined, {
+    request<{ verified: true; token: string }>('/api/setup/smtp-verification/check', undefined, {
       method: 'POST',
       body: JSON.stringify(input),
     }, 15_000),
@@ -2025,12 +2183,25 @@ export const phdApi = {
     }),
 
   captcha: () =>
-    request<{ question: string; token: string; expiresInSeconds: number }>('/api/auth/captcha'),
+    request<
+      | { provider: 'math'; question: string; token: string; expiresInSeconds: number }
+      | { provider: 'turnstile'; siteKey: string; action: string; expiresInSeconds: number }
+    >('/api/auth/captcha'),
 
-  sendRegisterEmailCode: (email: string, language: string) =>
+  sendRegisterEmailCode: (
+    email: string,
+    language: string,
+    challenge: { provider: 'math' | 'turnstile'; token: string; answer?: string },
+  ) =>
     request<{ token: string; expiresInSeconds: number }>('/api/auth/register/email-code', undefined, {
       method: 'POST',
-      body: JSON.stringify({ email, language }),
+      body: JSON.stringify({
+        email,
+        language,
+        captchaProvider: challenge.provider,
+        captchaToken: challenge.token,
+        captchaAnswer: challenge.answer ?? '',
+      }),
     }),
 
   register: (
@@ -2134,7 +2305,7 @@ export const phdApi = {
     request<TeamTransferPreflight>(`/api/applications/${applicationId}/team-transfer/preflight`, token, {
       method: 'POST',
       body: JSON.stringify(input),
-    }),
+    }, 10_000),
 
   updateApplicationTeamVisibility: (
     token: string,
@@ -2773,7 +2944,12 @@ export const phdApi = {
     }),
 
   importDiscoverProgram: (token: string, input: import('../data/discover').DiscoverImportInput) =>
-    request<{ application: ApplicationRecord; programId: string; piId: string | null }>(
+    request<{
+      application: ApplicationRecord
+      programId: string
+      piId: string | null
+      warnings?: Array<'missingOfficialSource' | 'missingDeadline'>
+    }>(
       '/api/discover/import',
       token,
       {
@@ -3014,10 +3190,17 @@ export const phdApi = {
       body: JSON.stringify({ name }),
     }),
 
-  adminLogs: (token: string) => request<SystemEvent[]>('/api/admin/logs', token),
+  adminLogs: (token: string, query: SystemLogQuery = {}) => {
+    const params = new URLSearchParams()
+    Object.entries(query).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
+    })
+    const suffix = params.size > 0 ? `?${params.toString()}` : ''
+    return request<SystemLogPage>(`/api/admin/logs${suffix}`, token)
+  },
 
   clearAdminLogs: (token: string) =>
-    request<{ deleted: number; logs: SystemEvent[] }>('/api/admin/logs', token, {
+    request<{ deleted: number; logs: SystemLogPage }>('/api/admin/logs', token, {
       method: 'DELETE',
     }),
 
@@ -3097,6 +3280,15 @@ export const phdApi = {
 
   checkSystemUpdate: (token: string) =>
     request<ReleaseUpdateCheck>('/api/admin/system-update/check', token),
+
+  systemUpdateStatus: (token: string) =>
+    request<SystemUpdateStatus>('/api/admin/system-update/status', token),
+
+  systemUpdateLogs: (token: string, limit = 80) =>
+    request<SystemUpdateLogs>(
+      `/api/admin/system-update/logs?limit=${encodeURIComponent(String(limit))}`,
+      token,
+    ),
 
   installReleaseUpdate: (token: string, tagName: string) =>
     request<SystemUpdateResult>('/api/admin/system-update/install-release', token, {
@@ -3258,6 +3450,10 @@ export const phdApi = {
       role?: Exclude<TeamRole, 'owner'>
       invitedBy?: string
       teacherIds?: string[]
+      accessLevel?: 'pro' | 'standard'
+      studentProLimit?: number
+      studentPermissions?: Partial<TeamStudentPermissions>
+      teacherPermissions?: Partial<TeamTeacherPermissions>
     },
   ) =>
     request<TeamMember>(`/api/teams/${teamId}/members/${memberId}`, token, {

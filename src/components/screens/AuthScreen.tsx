@@ -1,17 +1,43 @@
-import { CalendarClock, Check, Copy, Eye, EyeOff, Fingerprint, FolderCheck, GraduationCap, Languages, ListChecks, Mail, Moon, RefreshCw, ShieldCheck, Sun, Users } from 'lucide-react'
+import {
+  ArrowDown,
+  ArrowRight,
+  CalendarClock,
+  Check,
+  Copy,
+  Eye,
+  EyeOff,
+  Fingerprint,
+  FolderCheck,
+  GraduationCap,
+  Languages,
+  ListChecks,
+  Mail,
+  Moon,
+  RefreshCw,
+  ShieldCheck,
+  Sun,
+  Users,
+} from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { normalizeErrorMessage } from '../../errorMessages'
 import { PUBLIC_DISTRIBUTION } from '../../edition'
 import type { Language } from '../../i18n'
 import { useI18n } from '../hooks/useI18n'
+import { useMarketingReveal, usePointerTilt } from '../hooks/useMarketingMotion'
 import { useTheme } from '../hooks/useTheme'
 import { Select } from '../shared/Select'
+import { MarketingWorkspaceDemo, type MarketingWorkspaceTab } from './MarketingWorkspaceDemo'
+import { TurnstileChallenge } from '../shared/TurnstileChallenge'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const EMAIL_CODE_COOLDOWN_SECONDS = 45
 
 type AuthMode = 'login' | 'register' | 'forgot'
 type AuthModeDirection = 'forward' | 'back'
+type AuthStory = 'track' | 'deadline' | 'organize'
+type HumanChallenge =
+  | { provider?: 'math'; question: string; token: string }
+  | { provider: 'turnstile'; siteKey: string; action: string }
 
 /** Navigation depth so login ↔ create account / reset feels directional. */
 function authModeRank(mode: AuthMode) {
@@ -38,14 +64,21 @@ export function AuthScreen({
   passkeyAvailable?: boolean
   onRegister: (name: string, email: string, password: string, captchaToken: string, captchaAnswer: string, emailCodeToken: string, emailCode: string, language: string) => void
   onForgotPassword?: (email: string) => Promise<string | undefined | null>
-  onCaptcha: () => Promise<{ question: string; token: string }>
-  onSendEmailCode: (email: string, language: string) => Promise<{ token: string; expiresInSeconds: number }>
+  onCaptcha: () => Promise<HumanChallenge>
+  onSendEmailCode: (
+    email: string,
+    language: string,
+    challenge: { provider: 'math' | 'turnstile'; token: string; answer?: string },
+  ) => Promise<{ token: string; expiresInSeconds: number }>
   languages: Array<{ value: Language; label: string }>
   onLanguageChange: (language: Language) => void
 }) {
   const { tx, format, lang } = useI18n()
   const { theme, toggleTheme } = useTheme()
+  const pageRef = useRef<HTMLElement | null>(null)
+  const productStageRef = useRef<HTMLDivElement | null>(null)
   const [mode, setMode] = useState<AuthMode>('login')
+  const [activeStory, setActiveStory] = useState<AuthStory>('track')
   const [modeDirection, setModeDirection] = useState<AuthModeDirection>('forward')
   const [modeAnimKey, setModeAnimKey] = useState(0)
   const modeStageRef = useRef<HTMLDivElement | null>(null)
@@ -62,12 +95,18 @@ export function AuthScreen({
   const [captchaQuestion, setCaptchaQuestion] = useState('')
   const [captchaToken, setCaptchaToken] = useState('')
   const [captchaAnswer, setCaptchaAnswer] = useState('')
+  const [captchaProvider, setCaptchaProvider] = useState<'math' | 'turnstile'>('math')
+  const [captchaSiteKey, setCaptchaSiteKey] = useState('')
+  const [captchaAction, setCaptchaAction] = useState('signup')
   const [captchaError, setCaptchaError] = useState('')
   const [emailCodeToken, setEmailCodeToken] = useState('')
   const [emailCodeValue, setEmailCodeValue] = useState('')
   const [emailCodeSending, setEmailCodeSending] = useState(false)
   const [emailCodeError, setEmailCodeError] = useState('')
   const [emailCodeCooldown, setEmailCodeCooldown] = useState(0)
+
+  useMarketingReveal(pageRef)
+  usePointerTilt(productStageRef)
 
   const switchMode = useCallback((next: AuthMode) => {
     const current = modeRef.current
@@ -85,12 +124,17 @@ export function AuthScreen({
     setCaptchaError('')
     try {
       const challenge = await onCaptcha()
-      setCaptchaQuestion(challenge.question)
-      setCaptchaToken(challenge.token)
+      const provider = challenge.provider === 'turnstile' ? 'turnstile' : 'math'
+      setCaptchaProvider(provider)
+      setCaptchaQuestion('question' in challenge ? challenge.question : '')
+      setCaptchaToken('token' in challenge ? challenge.token : '')
+      setCaptchaSiteKey(challenge.provider === 'turnstile' ? challenge.siteKey : '')
+      setCaptchaAction(challenge.provider === 'turnstile' ? challenge.action : 'signup')
       setCaptchaAnswer('')
     } catch {
       setCaptchaQuestion('')
       setCaptchaToken('')
+      setCaptchaSiteKey('')
       setCaptchaError(tx('captchaLoadFailed'))
     }
   }, [onCaptcha, tx])
@@ -162,21 +206,30 @@ export function AuthScreen({
       setEmailCodeError(tx('emailCodeInvalidEmail'))
       return
     }
+    if (!captchaToken || (captchaProvider === 'math' && !captchaAnswer.trim())) {
+      setCaptchaError(tx('captchaRequired'))
+      return
+    }
     if (emailCodeSending || emailCodeCooldown > 0) return
     setEmailCodeError('')
     setEmailCodeSending(true)
     try {
-      const result = await onSendEmailCode(trimmedEmail, lang)
+      const result = await onSendEmailCode(trimmedEmail, lang, {
+        provider: captchaProvider,
+        token: captchaToken,
+        answer: captchaProvider === 'math' ? captchaAnswer.trim() : undefined,
+      })
       setEmailCodeToken(result.token)
       setEmailCodeValue('')
       setEmailCodeCooldown(EMAIL_CODE_COOLDOWN_SECONDS)
+      void refreshCaptcha()
     } catch (error) {
       setEmailCodeToken('')
       setEmailCodeError(normalizeErrorMessage(error, lang, tx('emailCodeSendFailed')))
     } finally {
       setEmailCodeSending(false)
     }
-  }, [email, emailCodeSending, emailCodeCooldown, onSendEmailCode, lang, tx])
+  }, [captchaAnswer, captchaProvider, captchaToken, email, emailCodeSending, emailCodeCooldown, onSendEmailCode, lang, refreshCaptcha, tx])
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -187,10 +240,6 @@ export function AuthScreen({
       return
     }
     if (mode === 'register') {
-      if (!captchaToken || !captchaAnswer.trim()) {
-        setCaptchaError(tx('captchaRequired'))
-        return
-      }
       if (!emailCodeToken || !emailCodeValue.trim()) {
         setEmailCodeError(tx('emailCodeRequired'))
         return
@@ -222,33 +271,59 @@ export function AuthScreen({
     setPassword('demo123456')
   }
 
+  function openAccess(nextMode: Extract<AuthMode, 'login' | 'register'>) {
+    switchMode(nextMode)
+    const target = document.getElementById('auth-access')
+    if (!target) return
+    const reduced = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    target.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' })
+  }
+
+  const stories: Array<{
+    key: AuthStory
+    title: string
+    body: string
+    Icon: typeof ListChecks
+  }> = [
+    {
+      key: 'track',
+      title: tx('authHighlightTrack'),
+      body: tx('authMarketingTrackBody'),
+      Icon: ListChecks,
+    },
+    {
+      key: 'deadline',
+      title: tx('authHighlightDeadline'),
+      body: tx('authMarketingDeadlineBody'),
+      Icon: CalendarClock,
+    },
+    {
+      key: 'organize',
+      title: tx('authHighlightOrganize'),
+      body: tx('authMarketingOrganizeBody'),
+      Icon: FolderCheck,
+    },
+  ]
+  const storyTab: Record<AuthStory, MarketingWorkspaceTab> = {
+    track: 'dossier',
+    deadline: 'timeline',
+    organize: 'materials',
+  }
+  const storyForTab: Record<MarketingWorkspaceTab, AuthStory> = {
+    dossier: 'track',
+    timeline: 'deadline',
+    materials: 'organize',
+  }
+
   return (
-    <main className="auth-canvas">
-      <div className="auth-shell">
-        <aside className="auth-hero">
-          <div className="auth-hero-content">
-            <div className="auth-hero-mark">
-              <GraduationCap size={26} aria-hidden="true" />
-            </div>
-            <h1>{tx('appTitle')}</h1>
-            <p>{tx('appDesc')}</p>
-            <ul className="auth-hero-points">
-              <li>
-                <ListChecks size={14} aria-hidden="true" />
-                <span>{tx('authHighlightTrack')}</span>
-              </li>
-              <li>
-                <CalendarClock size={14} aria-hidden="true" />
-                <span>{tx('authHighlightDeadline')}</span>
-              </li>
-              <li>
-                <FolderCheck size={14} aria-hidden="true" />
-                <span>{tx('authHighlightOrganize')}</span>
-              </li>
-            </ul>
-          </div>
-        </aside>
-        <section className="auth-sheet" aria-label={modeHeading}>
+    <main className="auth-canvas auth-marketing-page" ref={pageRef}>
+      <header className="auth-marketing-nav" data-marketing-reveal data-marketing-visible="true">
+        <a className="auth-marketing-brand" href="#auth-top" aria-label={tx('appTitle')}>
+          <span aria-hidden="true"><GraduationCap size={17} /></span>
+          <strong>{tx('appTitle')}</strong>
+        </a>
+        <div className="auth-marketing-nav-actions">
           <div className="auth-preferences" aria-label={tx('preferences')}>
             <div className="auth-language-control" title={tx('settings.language')}>
               <Languages size={14} aria-hidden="true" />
@@ -265,12 +340,120 @@ export function AuthScreen({
               {theme === 'dark' ? <Sun size={15} aria-hidden="true" /> : <Moon size={15} aria-hidden="true" />}
             </button>
           </div>
+          <a
+            className="auth-nav-sign-in"
+            href="#auth-access"
+            onClick={(event) => {
+              event.preventDefault()
+              openAccess('login')
+            }}
+          >
+            {tx('signIn')}
+          </a>
+        </div>
+      </header>
+
+      <section className="auth-marketing-hero" id="auth-top" aria-labelledby="auth-marketing-title">
+        <div className="auth-marketing-hero-copy" data-marketing-reveal data-marketing-visible="true">
+          <h1 id="auth-marketing-title">{tx('authMarketingHeroTitle')}</h1>
+          <p>{tx('authMarketingHeroBody')}</p>
+          <div className="auth-marketing-hero-actions">
+            <a
+              className="auth-marketing-primary"
+              href="#auth-access"
+              onClick={(event) => {
+                event.preventDefault()
+                openAccess('login')
+              }}
+            >
+              {tx('signIn')}
+              <ArrowRight size={15} aria-hidden="true" />
+            </a>
+            <a
+              className="auth-marketing-secondary"
+              href="#auth-access"
+              onClick={(event) => {
+                event.preventDefault()
+                openAccess('register')
+              }}
+            >
+              {tx('createAccount')}
+            </a>
+          </div>
+        </div>
+
+        <div
+          className="auth-product-stage"
+          ref={productStageRef}
+          aria-label={tx('appDesc')}
+          data-marketing-reveal
+          data-marketing-visible="true"
+        >
+          <div className="auth-product-stage-light" aria-hidden="true" />
+          <MarketingWorkspaceDemo className="auth-real-workspace" />
+        </div>
+
+        <a className="auth-marketing-scroll-cue" href="#auth-story">
+          <span>{tx('authMarketingStoryTitle')}</span>
+          <ArrowDown size={14} aria-hidden="true" />
+        </a>
+      </section>
+
+      <section className="auth-story" id="auth-story" aria-labelledby="auth-story-title">
+        <div className="auth-story-heading" data-marketing-reveal>
+          <h2 id="auth-story-title">{tx('authMarketingStoryTitle')}</h2>
+          <p>{tx('authMarketingStoryBody')}</p>
+        </div>
+        <div className="auth-story-layout">
+          <div className="auth-story-selector" data-marketing-reveal>
+            {stories.map(({ key, title, body, Icon }, index) => (
+              <button
+                key={key}
+                type="button"
+                className={activeStory === key ? 'is-active' : ''}
+                aria-pressed={activeStory === key}
+                onClick={() => setActiveStory(key)}
+              >
+                <span className="auth-story-index">0{index + 1}</span>
+                <span className="auth-story-icon"><Icon size={17} aria-hidden="true" /></span>
+                <span>
+                  <strong>{title}</strong>
+                  <small>{body}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <div className="auth-story-preview" data-story={activeStory} data-marketing-reveal aria-live="polite">
+            <MarketingWorkspaceDemo
+              className="auth-story-real-workspace"
+              activeTab={storyTab[activeStory]}
+              onTabChange={(tab) => setActiveStory(storyForTab[tab])}
+            />
+          </div>
+        </div>
+      </section>
+
+      <section className="auth-access-section" id="auth-access" aria-labelledby="auth-access-title">
+        <div className="auth-access-copy" data-marketing-reveal>
+          <h2 id="auth-access-title">{tx('authMarketingAccessTitle')}</h2>
+          <p>{tx('authMarketingAccessBody')}</p>
+          <ul>
+            {stories.map(({ key, title, Icon }) => (
+              <li key={key}><Icon size={14} aria-hidden="true" /><span>{title}</span></li>
+            ))}
+          </ul>
+        </div>
+
+        <section className="auth-sheet" aria-label={modeHeading} data-marketing-reveal>
           <div className="auth-sheet-intro">
             <div className="auth-mark">
-              <GraduationCap size={22} aria-hidden="true" />
+              <GraduationCap size={20} aria-hidden="true" />
             </div>
-            <h1>{tx('appTitle')}</h1>
-            <p>{tx('appDesc')}</p>
+            <div>
+              <h2>{tx('appTitle')}</h2>
+              <p>{tx('appDesc')}</p>
+            </div>
           </div>
           <div className="auth-mode-stage" ref={modeStageRef}>
             <div
@@ -321,9 +504,9 @@ export function AuthScreen({
               ) : null}
               <label>
                 <span>{tx('email')}</span>
-                <input
-                  required
-                  type="email"
+                  <input
+                    required
+                    type="email"
                   value={email}
                   onChange={(event) => {
                     setEmail(event.target.value)
@@ -335,9 +518,43 @@ export function AuthScreen({
                     }
                   }}
                   placeholder="you@example.com"
-                  autoFocus={mode === 'login'}
                 />
               </label>
+              {mode === 'register' ? (
+                <label>
+                  <span>{tx('captcha')}</span>
+                  {captchaProvider === 'turnstile' && captchaSiteKey ? (
+                    <TurnstileChallenge
+                      siteKey={captchaSiteKey}
+                      action={captchaAction}
+                      theme={theme}
+                      onToken={(token) => {
+                        setCaptchaToken(token)
+                        if (token) setCaptchaError('')
+                      }}
+                      onError={() => setCaptchaError(tx('captchaLoadFailed'))}
+                    />
+                  ) : (
+                    <div className="captcha-row">
+                      <strong>{captchaQuestion || tx('working')}</strong>
+                      <input
+                        required
+                        inputMode="numeric"
+                        value={captchaAnswer}
+                        onChange={(event) => {
+                          setCaptchaAnswer(event.target.value)
+                          setCaptchaError('')
+                        }}
+                        placeholder={tx('captchaPlaceholder')}
+                      />
+                      <button type="button" className="icon-action" onClick={() => void refreshCaptcha()} aria-label={tx('refreshCaptcha')} title={tx('refreshCaptcha')}>
+                        <RefreshCw size={14} aria-hidden="true" />
+                      </button>
+                    </div>
+                  )}
+                  {captchaError ? <em className="settings-inline-error">{captchaError}</em> : null}
+                </label>
+              ) : null}
               {mode === 'register' ? (
                 <label>
                   <span>{tx('emailCode')}</span>
@@ -357,7 +574,12 @@ export function AuthScreen({
                       type="button"
                       className="quiet-action email-code-send-btn"
                       onClick={() => void sendEmailCode()}
-                      disabled={emailCodeSending || emailCodeCooldown > 0}
+                      disabled={
+                        emailCodeSending
+                        || emailCodeCooldown > 0
+                        || !captchaToken
+                        || (captchaProvider === 'math' && !captchaAnswer.trim())
+                      }
                     >
                       {emailCodeSending ? (
                         tx('working')
@@ -380,28 +602,6 @@ export function AuthScreen({
                   ) : null}
                 </label>
               ) : null}
-              {mode === 'register' ? (
-                <label>
-                  <span>{tx('captcha')}</span>
-                  <div className="captcha-row">
-                    <strong>{captchaQuestion || tx('working')}</strong>
-                    <input
-                      required
-                      inputMode="numeric"
-                      value={captchaAnswer}
-                      onChange={(event) => {
-                        setCaptchaAnswer(event.target.value)
-                        setCaptchaError('')
-                      }}
-                      placeholder={tx('captchaPlaceholder')}
-                    />
-                    <button type="button" className="icon-action" onClick={() => void refreshCaptcha()} aria-label={tx('refreshCaptcha')} title={tx('refreshCaptcha')}>
-                      <RefreshCw size={14} aria-hidden="true" />
-                    </button>
-                  </div>
-                  {captchaError ? <em className="settings-inline-error">{captchaError}</em> : null}
-                </label>
-              ) : null}
               {mode !== 'forgot' ? (
                 <label>
                   <span>{tx('password')}</span>
@@ -412,7 +612,7 @@ export function AuthScreen({
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
                       placeholder={tx('passwordPlaceholder')}
-                      minLength={6}
+                      minLength={mode === 'register' ? 15 : 8}
                     />
                     <button
                       type="button"
@@ -486,7 +686,7 @@ export function AuthScreen({
             </div>
           </div>
         </section>
-      </div>
+      </section>
     </main>
   )
 }

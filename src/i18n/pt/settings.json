@@ -57,7 +57,7 @@
     "installAppBenefitOffline": "Pronto para uso off-line",
     "installAppBenefitQuick": "Lançamento rápido",
     "installAppOfflineScopeLabel": "Escopo off-line",
-    "installAppOfflineScope": "Os dados off-line permanecem neste dispositivo: você pode visualizar o último espaço de trabalho sincronizado e enfileirar edições em suas próprias candidaturas universitárias. Uploads, e-mail, IA, equipe, compartilhamento, conta e ações de backup permanecem apenas online.",
+    "installAppOfflineScope": "Os dados offline ficam neste dispositivo. Apenas as suas candidaturas pessoais são armazenadas com uma autorização curta e expirada; as edições podem entrar na fila. Antes de sincronizar, o servidor verifica novamente identidade, propriedade, permissões e versão. Uploads, e-mail, IA, equipe, compartilhamento, conta e backup continuam online.",
     "installAppStatusAvailable": "Disponível para instalar",
     "installAppStatusInstalling": "Aguardando confirmação",
     "installAppStatusInstalled": "Instalado",

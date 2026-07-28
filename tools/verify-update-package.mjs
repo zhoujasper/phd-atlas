@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { createReadStream, createWriteStream } from 'node:fs'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
@@ -33,6 +34,41 @@ async function createInstalledFixture(name) {
   return root
 }
 
+function verifyOfflineProductionInstall(runtimeRoot) {
+  const args = [
+    'ci',
+    '--omit=dev',
+    '--offline',
+    '--no-audit',
+    '--no-fund',
+    '--foreground-scripts',
+    '--cache',
+    path.join(runtimeRoot, '.verification-npm-cache'),
+  ]
+  const command = process.platform === 'win32' ? 'cmd.exe' : 'npm'
+  const commandArgs = process.platform === 'win32'
+    ? ['/d', '/s', '/c', 'npm', ...args]
+    : args
+  const result = spawnSync(command, commandArgs, {
+    cwd: runtimeRoot,
+    env: {
+      ...process.env,
+      npm_config_progress: 'false',
+      npm_config_update_notifier: 'false',
+    },
+    stdio: 'inherit',
+    windowsHide: true,
+  })
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    throw new Error(
+      `The bundled production dependency graph failed its offline npm ci check (${
+        result.signal ? `signal ${result.signal}` : `exit ${result.status}`
+      }).`,
+    )
+  }
+}
+
 async function createPackageWithUnmanifestedRuntimeFile(sourcePackage) {
   const extractRoot = path.join(tempRoot, 'unmanifested-package')
   const outputPath = path.join(tempRoot, 'unmanifested-package.tar.gz')
@@ -57,6 +93,18 @@ async function createPackageWithUnmanifestedRuntimeFile(sourcePackage) {
 
 try {
   const validation = await validateUpdatePackage(packagePath, path.join(tempRoot, 'validation'))
+  verifyOfflineProductionInstall(validation.extractRoot)
+  for (const required of ['express', 'better-sqlite3', 'tar-fs']) {
+    await fs.access(path.join(validation.extractRoot, 'node_modules', required))
+  }
+  for (const frontendOnly of ['react', 'xlsx']) {
+    try {
+      await fs.access(path.join(validation.extractRoot, 'node_modules', frontendOnly))
+      throw new Error(`Frontend-only dependency ${frontendOnly} reached the server runtime install.`)
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+  }
   await fs.rm(validation.extractRoot, { recursive: true, force: true })
 
   const packageWithExtraFile = await createPackageWithUnmanifestedRuntimeFile(packagePath)

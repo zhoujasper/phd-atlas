@@ -57,7 +57,7 @@
     "installAppBenefitOffline": "离线可用",
     "installAppBenefitQuick": "快速启动",
     "installAppOfflineScopeLabel": "离线范围",
-    "installAppOfflineScope": "离线数据仅保存在当前设备：可查看最近同步的工作区，并暂存对本人申请的编辑；文件上传、邮件、AI、团队、分享、账户与备份操作仍需联网。",
+    "installAppOfflineScope": "离线数据仅保存在当前设备。系统只会在短期、到期即失效的授权期内缓存本人拥有的个人申请，并可暂存编辑；同步前，服务器会重新验证身份、归属、权限和数据版本。文件上传、邮件、AI、团队、分享、账户与备份操作仍需联网。",
     "installAppStatusAvailable": "可安装",
     "installAppStatusInstalling": "等待确认",
     "installAppStatusInstalled": "已安装",

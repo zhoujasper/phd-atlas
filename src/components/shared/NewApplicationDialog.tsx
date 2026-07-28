@@ -3,6 +3,7 @@ import { useRef, useState } from 'react'
 import { today } from '../../appModel'
 import { DatePicker } from './DatePicker'
 import { Select } from './Select'
+import { CountrySelect } from './CountrySelect'
 import { LazyMarkdownTextarea as MarkdownTextarea } from './LazyMarkdownTextarea'
 import { useI18n } from '../hooks/useI18n'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
@@ -64,7 +65,7 @@ export function NewApplicationDialog({
     professorEmail: '',
     professorHomepage: '',
     university: '',
-    country: tx('dialog.countryDefault'),
+    country: 'United States',
     website: '',
     program: '',
     deadline: today,
@@ -217,10 +218,11 @@ export function NewApplicationDialog({
           </label>
           <label>
             <span>{tx('dialog.country')}</span>
-            <input
+            <CountrySelect
               value={form.country}
-              onChange={(e) => setForm({ ...form, country: e.target.value })}
-              placeholder={tx('dialog.countryPlaceholder')}
+              onChange={(country) => setForm({ ...form, country })}
+              ariaLabel={tx('dialog.country')}
+              placeholder={tx('dossier.countryPlaceholder')}
             />
           </label>
           <label>

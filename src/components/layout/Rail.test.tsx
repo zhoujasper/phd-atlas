@@ -60,6 +60,7 @@ describe('Rail i18n', () => {
           interfaceMode="team"
           teamViewerRole="member"
           teamSection="overview"
+          canUseDiscover={false}
           onScreen={vi.fn()}
           onTeamSection={vi.fn()}
           onModeChange={vi.fn()}
@@ -79,7 +80,7 @@ describe('Rail i18n', () => {
     expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
   })
 
-  it('keeps organization settings out of the teacher team rail', () => {
+  it('shows assigned-student audit but keeps organization settings out of the teacher team rail', () => {
     render(
       <I18nContext.Provider value={{
         lang: 'en',
@@ -103,10 +104,37 @@ describe('Rail i18n', () => {
     )
 
     const nav = screen.getByRole('navigation')
-    expect(nav.querySelectorAll('button')).toHaveLength(5)
+    expect(nav.querySelectorAll('button')).toHaveLength(6)
     expect(screen.getByRole('button', { name: 'Discover' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Audit' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Audit' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
+  })
+
+  it('adds Discover to the student team rail only when the organization permits it', () => {
+    render(
+      <I18nContext.Provider value={{
+        lang: 'en',
+        t: getDict('en'),
+        format: tpl,
+        tx: (path, fallback) => t('en', path, fallback),
+      }}>
+        <Rail
+          screen="team"
+          theme="light"
+          interfaceMode="team"
+          teamViewerRole="member"
+          teamSection="overview"
+          canUseDiscover
+          onScreen={vi.fn()}
+          onTeamSection={vi.fn()}
+          onModeChange={vi.fn()}
+          onToggleTheme={vi.fn()}
+          onLogout={vi.fn()}
+        />
+      </I18nContext.Provider>,
+    )
+
+    expect(screen.getByRole('button', { name: 'Discover' })).toBeInTheDocument()
   })
 
   it('hides personal Discover when the current personal plan is not eligible', () => {
@@ -190,5 +218,8 @@ describe('Rail i18n', () => {
     )
 
     expect(screen.getByRole('button', { name: 'Discover' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('navigation')).toHaveStyle({
+      '--rail-active-index': '4',
+    })
   })
 })

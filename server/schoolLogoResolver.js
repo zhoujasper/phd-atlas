@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { lookup as nodeDnsLookup } from 'node:dns/promises'
 import { isDiscoverPublicHostname, isDiscoverPublicNetworkTarget } from './discover-source-crawler.js'
+import { schoolLogoWebsiteCacheKey } from './schoolLogoCacheKey.js'
 
 const MAX_URL_LENGTH = 2_048
 const MAX_REDIRECTS = 4
@@ -10,6 +11,7 @@ const MAX_IMAGE_CANDIDATES = 8
 const PAGE_TIMEOUT_MS = 6_000
 const IMAGE_TIMEOUT_MS = 5_000
 const LOGO_USER_AGENT = 'PhDAtlas-SchoolLogo/1.0 (+official-school-identity)'
+const SITE_ICON_PROVIDER = 'https://www.google.com/s2/favicons'
 
 function cleanHtmlUrl(value) {
   return String(value || '')
@@ -112,7 +114,7 @@ export function extractSchoolLogoCandidates(html, pageUrl, schoolName = '') {
     const href = attributes.href
     if (!href) continue
     if (rel.includes('apple-touch-icon')) {
-      add(href, 106 + iconSizeScore(attributes.sizes), 'apple-touch-icon')
+      add(href, 82 + iconSizeScore(attributes.sizes), 'apple-touch-icon')
     } else if (rel.split(/\s+/u).includes('icon') || rel.includes('shortcut icon')) {
       const typeBonus = /svg|png/iu.test(attributes.type || href) ? 5 : 0
       add(href, 64 + iconSizeScore(attributes.sizes) + typeBonus, 'icon')
@@ -125,7 +127,7 @@ export function extractSchoolLogoCandidates(html, pageUrl, schoolName = '') {
     const attributes = attributesFromTag(tag)
     const identity = `${attributes.property || ''} ${attributes.name || ''} ${attributes.itemprop || ''}`.toLowerCase()
     if (!/(?:^|\s|:)logo(?:$|\s)/u.test(identity)) continue
-    add(attributes.content, 112, 'metadata-logo')
+    add(attributes.content, 148, 'metadata-logo')
   }
 
   for (const tag of source.match(/<img\b[^>]*>/giu) ?? []) {
@@ -140,8 +142,22 @@ export function extractSchoolLogoCandidates(html, pageUrl, schoolName = '') {
     const explicitLogo = /(?:^|[\s_/-])(?:logo|brand|crest|seal|wordmark)(?:$|[\s_.?&/-])/u.test(signalText)
     const schoolMatch = schoolSignals.some((token) => signalText.includes(token))
     if (!explicitLogo && !schoolMatch) continue
-    const sourceUrl = attributes.src || attributes['data-src'] || attributes['data-lazy-src']
-    add(sourceUrl, explicitLogo ? 96 + (schoolMatch ? 4 : 0) : 78, explicitLogo ? 'page-logo' : 'school-image')
+    const eagerSource = attributes.src && !attributes.src.startsWith('data:')
+      ? attributes.src
+      : ''
+    const sourceUrl = eagerSource || attributes['data-src'] || attributes['data-lazy-src']
+    const identityBonus = schoolMatch ? 20 : 0
+    const wordmarkBonus = /(?:wordmark|university|college|institution)/u.test(signalText) ? 8 : 0
+    const variantPenalty = /(?:^|[\s_./-])(?:white|inverse|inverted|footer|mobile|compact|small|mono)(?:$|[\s_.?&/-])/u.test(signalText)
+      ? 40
+      : 0
+    add(
+      sourceUrl,
+      explicitLogo
+        ? 112 + identityBonus + wordmarkBonus - variantPenalty
+        : 28 + identityBonus - variantPenalty,
+      explicitLogo ? 'page-logo' : 'school-image',
+    )
   }
 
   for (const match of source.matchAll(/(<script\b[^>]*>)([\s\S]*?)<\/script>/giu)) {
@@ -149,7 +165,7 @@ export function extractSchoolLogoCandidates(html, pageUrl, schoolName = '') {
     if (String(attributes.type || '').toLowerCase() !== 'application/ld+json') continue
     try {
       const parsed = JSON.parse(String(match[2] || '').trim())
-      for (const value of logoValuesFromJson(parsed)) add(value, 132, 'structured-logo')
+      for (const value of logoValuesFromJson(parsed)) add(value, 164, 'structured-logo')
     } catch {
       // Malformed structured data should not prevent favicon discovery.
     }
@@ -283,6 +299,57 @@ export function detectSchoolLogoMime(bytes, declaredType = '') {
   return null
 }
 
+export function detectSchoolLogoGeometry(bytes, mimeType = '') {
+  const mime = String(mimeType || '').toLowerCase()
+  if (mime === 'image/png' && bytes.length >= 24) {
+    return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) }
+  }
+  if (mime === 'image/bmp' && bytes.length >= 26) {
+    return {
+      width: Math.abs(bytes.readInt32LE(18)),
+      height: Math.abs(bytes.readInt32LE(22)),
+    }
+  }
+  if (mime === 'image/x-icon' && bytes.length >= 22) {
+    const count = Math.min(bytes.readUInt16LE(4), 64)
+    let largest = null
+    for (let index = 0; index < count; index += 1) {
+      const offset = 6 + index * 16
+      if (offset + 16 > bytes.length) break
+      const width = bytes[offset] || 256
+      const height = bytes[offset + 1] || 256
+      if (!largest || width * height > largest.width * largest.height) {
+        largest = { width, height }
+      }
+    }
+    return largest
+  }
+  if (mime === 'image/svg+xml') {
+    const head = bytes.subarray(0, 4_096).toString('utf8')
+    const viewBox = head.match(/\bviewBox\s*=\s*["']\s*[-+]?(?:\d*\.?\d+)\s+[-+]?(?:\d*\.?\d+)\s+(\d*\.?\d+)\s+(\d*\.?\d+)\s*["']/iu)
+    if (viewBox) return { width: Number(viewBox[1]), height: Number(viewBox[2]) }
+    const width = Number(head.match(/\bwidth\s*=\s*["']\s*(\d*\.?\d+)/iu)?.[1])
+    const height = Number(head.match(/\bheight\s*=\s*["']\s*(\d*\.?\d+)/iu)?.[1])
+    if (width > 0 && height > 0) return { width, height }
+  }
+  return null
+}
+
+export function schoolLogoGeometryScore(geometry) {
+  const width = Number(geometry?.width)
+  const height = Number(geometry?.height)
+  if (!(width > 0) || !(height > 0)) return 0
+  const ratio = width / height
+  const shortestSide = Math.min(width, height)
+  const sizeBonus = shortestSide >= 96 ? 8 : shortestSide < 24 ? -12 : 0
+  if (ratio >= 0.72 && ratio <= 1.38) return 74 + sizeBonus
+  if (ratio >= 0.55 && ratio <= 1.8) return 32 + sizeBonus
+  if (ratio > 3.2) return -56
+  if (ratio > 2.2) return -34
+  if (ratio < 0.45) return -24
+  return sizeBonus
+}
+
 async function fetchLogoCandidate(candidate, options) {
   const result = await fetchBoundedRemote(candidate.url, {
     ...options,
@@ -293,12 +360,24 @@ async function fetchLogoCandidate(candidate, options) {
   if (!result) return null
   const mimeType = detectSchoolLogoMime(result.bytes, result.contentType)
   if (!mimeType) return null
+  const geometry = detectSchoolLogoGeometry(result.bytes, mimeType)
+  const semanticPenalty = candidate.kind === 'school-image' ? 100 : 0
   return {
     found: true,
     dataUrl: `data:${mimeType};base64,${result.bytes.toString('base64')}`,
     sourceUrl: result.url,
     candidateKind: candidate.kind,
+    selectionScore: candidate.score + schoolLogoGeometryScore(geometry) - semanticPenalty,
   }
+}
+
+function siteIconProviderUrl(websiteUrl) {
+  const page = normalizeSchoolLogoRemoteUrl(websiteUrl)
+  if (!page) return ''
+  const provider = new URL(SITE_ICON_PROVIDER)
+  provider.searchParams.set('domain_url', `${page.protocol}//${page.hostname}`)
+  provider.searchParams.set('sz', '256')
+  return provider.toString()
 }
 
 export async function resolveSchoolLogoAsset({
@@ -311,10 +390,13 @@ export async function resolveSchoolLogoAsset({
   if (typeof fetchImpl !== 'function') return { found: false, reason: 'unavailable' }
   const directImage = normalizeSchoolLogoRemoteUrl(imageUrl)
   if (directImage) {
-    return await fetchLogoCandidate(
+    const resolved = await fetchLogoCandidate(
       { url: directImage.toString(), kind: 'manual-link' },
       { fetchImpl, dnsLookup },
-    ) ?? { found: false, reason: 'not-found' }
+    )
+    if (!resolved) return { found: false, reason: 'not-found' }
+    const { selectionScore: _selectionScore, ...result } = resolved
+    return result
   }
 
   const page = normalizeSchoolLogoRemoteUrl(website)
@@ -337,13 +419,48 @@ export async function resolveSchoolLogoAsset({
     pageResult.url,
     schoolName,
   )
+  const usableCandidates = []
   for (let index = 0; index < candidates.length; index += 3) {
     const batch = candidates.slice(index, index + 3)
     const results = await Promise.all(batch.map((candidate) => (
       fetchLogoCandidate(candidate, { fetchImpl, dnsLookup })
     )))
-    const match = results.find(Boolean)
-    if (match) return match
+    usableCandidates.push(...results.filter(Boolean))
   }
-  return { found: false, reason: 'not-found' }
+  const match = usableCandidates.sort((left, right) => right.selectionScore - left.selectionScore)[0]
+  if (match) {
+    const { selectionScore: _selectionScore, ...result } = match
+    return {
+      ...result,
+      cacheKey: schoolLogoWebsiteCacheKey(pageResult.url),
+      websiteUrl: pageResult.url,
+    }
+  }
+
+  // Some university CDNs allow the HTML document but reject every logo asset
+  // to non-browser clients (Oxford is a current example). In that case, use a
+  // compact site-icon provider as a final read-only fetch. It returns the
+  // domain's published icon and avoids replacing a missing mark with an
+  // unrelated page photograph or a wide navigation wordmark.
+  const providerUrl = siteIconProviderUrl(pageResult.url)
+  if (providerUrl) {
+    const providerMatch = await fetchLogoCandidate(
+      { url: providerUrl, kind: 'site-icon-provider', score: 0 },
+      { fetchImpl, dnsLookup },
+    )
+    if (providerMatch) {
+      const { selectionScore: _selectionScore, ...result } = providerMatch
+      return {
+        ...result,
+        cacheKey: schoolLogoWebsiteCacheKey(pageResult.url),
+        websiteUrl: pageResult.url,
+      }
+    }
+  }
+  return {
+    found: false,
+    reason: 'not-found',
+    cacheKey: schoolLogoWebsiteCacheKey(pageResult.url),
+    websiteUrl: pageResult.url,
+  }
 }

@@ -1,13 +1,42 @@
 import type { DetailTab } from '../appModel'
 
-export type ApplicationStatus =
-  | 'Draft'
-  | 'Preparing'
-  | 'Submitted'
-  | 'Interview'
-  | 'Accepted'
-  | 'Rejected'
-  | 'Waitlist'
+export const builtInApplicationStatuses = [
+  'Draft',
+  'Preparing',
+  'Submitted',
+  'Interview',
+  'Accepted',
+  'Rejected',
+  'Waitlist',
+] as const
+
+export type BuiltInApplicationStatus = typeof builtInApplicationStatuses[number]
+
+/**
+ * Built-in statuses keep editor autocomplete, while account-scoped custom
+ * statuses remain valid persisted application data.
+ */
+export type ApplicationStatus = BuiltInApplicationStatus | (string & {})
+
+/**
+ * Keeps the canonical pipeline first, then appends account- or record-specific
+ * custom values in a stable, case-insensitive order.
+ */
+export function applicationStatusOrder(
+  ...sources: ReadonlyArray<ReadonlyArray<string | null | undefined>>
+): ApplicationStatus[] {
+  const statuses: ApplicationStatus[] = []
+  const seen = new Set<string>()
+  for (const rawValue of [...builtInApplicationStatuses, ...sources.flat()]) {
+    if (typeof rawValue !== 'string') continue
+    const value = rawValue.trim().replace(/\s+/g, ' ')
+    const key = value.toLocaleLowerCase()
+    if (!value || value.length > 64 || seen.has(key)) continue
+    seen.add(key)
+    statuses.push(value as ApplicationStatus)
+  }
+  return statuses
+}
 
 export type MaterialStatus = string
 export type BackupFrequency = '1m' | '5m' | '15m' | '30m' | '1h' | '3h' | '6h' | '12h' | 'daily' | '3d' | '7d' | 'weekly' | 'monthly'
@@ -123,6 +152,8 @@ export type ApplicationRecord = {
     homepage: string
     research: string
     lab: string
+    labUrl?: string
+    projectUrl?: string
   }
   school: {
     name: string
@@ -132,6 +163,10 @@ export type ApplicationRecord = {
       dataUrl: string
       source: 'website' | 'link' | 'upload'
       sourceUrl?: string
+      websiteUrl?: string
+      cacheKey?: string
+      assetKey?: string
+      candidateKind?: string
       updatedAt: string
     }
     /** Defaults to true for legacy records; false preserves an intentional removal. */
@@ -293,6 +328,7 @@ export type ApplicationRecord = {
   shares?: Array<{
     id: string
     token: string
+    createdBy?: string
     createdAt: string
     expiresAt: string | null
     permission?: SharePermission

@@ -27,6 +27,8 @@ export function sharedPayloadToApplication(data: SharedApplicationPayload): Appl
       homepage: data.professor.homepage,
       research: data.professor.research,
       lab: data.professor.lab ?? '',
+      labUrl: data.professor.labUrl ?? '',
+      projectUrl: data.professor.projectUrl ?? '',
     },
     school: {
       name: data.school.name,

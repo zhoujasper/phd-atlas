@@ -1,15 +1,49 @@
 import { z } from 'zod'
 import { Buffer } from 'node:buffer'
 
-export const ApplicationStatusSchema = z.enum([
-  'Draft',
-  'Preparing',
-  'Submitted',
-  'Interview',
-  'Accepted',
-  'Rejected',
-  'Waitlist',
+const BUILT_IN_APPLICATION_STATUSES = new Map([
+  ['draft', 'Draft'],
+  ['preparing', 'Preparing'],
+  ['submitted', 'Submitted'],
+  ['interview', 'Interview'],
+  ['accepted', 'Accepted'],
+  ['rejected', 'Rejected'],
+  ['waitlist', 'Waitlist'],
 ])
+
+export const ApplicationStatusSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .refine((status) => {
+    const canonical = BUILT_IN_APPLICATION_STATUSES.get(status.toLocaleLowerCase())
+    return canonical === undefined || canonical === status
+  }, 'Built-in application statuses must use their canonical value.')
+
+const CustomApplicationStatusesSchema = z
+  .array(ApplicationStatusSchema)
+  .max(30)
+  .superRefine((statuses, context) => {
+    const seen = new Set()
+    statuses.forEach((status, index) => {
+      const key = status.toLocaleLowerCase()
+      if (BUILT_IN_APPLICATION_STATUSES.has(key)) {
+        context.addIssue({
+          code: 'custom',
+          path: [index],
+          message: 'Built-in application statuses must not be duplicated as custom statuses.',
+        })
+      } else if (seen.has(key)) {
+        context.addIssue({
+          code: 'custom',
+          path: [index],
+          message: 'Custom application statuses must be unique.',
+        })
+      }
+      seen.add(key)
+    })
+  })
 
 export const MaterialStatusSchema = z.string().trim().min(1).max(64)
 
@@ -137,16 +171,47 @@ export const AdminTeamCreateSchema = z.object({
   name: z.string().trim().min(1).max(120),
 })
 
+const OptionalTeamMemberLimitSchema = z.number().int().min(1).max(10_000).nullable()
+
+const TeamStudentPermissionsPatchSchema = z.object({
+  editApplications: z.boolean().optional(),
+  createApplications: z.boolean().optional(),
+  useDiscover: z.boolean().optional(),
+  createShareLinks: z.boolean().optional(),
+  requestTeamTransfers: z.boolean().optional(),
+  activeApplicationLimit: OptionalTeamMemberLimitSchema.optional(),
+  lifetimeApplicationLimit: OptionalTeamMemberLimitSchema.optional(),
+  activeShareLimit: OptionalTeamMemberLimitSchema.optional(),
+  lifetimeShareLimit: OptionalTeamMemberLimitSchema.optional(),
+}).strict()
+
+const TeamTeacherPermissionsPatchSchema = z.object({
+  inviteStudents: z.boolean().optional(),
+  manageStudentPermissions: z.boolean().optional(),
+  useDiscover: z.boolean().optional(),
+  createStudentApplications: z.boolean().optional(),
+  editStudentApplications: z.boolean().optional(),
+  manageStudentShares: z.boolean().optional(),
+}).strict()
+
 export const TeamMemberRolePatchSchema = z.object({
   role: InvitableTeamMemberRoleSchema.optional(),
   invitedBy: z.string().min(1).optional(),
   teacherIds: z.array(z.string().min(1)).max(20).optional(),
+  accessLevel: z.enum(['pro', 'standard']).optional(),
+  studentProLimit: z.number().int().min(0).max(100).optional(),
+  studentPermissions: TeamStudentPermissionsPatchSchema.optional(),
+  teacherPermissions: TeamTeacherPermissionsPatchSchema.optional(),
 }).refine((value) => (
   value.role !== undefined
   || value.invitedBy !== undefined
   || value.teacherIds !== undefined
+  || value.accessLevel !== undefined
+  || value.studentProLimit !== undefined
+  || value.studentPermissions !== undefined
+  || value.teacherPermissions !== undefined
 ), {
-  message: 'Team member update must include a role or teacher assignment.',
+  message: 'Team member update must include a role, teacher assignment, or delegated access setting.',
 })
 
 export const TeamMemberContactProfilePatchSchema = z.object({
@@ -242,6 +307,10 @@ export const SchoolLogoSchema = z.object({
   dataUrl: SchoolLogoDataUrlSchema,
   source: z.enum(['website', 'link', 'upload']),
   sourceUrl: z.url().max(2_048).refine((value) => value.startsWith('https://')).optional(),
+  websiteUrl: z.url().max(2_048).refine((value) => value.startsWith('https://')).optional(),
+  cacheKey: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  assetKey: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  candidateKind: z.string().max(64).optional(),
   updatedAt: z.string().max(64),
 })
 
@@ -253,6 +322,7 @@ export const SchoolLogoPatchSchema = z.object({
 export const SchoolLogoResolveSchema = z.object({
   website: z.url().max(2_048).optional(),
   imageUrl: z.url().max(2_048).optional(),
+  refresh: z.boolean().optional(),
 }).refine((value) => Boolean(value.website) !== Boolean(value.imageUrl), {
   message: 'Provide either a school website or a direct logo image URL.',
 })
@@ -313,16 +383,24 @@ export const UserAuthSchema = z.object({
 
 export const RegisterSchema = UserAuthSchema.extend({
   name: z.string().min(1).max(80),
+  password: z.string().min(15).max(128),
   language: z.string().min(2).max(12).default('en'),
-  captchaToken: z.string().min(16),
-  captchaAnswer: z.string().min(1).max(8),
-  emailCodeToken: z.string().min(16),
+  // Kept optional for one compatibility window. Human verification is consumed
+  // before an email code is sent and is never trusted again at final signup.
+  captchaToken: z.string().min(16).max(4096).optional(),
+  captchaAnswer: z.string().max(64).optional(),
+  emailCodeToken: z.string().min(32).max(256),
   emailCode: z.string().min(4).max(8),
+  website: z.string().max(0).optional(),
 })
 
 export const SendEmailCodeSchema = z.object({
   email: z.email().transform((value) => value.toLowerCase()),
   language: z.string().min(2).max(12).optional().default('en'),
+  captchaProvider: z.enum(['math', 'turnstile']).optional().default('math'),
+  captchaToken: z.string().min(16).max(4096),
+  captchaAnswer: z.string().max(64).optional().default(''),
+  website: z.string().max(0).optional(),
 })
 
 const InitialSetupSmtpSettingsSchema = z.object({
@@ -348,7 +426,7 @@ export const PasswordResetRequestSchema = z.object({
 
 export const PasswordResetConfirmSchema = z.object({
   token: z.string().min(32).max(256),
-  password: z.string().min(8).max(128),
+  password: z.string().min(15).max(128),
 })
 
 const PasskeyLabelSchema = z.string().trim().max(80).optional()
@@ -595,6 +673,8 @@ export const ApplicationSchema = z.object({
     homepage: OptionalUrlSchema,
     research: z.string().min(1),
     lab: z.string(),
+    labUrl: OptionalUrlSchema.optional(),
+    projectUrl: OptionalUrlSchema.optional(),
   }),
   school: z.object({
     name: z.string().min(1),
@@ -604,12 +684,12 @@ export const ApplicationSchema = z.object({
     logoAutoDetect: z.boolean().optional(),
   }),
   program: z.string().min(1),
-  deadline: z.iso.date(),
+  deadline: ReminderDateSchema,
   status: ApplicationStatusSchema,
   progress: z.number().min(0).max(100),
   priority: z.number().min(0).max(100),
   tags: z.array(z.string()),
-  nextReminder: z.iso.date(),
+  nextReminder: ReminderDateSchema,
   result: z.string(),
   dossierCards: z.array(DossierCardSchema).optional(),
   materials: z.array(MaterialSchema),
@@ -625,6 +705,7 @@ export const ApplicationSchema = z.object({
       z.object({
         id: z.string(),
         token: z.string(),
+        createdBy: z.string().optional(),
         createdAt: z.string(),
         expiresAt: z.string().nullable(),
         permission: SharePermissionSchema.optional().default('view'),
@@ -653,7 +734,7 @@ export const CreateApplicationSchema = z.object({
   country: z.string().min(1).default('United States'),
   website: OptionalUrlSchema.optional().default(''),
   program: z.string().min(1),
-  deadline: z.iso.date(),
+  deadline: ReminderDateSchema,
   notes: z.string().optional().default(''),
   visibleToTeam: z.boolean().optional().default(false),
   ownerId: z.string().min(1).optional(),
@@ -970,6 +1051,7 @@ export const UserSettingsPatchSchema = z.object({
   snippetPhraseTailZh: z.string().optional(),
   snippetPhraseLeadEn: z.string().optional(),
   snippetPhraseTailEn: z.string().optional(),
+  customApplicationStatuses: CustomApplicationStatusesSchema.optional(),
   aiProfile: AiUserProfileSchema.optional(),
   profilePresets: z.array(StoredProfilePresetSchema).max(100).optional(),
 })
@@ -991,7 +1073,10 @@ export const DatabaseConnectionSchema = z.object({
 
 export const AdminSettingsPatchSchema = z.object({
   allowRegistration: z.boolean().optional(),
+  adminEntryHidden: z.boolean().optional(),
+  adminEntryCode: z.string().trim().min(3).max(64).regex(/^[A-Za-z0-9_-]+$/).optional(),
   notificationMailbox: z.email().optional(),
+  systemLogRetentionDays: z.number().int().min(1).max(3650).nullable().optional(),
   backupFrequency: BackupFrequencySchema.optional(),
   maxBackupsPerAppLimit: z.number().int().min(1).max(20).optional(),
   encryptionAtRest: z.boolean().optional(),
@@ -1078,7 +1163,7 @@ export const DiscoverResearchSchema = z.object({
   keyId: z.string().min(1).max(80).optional(),
   /** Multiple authorised keys are assigned round-robin at agent-batch level. */
   keyIds: z.array(z.string().min(1).max(80)).max(12).optional(),
-  /** Optional teacher-led Team Discover scope. */
+  /** Optional authorized Team Discover scope. */
   teamId: z.string().min(1).max(128).optional(),
   targetUserId: z.string().min(1).max(128).optional(),
   /** Merge AI-suggested new programs into the custom catalog. */
@@ -1112,7 +1197,9 @@ const DiscoverEnrichmentChangeSchema = z.object({
 export const InitialAdminSetupSchema = z.object({
   name: z.string().trim().min(2).max(80),
   email: z.email().transform((value) => value.toLowerCase()),
-  password: z.string().min(12).max(200),
+  password: z.string().min(15).max(128),
+  adminEntryHidden: z.boolean().default(false),
+  adminEntryCode: z.string().trim().min(3).max(64).regex(/^[A-Za-z0-9_-]+$/).optional(),
   notificationMailbox: z.email().transform((value) => value.toLowerCase()),
   smtpHost: z.string().trim().min(1).max(253),
   smtpPort: z.number().int().min(1).max(65535),
@@ -1122,6 +1209,14 @@ export const InitialAdminSetupSchema = z.object({
   smtpVerificationToken: z.string().min(16).max(4096),
   language: z.string().min(2).max(12).default('en'),
   database: DatabaseConnectionSchema.default({ type: 'sqlite' }),
+}).superRefine((value, context) => {
+  if (value.adminEntryHidden && !value.adminEntryCode) {
+    context.addIssue({
+      code: 'custom',
+      path: ['adminEntryCode'],
+      message: 'An activation code is required when the administrator entry is hidden.',
+    })
+  }
 })
 
 export const DiscoverApplicationEnrichmentPreviewSchema = z.object({
@@ -1129,7 +1224,7 @@ export const DiscoverApplicationEnrichmentPreviewSchema = z.object({
   keyId: z.string().min(1).max(80).optional(),
   /** Multiple authorised keys are assigned round-robin at agent-batch level. */
   keyIds: z.array(z.string().min(1).max(80)).max(12).optional(),
-  /** Team Discover is teacher-only and may target an assigned student. */
+  /** Team Discover may target the requester or an assigned student. */
   teamId: z.string().min(1).max(128).optional(),
   targetUserId: z.string().min(1).max(128).optional(),
 })

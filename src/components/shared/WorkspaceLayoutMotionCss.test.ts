@@ -18,8 +18,19 @@ describe('workspace layout motion CSS', () => {
 
     expect(panelRule).toContain('backdrop-filter: none')
     expect(bodyRule).toContain('grid-template-columns 0s linear')
+    expect(bodyRule).toContain('max-width: 0')
+    expect(bodyRule).toContain('max-width var(--workspace-toolbar-reveal-duration)')
     expect(innerRule).toContain('clip-path:')
     expect(innerRule).toContain('contain: layout paint')
+  })
+
+  it('collapses the hidden toolbar width so dirty actions remain beside the toggle', () => {
+    const closedBodyRule = cssRule('.workspace-layout-toolbar-body')
+    const openBodyRule = cssRule('.workspace-layout-toolbar-panel:hover .workspace-layout-toolbar-body,\n.workspace-layout-toolbar-panel:focus-within .workspace-layout-toolbar-body')
+
+    expect(closedBodyRule).toContain('width: max-content')
+    expect(closedBodyRule).toContain('max-width: 0')
+    expect(openBodyRule).toContain('max-width: min(520px, calc(100vw - 72px))')
   })
 
   it('uses only one animated size property for desktop pane toggles', () => {

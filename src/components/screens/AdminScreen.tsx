@@ -52,7 +52,8 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react'
 import { AsyncActionButton } from '../shared/AsyncActionButton'
-import { phdApi, type AdminSettings, type AdminTeamRecord, type AdminUser, type BackupRecord, type DatabaseConfiguration, type DatabaseConnectionInput, type DatabaseEngine, type EncryptionAlgorithm, type NotificationGroup, type ReleaseUpdateCheck, type SystemEvent, type SystemInfo, type TeamMember, type TeamRole, type TeamSummary } from '../../api/phdApi'
+import { phdApi, type AdminSettings, type AdminTeamRecord, type AdminUser, type BackupRecord, type DatabaseConfiguration, type DatabaseConnectionInput, type DatabaseEngine, type EncryptionAlgorithm, type NotificationGroup, type ReleaseUpdateCheck, type SystemEvent, type SystemInfo, type SystemLogPage, type SystemLogQuery, type SystemUpdateLogEntry, type SystemUpdateResult, type SystemUpdateStatus, type TeamMember, type TeamRole, type TeamSummary } from '../../api/phdApi'
+import * as systemUpdateClient from '../../admin/systemUpdateClient'
 import type { BackupFrequency } from '../../data/applications'
 import { normalizeErrorMessage } from '../../errorMessages'
 import { PUBLIC_DISTRIBUTION, PUBLIC_EDITION } from '../../edition'
@@ -127,6 +128,20 @@ const USER_PAGE_SIZE = 8
 const LOG_PAGE_SIZE = 10
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const accountTypes = ['free', 'pro', 'admin'] as const
+const UPDATE_STATUS_KEYS: Record<SystemUpdateStatus['phase'], string> = {
+  idle: 'admin.autoUpdateDesc',
+  resolving: 'admin.checkingForUpdates',
+  probing: 'admin.updateStatusProbing',
+  downloading: 'admin.updateStatusDownloading',
+  verifying: 'admin.updateStatusVerifying',
+  preparing: 'admin.installingUpdate',
+  installing: 'admin.installingUpdate',
+  restarting: 'admin.updateRestarting',
+  stored: 'admin.updateStoredNoRestart',
+  ready: 'admin.updateStatusReady',
+  timeout: 'admin.updateStatusTimeout',
+  error: 'admin.updateStatusError',
+}
 
 /**
  * Controlled per-row quota editor. A plain `defaultValue` input here would silently
@@ -483,6 +498,7 @@ export function AdminScreen({
   onTestSystemMail,
   onUserUpdate,
   onUserDelete,
+  onLoadLogs,
   onExportLogs,
   onClearLogs,
   onChangePassword,
@@ -502,10 +518,11 @@ export function AdminScreen({
   onTestSystemMail?: (patch: Partial<AdminSettings>, delivery: string) => Promise<void> | void
   onUserUpdate: (userId: string, patch: UserUpdatePatch) => Promise<void> | void
   onUserDelete: (userId: string) => void
+  onLoadLogs?: (query: SystemLogQuery) => Promise<SystemLogPage>
   onExportLogs: (format: 'csv' | 'json') => Promise<void> | void
   onClearLogs: () => Promise<void> | void
   onChangePassword: (currentPassword: string, newPassword: string) => Promise<boolean>
-  onSystemUpdate: (file: File) => Promise<boolean>
+  onSystemUpdate: (file: File) => Promise<boolean | SystemUpdateResult>
   onRefreshSystemInfo: () => void
   onNotify?: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
 }) {
@@ -571,6 +588,12 @@ export function AdminScreen({
   })
   const [clearLogDialogOpen, setClearLogDialogOpen] = useState(false)
   const [clearingLogs, setClearingLogs] = useState(false)
+  const [remoteLogPage, setRemoteLogPage] = useState<SystemLogPage | null>(null)
+  const [logsLoading, setLogsLoading] = useState(false)
+  const [logReloadVersion, setLogReloadVersion] = useState(0)
+  const logRequestIdRef = useRef(0)
+  const [logRetentionDraft, setLogRetentionDraft] = useState<number | null>(settings.systemLogRetentionDays ?? null)
+  const [logRetentionSaving, setLogRetentionSaving] = useState(false)
 
   // System config state
   const [notificationMailbox, setNotificationMailbox] = useState(settings.notificationMailbox)
@@ -581,6 +604,10 @@ export function AdminScreen({
   const [smtpPass, setSmtpPass] = useState('')
   const [smtpTls, setSmtpTls] = useState(settings.smtpTls ?? true)
   const [registrationOpen, setRegistrationOpen] = useState(false)
+  const [adminEntryOpen, setAdminEntryOpen] = useState(false)
+  const [adminEntryEnabled, setAdminEntryEnabled] = useState(Boolean(settings.adminEntryHidden))
+  const [adminEntryCode, setAdminEntryCode] = useState('')
+  const [adminEntrySaving, setAdminEntrySaving] = useState(false)
   const [encryptionOpen, setEncryptionOpen] = useState(false)
   const [encryptionBusy, setEncryptionBusy] = useState(false)
   const [sessionConfigOpen, setSessionConfigOpen] = useState(false)
@@ -620,6 +647,10 @@ export function AdminScreen({
   const [releaseUpdate, setReleaseUpdate] = useState<ReleaseUpdateCheck | null>(null)
   const [checkingReleaseUpdate, setCheckingReleaseUpdate] = useState(false)
   const [installingReleaseUpdate, setInstallingReleaseUpdate] = useState(false)
+  const [systemUpdateStatus, setSystemUpdateStatus] = useState<SystemUpdateStatus | null>(null)
+  const [systemUpdateLogs, setSystemUpdateLogs] = useState<SystemUpdateLogEntry[]>([])
+  const [systemUpdateLogsOpen, setSystemUpdateLogsOpen] = useState(false)
+  const [systemUpdateLogsLoading, setSystemUpdateLogsLoading] = useState(false)
   const [manualUpdateOpen, setManualUpdateOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -666,6 +697,9 @@ export function AdminScreen({
     setBackupFrequency(normalizeBackupFrequency(settings.backupFrequency))
     setMaxBackupsLimit(normalizeBackupLimitOption(settings.maxBackupsPerAppLimit))
     setAdminSessionDuration(String(settings.adminSessionDurationMinutes ?? 120))
+    setAdminEntryEnabled(Boolean(settings.adminEntryHidden))
+    setAdminEntryCode('')
+    setLogRetentionDraft(settings.systemLogRetentionDays ?? null)
   }, [settings])
 
   const loadWorkspaceBackups = useCallback(async (showSpinner = true) => {
@@ -705,6 +739,58 @@ export function AdminScreen({
     if (activeTab !== 'systemConfig' || (!databaseConfigOpen && !encryptionOpen) || databaseConfigurationLoaded || databaseLoading) return
     void loadDatabaseConfiguration()
   }, [activeTab, databaseConfigOpen, databaseConfigurationLoaded, databaseLoading, encryptionOpen, loadDatabaseConfiguration])
+
+  const loadSystemUpdateLogs = useCallback(async (showSpinner = true) => {
+    if (showSpinner) setSystemUpdateLogsLoading(true)
+    try {
+      const result = await phdApi.systemUpdateLogs(token, 100)
+      setSystemUpdateLogs(result.entries)
+    } catch (error) {
+      if (showSpinner) onNotify?.(normalizeErrorMessage(error, lang), 'error')
+    } finally {
+      if (showSpinner) setSystemUpdateLogsLoading(false)
+    }
+  }, [lang, onNotify, token])
+
+  useEffect(() => {
+    if (activeTab !== 'systemInfo') return undefined
+    let cancelled = false
+    let timer = 0
+    const poll = async () => {
+      let nextDelay = 5_000
+      try {
+        const status = await phdApi.systemUpdateStatus(token)
+        if (cancelled) return
+        setSystemUpdateStatus(status)
+        const active = status.operationInFlight
+          || status.restartPending
+          || ['resolving', 'probing', 'downloading', 'verifying', 'preparing', 'installing', 'restarting'].includes(status.phase)
+        nextDelay = active ? 3_000 : 5_000
+        if (!active && ['ready', 'stored', 'error'].includes(status.phase)) {
+          setInstallingReleaseUpdate(false)
+          setUploading(false)
+        }
+        if (systemUpdateLogsOpen) void loadSystemUpdateLogs(false)
+      } catch {
+        // A short disconnect is expected once the verified update restarts the server.
+        nextDelay = installingReleaseUpdate || uploading ? 1_800 : 5_000
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void poll(), nextDelay)
+      }
+    }
+    void poll()
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [
+    activeTab,
+    installingReleaseUpdate,
+    loadSystemUpdateLogs,
+    systemUpdateLogsOpen,
+    token,
+    uploading,
+  ])
 
   const loadNotificationGroups = useCallback(async () => {
     const groups = await phdApi.adminNotificationGroups(token)
@@ -894,14 +980,17 @@ export function AdminScreen({
     await phdApi.deleteAdminNotificationGroup(token, groupId)
     setNotificationGroups((current) => current.filter((group) => group.id !== groupId))
   }, [token])
+  const usesRemoteLogs = Boolean(onLoadLogs)
   const logScopeOptions = useMemo(() => {
-    const scopes = Array.from(new Set(logs.map((event) => event.scope).filter(Boolean)))
+    const scopes = usesRemoteLogs && remoteLogPage
+      ? remoteLogPage.scopes
+      : Array.from(new Set(logs.map((event) => event.scope).filter(Boolean)))
       .sort((a, b) => localizeScope(a, tx).localeCompare(localizeScope(b, tx)))
     return [
       { value: 'all', label: tx('admin.logAllScopes') },
       ...scopes.map((scope) => ({ value: scope, label: localizeScope(scope, tx) })),
     ]
-  }, [logs, tx])
+  }, [logs, remoteLogPage, tx, usesRemoteLogs])
   const logActorOptions = useMemo(() => [
     { value: 'all' as const, label: tx('admin.logAllActors') },
     { value: 'admin' as const, label: tx('admin.logAdminActor') },
@@ -930,11 +1019,55 @@ export function AdminScreen({
       })
       .sort((a, b) => compareLogEvents(a, b, logSort.field, logSort.direction))
   }, [lang, logActorFilter, logScopeFilter, logSearch, logSort.direction, logSort.field, logs, tx])
-  const logPageCount = Math.max(1, Math.ceil(filteredSortedLogs.length / LOG_PAGE_SIZE))
-  const visibleLogs = filteredSortedLogs.slice(logPage * LOG_PAGE_SIZE, (logPage + 1) * LOG_PAGE_SIZE)
-  const logRangeStart = filteredSortedLogs.length === 0 ? 0 : logPage * LOG_PAGE_SIZE + 1
-  const logRangeEnd = Math.min(filteredSortedLogs.length, (logPage + 1) * LOG_PAGE_SIZE)
+  const filteredLogCount = usesRemoteLogs ? (remoteLogPage?.total ?? 0) : filteredSortedLogs.length
+  const retainedLogCount = usesRemoteLogs
+    ? (remoteLogPage?.retainedTotal ?? systemInfo?.counts.systemEvents ?? 0)
+    : logs.length
+  const logPageCount = Math.max(1, Math.ceil(filteredLogCount / LOG_PAGE_SIZE))
+  const visibleLogs = usesRemoteLogs
+    ? (remoteLogPage?.items ?? [])
+    : filteredSortedLogs.slice(logPage * LOG_PAGE_SIZE, (logPage + 1) * LOG_PAGE_SIZE)
+  const logRangeStart = filteredLogCount === 0 ? 0 : logPage * LOG_PAGE_SIZE + 1
+  const logRangeEnd = Math.min(filteredLogCount, (logPage + 1) * LOG_PAGE_SIZE)
   const isLogFiltered = logSearch.trim().length > 0 || logScopeFilter !== 'all' || logActorFilter !== 'all'
+
+  useEffect(() => {
+    if (activeTab !== 'logManagement' || !onLoadLogs) return undefined
+    const requestId = ++logRequestIdRef.current
+    const timer = window.setTimeout(() => {
+      setLogsLoading(true)
+      void onLoadLogs({
+        page: logPage,
+        pageSize: LOG_PAGE_SIZE,
+        search: logSearch.trim(),
+        scope: logScopeFilter,
+        actor: logActorFilter,
+        sortField: logSort.field,
+        direction: logSort.direction,
+      }).then((result) => {
+        if (requestId !== logRequestIdRef.current) return
+        setRemoteLogPage(result)
+      }).catch((error) => {
+        if (requestId !== logRequestIdRef.current) return
+        onNotify?.(normalizeErrorMessage(error, lang), 'error')
+      }).finally(() => {
+        if (requestId === logRequestIdRef.current) setLogsLoading(false)
+      })
+    }, logSearch.trim() ? 180 : 0)
+    return () => window.clearTimeout(timer)
+  }, [
+    activeTab,
+    lang,
+    logActorFilter,
+    logPage,
+    logReloadVersion,
+    logScopeFilter,
+    logSearch,
+    logSort.direction,
+    logSort.field,
+    onLoadLogs,
+    onNotify,
+  ])
 
   useEffect(() => {
     setLogPage((page) => Math.min(page, logPageCount - 1))
@@ -968,6 +1101,7 @@ export function AdminScreen({
   }
 
   const updateLogSort = (field: LogSortField) => {
+    setLogPage(0)
     setLogSort((current) => ({
       field,
       direction: current.field === field && current.direction === 'asc' ? 'desc' : 'asc',
@@ -978,6 +1112,7 @@ export function AdminScreen({
     setLogSearch('')
     setLogScopeFilter('all')
     setLogActorFilter('all')
+    setLogPage(0)
   }
 
   const handleClearLogs = async () => {
@@ -987,8 +1122,21 @@ export function AdminScreen({
       setClearLogDialogOpen(false)
       resetLogFilters()
       setLogPage(0)
+      setLogReloadVersion((version) => version + 1)
     } finally {
       setClearingLogs(false)
+    }
+  }
+
+  const handleSaveLogRetention = async (close: () => void) => {
+    setLogRetentionSaving(true)
+    try {
+      await onSettings({ systemLogRetentionDays: logRetentionDraft })
+      setLogReloadVersion((version) => version + 1)
+      notify(tx('admin.logRetentionSaved'))
+      close()
+    } finally {
+      setLogRetentionSaving(false)
     }
   }
 
@@ -1260,22 +1408,105 @@ export function AdminScreen({
     }
   }
 
+  const completeSystemUpdate = async (result: SystemUpdateResult) => {
+    if (!result.restartScheduled) {
+      if (result.background) {
+        notify(tx('admin.updateBackgroundStarted'), 'info')
+      } else {
+        setSystemUpdateStatus((current) => ({
+          phase: 'stored',
+          source: result.source?.id ?? current?.source ?? null,
+          bytes: result.size,
+          total: result.size,
+          targetVersion: result.version,
+          errorCode: null,
+          updatedAt: new Date().toISOString(),
+          currentVersion: current?.currentVersion ?? systemInfo?.version ?? '',
+          operationInFlight: false,
+          restartPending: false,
+        }))
+        notify(tx('admin.updateStoredNoRestart'), 'warning')
+      }
+      return false
+    }
+
+    if (result.background) {
+      notify(tx('admin.updateBackgroundStarted'), 'info')
+    } else {
+      setSystemUpdateStatus((current) => ({
+        phase: 'restarting',
+        source: result.source?.id ?? current?.source ?? null,
+        bytes: result.size,
+        total: result.size,
+        targetVersion: result.version,
+        errorCode: null,
+        updatedAt: new Date().toISOString(),
+        currentVersion: current?.currentVersion ?? systemInfo?.version ?? '',
+        operationInFlight: false,
+        restartPending: true,
+      }))
+      notify(tx('admin.updateRestarting'), 'info')
+    }
+    try {
+      const ready = await systemUpdateClient.waitForInstalledVersion({
+        expectedVersion: result.version,
+        readStatus: () => phdApi.systemUpdateStatus(token),
+        onStatus: setSystemUpdateStatus,
+      })
+      setSystemUpdateStatus({ ...ready, phase: 'ready' })
+      notify(tx('admin.updateReadyRefreshing'), 'success')
+      window.setTimeout(systemUpdateClient.reloadInstalledApplication, 650)
+      return true
+    } catch (error) {
+      const timeout = (error as { code?: string })?.code === 'UPDATE_RESTART_TIMEOUT'
+      setSystemUpdateStatus((current) => current ? {
+        ...current,
+        phase: timeout ? 'timeout' : 'error',
+        errorCode: (error as { code?: string })?.code ?? 'UPDATE_FAILED',
+        restartPending: false,
+        operationInFlight: false,
+        updatedAt: new Date().toISOString(),
+      } : null)
+      notify(
+        timeout ? tx('admin.updateRestartTimeout') : normalizeErrorMessage(error, lang),
+        timeout ? 'warning' : 'error',
+      )
+      return false
+    }
+  }
+
   const handleInstallReleaseUpdate = async () => {
     const release = releaseUpdate?.release
     if (!release || !releaseUpdate.updateAvailable) return
     setInstallingReleaseUpdate(true)
+    setSystemUpdateStatus((current) => ({
+      phase: 'resolving',
+      source: 'github',
+      bytes: 0,
+      total: release.package.size,
+      targetVersion: release.version,
+      errorCode: null,
+      updatedAt: new Date().toISOString(),
+      currentVersion: current?.currentVersion ?? releaseUpdate.currentVersion,
+      operationInFlight: true,
+      restartPending: false,
+    }))
+    let reloadScheduled = false
     try {
       const result = await phdApi.installReleaseUpdate(token, release.tagName)
-      notify(
-        result.restartScheduled
-          ? tx('admin.updateRestarting')
-          : tx('admin.updateStoredNoRestart'),
-        result.restartScheduled ? 'success' : 'warning',
-      )
-      if (!result.restartScheduled) setInstallingReleaseUpdate(false)
+      reloadScheduled = await completeSystemUpdate(result)
     } catch (err) {
-      setInstallingReleaseUpdate(false)
+      setSystemUpdateStatus((current) => current ? {
+        ...current,
+        phase: 'error',
+        errorCode: (err as { code?: string })?.code ?? 'UPDATE_FAILED',
+        operationInFlight: false,
+        restartPending: false,
+        updatedAt: new Date().toISOString(),
+      } : null)
       notify(normalizeErrorMessage(err, lang), 'error')
+    } finally {
+      if (!reloadScheduled) setInstallingReleaseUpdate(false)
     }
   }
 
@@ -1318,17 +1549,19 @@ export function AdminScreen({
       return
     }
     setUploading(true)
+    let reloadScheduled = false
     try {
-      const ok = await onSystemUpdate(file)
-      if (ok) {
+      const result = await onSystemUpdate(file)
+      if (result) {
         notify(tx('admin.updateUploaded'), 'success')
         if (fileInputRef.current) fileInputRef.current.value = ''
         setUpdateFile(null)
+        if (typeof result === 'object') reloadScheduled = await completeSystemUpdate(result)
       }
     } catch (err) {
       notify(normalizeErrorMessage(err, lang), 'error')
     } finally {
-      setUploading(false)
+      if (!reloadScheduled) setUploading(false)
     }
   }
 
@@ -1383,6 +1616,42 @@ export function AdminScreen({
       fileCount: systemInfo.storage.backupFiles,
     },
   ] : []
+  const updatePhase = systemUpdateStatus?.phase ?? 'idle'
+  const updateProgress = systemUpdateStatus?.total
+    ? Math.min(100, Math.max(0, Math.round((systemUpdateStatus.bytes / systemUpdateStatus.total) * 100)))
+    : 0
+  const updateSourceLabel = !systemUpdateStatus?.source
+    ? ''
+    : systemUpdateStatus.source === 'github'
+      ? tx('admin.updateSourceGithub')
+      : systemUpdateStatus.source === 'manual'
+        ? tx('admin.updateSourceManual')
+        : systemUpdateStatus.source === 'mirrors'
+          ? tx('admin.updateSourceTestingMirrors')
+          : format(tx('admin.updateSourceMirror'), { source: systemUpdateStatus.source })
+  const showUpdateProgress = updatePhase !== 'idle'
+  const systemUpdateBusy = installingReleaseUpdate
+    || uploading
+    || Boolean(systemUpdateStatus?.operationInFlight)
+    || Boolean(systemUpdateStatus?.restartPending)
+    || ['resolving', 'probing', 'downloading', 'verifying', 'preparing', 'installing', 'restarting'].includes(updatePhase)
+  const updateStepOrder: SystemUpdateStatus['phase'][] = [
+    'resolving',
+    'probing',
+    'downloading',
+    'verifying',
+    'preparing',
+    'installing',
+    'restarting',
+  ]
+  const updateStepIndex = updatePhase === 'ready' || updatePhase === 'stored'
+    ? updateStepOrder.length
+    : Math.max(0, updateStepOrder.indexOf(updatePhase))
+  const updateTimelineProgress = updatePhase === 'ready' || updatePhase === 'stored'
+    ? 100
+    : updatePhase === 'downloading'
+      ? 34 + (updateProgress * 0.24)
+      : Math.min(96, (updateStepIndex / updateStepOrder.length) * 100)
 
   return (
     <section className="simple-screen admin-screen">
@@ -1425,6 +1694,94 @@ export function AdminScreen({
                   onChange={(v) => onRegistration(v)}
                 />
               </label>
+            </CollapsiblePanel>
+          </section>
+
+          {/* Hidden administrator entry */}
+          <section className={`admin-card mail-collapsible admin-config-card ${adminEntryOpen ? 'expanded' : ''}`}>
+            <button
+              type="button"
+              className="mail-config-summary"
+              aria-expanded={adminEntryOpen}
+              onClick={() => setAdminEntryOpen((open) => !open)}
+            >
+              <span className="mail-config-icon security" aria-hidden="true">
+                <KeyRound size={15} />
+              </span>
+              <span className="mail-config-copy">
+                <span className="eyebrow">{tx('settings.security')}</span>
+                <strong>{tx('admin.adminEntry.title')}</strong>
+                <small>{tx('admin.adminEntry.description')}</small>
+              </span>
+              <span className="mail-config-chips" aria-hidden="true">
+                <span className={`mail-summary-chip ${settings.adminEntryHidden ? 'ok' : 'muted'}`}>
+                  {settings.adminEntryHidden ? tx('admin.adminEntry.hidden') : tx('admin.adminEntry.visible')}
+                </span>
+              </span>
+              <ChevronDown className="mail-config-chevron" size={15} aria-hidden="true" />
+            </button>
+            <CollapsiblePanel open={adminEntryOpen} className="mail-config-detail" innerClassName="mail-config-detail-inner">
+              <div className="admin-entry-form">
+                <label className="admin-toggle-row admin-setting-line">
+                  <span>{tx('admin.adminEntry.hideToggle')}</span>
+                  <SwitchControl
+                    checked={adminEntryEnabled}
+                    label={tx('admin.adminEntry.hideToggle')}
+                    onChange={setAdminEntryEnabled}
+                  />
+                </label>
+                <CollapsiblePanel open={adminEntryEnabled} className="admin-entry-code-collapse" collapseMs={280} keepMounted>
+                  <div className="admin-entry-code-fields">
+                    <label>
+                      <span>{tx('admin.adminEntry.codeLabel')}</span>
+                      <input
+                        type="text"
+                        value={adminEntryCode}
+                        minLength={3}
+                        maxLength={64}
+                        pattern="[A-Za-z0-9_-]+"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        autoComplete="off"
+                        spellCheck={false}
+                        placeholder={settings.adminEntryCodeSet
+                          ? tx('admin.adminEntry.codeKeepPlaceholder')
+                          : tx('admin.adminEntry.codePlaceholder')}
+                        onChange={(event) => setAdminEntryCode(event.target.value.replace(/[^A-Za-z0-9_-]/g, ''))}
+                      />
+                    </label>
+                    <div className="admin-entry-preview">
+                      <span>{tx('admin.adminEntry.activationUrl')}</span>
+                      <code>{`/admin/${adminEntryCode || (settings.adminEntryCodeSet ? '••••••' : 'aaa')}`}</code>
+                    </div>
+                  </div>
+                </CollapsiblePanel>
+                <div className="admin-entry-actions">
+                  <button
+                    type="button"
+                    className="primary-action compact-action admin-entry-save-btn"
+                    disabled={adminEntrySaving}
+                    onClick={() => {
+                      const code = adminEntryCode.trim()
+                      if (adminEntryEnabled && !settings.adminEntryCodeSet && code.length < 3) {
+                        notify(tx('admin.adminEntry.codeRequired'), 'error')
+                        return
+                      }
+                      setAdminEntrySaving(true)
+                      void Promise.resolve(onSettings({
+                        adminEntryHidden: adminEntryEnabled,
+                        ...(code ? { adminEntryCode: code } : {}),
+                      }))
+                        .then(() => notify(tx('admin.adminEntry.saved'), 'success'))
+                        .catch(() => undefined)
+                        .finally(() => setAdminEntrySaving(false))
+                    }}
+                  >
+                    {adminEntrySaving ? <RefreshCw size={12} className="spin-icon" aria-hidden="true" /> : <Save size={12} aria-hidden="true" />}
+                    {tx('admin.adminEntry.save')}
+                  </button>
+                </div>
+              </div>
             </CollapsiblePanel>
           </section>
 
@@ -2521,15 +2878,88 @@ export function AdminScreen({
             <div className="admin-card-head">
               <div>
                 <span className="eyebrow">{tx('admin.systemLog')}</span>
-                <h3>{format(tx('admin.logCount'), { count: logs.length })}</h3>
+                <h3>{format(tx('admin.logCount'), { count: retainedLogCount })}</h3>
                 <p>{tx('admin.logDesc')}</p>
               </div>
-              <Clock size={17} aria-hidden="true" />
+              <AnchoredPopover
+                align="end"
+                width={312}
+                estimatedHeight={398}
+                triggerAriaLabel={tx('admin.logRetentionTitle')}
+                triggerClassName="admin-log-retention-trigger"
+                popoverClassName="admin-log-retention-popover"
+                trigger={(
+                  <>
+                    <Clock size={14} aria-hidden="true" />
+                    <span>{tx('admin.logRetention')}</span>
+                    <strong>
+                      {settings.systemLogRetentionDays
+                        ? format(tx('admin.logRetentionDays'), { count: settings.systemLogRetentionDays })
+                        : tx('admin.logRetentionForever')}
+                    </strong>
+                    <ChevronDown size={12} aria-hidden="true" />
+                  </>
+                )}
+              >
+                {(close) => (
+                  <>
+                    <div className="admin-log-retention-head">
+                      <span className="admin-log-retention-mark"><Clock size={15} aria-hidden="true" /></span>
+                      <div>
+                        <strong>{tx('admin.logRetentionTitle')}</strong>
+                        <p>{tx('admin.logRetentionDesc')}</p>
+                      </div>
+                    </div>
+                    <div className="admin-log-retention-options" role="radiogroup" aria-label={tx('admin.logRetentionTitle')}>
+                      {[null, 7, 30, 90, 180, 365].map((days, index) => {
+                        const selected = logRetentionDraft === days
+                        return (
+                          <button
+                            key={days ?? 'forever'}
+                            type="button"
+                            role="radio"
+                            aria-checked={selected}
+                            className={selected ? 'selected' : ''}
+                            data-popover-autofocus={index === 0 ? '' : undefined}
+                            onClick={() => setLogRetentionDraft(days)}
+                          >
+                            <span className="admin-log-retention-radio" aria-hidden="true">
+                              {selected ? <Check size={11} /> : null}
+                            </span>
+                            <span>
+                              <strong>
+                                {days === null
+                                  ? tx('admin.logRetentionForever')
+                                  : format(tx('admin.logRetentionDays'), { count: days })}
+                              </strong>
+                              {days === null ? <small>{tx('admin.logUnlimited')}</small> : null}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                    <div className="admin-log-retention-footer">
+                      <span>{format(tx('admin.logCount'), { count: retainedLogCount })}</span>
+                      <button
+                        type="button"
+                        className="primary-action admin-log-retention-save"
+                        disabled={logRetentionSaving}
+                        onClick={() => void handleSaveLogRetention(close)}
+                      >
+                        {logRetentionSaving
+                          ? <RefreshCw size={12} className="spin-icon" aria-hidden="true" />
+                          : <Save size={12} aria-hidden="true" />}
+                        {logRetentionSaving ? tx('admin.logRetentionSaving') : tx('admin.logRetentionSave')}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </AnchoredPopover>
             </div>
             <div className="admin-log-summary">
               <div className="admin-log-summary-item">
                 <span>{tx('admin.logVisible')}</span>
-                <strong>{filteredSortedLogs.length}</strong>
+                <strong>{filteredLogCount}</strong>
               </div>
               <div className="admin-log-summary-item">
                 <span>{tx('admin.logSort')}</span>
@@ -2546,7 +2976,10 @@ export function AdminScreen({
                 <span className="sr-only">{tx('admin.logSearchLabel')}</span>
                 <input
                   value={logSearch}
-                  onChange={(event) => setLogSearch(event.target.value)}
+                  onChange={(event) => {
+                    setLogSearch(event.target.value)
+                    setLogPage(0)
+                  }}
                   placeholder={tx('admin.logSearchPlaceholder')}
                 />
               </label>
@@ -2557,7 +2990,10 @@ export function AdminScreen({
                     size="small"
                     value={logScopeFilter}
                     options={logScopeOptions}
-                    onChange={setLogScopeFilter}
+                    onChange={(value) => {
+                      setLogScopeFilter(value)
+                      setLogPage(0)
+                    }}
                   />
                 </label>
                 <label className="admin-log-filter">
@@ -2566,7 +3002,10 @@ export function AdminScreen({
                     size="small"
                     value={logActorFilter}
                     options={logActorOptions}
-                    onChange={setLogActorFilter}
+                    onChange={(value) => {
+                      setLogActorFilter(value)
+                      setLogPage(0)
+                    }}
                   />
                 </label>
               </div>
@@ -2598,14 +3037,26 @@ export function AdminScreen({
                   type="button"
                   className="quiet-action admin-log-clear-btn"
                   onClick={() => setClearLogDialogOpen(true)}
-                  disabled={logs.length === 0 || clearingLogs}
+                  disabled={retainedLogCount === 0 || clearingLogs}
                 >
                   <Trash2 size={12} aria-hidden="true" /> {clearingLogs ? tx('admin.clearingLogs') : tx('admin.clearLogs')}
                 </button>
               </div>
             </div>
+            <div className={`admin-log-load-line${logsLoading ? ' active' : ''}`} aria-hidden="true" />
 
-            {visibleLogs.length === 0 ? (
+            {logsLoading && usesRemoteLogs && !remoteLogPage ? (
+              <div className="admin-log-loading" aria-label={tx('working')}>
+                {[0, 1, 2].map((row) => (
+                  <div key={row}>
+                    <Skeleton width="18%" />
+                    <Skeleton width="13%" />
+                    <Skeleton width="42%" />
+                    <Skeleton width="17%" />
+                  </div>
+                ))}
+              </div>
+            ) : visibleLogs.length === 0 ? (
               <div className="admin-log-empty">
                 <Clock size={20} aria-hidden="true" />
                 <strong>{isLogFiltered ? tx('admin.noMatchingLogs') : tx('admin.noLogEntries')}</strong>
@@ -2617,7 +3068,7 @@ export function AdminScreen({
                 ) : null}
               </div>
             ) : (
-              <div className="admin-log-table-wrap atlas-table-shell" onContextMenu={openLogTableMenu}>
+              <div className={`admin-log-table-wrap atlas-table-shell${logsLoading ? ' is-refreshing' : ''}`} onContextMenu={openLogTableMenu}>
                 <table className="admin-log-table atlas-table">
                   <TableColGroup columns={logTableColumns} api={logTableApi} />
                   <thead>
@@ -2677,7 +3128,7 @@ export function AdminScreen({
             )}
             <div className="settings-pagination admin-log-pagination">
               <span className="settings-pagination-info">
-                {format(tx('pagination.showing'), { from: logRangeStart, to: logRangeEnd, total: filteredSortedLogs.length })}
+                {format(tx('pagination.showing'), { from: logRangeStart, to: logRangeEnd, total: filteredLogCount })}
               </span>
               <div className="settings-pagination-controls">
                 <button type="button" onClick={() => setLogPage(0)} disabled={logPage === 0}>{tx('pagination.first')}</button>
@@ -3014,7 +3465,9 @@ export function AdminScreen({
                       <em>{tx('admin.currentVersion')}</em>
                       <strong>PhD Atlas v{releaseUpdate?.currentVersion ?? systemInfo?.version ?? '…'}</strong>
                       <small role="status">
-                        {releaseUpdate?.updateAvailable && releaseUpdate.release
+                        {systemUpdateBusy && systemUpdateStatus
+                          ? tx(UPDATE_STATUS_KEYS[systemUpdateStatus.phase])
+                          : releaseUpdate?.updateAvailable && releaseUpdate.release
                           ? format(tx('admin.updateAvailable'), { version: releaseUpdate.release.version })
                           : releaseUpdate
                             ? tx('admin.updateUpToDate')
@@ -3025,12 +3478,96 @@ export function AdminScreen({
                       type="button"
                       className="quiet-action"
                       onClick={() => void handleCheckReleaseUpdate()}
-                      disabled={checkingReleaseUpdate || installingReleaseUpdate}
+                      disabled={checkingReleaseUpdate || systemUpdateBusy}
                     >
                       <RefreshCw size={13} aria-hidden="true" className={checkingReleaseUpdate ? 'spin-icon' : undefined} />
                       {checkingReleaseUpdate ? tx('admin.checkingForUpdates') : tx('admin.checkForUpdates')}
                     </button>
                   </div>
+                  <div className="admin-update-source-note">
+                    <ShieldCheck size={13} aria-hidden="true" />
+                    <span>{tx('admin.updateDownloadVerifyHint')}</span>
+                  </div>
+                  {showUpdateProgress ? (
+                    <div
+                      className={`admin-update-progress admin-update-progress-${updatePhase}`}
+                      role="status"
+                      aria-live="polite"
+                    >
+                      <span className="admin-update-progress-mark" aria-hidden="true">
+                        {updatePhase === 'ready' || updatePhase === 'stored'
+                          ? <Check size={15} />
+                          : updatePhase === 'error' || updatePhase === 'timeout'
+                            ? <XCircle size={15} />
+                            : <RefreshCw size={15} className={updatePhase === 'restarting' ? 'admin-update-restart-pulse' : 'spin-icon'} />}
+                      </span>
+                      <span className="admin-update-progress-copy">
+                        <strong>{tx(UPDATE_STATUS_KEYS[updatePhase])}</strong>
+                        <small>
+                          {[
+                            updateSourceLabel,
+                            updatePhase === 'downloading' && systemUpdateStatus?.total
+                              ? `${updateProgress}% · ${formatFileSize(systemUpdateStatus.bytes)} / ${formatFileSize(systemUpdateStatus.total)}`
+                              : '',
+                          ].filter(Boolean).join(' · ')}
+                        </small>
+                      </span>
+                      <span className="admin-update-progress-track" aria-hidden="true">
+                        <i style={{ width: `${updateTimelineProgress}%` }} />
+                      </span>
+                      <span className="admin-update-progress-steps" aria-hidden="true">
+                        {updateStepOrder.map((phase, index) => (
+                          <i
+                            key={phase}
+                            className={`${index < updateStepIndex ? 'done' : ''}${index === updateStepIndex && !['ready', 'stored', 'error', 'timeout'].includes(updatePhase) ? ' active' : ''}`}
+                          />
+                        ))}
+                      </span>
+                    </div>
+                  ) : null}
+                  {systemUpdateStatus?.errorMessage ? (
+                    <p className="admin-update-error-detail" role="alert">
+                      {systemUpdateStatus.errorMessage}
+                    </p>
+                  ) : null}
+                  {showUpdateProgress ? (
+                    <div className="admin-update-log">
+                      <button
+                        type="button"
+                        className="admin-update-log-toggle"
+                        aria-expanded={systemUpdateLogsOpen}
+                        onClick={() => {
+                          const nextOpen = !systemUpdateLogsOpen
+                          setSystemUpdateLogsOpen(nextOpen)
+                          if (nextOpen) void loadSystemUpdateLogs()
+                        }}
+                      >
+                        <span><FileText size={13} aria-hidden="true" /> {tx('admin.updateLogs')}</span>
+                        {systemUpdateLogsLoading
+                          ? <RefreshCw size={12} aria-hidden="true" className="spin-icon" />
+                          : <ChevronDown size={13} aria-hidden="true" className={systemUpdateLogsOpen ? 'open' : undefined} />}
+                      </button>
+                      {systemUpdateLogsOpen ? (
+                        <div className="admin-update-log-list" aria-live="polite">
+                          {systemUpdateLogs.length > 0 ? systemUpdateLogs.map((entry, index) => (
+                            <div
+                              key={`${entry.at}-${entry.jobId ?? 'update'}-${index}`}
+                              className={`admin-update-log-entry admin-update-log-entry-${entry.level}`}
+                            >
+                              <span>
+                                <time dateTime={entry.at}>{formatAdminDateTime(entry.at, lang, '—')}</time>
+                                {entry.errorCode ? <code>{entry.errorCode}</code> : null}
+                              </span>
+                              <p>{entry.message}</p>
+                              {entry.detail && entry.level === 'error' ? <pre>{entry.detail}</pre> : null}
+                            </div>
+                          )) : (
+                            <p className="admin-update-log-empty">{tx('admin.updateLogsEmpty')}</p>
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {releaseUpdate?.updateAvailable && releaseUpdate.release ? (
                     <div className="admin-release-update-detail">
                       <span>
@@ -3055,10 +3592,10 @@ export function AdminScreen({
                           type="button"
                           className="primary-action"
                           onClick={() => void handleInstallReleaseUpdate()}
-                          disabled={installingReleaseUpdate}
+                          disabled={systemUpdateBusy}
                         >
-                          {installingReleaseUpdate ? (
-                            <><RefreshCw size={13} aria-hidden="true" className="spin-icon" /> {tx('admin.installingUpdate')}</>
+                          {systemUpdateBusy ? (
+                            <><RefreshCw size={13} aria-hidden="true" className="spin-icon" /> {tx(UPDATE_STATUS_KEYS[updatePhase])}</>
                           ) : (
                             <><Download size={13} aria-hidden="true" /> {format(tx('admin.installRelease'), { version: releaseUpdate.release.version })}</>
                           )}
@@ -3138,7 +3675,7 @@ export function AdminScreen({
                       type="button"
                       className="quiet-action"
                       onClick={() => void handleUploadPackage()}
-                      disabled={uploading || !updateFile}
+                      disabled={systemUpdateBusy || !updateFile}
                     >
                       {uploading ? (
                         <><RefreshCw size={13} aria-hidden="true" className="spin-icon" /> {tx('admin.uploading')}</>
@@ -3373,6 +3910,23 @@ function AdminTeamPanel({
       await phdApi.removeTeamMember(token, teamId, memberId)
       setPendingRemoveMemberId(null)
       setContextMenu(null)
+      await reload()
+    } catch (err) {
+      setError(normalizeErrorMessage(err, lang))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  async function handleMemberDelegatedAccess(
+    memberId: string,
+    patch: { accessLevel?: 'pro' | 'standard'; studentProLimit?: number },
+  ) {
+    if (!teamId) return
+    setBusyId(`access:${memberId}`)
+    setError(null)
+    try {
+      await phdApi.updateTeamMemberAccess(token, teamId, memberId, patch)
       await reload()
     } catch (err) {
       setError(normalizeErrorMessage(err, lang))
@@ -3653,7 +4207,7 @@ function AdminTeamPanel({
               <AnchoredPopover
                 triggerAriaLabel={tx('team.joinCodeTitle')}
                 popoverAriaLabel={tx('team.joinCodeTitle')}
-                triggerClassName="primary-action admin-team-invite-trigger"
+                triggerClassName="primary-action compact-action admin-team-invite-trigger"
                 popoverClassName="team-invite-popover-shell"
                 width={410}
                 estimatedHeight={560}
@@ -3883,7 +4437,7 @@ function AdminTeamPanel({
                     ) : filteredMembers.map((member) => {
                       const linkedUser = member.userId ? usersById.get(member.userId) ?? null : null
                       const memberStats = summary.memberStats?.[member.id]
-                      const memberBusy = busyId === member.id
+                      const memberBusy = busyId === member.id || busyId === `access:${member.id}`
                       const expanded = expandedMemberId === member.id
                       return (
                         <article
@@ -3973,6 +4527,45 @@ function AdminTeamPanel({
                                   />
                                 )}
                               </div>
+
+                              {member.role !== 'owner' ? (
+                                <div className="admin-team-member-field">
+                                  <span>{tx('team.delegatedAccessTitle')}</span>
+                                  <Select
+                                    size="small"
+                                    value={member.relationships?.accessLevel === 'standard' ? 'standard' : 'pro'}
+                                    disabled={memberBusy}
+                                    options={[
+                                      { value: 'pro', label: tx('team.delegatedAccessPro') },
+                                      { value: 'standard', label: tx('team.delegatedAccessStandard') },
+                                    ]}
+                                    onChange={(accessLevel) => void handleMemberDelegatedAccess(member.id, {
+                                      accessLevel: accessLevel as 'pro' | 'standard',
+                                    })}
+                                  />
+                                </div>
+                              ) : null}
+
+                              {member.role === 'admin' ? (
+                                <label className="admin-team-member-field admin-team-pro-limit-field">
+                                  <span>{tx('team.teacherStudentProLimit')}</span>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    defaultValue={member.relationships?.studentProLimit ?? 100}
+                                    disabled={memberBusy}
+                                    onBlur={(event) => {
+                                      const current = member.relationships?.studentProLimit ?? 100
+                                      const next = Math.max(0, Math.min(100, Number.parseInt(event.currentTarget.value, 10) || 0))
+                                      event.currentTarget.value = String(next)
+                                      if (next !== current) {
+                                        void handleMemberDelegatedAccess(member.id, { studentProLimit: next })
+                                      }
+                                    }}
+                                  />
+                                </label>
+                              ) : null}
 
                               {member.role === 'member' ? (
                                 <div className="admin-team-member-field teachers">

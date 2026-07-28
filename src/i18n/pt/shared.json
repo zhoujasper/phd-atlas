@@ -95,6 +95,10 @@
     "INVALID_CREDENTIALS": "E-mail ou senha estão incorretos.",
     "FORBIDDEN": "Você não tem permissão para realizar esta ação.",
     "REGISTRATION_CLOSED": "O registro de novo usuário está desabilitado.",
+    "REGISTRATION_EMAIL_NOT_ALLOWED": "Este domínio de email não é permitido para registro.",
+    "PASSWORD_TOO_WEAK": "Escolha uma senha com pelo menos 15 caracteres que não seja comum, previsível ou comprometida.",
+    "PASSWORD_CHECK_UNAVAILABLE": "A verificação de segurança da senha está temporariamente indisponível.",
+    "HUMAN_VERIFICATION_UNAVAILABLE": "A verificação humana está temporariamente indisponível.",
     "EMAIL_EXISTS": "Já existe uma conta para este e-mail.",
     "SMTP_NOT_CONFIGURED": "O e-mail de saída ainda não está configurado. Peça ao administrador para configurar primeiro o correio do sistema.",
     "SMTP_ERROR": "Falha na entrega de correio. Verifique as configurações de e-mail e tente novamente.",
@@ -211,7 +215,6 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "Escolha uma equipe e um estudante atribuído para a pesquisa de equipe.",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "O orientador selecionado não possui um endereço de e-mail verificado.",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "É necessário um perfil e e-mail reais do orientador antes de adicionar este programa às candidaturas.",
-    "DISCOVER_PROGRAM_NOT_VERIFIED": "Este programa não tem uma fonte oficial verificada ou prazo de candidatura atual. Atualize a pesquisa antes de importá-lo.",
     "MAIL_ATTACHMENT_TOO_LARGE": "Um anexo é grande demais para ser incluído no e-mail."
   },
   "apiErrorFields": {
@@ -323,6 +326,13 @@
     "manualDetail": "Você escolheu trabalhar offline. As edições pessoais do aplicativo são salvas localmente e aguardarão até você retomar o modo online.",
     "serverUnavailableDetail": "Este dispositivo tem acesso à Internet, mas o PhD Atlas não consegue acessar seu servidor. O trabalho local permanece disponível.",
     "panelTitle": "Conexão e status offline",
+    "launchTitle": "Você está offline",
+    "launchDetail": "A interface e os recursos estáticos já visitados continuam disponíveis. Reconecte-se para entrar; offline, apenas um espaço pessoal previamente autorizado e ainda válido pode ser aberto.",
+    "noLocalCopy": "Não há um espaço local autorizado disponível neste dispositivo.",
+    "permissionProtected": "Dados offline nunca são aceitos como permissão. O servidor verifica novamente identidade, propriedade, acesso e versão antes de cada sincronização.",
+    "personalScopeValue": "Somente candidaturas pessoais próprias",
+    "accessUntil": "Acesso offline até",
+    "authorizationExpired": "O acesso offline seguro terminou. Reconecte-se e entre novamente.",
     "slowDetail": "O servidor está acessível, mas as respostas estão demorando mais que o normal. As alterações locais permanecem protegidas.",
     "offlineDetail": "Você pode continuar trabalhando a partir da cópia local. As edições de aplicativos pessoais compatíveis serão sincronizadas quando a conexão for retornada.",
     "checkingDetail": "PhD Atlas está verificando a conexão real do servidor, não apenas o indicador de rede do navegador.",
@@ -830,5 +840,21 @@
     "showColumn": "Mostrar coluna",
     "actions": "Ações"
   },
-  "doubleClickToCopy": "Clique duas vezes para copiar {label}"
+  "doubleClickToCopy": "Clique duas vezes para copiar {label}",
+  "projectFooter": {
+    "ariaLabel": "Informações do projeto",
+    "projectName": "PhD Atlas",
+    "authorName": "Jasper Zhou",
+    "projectHome": "Abrir a página inicial do PhD Atlas",
+    "by": "Por",
+    "repository": "GitHub",
+    "repositoryAria": "Abrir o repositório do PhD Atlas no GitHub",
+    "support": "Apoiar",
+    "supportAria": "Apoiar o PhD Atlas",
+    "dialogTitle": "Dê um pequeno impulso ao PhD Atlas",
+    "dialogDescription": "Escolha o código mais fácil de escanear — seu apoio vira a próxima pequena melhoria.",
+    "wechat": "WeChat Pay",
+    "alipay": "Alipay",
+    "qrAlt": "Código QR de pagamento do {method}"
+  }
 }

@@ -281,7 +281,7 @@ but they do not promise database-schema or stored-data compatibility between
 Beta versions. Back up the whole workspace before every Beta update.
 
 For Docker, native Windows, or native Linux deployments already running
-`v0.1.0-beta.2` or later:
+`v0.1.0-beta.6` or later:
 
 1. Create a whole-workspace backup in Admin and a stopped `storage/` snapshot.
 2. Open **Admin → System information → System update**, select
@@ -291,6 +291,14 @@ For Docker, native Windows, or native Linux deployments already running
    upload the package.
 4. Wait for the service to restart, then sign in and confirm the displayed
    version, health, and a representative read/write operation.
+
+**One-time Beta.6 migration:** installations on Beta.5 or earlier must download
+the Beta.6 `.tar.gz` Release asset on a trusted machine and upload it through
+**Manual update**. Do not rely on the older **Check for updates → Install**
+handoff for this transition. Once Beta.6 is running, later releases use the
+durable automatic updater. Beta.6 packages also carry their complete
+integrity-pinned production dependency graph and retain bounded international
+and mainland mirror fallback for future server extensions.
 
 The already-published `v0.1.0-beta.1` predates this guarded path. Docker
 operators must pin or select the published beta.2 image, then run
@@ -329,12 +337,12 @@ See [TODO.md](TODO.md) for the public roadmap. Issues and focused pull requests
 are welcome. Before submitting a change, run:
 
 ```bash
-npm run lint
-npm run i18n:check
-npx tsc --noEmit
-npm test
-npm run build
+npm run verify:tree
 ```
+
+Release maintainers must additionally run `npm run verify:release`; this
+reproduces the update package and boots both amd64 and arm64 production
+containers before a tag is published.
 
 ## License
 

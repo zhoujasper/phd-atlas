@@ -52,7 +52,7 @@
     "installAppBenefitOffline": "Listo sin conexión",
     "installAppBenefitQuick": "Lanzamiento rápido",
     "installAppOfflineScopeLabel": "Alcance sin conexión",
-    "installAppOfflineScope": "Los datos sin conexión permanecen en este dispositivo: puede ver el último espacio de trabajo sincronizado y las ediciones en cola de sus propias candidaturas. Las cargas, el correo electrónico, la IA, el equipo, el uso compartido, la cuenta y las acciones de respaldo permanecen solo en línea.",
+    "installAppOfflineScope": "Los datos sin conexión permanecen en este dispositivo. Solo se guardan tus candidaturas personales con una autorización breve y con caducidad; sus cambios pueden quedar en cola. Antes de sincronizar, el servidor vuelve a comprobar identidad, propiedad, permisos y versión. Las cargas, el correo, la IA, el equipo, el uso compartido, la cuenta y las copias siguen en línea.",
     "installAppStatusAvailable": "Disponible para instalar",
     "installAppStatusInstalling": "Esperando confirmación",
     "installAppStatusInstalled": "Instalado",

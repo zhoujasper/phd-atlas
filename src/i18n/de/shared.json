@@ -95,6 +95,10 @@
     "INVALID_CREDENTIALS": "E-Mail oder Passwort ist falsch.",
     "FORBIDDEN": "Sie haben keine Berechtigung, diese Aktion auszuführen.",
     "REGISTRATION_CLOSED": "Die Registrierung neuer Benutzer ist deaktiviert.",
+    "REGISTRATION_EMAIL_NOT_ALLOWED": "Diese E-Mail-Domain ist für die Registrierung nicht zugelassen.",
+    "PASSWORD_TOO_WEAK": "Wähle ein Passwort mit mindestens 15 Zeichen, das nicht häufig, vorhersehbar oder aus einem Datenleck bekannt ist.",
+    "PASSWORD_CHECK_UNAVAILABLE": "Die Passwort-Sicherheitsprüfung ist vorübergehend nicht verfügbar.",
+    "HUMAN_VERIFICATION_UNAVAILABLE": "Die Prüfung, ob du ein Mensch bist, ist vorübergehend nicht verfügbar.",
     "EMAIL_EXISTS": "Für diese E-Mail existiert bereits ein Konto.",
     "SMTP_NOT_CONFIGURED": "Ausgehende E-Mail ist noch nicht konfiguriert. Bitten Sie den Administrator, zunächst System-Mail einzurichten.",
     "SMTP_ERROR": "Die E-Mail-Zustellung ist fehlgeschlagen. Überprüfen Sie die E-Mail-Einstellungen und versuchen Sie es erneut.",
@@ -211,7 +215,6 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "Wählen Sie für die Teamrecherche sowohl ein Team als auch einen zugewiesenen Studierenden.",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "Die ausgewählte Betreuungsperson hat keine verifizierte E-Mail-Adresse.",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "Ein echtes Profil und eine E-Mail-Adresse der Betreuungsperson sind erforderlich, bevor dieses Programm zu Bewerbungen hinzugefügt werden kann.",
-    "DISCOVER_PROGRAM_NOT_VERIFIED": "Für dieses Programm fehlt eine verifizierte offizielle Quelle oder eine aktuelle Bewerbungsfrist. Aktualisieren Sie die Recherche vor dem Import.",
     "MAIL_ATTACHMENT_TOO_LARGE": "Ein Anhang ist zu groß, um in die E-Mail aufgenommen zu werden."
   },
   "apiErrorFields": {
@@ -321,6 +324,13 @@
     "workingOffline": "Offline arbeiten",
     "slow": "Langsame Verbindung",
     "panelTitle": "Verbindung und Offline-Status",
+    "launchTitle": "Sie sind offline",
+    "launchDetail": "Die App-Oberfläche und bereits besuchte statische Ressourcen bleiben verfügbar. Stellen Sie die Verbindung zum Anmelden wieder her; offline lässt sich nur ein zuvor autorisierter, noch gültiger persönlicher Arbeitsbereich öffnen.",
+    "noLocalCopy": "Auf diesem Gerät ist kein autorisierter lokaler Arbeitsbereich verfügbar.",
+    "permissionProtected": "Offlinedaten gelten nie als Berechtigung. Der Server prüft Identität, Eigentum, Zugriff und Version vor jeder Synchronisierung erneut.",
+    "personalScopeValue": "Nur eigene persönliche Bewerbungen",
+    "accessUntil": "Offlinezugriff bis",
+    "authorizationExpired": "Der sichere Offlinezugriff ist abgelaufen. Stellen Sie die Verbindung wieder her und melden Sie sich an.",
     "manualDetail": "Sie haben sich entschieden, offline zu arbeiten. Persönliche Bewerbungsänderungen werden lokal gespeichert und warten, bis Sie den Online-Modus wieder aufnehmen.",
     "offlineDetail": "Sie können mit der lokalen Kopie weiterarbeiten. Unterstützte persönliche Anwendungsbearbeitungen werden synchronisiert, wenn die Verbindung wiederhergestellt wird.",
     "server": "Server",
@@ -830,5 +840,21 @@
     "resetColumns": "Spalten zurücksetzen",
     "actions": "Aktionen"
   },
-  "doubleClickToCopy": "Doppelklicken, um {label} zu kopieren"
+  "doubleClickToCopy": "Doppelklicken, um {label} zu kopieren",
+  "projectFooter": {
+    "ariaLabel": "Projektinformationen",
+    "projectName": "PhD Atlas",
+    "authorName": "Jasper Zhou",
+    "projectHome": "Startseite von PhD Atlas öffnen",
+    "by": "Von",
+    "repository": "GitHub",
+    "repositoryAria": "GitHub-Repository von PhD Atlas öffnen",
+    "support": "Unterstützen",
+    "supportAria": "PhD Atlas unterstützen",
+    "dialogTitle": "PhD Atlas etwas Energie schenken",
+    "dialogDescription": "Wähle einfach den bequemsten Scan – deine Unterstützung wird zum nächsten kleinen Upgrade.",
+    "wechat": "WeChat Pay",
+    "alipay": "Alipay",
+    "qrAlt": "{method}-Zahlungs-QR-Code"
+  }
 }

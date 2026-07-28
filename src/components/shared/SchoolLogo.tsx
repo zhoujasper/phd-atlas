@@ -2,6 +2,7 @@ import clsx from 'clsx'
 import {
   Building2,
   Check,
+  Globe2,
   ImagePlus,
   Link2,
   LoaderCircle,
@@ -16,8 +17,9 @@ import { AnchoredPopover } from './AnchoredPopover'
 import { SCHOOL_LOGO_ACCEPT, schoolLogoInitials } from './schoolLogoModel'
 
 type SchoolLogo = ApplicationRecord['school']['logo']
-type ResolveInput = { website?: string; imageUrl?: string }
+type ResolveInput = { website?: string; imageUrl?: string; refresh?: boolean }
 type LogoActionStatus = 'idle' | 'working' | 'saved' | 'not-found' | 'error'
+type LogoLinkMode = 'website' | 'image'
 
 function compactSource(value?: string) {
   if (!value) return ''
@@ -27,6 +29,13 @@ function compactSource(value?: string) {
   } catch {
     return value
   }
+}
+
+export function normalizeSchoolLogoLinkInput(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed || /^[a-z][a-z\d+.-]*:/iu.test(trimmed)) return trimmed
+  if (trimmed.startsWith('//')) return `https:${trimmed}`
+  return `https://${trimmed}`
 }
 
 export function SchoolLogoMark({
@@ -80,6 +89,8 @@ export function SchoolLogoManager({
   const { tx } = useI18n()
   const [status, setStatus] = useState<LogoActionStatus>('idle')
   const [linkEditorOpen, setLinkEditorOpen] = useState(false)
+  const [linkMode, setLinkMode] = useState<LogoLinkMode>('website')
+  const [alternateWebsite, setAlternateWebsite] = useState('')
   const [imageUrl, setImageUrl] = useState('')
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const autoAttemptRef = useRef('')
@@ -119,6 +130,26 @@ export function SchoolLogoManager({
     event.currentTarget.value = ''
     if (!file || working) return
     void run(() => onUpload(file))
+  }
+
+  const linkValue = linkMode === 'website' ? alternateWebsite : imageUrl
+  const linkLabel = linkMode === 'website'
+    ? tx('dossier.schoolLogoWebsiteLink')
+    : tx('dossier.schoolLogoImageLink')
+  const linkHint = linkMode === 'website'
+    ? tx('dossier.schoolLogoWebsiteLinkHint')
+    : tx('dossier.schoolLogoImageLinkHint')
+  const linkPlaceholder = linkMode === 'website'
+    ? tx('dossier.schoolLogoWebsiteLinkPlaceholder')
+    : tx('dossier.schoolLogoLinkPlaceholder')
+  const resolveLink = () => {
+    const normalized = normalizeSchoolLogoLinkInput(linkValue)
+    if (linkMode === 'website') {
+      setAlternateWebsite(normalized)
+      return onResolve({ website: normalized, refresh: true })
+    }
+    setImageUrl(normalized)
+    return onResolve({ imageUrl: normalized })
   }
 
   const sourceLabel = logo
@@ -169,7 +200,7 @@ export function SchoolLogoManager({
               type="button"
               className="school-logo-action is-primary"
               disabled={working || !website.trim()}
-              onClick={() => void run(() => onResolve({ website: website.trim() }))}
+              onClick={() => void run(() => onResolve({ website: website.trim(), refresh: true }))}
             >
               <span className="school-logo-action-icon" aria-hidden="true">
                 {working ? <LoaderCircle size={15} className="spin-icon" /> : <RefreshCw size={15} />}
@@ -196,28 +227,66 @@ export function SchoolLogoManager({
 
             <div className={clsx('school-logo-link-editor', linkEditorOpen && 'open')} inert={!linkEditorOpen || undefined}>
               <div className="school-logo-link-editor-inner">
-                <input
-                  type="url"
-                  value={imageUrl}
-                  onChange={(event) => setImageUrl(event.target.value)}
-                  placeholder={tx('dossier.schoolLogoLinkPlaceholder')}
+                <div
+                  className="school-logo-link-modes"
+                  role="tablist"
                   aria-label={tx('dossier.schoolLogoLink')}
-                  data-popover-autofocus
-                  onKeyDown={(event) => {
-                    if (event.key !== 'Enter' || !imageUrl.trim() || working) return
-                    event.preventDefault()
-                    void run(() => onResolve({ imageUrl: imageUrl.trim() }))
-                  }}
-                />
-                <button
-                  type="button"
-                  className="school-logo-fetch-link"
-                  disabled={working || !imageUrl.trim()}
-                  onClick={() => void run(() => onResolve({ imageUrl: imageUrl.trim() }))}
                 >
-                  {working ? <LoaderCircle size={13} className="spin-icon" /> : <RefreshCw size={13} />}
-                  {tx('dossier.schoolLogoFetch')}
-                </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={linkMode === 'website'}
+                    className={clsx(linkMode === 'website' && 'active')}
+                    disabled={working}
+                    onClick={() => setLinkMode('website')}
+                  >
+                    <Globe2 size={12} aria-hidden="true" />
+                    {tx('dossier.schoolLogoWebsiteLink')}
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={linkMode === 'image'}
+                    className={clsx(linkMode === 'image' && 'active')}
+                    disabled={working}
+                    onClick={() => setLinkMode('image')}
+                  >
+                    <ImagePlus size={12} aria-hidden="true" />
+                    {tx('dossier.schoolLogoImageLink')}
+                  </button>
+                </div>
+                <p className="school-logo-link-hint">{linkHint}</p>
+                <div className="school-logo-link-controls">
+                  <input
+                    type="url"
+                    value={linkValue}
+                    onChange={(event) => {
+                      if (linkMode === 'website') setAlternateWebsite(event.target.value)
+                      else setImageUrl(event.target.value)
+                    }}
+                    onBlur={() => {
+                      const normalized = normalizeSchoolLogoLinkInput(linkValue)
+                      if (linkMode === 'website') setAlternateWebsite(normalized)
+                      else setImageUrl(normalized)
+                    }}
+                    placeholder={linkPlaceholder}
+                    aria-label={linkLabel}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter' || !linkValue.trim() || working) return
+                      event.preventDefault()
+                      void run(resolveLink)
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="school-logo-fetch-link"
+                    disabled={working || !linkValue.trim()}
+                    onClick={() => void run(resolveLink)}
+                  >
+                    {working ? <LoaderCircle size={13} className="spin-icon" /> : <RefreshCw size={13} />}
+                    {tx('dossier.schoolLogoFetch')}
+                  </button>
+                </div>
               </div>
             </div>
 

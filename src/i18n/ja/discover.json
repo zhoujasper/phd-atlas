@@ -109,6 +109,7 @@
     "hiddenCount": "{count} 非表示",
     "watchedBadge": "見てる",
     "importedToast": "アプリケーションにインポートされる",
+    "partialImportToast": "取得できた情報を追加しました。公式情報源または現在の出願期限が不足しているため、出願情報で確認してください。",
     "savedToast": "保存された設定を検出する",
     "researchToast": "研究エージェントが終了しました",
     "prefRising": "新星",

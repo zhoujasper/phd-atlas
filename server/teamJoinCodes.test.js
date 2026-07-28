@@ -143,7 +143,15 @@ describe.sequential('team join credentials', () => {
     const studentToken = await login('student.lina@phd-atlas.local')
     const secondStudentToken = await login('student.omar@phd-atlas.local')
     const created = await createProvisioningTeam(adminToken)
-    await snapshotUserSettings('jasper@example.com')
+    for (const email of [
+      'jasper@example.com',
+      'teacher@phd-atlas.local',
+      'teacher.alex@phd-atlas.local',
+      'student.lina@phd-atlas.local',
+      'student.omar@phd-atlas.local',
+    ]) {
+      await snapshotUserSettings(email)
+    }
 
     const ownerCode = await generateCode(adminToken, created.team.id, 'owner')
     const ownerClaim = await request(`/api/teams/join-codes/${encodeURIComponent(ownerCode.code)}/redeem`, {
@@ -185,9 +193,50 @@ describe.sequential('team join credentials', () => {
       expect(joined.payload.data.membership).toMatchObject({
         role: 'member',
         status: 'active',
+        relationships: {
+          accessLevel: 'pro',
+        },
       })
       expect(joined.payload.data.membership.relationships.teacherIds)
         .toEqual(expect.arrayContaining(teachers.map((teacher) => teacher.userId)))
+    }
+
+    const populatedSummary = await request(`/api/teams/${created.team.id}/members`, { token: ownerToken })
+    const primaryTeacher = populatedSummary.payload.data.members.find(
+      (member) => member.invitedEmail === 'teacher@phd-atlas.local',
+    )
+    const lina = populatedSummary.payload.data.members.find(
+      (member) => member.invitedEmail === 'student.lina@phd-atlas.local',
+    )
+    const teacherPolicy = await request(`/api/teams/${created.team.id}/members/${primaryTeacher.id}`, {
+      token: ownerToken,
+      method: 'PATCH',
+      body: { accessLevel: 'pro', studentProLimit: 1 },
+    })
+    expect(teacherPolicy.response.status).toBe(200)
+    expect(teacherPolicy.payload.data.relationships).toMatchObject({
+      accessLevel: 'pro',
+      studentProLimit: 1,
+    })
+
+    const restrictStudent = await request(`/api/teams/${created.team.id}/members/${lina.id}`, {
+      token: teacherToken,
+      method: 'PATCH',
+      body: { accessLevel: 'standard' },
+    })
+    expect(restrictStudent.response.status).toBe(200)
+
+    const overLimitGrant = await request(`/api/teams/${created.team.id}/members/${lina.id}`, {
+      token: teacherToken,
+      method: 'PATCH',
+      body: { accessLevel: 'pro' },
+    })
+    expect(overLimitGrant.response.status).toBe(409)
+    expect(overLimitGrant.payload.error.code).toBe('SEAT_LIMIT_REACHED')
+
+    const store = await readStore()
+    for (const email of ['teacher@phd-atlas.local', 'student.lina@phd-atlas.local']) {
+      expect(store.users.find((user) => user.email === email)?.settings.membershipPlan).toBe('team')
     }
   })
 })

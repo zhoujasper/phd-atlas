@@ -57,7 +57,7 @@
     "installAppBenefitOffline": "Offline ready",
     "installAppBenefitQuick": "Quick launch",
     "installAppOfflineScopeLabel": "Offline scope",
-    "installAppOfflineScope": "Offline data stays on this device: you can view the last synced workspace and queue edits to your own applications. Uploads, email, AI, team, sharing, account, and backup actions remain online-only.",
+    "installAppOfflineScope": "Offline data stays on this device. Only your personal applications are cached under a short, expiring lease; their edits can be queued. The server rechecks identity, ownership, permissions, and version before sync. Uploads, email, AI, team, sharing, account, and backup actions remain online-only.",
     "installAppStatusAvailable": "Ready",
     "installAppStatusInstalling": "Waiting",
     "installAppStatusInstalled": "Installed",

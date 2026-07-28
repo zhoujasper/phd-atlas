@@ -109,6 +109,7 @@
     "hiddenCount": "{count} ẩn",
     "watchedBadge": "Đang xem",
     "importedToast": "Đã nhập vào ứng dụng",
+    "partialImportToast": "Đã thêm các thông tin hiện có. Nguồn chính thức hoặc hạn nộp hồ sơ hiện tại vẫn còn thiếu; hãy xác minh trong hồ sơ.",
     "savedToast": "Đã lưu tùy chọn khám phá",
     "researchToast": "Đại lý nghiên cứu đã hoàn thành",
     "prefRising": "Ngôi sao đang lên",

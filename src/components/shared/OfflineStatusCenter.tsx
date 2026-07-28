@@ -1,23 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
-  Check,
   ChevronDown,
   CloudOff,
   CloudUpload,
   RefreshCw,
   ServerOff,
+  ShieldCheck,
   Wifi,
   WifiLow,
 } from 'lucide-react'
 import type { ConnectivitySnapshot } from '../../connectivity'
 import { localeForLanguage, type Language, tpl } from '../../i18n'
+import { useAnimatedClose } from '../hooks/useAnimatedClose'
 
 type Props = {
   connectivity: ConnectivitySnapshot
   language: Language
   snapshotActive: boolean
   snapshotSavedAt: string | null
+  offlineAccessExpiresAt?: string | null
   pendingCount: number
   blockedCount: number
   syncing: boolean
@@ -40,6 +42,7 @@ export function OfflineStatusCenter({
   language,
   snapshotActive,
   snapshotSavedAt,
+  offlineAccessExpiresAt = null,
   pendingCount,
   blockedCount,
   syncing,
@@ -54,6 +57,7 @@ export function OfflineStatusCenter({
 }: Props) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
+  const { exiting, requestClose } = useAnimatedClose(open, () => setOpen(false))
   const visible = connectivity.mode !== 'online'
     || snapshotActive
     || pendingCount > 0
@@ -64,10 +68,10 @@ export function OfflineStatusCenter({
   useEffect(() => {
     if (!open) return undefined
     const closeOutside = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+      if (!rootRef.current?.contains(event.target as Node)) requestClose()
     }
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
+      if (event.key === 'Escape') requestClose()
     }
     document.addEventListener('pointerdown', closeOutside)
     document.addEventListener('keydown', closeOnEscape)
@@ -75,7 +79,7 @@ export function OfflineStatusCenter({
       document.removeEventListener('pointerdown', closeOutside)
       document.removeEventListener('keydown', closeOnEscape)
     }
-  }, [open])
+  }, [open, requestClose])
 
   if (!visible) return null
 
@@ -134,6 +138,9 @@ export function OfflineStatusCenter({
   const savedLabel = snapshotSavedAt
     ? timeFormatter.format(new Date(snapshotSavedAt))
     : tx('offlineStatus.notAvailable')
+  const accessUntilLabel = offlineAccessExpiresAt
+    ? timeFormatter.format(new Date(offlineAccessExpiresAt))
+    : tx('offlineStatus.notAvailable')
 
   return (
     <div className={`offline-status-center mode-${mode}${open ? ' open' : ''}${authSurface ? ' auth-surface' : ''}`} ref={rootRef}>
@@ -142,7 +149,10 @@ export function OfflineStatusCenter({
         className="offline-status-pill"
         aria-expanded={open}
         aria-haspopup="dialog"
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          if (open) requestClose()
+          else setOpen(true)
+        }}
       >
         <Icon className={mode === 'checking' || mode === 'syncing' ? 'spin' : ''} size={13} aria-hidden="true" />
         <span>{label}</span>
@@ -155,7 +165,7 @@ export function OfflineStatusCenter({
       </button>
 
       {open ? (
-        <section className="offline-status-popover" role="dialog" aria-label={tx('offlineStatus.panelTitle')}>
+        <section className={`offline-status-popover${exiting ? ' is-exiting' : ''}`} role="dialog" aria-label={tx('offlineStatus.panelTitle')}>
           <div className="offline-status-heading">
             <span className="offline-status-icon"><Icon size={18} aria-hidden="true" /></span>
             <div>
@@ -178,15 +188,22 @@ export function OfflineStatusCenter({
               <strong>{savedLabel}</strong>
             </div>
             <div>
+              <span>{tx('offlineStatus.accessUntil')}</span>
+              <strong>{accessUntilLabel}</strong>
+            </div>
+            <div>
               <span>{tx('offlineStatus.syncQueue')}</span>
               <strong>{tpl(tx('offlineStatus.queueSummary'), { pending: pendingCount, blocked: blockedCount })}</strong>
             </div>
           </div>
 
           {snapshotActive ? (
-            <div className="offline-status-note">
-              <Check size={14} aria-hidden="true" />
-              <span>{tx('offlineStatus.snapshotSafe')}</span>
+            <div className="offline-status-note offline-status-security">
+              <ShieldCheck size={15} aria-hidden="true" />
+              <span>
+                <strong>{tx('offlineStatus.personalScopeValue')}</strong>
+                <small>{tx('offlineStatus.permissionProtected')}</small>
+              </span>
             </div>
           ) : null}
 

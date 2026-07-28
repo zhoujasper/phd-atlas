@@ -12,6 +12,7 @@ import {
 import { createPortal } from 'react-dom'
 import { copyToClipboard } from './clipboard'
 import { useI18n } from '../hooks/useI18n'
+import { OVERFLOW_REVEAL_HOVER_DELAY_MS } from './overflowRevealModel'
 
 type OverflowRevealProps = {
   text: string
@@ -58,6 +59,7 @@ export function OverflowReveal({
   const [open, setOpen] = useState(false)
   const [anchor, setAnchor] = useState<TooltipRect | null>(null)
   const resetTimerRef = useRef<number | null>(null)
+  const hoverOpenTimerRef = useRef<number | null>(null)
   const rootRef = useRef<HTMLElement | null>(null)
   const Tag = as as ElementType
   const value = (copyValue ?? text).trim()
@@ -71,7 +73,17 @@ export function OverflowReveal({
     }
   }, [])
 
-  useEffect(() => () => clearResetTimer(), [clearResetTimer])
+  const clearHoverOpenTimer = useCallback(() => {
+    if (hoverOpenTimerRef.current !== null) {
+      window.clearTimeout(hoverOpenTimerRef.current)
+      hoverOpenTimerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => () => {
+    clearResetTimer()
+    clearHoverOpenTimer()
+  }, [clearHoverOpenTimer, clearResetTimer])
 
   const measure = useCallback(() => {
     const el = rootRef.current
@@ -86,15 +98,25 @@ export function OverflowReveal({
   }, [])
 
   const show = useCallback(() => {
+    clearHoverOpenTimer()
     const next = measure()
     if (!next) return
     setAnchor(next)
     setOpen(true)
-  }, [measure])
+  }, [clearHoverOpenTimer, measure])
 
   const hide = useCallback(() => {
+    clearHoverOpenTimer()
     setOpen(false)
-  }, [])
+  }, [clearHoverOpenTimer])
+
+  const scheduleShow = useCallback(() => {
+    clearHoverOpenTimer()
+    hoverOpenTimerRef.current = window.setTimeout(() => {
+      hoverOpenTimerRef.current = null
+      show()
+    }, OVERFLOW_REVEAL_HOVER_DELAY_MS)
+  }, [clearHoverOpenTimer, show])
 
   useEffect(() => {
     if (!open) return undefined
@@ -192,25 +214,27 @@ export function OverflowReveal({
       <Tag
         ref={rootRef}
         className={`overflow-reveal${status !== 'idle' ? ` is-${status}` : ''}${open ? ' is-open' : ''}${className ? ` ${className}` : ''}`}
+        data-overflow-reveal="off"
         tabIndex={tabIndex}
         title={title}
         aria-label={status === 'idle' ? `${text}. ${hint}` : title}
         aria-describedby={open ? tooltipId : undefined}
         onDoubleClick={handleDoubleClick}
         onKeyDown={handleKeyDown}
-        onMouseEnter={show}
+        onMouseEnter={scheduleShow}
         onMouseLeave={hide}
         onFocus={show}
         onBlur={hide}
       >
         {display}
       </Tag>
-      {open && portalHost && text
+      {anchor && portalHost && text
         ? createPortal(
             <span
               id={tooltipId}
               role="tooltip"
-              className={`overflow-reveal-portal${status !== 'idle' ? ` is-${status}` : ''}`}
+              aria-hidden={!open}
+              className={`overflow-reveal-portal${open ? ' is-open' : ''}${status !== 'idle' ? ` is-${status}` : ''}`}
               style={tooltipStyle}
             >
               {tooltipText}

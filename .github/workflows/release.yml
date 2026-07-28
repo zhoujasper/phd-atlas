@@ -17,22 +17,111 @@ env:
   IMAGE_NAME: zhoujasper/phd-atlas
 
 jobs:
-  mssql-release-gate:
+  release:
     if: github.repository == 'zhoujasper/phd-atlas'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 100
     permissions:
-      contents: read
+      contents: write
+      packages: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the tagged public source
+        uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-      - name: Install smoke-test dependencies
+
+      - name: Install release dependencies
         run: npm ci
+
+      - name: Verify release tag and freeze build time
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -e "const value = JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version; if (typeof value !== 'string' || !value) process.exit(1); process.stdout.write(value)")"
+          if ! node -e 'const pattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/; if (!pattern.test(process.argv[1])) process.exit(1)' "$package_version"; then
+            echo "::error title=Invalid package version::package.json version '$package_version' is not a supported SemVer value."
+            exit 1
+          fi
+          if [[ "$package_version" == *+* ]]; then
+            echo "::error title=Unsupported container version::Public release versions cannot contain SemVer build metadata because OCI tags cannot represent '+' without collisions."
+            exit 1
+          fi
+          expected_tag="v${package_version}"
+          if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
+            echo "::error title=Release tag/version mismatch::Expected tag '$expected_tag' from package.json, received '$GITHUB_REF_NAME'."
+            exit 1
+          fi
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          if ! [[ "$source_date_epoch" =~ ^[0-9]+$ ]]; then
+            echo "::error title=Missing source timestamp::Could not derive SOURCE_DATE_EPOCH from the tagged commit."
+            exit 1
+          fi
+          release_notes_path="$RUNNER_TEMP/phd-atlas-${package_version}-release-notes.md"
+          node tools/extract-release-notes.mjs \
+            --version "$package_version" \
+            --output "$release_notes_path"
+          {
+            echo "PACKAGE_VERSION=$package_version"
+            echo "SOURCE_DATE_EPOCH=$source_date_epoch"
+            echo "CANDIDATE_TAG=candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "RELEASE_NOTES_PATH=$release_notes_path"
+          } >> "$GITHUB_ENV"
+
+      - name: Remove withdrawn Beta.6 and Beta.7 container versions
+        if: env.PACKAGE_VERSION == '0.1.0-beta.6'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # One-time replacement cleanup. These IDs were resolved and checked
+          # immediately before withdrawing the former Beta.6/Beta.7 releases.
+          # A rerun is safe because an already-absent version returns 404.
+          version_ids=(
+            1073239413 1073239399 1073239383 1073239364 1073239350
+            1073188281 1073188270 1073188259 1073188245 1073188233
+            1072693398 1072693391 1072693384 1072693371 1072693361
+            1071458511 1071458499 1071458485 1071458473 1071458455
+            1071392602 1071392586 1071392555 1071392500 1071392466
+          )
+          for version_id in "${version_ids[@]}"; do
+            response_path="$RUNNER_TEMP/phd-atlas-package-delete-${version_id}.json"
+            http_code="$(
+              curl \
+                --silent \
+                --show-error \
+                --connect-timeout 10 \
+                --max-time 30 \
+                --request DELETE \
+                --header "Authorization: Bearer ${GH_TOKEN}" \
+                --header "Accept: application/vnd.github+json" \
+                --header "X-GitHub-Api-Version: 2022-11-28" \
+                --output "$response_path" \
+                --write-out '%{http_code}' \
+                "${GITHUB_API_URL}/user/packages/container/phd-atlas/versions/${version_id}"
+            )"
+            case "$http_code" in
+              204)
+                echo "Deleted withdrawn GHCR package version ${version_id}."
+                ;;
+              404)
+                echo "Withdrawn GHCR package version ${version_id} is already absent."
+                ;;
+              *)
+                echo "::error title=Withdrawn container cleanup failed::Package version ${version_id} returned HTTP ${http_code}."
+                cat "$response_path"
+                exit 1
+                ;;
+            esac
+          done
+
       - name: Verify Microsoft SQL Server 2022 adapter
         shell: bash
         run: |
@@ -75,69 +164,8 @@ jobs:
           export PHD_ATLAS_SMOKE_READY_TIMEOUT_MS=300000
           node tools/smoke-external-database.mjs
 
-  release:
-    needs: mssql-release-gate
-    if: github.repository == 'zhoujasper/phd-atlas'
-    runs-on: ubuntu-latest
-    timeout-minutes: 100
-    permissions:
-      contents: write
-      packages: write
-    steps:
-      - name: Check out the tagged public source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Verify release tag and freeze build time
-        shell: bash
-        run: |
-          set -euo pipefail
-          package_version="$(node -e "const value = JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version; if (typeof value !== 'string' || !value) process.exit(1); process.stdout.write(value)")"
-          if ! node -e 'const pattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/; if (!pattern.test(process.argv[1])) process.exit(1)' "$package_version"; then
-            echo "::error title=Invalid package version::package.json version '$package_version' is not a supported SemVer value."
-            exit 1
-          fi
-          if [[ "$package_version" == *+* ]]; then
-            echo "::error title=Unsupported container version::Public release versions cannot contain SemVer build metadata because OCI tags cannot represent '+' without collisions."
-            exit 1
-          fi
-          expected_tag="v${package_version}"
-          if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
-            echo "::error title=Release tag/version mismatch::Expected tag '$expected_tag' from package.json, received '$GITHUB_REF_NAME'."
-            exit 1
-          fi
-          source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
-          if ! [[ "$source_date_epoch" =~ ^[0-9]+$ ]]; then
-            echo "::error title=Missing source timestamp::Could not derive SOURCE_DATE_EPOCH from the tagged commit."
-            exit 1
-          fi
-          release_notes_path="$RUNNER_TEMP/phd-atlas-${package_version}-release-notes.md"
-          node tools/extract-release-notes.mjs \
-            --version "$package_version" \
-            --output "$release_notes_path"
-          {
-            echo "PACKAGE_VERSION=$package_version"
-            echo "SOURCE_DATE_EPOCH=$source_date_epoch"
-            echo "CANDIDATE_TAG=candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-            echo "RELEASE_NOTES_PATH=$release_notes_path"
-          } >> "$GITHUB_ENV"
-
       - name: Verify source
-        run: |
-          npm ci
-          npm run lint
-          npm run i18n:check
-          npm run release:notes:check
-          npx tsc --noEmit
-          npm test
+        run: npm run verify:tree
 
       - name: Build and reproduce the update package
         shell: bash
@@ -179,7 +207,29 @@ jobs:
             channel_args+=(--prerelease)
           fi
 
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          release_json="$RUNNER_TEMP/phd-atlas-release-before.json"
+          release_pages="$RUNNER_TEMP/phd-atlas-release-pages.json"
+          load_release_by_tag() {
+            gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$release_pages"
+            release_count="$(
+              jq --arg tag "$GITHUB_REF_NAME" \
+                '[.[][] | select(.tag_name == $tag)] | length' \
+                "$release_pages"
+            )"
+            if [[ "$release_count" -gt 1 ]]; then
+              echo "::error title=Duplicate Releases::More than one Release targets $GITHUB_REF_NAME."
+              exit 1
+            fi
+            if [[ "$release_count" -eq 0 ]]; then
+              return 1
+            fi
+            jq --arg tag "$GITHUB_REF_NAME" \
+              '[.[][] | select(.tag_name == $tag)][0]' \
+              "$release_pages" > "$release_json"
+          }
+
+          if ! load_release_by_tag; then
             gh release create "$GITHUB_REF_NAME" \
               "$PACKAGE_PATH" \
               "${PACKAGE_PATH}.sha256" \
@@ -188,21 +238,46 @@ jobs:
               --notes-file "$RELEASE_NOTES_PATH" \
               "${channel_args[@]}" \
               --title "PhD Atlas $GITHUB_REF_NAME"
+            release_loaded=false
+            for attempt in $(seq 1 30); do
+              if load_release_by_tag; then
+                release_loaded=true
+                break
+              fi
+              echo "Waiting for Draft Release ID (attempt $attempt/30)."
+              sleep 2
+            done
+            if [[ "$release_loaded" != true ]]; then
+              echo "::error title=Missing Draft Release::The created Release was not discoverable through the authenticated Releases API."
+              exit 1
+            fi
           fi
 
-          release_json="$RUNNER_TEMP/phd-atlas-release-before.json"
-          gh release view "$GITHUB_REF_NAME" --json assets,isDraft,isPrerelease,tagName > "$release_json"
-          actual_tag="$(jq -r '.tagName' "$release_json")"
-          actual_prerelease="$(jq -r '.isPrerelease' "$release_json")"
-          is_draft="$(jq -r '.isDraft' "$release_json")"
+          release_id="$(jq -r '.id' "$release_json")"
+          actual_tag="$(jq -r '.tag_name' "$release_json")"
+          actual_prerelease="$(jq -r '.prerelease' "$release_json")"
+          is_draft="$(jq -r '.draft' "$release_json")"
+          if ! [[ "$release_id" =~ ^[0-9]+$ ]]; then
+            echo "::error title=Invalid Release ID::The authenticated Releases API did not return a numeric ID."
+            exit 1
+          fi
           if [[ "$actual_tag" != "$GITHUB_REF_NAME" || "$actual_prerelease" != "$expected_prerelease" ]]; then
             echo "::error title=Release metadata mismatch::Existing Release tag or prerelease channel differs from the canonical package version."
             exit 1
           fi
           if [[ "$is_draft" == true ]]; then
-            gh release edit "$GITHUB_REF_NAME" \
-              --notes-file "$RELEASE_NOTES_PATH" \
-              --title "PhD Atlas $GITHUB_REF_NAME"
+            patch_json="$RUNNER_TEMP/phd-atlas-release-draft-patch.json"
+            jq -n \
+              --arg tag "$GITHUB_REF_NAME" \
+              --arg target "$GITHUB_SHA" \
+              --arg name "PhD Atlas $GITHUB_REF_NAME" \
+              --rawfile body "$RELEASE_NOTES_PATH" \
+              --argjson prerelease "$expected_prerelease" \
+              '{tag_name: $tag, target_commitish: $target, name: $name, body: $body, draft: true, prerelease: $prerelease}' \
+              > "$patch_json"
+            gh api --method PATCH \
+              --input "$patch_json" \
+              "repos/${GITHUB_REPOSITORY}/releases/${release_id}" > "$release_json"
           fi
 
           unexpected_assets="$(jq -r \
@@ -228,17 +303,46 @@ jobs:
                 exit 1
               fi
               if [[ "$asset_name" == "$package_name" ]]; then
-                gh release upload "$GITHUB_REF_NAME" "$PACKAGE_PATH"
+                asset_path="$PACKAGE_PATH"
+                content_type="application/gzip"
               else
-                gh release upload "$GITHUB_REF_NAME" "${PACKAGE_PATH}.sha256"
+                asset_path="${PACKAGE_PATH}.sha256"
+                content_type="text/plain"
               fi
+              gh api \
+                --hostname uploads.github.com \
+                --method POST \
+                --header "Content-Type: ${content_type}" \
+                --input "$asset_path" \
+                "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?name=${asset_name}" \
+                > /dev/null
             fi
           done
 
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" > "$release_json"
+          echo "RELEASE_ID=$release_id" >> "$GITHUB_ENV"
+
           remote_dir="$RUNNER_TEMP/phd-atlas-release-assets-before"
           mkdir -p "$remote_dir"
-          gh release download "$GITHUB_REF_NAME" --pattern "$package_name" --dir "$remote_dir"
-          gh release download "$GITHUB_REF_NAME" --pattern "$checksum_name" --dir "$remote_dir"
+          download_release_asset() {
+            local asset_name="$1"
+            local output_path="$2"
+            local asset_id
+            asset_id="$(
+              jq -r --arg name "$asset_name" \
+                '[.assets[] | select(.name == $name)] | if length == 1 then .[0].id else empty end' \
+                "$release_json"
+            )"
+            if ! [[ "$asset_id" =~ ^[0-9]+$ ]]; then
+              echo "::error title=Missing immutable asset::Release does not contain exactly one '$asset_name'."
+              exit 1
+            fi
+            gh api \
+              --header 'Accept: application/octet-stream' \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > "$output_path"
+          }
+          download_release_asset "$package_name" "$remote_dir/$package_name"
+          download_release_asset "$checksum_name" "$remote_dir/$checksum_name"
           if ! cmp --silent "$PACKAGE_PATH" "$remote_dir/$package_name"; then
             echo "::error title=Immutable release asset mismatch::The existing update package differs from this tagged source."
             exit 1
@@ -370,7 +474,7 @@ jobs:
       - name: Smoke test candidate on amd64 and arm64
         shell: bash
         run: |
-          bash tools/smoke-container-image.sh \
+          node tools/smoke-container-image.mjs \
             "${REGISTRY}/${IMAGE_NAME}@${RELEASE_IMAGE_DIGEST}" \
             candidate
 
@@ -435,7 +539,7 @@ jobs:
       - name: Smoke test the official version tag on amd64 and arm64
         shell: bash
         run: |
-          bash tools/smoke-container-image.sh \
+          node tools/smoke-container-image.mjs \
             "${REGISTRY}/${IMAGE_NAME}:${PACKAGE_VERSION}" \
             official
 
@@ -510,14 +614,16 @@ jobs:
           checksum_name="${package_name}.sha256"
           version_prefix="phd-atlas-update-${PACKAGE_VERSION}-"
           expected_prerelease=false
-          publish_args=(--prerelease=false)
           if [[ "${PACKAGE_VERSION%%+*}" == *-* ]]; then
             expected_prerelease=true
-            publish_args=(--prerelease)
           fi
 
           release_json="$RUNNER_TEMP/phd-atlas-release-final-draft.json"
-          gh release view "$GITHUB_REF_NAME" --json assets,isDraft,isPrerelease,tagName > "$release_json"
+          if ! [[ "${RELEASE_ID:-}" =~ ^[0-9]+$ ]]; then
+            echo "::error title=Missing Release ID::Draft preparation did not persist a canonical Release ID."
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > "$release_json"
           RELEASE_JSON="$release_json" \
           EXPECTED_PACKAGE_NAME="$package_name" \
           EXPECTED_CHECKSUM_NAME="$checksum_name" \
@@ -527,8 +633,8 @@ jobs:
           const fs = require('node:fs')
           const payload = JSON.parse(fs.readFileSync(process.env.RELEASE_JSON, 'utf8'))
           if (
-            payload.tagName !== process.env.GITHUB_REF_NAME
-            || String(payload.isPrerelease) !== process.env.EXPECTED_PRERELEASE
+            payload.tag_name !== process.env.GITHUB_REF_NAME
+            || String(payload.prerelease) !== process.env.EXPECTED_PRERELEASE
           ) {
             throw new Error('Release metadata does not match its canonical SemVer tag/channel.')
           }
@@ -545,8 +651,25 @@ jobs:
 
           remote_dir="$RUNNER_TEMP/phd-atlas-release-assets-final"
           mkdir -p "$remote_dir"
-          gh release download "$GITHUB_REF_NAME" --pattern "$package_name" --dir "$remote_dir"
-          gh release download "$GITHUB_REF_NAME" --pattern "$checksum_name" --dir "$remote_dir"
+          download_release_asset() {
+            local asset_name="$1"
+            local output_path="$2"
+            local asset_id
+            asset_id="$(
+              jq -r --arg name "$asset_name" \
+                '[.assets[] | select(.name == $name)] | if length == 1 then .[0].id else empty end' \
+                "$release_json"
+            )"
+            if ! [[ "$asset_id" =~ ^[0-9]+$ ]]; then
+              echo "::error title=Missing immutable asset::Release does not contain exactly one '$asset_name'."
+              exit 1
+            fi
+            gh api \
+              --header 'Accept: application/octet-stream' \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > "$output_path"
+          }
+          download_release_asset "$package_name" "$remote_dir/$package_name"
+          download_release_asset "$checksum_name" "$remote_dir/$checksum_name"
           cmp --silent "$PACKAGE_PATH" "$remote_dir/$package_name"
           cmp --silent "${PACKAGE_PATH}.sha256" "$remote_dir/$checksum_name"
           (
@@ -554,17 +677,25 @@ jobs:
             sha256sum --check "$checksum_name"
           )
 
-          if [[ "$(jq -r '.isDraft' "$release_json")" == true ]]; then
-            gh release edit "$GITHUB_REF_NAME" \
-              "${publish_args[@]}" \
-              --draft=false \
-              --notes-file "$RELEASE_NOTES_PATH" \
-              --title "PhD Atlas $GITHUB_REF_NAME"
+          published_json="$RUNNER_TEMP/phd-atlas-release-published.json"
+          if [[ "$(jq -r '.draft' "$release_json")" == true ]]; then
+            patch_json="$RUNNER_TEMP/phd-atlas-release-publish-patch.json"
+            jq -n \
+              --arg tag "$GITHUB_REF_NAME" \
+              --arg target "$GITHUB_SHA" \
+              --arg name "PhD Atlas $GITHUB_REF_NAME" \
+              --rawfile body "$RELEASE_NOTES_PATH" \
+              --argjson prerelease "$expected_prerelease" \
+              '{tag_name: $tag, target_commitish: $target, name: $name, body: $body, draft: false, prerelease: $prerelease}' \
+              > "$patch_json"
+            gh api --method PATCH \
+              --input "$patch_json" \
+              "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > "$published_json"
+          else
+            cp "$release_json" "$published_json"
           fi
 
-          published_json="$RUNNER_TEMP/phd-atlas-release-published.json"
-          gh release view "$GITHUB_REF_NAME" --json assets,body,isDraft,isPrerelease,tagName > "$published_json"
-          if [[ "$(jq -r '.isDraft' "$published_json")" != false ]]; then
+          if [[ "$(jq -r '.draft' "$published_json")" != false ]]; then
             echo "::error title=Release publication failed::The verified Release is still a draft."
             exit 1
           fi

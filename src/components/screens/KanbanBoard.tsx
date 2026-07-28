@@ -6,7 +6,9 @@ import {
   type UIEvent,
   type WheelEvent,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import {
@@ -27,22 +29,19 @@ import {
   Trash2,
   UsersRound,
 } from 'lucide-react'
-import type { ApplicationRecord, ApplicationStatus } from '../../data/applications'
+import {
+  applicationStatusOrder,
+  type ApplicationRecord,
+  type ApplicationStatus,
+} from '../../data/applications'
 import { daysUntil } from '../../appModel'
-import { statusLabel } from '../../statusLabels'
+import { statusCssSlug, statusLabel } from '../../statusLabels'
 import { DeadlineBadge } from '../shared/DeadlineBadge'
 import { StatusPill } from '../shared/StatusPill'
 import { UserAvatar } from '../shared/UserAvatar'
+import { InfoTooltip } from '../shared/InfoTooltip'
 import { useI18n } from '../hooks/useI18n'
 import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/ExplorerContextMenu'
-
-const KANBAN_GROUPS: Array<{
-  key: 'active' | 'decision'
-  statuses: ApplicationStatus[]
-}> = [
-  { key: 'active', statuses: ['Draft', 'Preparing', 'Submitted', 'Interview'] },
-  { key: 'decision', statuses: ['Accepted', 'Rejected', 'Waitlist'] },
-]
 
 export type TeamKanbanStudent = {
   id: string
@@ -57,6 +56,7 @@ export type TeamKanbanStudent = {
 
 interface KanbanBoardProps {
   applications: ApplicationRecord[]
+  customApplicationStatuses?: readonly ApplicationStatus[]
   onStatusChange: (id: string, status: ApplicationStatus) => void
   onSelect: (id: string) => void
   onPrefetch?: () => void
@@ -75,7 +75,6 @@ function priorityLabel(p: number): 'high' | 'medium' | 'low' {
   return 'low'
 }
 
-const kanbanStatusOrder: ApplicationStatus[] = ['Draft', 'Preparing', 'Submitted', 'Interview', 'Accepted', 'Rejected', 'Waitlist']
 const KANBAN_COLUMN_INITIAL_COUNT = 4
 const KANBAN_COLUMN_COMPACT_INITIAL_COUNT = 8
 const KANBAN_COLUMN_BATCH_SIZE = 8
@@ -129,14 +128,25 @@ function TeamStudentKanbanBoard({
   onSelect,
   onPrefetch,
   onNewForStudent,
+  onOpenInNewPage,
+  onCopy,
+  customApplicationStatuses,
 }: {
   students: TeamKanbanStudent[]
   onSelect: (id: string) => void
   onPrefetch?: () => void
   onNewForStudent?: (studentId: string) => void
+  onOpenInNewPage?: (id: string) => void
+  onCopy?: (value: string, label: string) => void
+  customApplicationStatuses?: readonly ApplicationStatus[]
 }) {
   const { tx, format } = useI18n()
   const [expandedStudentIds, setExpandedStudentIds] = useState<Set<string>>(() => new Set())
+  const [contextMenu, setContextMenu] = useState<ExplorerContextMenuState | null>(null)
+  const statusOrder = useMemo(() => applicationStatusOrder(
+    customApplicationStatuses ?? [],
+    students.flatMap((student) => student.allApplications.map((application) => application.status)),
+  ), [customApplicationStatuses, students])
 
   const boardData = useMemo(() => {
     let totalApplications = 0
@@ -155,7 +165,7 @@ function TeamStudentKanbanBoard({
       }).length
       const attentionCount = allApplications.filter(applicationNeedsAttention).length
       const statusCounts = Object.fromEntries(
-        kanbanStatusOrder.map((status) => [
+        statusOrder.map((status) => [
           status,
           allApplications.filter((application) => application.status === status).length,
         ]),
@@ -191,7 +201,60 @@ function TeamStudentKanbanBoard({
       attentionApplications,
       dueSoonApplications,
     }
-  }, [students])
+  }, [statusOrder, students])
+  const masonryGridRef = useRef<HTMLDivElement | null>(null)
+  const masonryLayoutKey = boardData.rows.map((student) => student.id).join('\u0001')
+
+  useLayoutEffect(() => {
+    const grid = masonryGridRef.current
+    if (!grid) return undefined
+
+    const gridStyle = window.getComputedStyle(grid)
+    const visualGap = Number.parseFloat(gridStyle.getPropertyValue('--team-kanban-card-gap')) || 12
+    const rowUnit = Number.parseFloat(gridStyle.getPropertyValue('--team-kanban-masonry-row-unit')) || 1
+    const trackGap = Number.parseFloat(gridStyle.getPropertyValue('--team-kanban-masonry-track-gap')) || 1
+    const cards = Array.from(grid.querySelectorAll<HTMLElement>('.team-kanban-student'))
+
+    const updateCards = (targets: HTMLElement[]) => {
+      const measurements = targets.map((card) => ({
+        card,
+        height: card.getBoundingClientRect().height,
+      })).filter(({ height }) => height > 0)
+      if (measurements.length === 0) return
+
+      for (const { card, height } of measurements) {
+        const span = Math.max(1, Math.ceil((height + visualGap) / (rowUnit + trackGap)))
+        const nextValue = String(span)
+        if (card.style.getPropertyValue('--team-kanban-masonry-span') !== nextValue) {
+          card.style.setProperty('--team-kanban-masonry-span', nextValue)
+        }
+      }
+      grid.classList.add('is-masonry-ready')
+    }
+
+    updateCards(cards)
+
+    if (typeof ResizeObserver !== 'function') {
+      const updateAllCards = () => updateCards(cards)
+      window.addEventListener('resize', updateAllCards)
+      return () => {
+        window.removeEventListener('resize', updateAllCards)
+        grid.classList.remove('is-masonry-ready')
+        cards.forEach((card) => card.style.removeProperty('--team-kanban-masonry-span'))
+      }
+    }
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      updateCards(entries.map((entry) => entry.target as HTMLElement))
+    })
+    cards.forEach((card) => resizeObserver.observe(card))
+
+    return () => {
+      resizeObserver.disconnect()
+      grid.classList.remove('is-masonry-ready')
+      cards.forEach((card) => card.style.removeProperty('--team-kanban-masonry-span'))
+    }
+  }, [masonryLayoutKey])
 
   function toggleStudent(studentId: string) {
     setExpandedStudentIds((current) => {
@@ -202,13 +265,96 @@ function TeamStudentKanbanBoard({
     })
   }
 
+  function openApplicationContextMenu(event: MouseEvent<HTMLElement>, application: ApplicationRecord) {
+    event.preventDefault()
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      title: application.school.name,
+      subtitle: application.program,
+      items: [
+        {
+          id: 'open',
+          label: tx('explorer.open'),
+          icon: <FolderOpen size={14} aria-hidden="true" />,
+          shortcut: 'Enter',
+          accessKey: 'o',
+          onSelect: () => onSelect(application.id),
+        },
+        {
+          id: 'open-new-page',
+          label: tx('explorer.openInNewPage'),
+          icon: <ExternalLink size={14} aria-hidden="true" />,
+          shortcut: 'N',
+          accessKey: 'n',
+          disabled: !onOpenInNewPage,
+          onSelect: () => onOpenInNewPage?.(application.id),
+        },
+        {
+          id: 'copy-school',
+          label: tx('explorer.copySchool'),
+          icon: <Copy size={14} aria-hidden="true" />,
+          shortcut: 'C',
+          accessKey: 'c',
+          disabled: !onCopy,
+          onSelect: () => onCopy?.(application.school.name, tx('inspector.copySchool')),
+        },
+        {
+          id: 'copy-program',
+          label: tx('explorer.copyProgram'),
+          icon: <Copy size={14} aria-hidden="true" />,
+          shortcut: 'P',
+          accessKey: 'p',
+          disabled: !onCopy,
+          onSelect: () => onCopy?.(application.program, tx('inspector.copyProgram')),
+        },
+        {
+          id: 'copy-professor',
+          label: tx('explorer.copyProfessor'),
+          icon: <Copy size={14} aria-hidden="true" />,
+          shortcut: 'R',
+          accessKey: 'r',
+          disabled: !application.professor.english.trim() || !onCopy,
+          onSelect: () => onCopy?.(application.professor.english, tx('inspector.copyProfessor')),
+        },
+        {
+          id: 'copy-email',
+          label: tx('explorer.copyEmail'),
+          icon: <Mail size={14} aria-hidden="true" />,
+          shortcut: 'M',
+          accessKey: 'm',
+          disabled: !application.professor.email.trim() || !onCopy,
+          onSelect: () => onCopy?.(application.professor.email, tx('inspector.copyEmail')),
+        },
+      ],
+    })
+  }
+
+  function handleApplicationKeyDown(event: KeyboardEvent<HTMLButtonElement>, application: ApplicationRecord) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      onSelect(application.id)
+      return
+    }
+    if (event.key.toLowerCase() === 'n' && onOpenInNewPage) {
+      event.preventDefault()
+      onOpenInNewPage(application.id)
+    }
+  }
+
   return (
     <section className="kanban-workspace team-kanban-workspace" aria-label={tx('team.teacherApplicationsTitle')}>
       <div className="kanban-hero team-kanban-hero">
         <div className="kanban-hero-info">
           <span className="eyebrow">{tx('team.teacherApplicationsEyebrow')}</span>
-          <h2>{tx('team.teacherApplicationsTitle')}</h2>
-          <p>{tx('team.teacherApplicationsDesc')}</p>
+          <div className="team-kanban-title-row">
+            <h2>{tx('team.teacherApplicationsTitle')}</h2>
+            <InfoTooltip
+              className="team-kanban-help"
+              content={tx('team.teacherApplicationsDesc')}
+              label={tx('team.teacherApplicationsDesc')}
+            />
+          </div>
         </div>
         <div className="kanban-summary" aria-label={tx('team.studentMetricsLabel')}>
           <span>
@@ -239,7 +385,7 @@ function TeamStudentKanbanBoard({
           </div>
         </div>
       ) : (
-        <div className="team-kanban-grid">
+        <div ref={masonryGridRef} className="team-kanban-grid">
           {boardData.rows.map((student) => {
             const expanded = expandedStudentIds.has(student.id)
             const visibleApplications = expanded
@@ -304,13 +450,13 @@ function TeamStudentKanbanBoard({
 
                 <div className="team-kanban-status-overview">
                   <div className={`team-kanban-status-track${totalApplications === 0 ? ' is-empty' : ''}`} aria-hidden="true">
-                    {kanbanStatusOrder.map((status) => {
+                    {statusOrder.map((status) => {
                       const count = student.statusCounts[status]
                       if (count === 0) return null
                       return (
                         <span
                           key={status}
-                          className={`team-kanban-status-segment ${status.toLowerCase()}`}
+                          className={`team-kanban-status-segment ${statusCssSlug(status)}`}
                           style={{ flexGrow: count }}
                         />
                       )
@@ -318,11 +464,11 @@ function TeamStudentKanbanBoard({
                   </div>
                   {totalApplications > 0 ? (
                     <div className="team-kanban-status-legend">
-                      {kanbanStatusOrder.map((status) => {
+                      {statusOrder.map((status) => {
                         const count = student.statusCounts[status]
                         if (count === 0) return null
                         return (
-                          <span key={status} className={`team-kanban-status-key ${status.toLowerCase()}`}>
+                          <span key={status} className={`team-kanban-status-key ${statusCssSlug(status)}`}>
                             <i aria-hidden="true" />
                             {statusLabel(status, tx)}
                             <b>{count}</b>
@@ -379,6 +525,8 @@ function TeamStudentKanbanBoard({
                           onPointerEnter={onPrefetch}
                           onFocus={onPrefetch}
                           onClick={() => onSelect(application.id)}
+                          onContextMenu={(event) => openApplicationContextMenu(event, application)}
+                          onKeyDown={(event) => handleApplicationKeyDown(event, application)}
                         >
                           <span className="team-kanban-application-copy">
                             <strong>{application.school.name}</strong>
@@ -417,6 +565,7 @@ function TeamStudentKanbanBoard({
           })}
         </div>
       )}
+      <ExplorerContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} />
     </section>
   )
 }
@@ -431,6 +580,7 @@ function PersonalKanbanBoard({
   onCopy,
   onDeleteApplication,
   onNew,
+  customApplicationStatuses,
 }: KanbanBoardProps) {
   const { tx, format } = useI18n()
   const [draggedId, setDraggedId] = useState<string | null>(null)
@@ -460,10 +610,31 @@ function PersonalKanbanBoard({
   const initialColumnCount = compactViewport
     ? KANBAN_COLUMN_COMPACT_INITIAL_COUNT
     : KANBAN_COLUMN_INITIAL_COUNT
+  const statusChoices = useMemo(
+    () => applicationStatusOrder(
+      customApplicationStatuses ?? [],
+      applications.map((application) => application.status),
+    ),
+    [applications, customApplicationStatuses],
+  )
+  const columnStatusOrder = useMemo(
+    () => applicationStatusOrder(applications.map((application) => application.status)),
+    [applications],
+  )
+  const statusGroups = useMemo(() => ([
+    {
+      key: 'active' as const,
+      statuses: columnStatusOrder.filter((status) => !terminalStatuses.has(status)),
+    },
+    {
+      key: 'decision' as const,
+      statuses: columnStatusOrder.filter((status) => terminalStatuses.has(status)),
+    },
+  ]), [columnStatusOrder])
 
   const boardData = useMemo(() => {
     const buckets = Object.fromEntries(
-      kanbanStatusOrder.map((status) => [status, [] as ApplicationRecord[]]),
+      columnStatusOrder.map((status) => [status, [] as ApplicationRecord[]]),
     ) as Record<ApplicationStatus, ApplicationRecord[]>
     const applicationIds: string[] = []
     let urgentCount = 0
@@ -473,7 +644,7 @@ function PersonalKanbanBoard({
       const due = daysUntil(application.deadline)
       if (due >= 0 && due <= 30) urgentCount += 1
     }
-    const groupedColumns = KANBAN_GROUPS.map((group) => ({
+    const groupedColumns = statusGroups.map((group) => ({
       ...group,
       items: group.statuses.flatMap((status) => buckets[status]),
       columns: group.statuses.map((status) => ({ status, items: buckets[status] })),
@@ -483,7 +654,7 @@ function PersonalKanbanBoard({
       urgentCount,
       datasetKey: applicationIds.join('\u0001'),
     }
-  }, [applications])
+  }, [applications, columnStatusOrder, statusGroups])
   const visibilityKey = `${boardData.datasetKey}:${compactViewport ? 'compact' : 'desktop'}`
   const visibleCounts = visibilityState.key === visibilityKey ? visibilityState.counts : {}
   const activeCount = boardData.groupedColumns.find((group) => group.key === 'active')?.items.length ?? 0
@@ -571,9 +742,9 @@ function PersonalKanbanBoard({
   }
 
   function moveApplicationByOffset(app: ApplicationRecord, offset: -1 | 1) {
-    const currentIndex = kanbanStatusOrder.indexOf(app.status)
+    const currentIndex = statusChoices.indexOf(app.status)
     if (currentIndex === -1) return
-    const nextStatus = kanbanStatusOrder[currentIndex + offset]
+    const nextStatus = statusChoices[currentIndex + offset]
     if (!nextStatus || nextStatus === app.status) return
     onStatusChange(app.id, nextStatus)
   }
@@ -597,7 +768,7 @@ function PersonalKanbanBoard({
 
   function openCardContextMenu(event: MouseEvent<HTMLElement>, app: ApplicationRecord) {
     event.preventDefault()
-    const statusItems = kanbanStatusOrder
+    const statusItems = statusChoices
       .filter((status) => status !== app.status)
       .map((status) => ({
         id: `move-${status}`,
@@ -864,6 +1035,9 @@ export function KanbanBoard(props: KanbanBoardProps) {
         onSelect={props.onSelect}
         onPrefetch={props.onPrefetch}
         onNewForStudent={props.onNewForStudent}
+        onOpenInNewPage={props.onOpenInNewPage}
+        onCopy={props.onCopy}
+        customApplicationStatuses={props.customApplicationStatuses}
       />
     )
   }

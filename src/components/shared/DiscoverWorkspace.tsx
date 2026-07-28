@@ -94,10 +94,13 @@ type WorkspaceActions = {
   openInspector: () => void
   closeInspector: () => void
   toggleCompare: (id: string) => void
+  addProgramsToCompare: (ids: string[]) => void
   clearCompare: () => void
   requestDeletePrograms: (ids: string[]) => void
   toggleWatch: (id: string) => void
+  watchPrograms: (ids: string[]) => void
   toggleProgramHidden: (id: string) => void
+  hidePrograms: (ids: string[]) => void
   togglePiHidden: (id: string) => void
   importProgram: (programId: string, piId?: string | null) => void
   updateProgramNote: (id: string, value: string) => void
@@ -221,7 +224,7 @@ function useProgressiveList<T>(items: T[]) {
   }
 }
 
-function useSmoothHiddenToggle(onToggle: (id: string) => void) {
+function useSmoothHiddenToggle(onToggle: (id: string) => void, onHideMany?: (ids: string[]) => void) {
   const [hidingIds, setHidingIds] = useState<string[]>([])
   const timersRef = useRef<number[]>([])
 
@@ -242,7 +245,20 @@ function useSmoothHiddenToggle(onToggle: (id: string) => void) {
     }, DISCOVER_HIDE_MOTION_MS))
   }, [hidingIds, onToggle])
 
-  return { hidingIds, requestToggle }
+  const requestHideMany = useCallback((ids: string[]) => {
+    const nextIds = ids.filter((id) => !hidingIds.includes(id))
+    if (!nextIds.length) return
+    setHidingIds((current) => [...new Set([...current, ...nextIds])])
+    timersRef.current.push(window.setTimeout(() => {
+      if (onHideMany) onHideMany(nextIds)
+      else nextIds.forEach(onToggle)
+      timersRef.current.push(window.setTimeout(() => {
+        setHidingIds((current) => current.filter((item) => !nextIds.includes(item)))
+      }, 1200))
+    }, DISCOVER_HIDE_MOTION_MS))
+  }, [hidingIds, onHideMany, onToggle])
+
+  return { hidingIds, requestToggle, requestHideMany }
 }
 
 function useSmoothListReflow<T extends HTMLElement>(layoutKey: string) {
@@ -796,7 +812,7 @@ function ProgramList({
     { id: 'actions', label: tx('table.actions', 'Actions'), defaultWidth: 224, minWidth: 200, maxWidth: 240, hideable: false, resizable: false },
   ], [tx])
   const { api, openMenu, menuNode } = useTableColumnMenu('discover-programs', columns)
-  const hiddenMotion = useSmoothHiddenToggle(actions.toggleProgramHidden)
+  const hiddenMotion = useSmoothHiddenToggle(actions.toggleProgramHidden, actions.hidePrograms)
   const filterMotion = useAnimatedListPresence(programs, hiddenMotion.hidingIds)
   const { visibleItems: visiblePrograms, hasMore, sentinelRef } = useProgressiveList(filterMotion.items)
   const selectableProgramIds = useMemo(() => programs.map((program) => program.id), [programs])
@@ -853,10 +869,24 @@ function ProgramList({
     if (event.shiftKey) selection.selectRange(programId, event.ctrlKey || event.metaKey)
     else selection.toggle(programId)
   }, [selection])
+  const selectedPrograms = useMemo(
+    () => programs.filter((program) => selection.selectedIds.has(program.id)),
+    [programs, selection.selectedIds],
+  )
+  const addSelectedToCompare = useCallback(() => {
+    actions.addProgramsToCompare(selection.selectedIdList)
+  }, [actions, selection.selectedIdList])
+  const watchSelected = useCallback(() => {
+    actions.watchPrograms(selectedPrograms.filter((program) => !program.watched).map((program) => program.id))
+  }, [actions, selectedPrograms])
+  const hideSelected = useCallback(() => {
+    hiddenMotion.requestHideMany(selectedPrograms.filter((program) => !program.hidden).map((program) => program.id))
+  }, [hiddenMotion, selectedPrograms])
   const openSelectionMenu = useCallback((program: ScoredDiscoverProgram, event: ReactMouseEvent<HTMLElement>) => {
     event.preventDefault()
     event.stopPropagation()
     const ids = selection.selectedIds.has(program.id) ? selection.selectedIdList : [program.id]
+    const targets = programs.filter((item) => ids.includes(item.id))
     selection.ensureSelectedForContext(program.id)
     setSelectionContextMenu({
       x: event.clientX,
@@ -867,10 +897,38 @@ function ProgramList({
       subtitle: tx('discover.bulkSelectionHint', 'Use Shift for a range and Ctrl/⌘ for multiple items'),
       items: [
         {
+          id: 'compare',
+          label: tx('discover.addToCompare', 'Add to compare'),
+          icon: <Plus size={14} />,
+          shortcut: 'C',
+          accessKey: 'c',
+          onSelect: () => actions.addProgramsToCompare(ids),
+        },
+        {
+          id: 'watch',
+          label: tx('discover.watch', 'Favorite'),
+          icon: <Bookmark size={14} />,
+          shortcut: 'F',
+          accessKey: 'f',
+          disabled: targets.every((item) => item.watched),
+          onSelect: () => actions.watchPrograms(targets.filter((item) => !item.watched).map((item) => item.id)),
+        },
+        {
+          id: 'hide',
+          label: tx('discover.hide', 'Hide'),
+          icon: <EyeOff size={14} />,
+          shortcut: 'H',
+          accessKey: 'h',
+          disabled: targets.every((item) => item.hidden),
+          onSelect: () => hiddenMotion.requestHideMany(targets.filter((item) => !item.hidden).map((item) => item.id)),
+        },
+        {
           id: 'delete',
           label: ids.length === 1 ? tx('discover.deleteProgram', 'Delete program') : tx('discover.deleteSelected', 'Delete selected'),
           icon: <Trash2 size={14} />,
           tone: 'danger',
+          shortcut: 'Delete',
+          accessKey: 'delete',
           disabled: ids.some((id) => deletingProgramIds.includes(id)),
           onSelect: () => actions.requestDeletePrograms(ids),
         },
@@ -882,28 +940,81 @@ function ProgramList({
         },
       ],
     })
-  }, [actions, deletingProgramIds, selection, tx])
+  }, [actions, deletingProgramIds, hiddenMotion, programs, selection, tx])
+
+  useEffect(() => {
+    if (selection.selectedCount === 0 || selectionContextMenu) return undefined
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return
+      const target = event.target
+      if (target instanceof HTMLElement && (
+        target.isContentEditable
+        || ['input', 'textarea', 'select'].includes(target.tagName.toLowerCase())
+      )) return
+      const key = event.key.toLowerCase()
+      if (key === 'escape') {
+        event.preventDefault()
+        selection.clearSelection()
+      } else if (key === 'c') {
+        event.preventDefault()
+        addSelectedToCompare()
+      } else if (key === 'f') {
+        event.preventDefault()
+        watchSelected()
+      } else if (key === 'h') {
+        event.preventDefault()
+        hideSelected()
+      } else if ((key === 'delete' || key === 'backspace') && !selection.selectedIdList.some((id) => deletingProgramIds.includes(id))) {
+        event.preventDefault()
+        actions.requestDeletePrograms(selection.selectedIdList)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [actions, addSelectedToCompare, deletingProgramIds, hideSelected, selection, selectionContextMenu, watchSelected])
   const column = (id: string) => columns.find((item) => item.id === id) as TableColumnDef
   return (
     <section className="discover-list-pane" aria-label={tx('discover.programsList', 'Programs')}>
       <div className="discover-list-count">
         <span>{tx('discover.foundPrograms', 'Found {count} programs').replace('{count}', String(programs.length))}</span>
+        <ExplorerSelectionBar
+          visible={selection.selectedCount > 0}
+          label={tx('discover.selectedProgramsCount', '{count} programs selected').replace('{count}', String(selection.selectedCount))}
+          clearLabel={tx('discover.clearSelection', 'Clear selection')}
+          actions={[
+            {
+              id: 'compare',
+              label: tx('discover.addToCompare', 'Add to compare'),
+              icon: <Plus size={13} />,
+              onClick: addSelectedToCompare,
+            },
+            {
+              id: 'watch',
+              label: tx('discover.watch', 'Favorite'),
+              icon: <Bookmark size={13} />,
+              disabled: selectedPrograms.every((program) => program.watched),
+              onClick: watchSelected,
+            },
+            {
+              id: 'hide',
+              label: tx('discover.hide', 'Hide'),
+              icon: <EyeOff size={13} />,
+              disabled: selectedPrograms.every((program) => program.hidden),
+              onClick: hideSelected,
+            },
+            {
+              id: 'delete',
+              label: tx('discover.deleteSelected', 'Delete selected'),
+              icon: <Trash2 size={13} />,
+              tone: 'danger',
+              disabled: selection.selectedIdList.some((id) => deletingProgramIds.includes(id)),
+              onClick: () => actions.requestDeletePrograms(selection.selectedIdList),
+            },
+          ]}
+          onClear={selection.clearSelection}
+        />
         <button type="button" className="discover-column-button" onClick={(event) => openMenu(event, tx('table.columns', 'Columns'))} aria-label={tx('table.columns', 'Columns')} title={tx('table.columnsHint', 'Resize columns or right-click to show and hide them.')}><Columns3 size={14} /></button>
       </div>
-      <ExplorerSelectionBar
-        visible={selection.selectedCount > 0}
-        label={tx('discover.selectedProgramsCount', '{count} programs selected').replace('{count}', String(selection.selectedCount))}
-        clearLabel={tx('discover.clearSelection', 'Clear selection')}
-        actions={[{
-          id: 'delete',
-          label: tx('discover.deleteSelected', 'Delete selected'),
-          icon: <Trash2 size={13} />,
-          tone: 'danger',
-          disabled: selection.selectedIdList.some((id) => deletingProgramIds.includes(id)),
-          onClick: () => actions.requestDeletePrograms(selection.selectedIdList),
-        }]}
-        onClear={selection.clearSelection}
-      />
       <div className="discover-mobile-list-tools">
         <Select
           value={programSort}
@@ -1566,7 +1677,7 @@ export function DiscoverWorkspace(props: DiscoverWorkspaceProps) {
   const { exiting: mobileFiltersExiting, requestClose: requestMobileFiltersClose } = useAnimatedClose(
     mobileFiltersOpen,
     actions.closeMobileFilters,
-    150,
+    220,
   )
   useEffect(() => {
     try {
@@ -1754,7 +1865,19 @@ export function DiscoverWorkspace(props: DiscoverWorkspaceProps) {
               {tx('discover.clearAllCompare', 'Clear all comparisons')}
             </button>
           </InlinePresence>
-          <button type="button" className="primary-action" disabled={researching || saving} onClick={actions.openResearch}><RefreshCw size={14} className={researching ? 'spin-icon' : undefined} />{researching ? tx('discover.runningResearch') : tx('discover.updateResearch', 'Update research')}</button>
+          <button
+            type="button"
+            className="primary-action discover-research-trigger"
+            disabled={researching || saving}
+            aria-label={researching ? tx('discover.runningResearch') : tx('discover.updateResearch', 'Update research')}
+            title={researching ? tx('discover.runningResearch') : tx('discover.updateResearch', 'Update research')}
+            onClick={actions.openResearch}
+          >
+            <RefreshCw size={14} className={researching ? 'spin-icon' : undefined} />
+            <span className="discover-research-trigger-label">
+              {researching ? tx('discover.runningResearch') : tx('discover.updateResearch', 'Update research')}
+            </span>
+          </button>
         </div>
       </header>
 

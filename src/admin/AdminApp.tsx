@@ -13,6 +13,7 @@ import {
   type AuthSession,
   type SystemEvent,
   type SystemInfo,
+  type SystemLogQuery,
 } from '../api/phdApi'
 import { AdminScreen } from '../components/screens/AdminScreen'
 import { AdminSetupScreen } from '../components/screens/AdminSetupScreen'
@@ -152,10 +153,9 @@ export function AdminApp() {
     const requestUserId = s.user.id
     try {
       if (!isCurrentSessionToken(s.token) || currentSessionUserIdRef.current !== requestUserId) return
-      const [me, u, l, info] = await Promise.all([
+      const [me, u, info] = await Promise.all([
         phdApi.me(s.token),
         phdApi.adminUsers(s.token),
-        phdApi.adminLogs(s.token),
         phdApi.systemInfo(s.token).catch(() => null),
       ])
       if (
@@ -198,7 +198,7 @@ export function AdminApp() {
       }
       localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify(nextSession))
       setUsers(u)
-      setLogs(l)
+      setLogs([])
       setSettings(me.settings)
       setSystemInfo(info)
     } catch (err) {
@@ -359,6 +359,11 @@ export function AdminApp() {
     if (!session) return
     await loadAdminData(session)
   }
+
+  const loadAdminLogs = useCallback((query: SystemLogQuery) => {
+    if (!session?.token) return Promise.reject(new Error('Administrator session is unavailable.'))
+    return phdApi.adminLogs(session.token, query)
+  }, [session?.token])
 
   if (session && !settings) {
     return (
@@ -609,6 +614,7 @@ export function AdminApp() {
                 notify(normalizeError(err, lang), 'error')
               }
             }}
+            onLoadLogs={loadAdminLogs}
             onExportLogs={async (format) => {
               try {
                 const blob = await phdApi.downloadAdminLogs(session.token, format)
@@ -621,12 +627,12 @@ export function AdminApp() {
             onClearLogs={async () => {
               try {
                 const result = await phdApi.clearAdminLogs(session.token)
-                setLogs(result.logs)
+                setLogs(result.logs.items)
                 setSystemInfo((info) => info ? {
                   ...info,
                   counts: {
                     ...info.counts,
-                    systemEvents: result.logs.length,
+                    systemEvents: result.logs.retainedTotal,
                   },
                 } : info)
                 notify(tx('admin.configSaved'), 'success')
@@ -640,8 +646,7 @@ export function AdminApp() {
               return true
             }}
             onSystemUpdate={async (file) => {
-              await phdApi.uploadSystemUpdate(session.token, file)
-              return true
+              return phdApi.uploadSystemUpdate(session.token, file)
             }}
             onRefreshSystemInfo={async () => {
               try {

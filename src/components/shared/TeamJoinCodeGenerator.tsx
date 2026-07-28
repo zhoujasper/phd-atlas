@@ -1,11 +1,20 @@
 import '../../styles/team-join-code.css'
-import { Check, Clock3, KeyRound, Link2, LoaderCircle, Users } from 'lucide-react'
+import {
+  Check,
+  Clock3,
+  GraduationCap,
+  KeyRound,
+  Link2,
+  LoaderCircle,
+  ShieldCheck,
+  UserRound,
+  Users,
+} from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type { TeamJoinCode, TeamRole } from '../../api/phdApi'
 import { normalizeErrorMessage } from '../../errorMessages'
 import { useI18n } from '../hooks/useI18n'
 import { CopyButton } from './CopyButton'
-import { Select } from './Select'
 
 type JoinCodeTeacher = {
   id: string
@@ -14,11 +23,13 @@ type JoinCodeTeacher = {
   invitedEmail: string
 }
 
+const EMPTY_TEACHER_IDS: string[] = []
+
 export function TeamJoinCodeGenerator({
   roles,
   teachers,
   defaultRole,
-  defaultTeacherIds = [],
+  defaultTeacherIds = EMPTY_TEACHER_IDS,
   onGenerate,
 }: {
   roles: TeamRole[]
@@ -58,6 +69,18 @@ export function TeamJoinCodeGenerator({
         ? tx('team.joinCodeTeacherRoleDesc')
         : tx('team.joinCodeStudentRoleDesc'),
   })), [roles, tx])
+
+  const roleIcon = (value: TeamRole) => {
+    if (value === 'owner') return <ShieldCheck size={15} aria-hidden="true" />
+    if (value === 'admin') return <GraduationCap size={15} aria-hidden="true" />
+    return <UserRound size={15} aria-hidden="true" />
+  }
+
+  const selectRole = (nextRole: TeamRole) => {
+    setRole(nextRole)
+    setGenerated(null)
+    setError('')
+  }
 
   const toggleTeacher = (teacherId: string) => {
     setGenerated(null)
@@ -103,20 +126,45 @@ export function TeamJoinCodeGenerator({
       </div>
 
       <div className="team-join-code-fields">
-        <label className="team-join-code-field">
+        <div className="team-join-code-field">
           <span>{tx('team.joinCodeRole')}</span>
-          <Select
-            value={role}
-            options={roleOptions}
-            onChange={(nextRole) => {
-              setRole(nextRole)
-              setGenerated(null)
-              setError('')
-            }}
-            ariaLabel={tx('team.joinCodeRole')}
-            size="small"
-          />
-        </label>
+          {roleOptions.length === 1 ? (
+            <div className="team-join-code-role-single">
+              <i aria-hidden="true">{roleIcon(roleOptions[0].value)}</i>
+              <span>
+                <strong>{roleOptions[0].label}</strong>
+                <small>{roleOptions[0].description}</small>
+              </span>
+            </div>
+          ) : (
+            <div
+              className="team-join-code-role-options"
+              role="radiogroup"
+              aria-label={tx('team.joinCodeRole')}
+            >
+              {roleOptions.map((option) => {
+                const selected = option.value === role
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    className={selected ? 'selected' : ''}
+                    onClick={() => selectRole(option.value)}
+                  >
+                    <i aria-hidden="true">{roleIcon(option.value)}</i>
+                    <span>
+                      <strong>{option.label}</strong>
+                      <small>{option.description}</small>
+                    </span>
+                    <b aria-hidden="true">{selected ? <Check size={12} /> : null}</b>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
 
         {role === 'member' ? (
           <div className="team-join-code-field">
@@ -154,7 +202,7 @@ export function TeamJoinCodeGenerator({
 
       <button
         type="button"
-        className="primary-button team-join-code-submit"
+        className="primary-action team-join-code-submit"
         onClick={handleGenerate}
         disabled={busy || (role === 'member' && teachers.length === 0)}
       >

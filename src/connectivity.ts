@@ -20,22 +20,23 @@ const MANUAL_OFFLINE_KEY = 'phd-atlas-manual-offline:v1'
 const listeners = new Set<() => void>()
 
 function storedManualOffline() {
-  if (typeof localStorage === 'undefined') return false
+  if (typeof sessionStorage === 'undefined') return false
   try {
-    return localStorage.getItem(MANUAL_OFFLINE_KEY) === '1'
+    return sessionStorage.getItem(MANUAL_OFFLINE_KEY) === '1'
   } catch {
     return false
   }
 }
 
 function persistManualOffline(enabled: boolean) {
-  if (typeof localStorage === 'undefined') return
+  if (typeof sessionStorage === 'undefined') return
   try {
-    if (enabled) localStorage.setItem(MANUAL_OFFLINE_KEY, '1')
-    else localStorage.removeItem(MANUAL_OFFLINE_KEY)
+    if (enabled) sessionStorage.setItem(MANUAL_OFFLINE_KEY, '1')
+    else sessionStorage.removeItem(MANUAL_OFFLINE_KEY)
   } catch {
     // Private browsing or a storage policy can reject writes. The in-memory
-    // mode still works for the current session.
+    // mode still works for the current tab. Deliberate offline mode is scoped
+    // to one browser session so it cannot silently carry into another account.
   }
 }
 
@@ -115,10 +116,52 @@ function settleProbe(result = snapshot) {
   resolve?.(result)
 }
 
-function healthSocketUrl() {
-  const url = new URL('/api/health/ws', window.location.href)
+function retireHealthSocket(socket: WebSocket) {
+  const closeAfterOpen = () => {
+    socket.onopen = null
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.close(1000, 'connectivity monitoring paused')
+    }
+  }
+
+  // A browser reports `WebSocket is closed before the connection is
+  // established` when close() is called in CONNECTING. Detach this retired
+  // generation immediately, then close it normally if the handshake wins the
+  // race. Generation checks remain the authority for all active callbacks.
+  socket.onmessage = null
+  socket.onerror = null
+  socket.onclose = null
+  if (socket.readyState === WebSocket.CONNECTING) {
+    socket.onopen = closeAfterOpen
+  } else {
+    closeAfterOpen()
+  }
+}
+
+export function resolveHealthSocketUrl(
+  locationHref: string,
+  { development = false, apiPort = '4317' }: { development?: boolean; apiPort?: string } = {},
+) {
+  const url = new URL('/api/health/ws', locationHref)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  // The HTTP API continues to use Vite's development proxy, but a long-lived
+  // WebSocket is better connected straight to the local API server. On Windows
+  // a page refresh/background transition can close the browser side while the
+  // proxy is forwarding a heartbeat, which makes Vite log a noisy
+  // `write ECONNABORTED` even though both endpoints handled the disconnect.
+  // Production remains same-origin, and custom local API ports can opt in
+  // through the matching VITE_API_PORT value.
+  if (development && url.port === '5173') {
+    url.port = apiPort.trim() || '4317'
+  }
   return url.toString()
+}
+
+function healthSocketUrl() {
+  return resolveHealthSocketUrl(window.location.href, {
+    development: import.meta.env.DEV,
+    apiPort: import.meta.env.VITE_API_PORT,
+  })
 }
 
 function scheduleReconnect() {
@@ -157,7 +200,7 @@ function disconnectHealthSocket() {
   clearSocketTimers()
   settleProbe(snapshot)
   if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) {
-    socket.close(1000, 'connectivity monitoring paused')
+    retireHealthSocket(socket)
   }
 }
 

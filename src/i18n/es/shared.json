@@ -95,6 +95,10 @@
     "INVALID_CREDENTIALS": "El correo electrónico o la contraseña son incorrectos.",
     "FORBIDDEN": "No tienes permiso para realizar esta acción.",
     "REGISTRATION_CLOSED": "El registro de nuevos usuarios está deshabilitado.",
+    "REGISTRATION_EMAIL_NOT_ALLOWED": "Este dominio de correo no está permitido para registrarse.",
+    "PASSWORD_TOO_WEAK": "Elige una contraseña de al menos 15 caracteres que no sea común, predecible ni aparezca en filtraciones.",
+    "PASSWORD_CHECK_UNAVAILABLE": "La comprobación de seguridad de la contraseña no está disponible temporalmente.",
+    "HUMAN_VERIFICATION_UNAVAILABLE": "La verificación humana no está disponible temporalmente.",
     "EMAIL_EXISTS": "Ya existe una cuenta para este correo electrónico.",
     "SMTP_NOT_CONFIGURED": "El correo electrónico saliente aún no está configurado. Pídale al administrador que primero configure el correo del sistema.",
     "SMTP_ERROR": "La entrega del correo falló. Verifique la configuración del correo e inténtelo nuevamente.",
@@ -211,7 +215,6 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "Elige un equipo y un estudiante asignado para la búsqueda de equipo.",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "El asesor seleccionado no tiene una dirección de correo verificada.",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "Se requiere un perfil y correo real del asesor antes de poder añadir este programa a las solicitudes.",
-    "DISCOVER_PROGRAM_NOT_VERIFIED": "Este programa no tiene una fuente oficial verificada ni una fecha límite de solicitud vigente. Actualiza la investigación antes de importarlo.",
     "MAIL_ATTACHMENT_TOO_LARGE": "Un archivo adjunto es demasiado grande para incluirlo en el correo."
   },
   "apiErrorFields": {
@@ -323,6 +326,13 @@
     "offlineDetail": "Puedes seguir trabajando desde la copia local. Las ediciones de aplicaciones personales admitidas se sincronizarán cuando se restablezca la conexión.",
     "manualDetail": "Elegiste trabajar sin conexión. Las ediciones de la aplicación personal se guardan localmente y esperarán hasta que reanude el modo en línea.",
     "panelTitle": "Estado de conexión y fuera de línea",
+    "launchTitle": "No tienes conexión",
+    "launchDetail": "La interfaz y los recursos estáticos ya visitados siguen disponibles. Vuelve a conectarte para iniciar sesión; sin conexión solo se abre un espacio personal autorizado y aún vigente.",
+    "noLocalCopy": "No hay un espacio local autorizado disponible en este dispositivo.",
+    "permissionProtected": "Los datos sin conexión nunca se aceptan como permiso. El servidor vuelve a comprobar identidad, propiedad, acceso y versión antes de cada sincronización.",
+    "personalScopeValue": "Solo solicitudes personales propias",
+    "accessUntil": "Acceso sin conexión hasta",
+    "authorizationExpired": "El acceso seguro sin conexión terminó. Vuelve a conectarte e inicia sesión.",
     "slowDetail": "Se puede acceder al servidor, pero las respuestas tardan más de lo habitual. Los cambios locales permanecen protegidos.",
     "unreachable": "Indisponible",
     "server": "Servidor",
@@ -830,5 +840,21 @@
     "columnsHint": "Alternar visibilidad · arrastrar los bordes del encabezado para cambiar el tamaño",
     "actions": "Comportamiento"
   },
-  "doubleClickToCopy": "Haga doble clic para copiar {label}"
+  "doubleClickToCopy": "Haga doble clic para copiar {label}",
+  "projectFooter": {
+    "ariaLabel": "Información del proyecto",
+    "projectName": "PhD Atlas",
+    "authorName": "Jasper Zhou",
+    "projectHome": "Abrir la página de inicio de PhD Atlas",
+    "by": "Por",
+    "repository": "GitHub",
+    "repositoryAria": "Abrir el repositorio de PhD Atlas en GitHub",
+    "support": "Apoyar",
+    "supportAria": "Apoyar a PhD Atlas",
+    "dialogTitle": "Dale un poco de energía a PhD Atlas",
+    "dialogDescription": "Elige el código que te resulte más cómodo: tu apoyo se convertirá en la próxima pequeña mejora.",
+    "wechat": "WeChat Pay",
+    "alipay": "Alipay",
+    "qrAlt": "Código QR de pago de {method}"
+  }
 }

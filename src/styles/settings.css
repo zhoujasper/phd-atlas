@@ -1224,7 +1224,7 @@
 }
 
 .settings-lines .mail-incoming-fields {
-  grid-template-columns: minmax(108px, 0.55fr) minmax(180px, 1.3fr) minmax(88px, 0.45fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: end;
 }
 
@@ -1425,7 +1425,7 @@ html[lang^="ko"] .settings-screen .mail-incoming-fields label > span {
 
 .settings-screen .mail-config-card-outgoing .mail-config-button-row {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
@@ -1563,7 +1563,7 @@ html[lang^="ko"] .settings-screen .mail-incoming-fields label > span {
   .settings-screen .mail-config-card-outgoing .mail-config-button-row {
     width: 100%;
     margin-left: 0;
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 
   .settings-screen .mail-config-card-mailbox .mailbox-row-head {
@@ -2147,7 +2147,7 @@ html[lang^="ko"] .settings-screen .mail-incoming-fields label > span {
   .settings-screen .mail-config-card-outgoing .mail-config-button-row {
     width: 100%;
     margin-left: 0;
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 
   .settings-screen .settings-section-title h4,

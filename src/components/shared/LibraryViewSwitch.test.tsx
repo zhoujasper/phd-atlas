@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { LibraryViewSwitch } from './LibraryViewSwitch'
+import appStyles from '../../index.css?raw'
 
 const originalMatchMedia = window.matchMedia
 const originalViewTransition = Object.getOwnPropertyDescriptor(document, 'startViewTransition')
@@ -106,5 +107,52 @@ describe('LibraryViewSwitch', () => {
     expect(onChange).toHaveBeenCalledWith('list')
     expect(startViewTransition).not.toHaveBeenCalled()
     expect(document.documentElement.hasAttribute('data-library-view-transition-token')).toBe(false)
+  })
+
+  it('reserves the larger library height so switching layouts cannot move the page', () => {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({ matches: true })),
+    })
+    const onChange = vi.fn()
+    render(
+      <div>
+        <LibraryViewSwitch
+          value="cards"
+          onChange={onChange}
+          label="View mode"
+          cardLabel="Card view"
+          listLabel="List view"
+          transitionScope="profile"
+          controlsId="stable-library"
+        />
+        <div>
+          <div id="stable-library">Library</div>
+        </div>
+      </div>,
+    )
+    const library = document.getElementById('stable-library')!
+    vi.spyOn(library, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      top: 0,
+      right: 300,
+      bottom: 420,
+      left: 0,
+      width: 300,
+      height: 420,
+      toJSON: () => ({}),
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'List view' }))
+
+    expect(library.parentElement?.style.getPropertyValue('--library-view-stable-height')).toBe('420px')
+    expect(library.parentElement?.dataset.libraryViewStable).toBe('true')
+  })
+
+  it('does not replay the mount animation after the view transition finishes', () => {
+    expect(appStyles).toMatch(
+      /\[data-library-view-stable="true"\] > \.profile-library-view,\s*\[data-library-view-stable="true"\] > \.team-portrait-library-view\s*\{\s*animation: none;/,
+    )
   })
 })

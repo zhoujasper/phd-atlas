@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AiKey } from '../../api/phdApi'
 import { DEFAULT_INTAKE } from '../../data/discover'
 import { getDict, t, tpl } from '../../i18n'
@@ -57,6 +57,10 @@ function renderSheet(overrides: Partial<Parameters<typeof DiscoverResearchSheet>
 }
 
 describe('DiscoverResearchSheet AI requirements', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('guides an account without a usable key to configuration and blocks research', () => {
     const props = renderSheet()
 
@@ -87,6 +91,29 @@ describe('DiscoverResearchSheet AI requirements', () => {
       selector: '.discover-research-validation-copy strong',
     })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Checking model access and configuration…' })).toBeDisabled()
+  })
+
+  it('keeps the queued sheet mounted for its exit motion before closing', () => {
+    vi.useFakeTimers()
+    const props = renderSheet({
+      aiKeys: [savedKey],
+      selectedKeyIds: ['key-1'],
+      researching: true,
+      submissionPhase: 'queued',
+    })
+
+    expect(screen.getByRole('dialog')).toHaveClass('is-exiting')
+    expect(props.onClose).not.toHaveBeenCalled()
+
+    act(() => {
+      vi.advanceTimersByTime(219)
+    })
+    expect(props.onClose).not.toHaveBeenCalled()
+
+    act(() => {
+      vi.advanceTimersByTime(1)
+    })
+    expect(props.onClose).toHaveBeenCalledOnce()
   })
 
   it('shows only the authorized team target choices supplied by the parent', () => {

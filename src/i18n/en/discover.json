@@ -109,6 +109,7 @@
     "hiddenCount": "{count} hidden",
     "watchedBadge": "Watching",
     "importedToast": "Imported into applications",
+    "partialImportToast": "Added available details. Official sources or the current deadline are still missing; verify them in the application.",
     "savedToast": "Discover preferences saved",
     "researchToast": "Research agents finished",
     "prefRising": "Rising stars",

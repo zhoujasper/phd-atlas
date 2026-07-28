@@ -24,6 +24,7 @@ import { type ThemeContextValue } from '../hooks/useTheme'
 import { languageOptions, type Language } from '../../i18n'
 import { Select } from '../shared/Select'
 import { SwitchControl } from '../shared/SwitchControl'
+import { CollapsiblePanel } from '../shared/CollapsiblePanel'
 
 type SetupStep = 'account' | 'security' | 'storage' | 'mail' | 'review'
 type SmtpVerificationState = 'idle' | 'sending' | 'sent' | 'checking' | 'verified'
@@ -52,6 +53,8 @@ export function AdminSetupScreen({
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [adminEntryHidden, setAdminEntryHidden] = useState(false)
+  const [adminEntryCode, setAdminEntryCode] = useState('')
   const [smtpHost, setSmtpHost] = useState('')
   const [smtpPort, setSmtpPort] = useState('587')
   const [smtpUser, setSmtpUser] = useState('')
@@ -143,10 +146,12 @@ export function AdminSetupScreen({
     }
   }, [])
 
+  const adminEntryValid = !adminEntryHidden || /^[A-Za-z0-9_-]{3,64}$/.test(adminEntryCode)
   const accountValid = name.trim().length >= 2
     && EMAIL_PATTERN.test(email.trim())
-    && password.length >= 12
+    && password.length >= 15
     && password === confirmPassword
+    && adminEntryValid
   const smtpPortNumber = Number(smtpPort)
   const mailValid = smtpHost.trim().length > 0
     && Number.isInteger(smtpPortNumber)
@@ -196,11 +201,12 @@ export function AdminSetupScreen({
     setSmtpVerificationState('checking')
     setSmtpVerificationError(null)
     try {
-      await phdApi.verifyInitialSetupSmtpVerification({
+      const verified = await phdApi.verifyInitialSetupSmtpVerification({
         ...smtpVerificationInput,
         token: smtpVerificationToken,
         code: smtpVerificationCode.trim(),
       })
+      setSmtpVerificationToken(verified.token)
       setSmtpVerificationState('verified')
       return true
     } catch (reason) {
@@ -248,6 +254,8 @@ export function AdminSetupScreen({
       name: name.trim(),
       email: email.trim().toLowerCase(),
       password,
+      adminEntryHidden,
+      ...(adminEntryHidden ? { adminEntryCode } : {}),
       notificationMailbox: notificationMailbox.trim().toLowerCase(),
       smtpHost: smtpHost.trim(),
       smtpPort: smtpPortNumber,
@@ -349,6 +357,49 @@ export function AdminSetupScreen({
                     aria-invalid={confirmPassword.length > 0 && password !== confirmPassword}
                   />
                 </label>
+                <div className={`admin-setup-entry-control admin-setup-field-wide ${adminEntryHidden ? 'enabled' : ''}`}>
+                  <div className="admin-setup-entry-summary">
+                    <span className="admin-setup-entry-icon" aria-hidden="true"><KeyRound size={16} /></span>
+                    <div>
+                      <strong>{tx('admin.adminEntry.title')}</strong>
+                      <small>{tx('admin.adminEntry.description')}</small>
+                    </div>
+                    <SwitchControl
+                      checked={adminEntryHidden}
+                      label={tx('admin.adminEntry.hideToggle')}
+                      onChange={(checked) => {
+                        setAdminEntryHidden(checked)
+                        if (!checked) setAdminEntryCode('')
+                      }}
+                    />
+                  </div>
+                  <CollapsiblePanel
+                    open={adminEntryHidden}
+                    keepMounted
+                    collapseMs={280}
+                    className="admin-setup-entry-collapse"
+                    innerClassName="admin-setup-entry-collapse-inner"
+                  >
+                    <div className="admin-setup-entry-details">
+                      <label>
+                        <span>{tx('admin.adminEntry.codeLabel')}</span>
+                        <input
+                          value={adminEntryCode}
+                          onChange={(event) => setAdminEntryCode(event.target.value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64))}
+                          placeholder={tx('admin.adminEntry.codePlaceholder')}
+                          autoComplete="off"
+                          spellCheck={false}
+                          aria-invalid={adminEntryCode.length > 0 && !adminEntryValid}
+                        />
+                      </label>
+                      <div className="admin-setup-entry-path" aria-live="polite">
+                        <span>{tx('admin.adminEntry.activationUrl')}</span>
+                        <code>{`/admin/${adminEntryCode || 'aaa'}`}</code>
+                      </div>
+                      <p><ShieldCheck size={13} aria-hidden="true" /> {tx('admin.adminEntry.rememberBody')}</p>
+                    </div>
+                  </CollapsiblePanel>
+                </div>
               </div>
             </>
           ) : null}
@@ -659,6 +710,15 @@ export function AdminSetupScreen({
                 <div>
                   <span><KeyRound size={15} /></span>
                   <p><small>{tx('admin.setup.security')}</small><strong>{tx('admin.setup.securityValue')}</strong><em>{tx('admin.setup.oneTimeNote')}</em></p>
+                  <Check size={15} className="admin-setup-check" />
+                </div>
+                <div>
+                  <span><ShieldCheck size={15} /></span>
+                  <p>
+                    <small>{tx('admin.adminEntry.title')}</small>
+                    <strong>{adminEntryHidden ? tx('admin.adminEntry.hidden') : tx('admin.adminEntry.visible')}</strong>
+                    <em>{adminEntryHidden ? `/admin/${adminEntryCode}` : '/admin'}</em>
+                  </p>
                   <Check size={15} className="admin-setup-check" />
                 </div>
               </div>

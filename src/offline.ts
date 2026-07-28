@@ -21,11 +21,24 @@ export type OfflineSnapshotData = {
 }
 
 type OfflineSnapshot = {
-  version: 2
+  version: 3
   userId: string
   savedAt: string
+  authorization: OfflineAuthorization
   data: OfflineSnapshotData
   integrity: OfflineIntegrity
+}
+
+export type OfflineAuthorization = {
+  scope: 'personal-owner'
+  subject: string
+  expiresAt: string
+}
+
+export type OfflineAccessDecision = {
+  allowed: boolean
+  expiresAt: string | null
+  reason: 'eligible' | 'administrator' | 'impersonation' | 'identity' | 'scope' | 'expired'
 }
 
 type OfflineIntegrity = {
@@ -35,7 +48,24 @@ type OfflineIntegrity = {
 
 type OfflineSnapshotPayload = Omit<OfflineSnapshot, 'integrity'>
 
+type LegacyOfflineSnapshot = {
+  version: 2
+  userId: string
+  savedAt: string
+  data: OfflineSnapshotData
+  integrity: OfflineIntegrity
+}
+
 type OfflineQueueStore = {
+  version: 3
+  userId: string
+  scope: 'personal-owner'
+  updatedAt: string
+  items: OfflineApplicationUpdate[]
+  integrity: OfflineIntegrity
+}
+
+type LegacyOfflineQueueStore = {
   version: 2
   userId: string
   updatedAt: string
@@ -57,12 +87,15 @@ export type OfflineApplicationUpdate = {
   blockedReason?: string
 }
 
-const SNAPSHOT_PREFIX = 'phd-atlas-offline-snapshot:v2:'
-const QUEUE_PREFIX = 'phd-atlas-offline-queue:v2:'
+const SNAPSHOT_PREFIX = 'phd-atlas-offline-snapshot:v3:'
+const QUEUE_PREFIX = 'phd-atlas-offline-queue:v3:'
+const LEGACY_SNAPSHOT_PREFIX = 'phd-atlas-offline-snapshot:v2:'
+const LEGACY_QUEUE_PREFIX = 'phd-atlas-offline-queue:v2:'
 const DEVICE_SECRET_KEY = 'phd-atlas-offline-integrity-key:v1'
 const WORKER_INTEGRITY_ALGORITHM: OfflineIntegrity['algorithm'] = 'hmac-sha256-json-v2'
 const INTEGRITY_ALGORITHM: OfflineIntegrity['algorithm'] = 'hmac-sha256-device-v1'
 const LEGACY_INTEGRITY_ALGORITHM: OfflineIntegrity['algorithm'] = 'fnv1a64-device-v1'
+const MAX_OFFLINE_ACCESS_MS = 72 * 60 * 60 * 1000
 const SNAPSHOT_WORKER_TIMEOUT_MS = 12_000
 let cachedDeviceSecret: string | null = null
 let snapshotWorker: Worker | null = null
@@ -119,6 +152,14 @@ function queueKey(userId: string) {
   return `${QUEUE_PREFIX}${userId}`
 }
 
+function legacySnapshotKey(userId: string) {
+  return `${LEGACY_SNAPSHOT_PREFIX}${userId}`
+}
+
+function legacyQueueKey(userId: string) {
+  return `${LEGACY_QUEUE_PREFIX}${userId}`
+}
+
 function safeParse<T>(value: string | null): T | null {
   if (!value) return null
   try {
@@ -130,6 +171,79 @@ function safeParse<T>(value: string | null): T | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function decodeSessionClaims(token: string) {
+  try {
+    const encoded = token.split('.')[1]
+    if (!encoded) return null
+    const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+    const json = typeof atob === 'function'
+      ? atob(padded)
+      : null
+    if (!json) return null
+    const claims = JSON.parse(json) as Record<string, unknown>
+    return isRecord(claims) ? claims : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Offline access is a short, read-local lease, never an authorization token.
+ * The server still re-authenticates every replay. This client-side bound keeps
+ * stale or impersonated sessions from rendering cached permissioned data
+ * indefinitely while a device remains disconnected.
+ */
+export function offlineAccessForSession(
+  session: AuthSession,
+  now = Date.now(),
+): OfflineAccessDecision {
+  if (session.user.role === 'admin') {
+    return { allowed: false, expiresAt: null, reason: 'administrator' }
+  }
+  if (session.impersonation) {
+    return { allowed: false, expiresAt: null, reason: 'impersonation' }
+  }
+
+  const claims = decodeSessionClaims(session.token)
+  const subject = typeof claims?.sub === 'string' ? claims.sub : null
+  if (!claims || subject !== session.user.id) {
+    return { allowed: false, expiresAt: null, reason: 'identity' }
+  }
+  if (claims.scope !== 'app') {
+    return { allowed: false, expiresAt: null, reason: 'scope' }
+  }
+  if (claims.act) {
+    return { allowed: false, expiresAt: null, reason: 'impersonation' }
+  }
+
+  const issuedAtMs = typeof claims.iat === 'number' && Number.isFinite(claims.iat)
+    ? claims.iat * 1000
+    : Number.NaN
+  const tokenExpiryMs = typeof claims.exp === 'number' && Number.isFinite(claims.exp)
+    ? claims.exp * 1000
+    : Number.NaN
+  if (
+    !Number.isFinite(issuedAtMs)
+    || !Number.isFinite(tokenExpiryMs)
+    || issuedAtMs > now + 5 * 60 * 1000
+    || tokenExpiryMs <= issuedAtMs
+  ) {
+    return { allowed: false, expiresAt: null, reason: 'identity' }
+  }
+  // Bind the lease to token issue time. Repeated offline saves cannot roll the
+  // window forward after the server stops refreshing the authenticated token.
+  const expiresAtMs = Math.min(tokenExpiryMs, issuedAtMs + MAX_OFFLINE_ACCESS_MS)
+  if (expiresAtMs <= now) {
+    return { allowed: false, expiresAt: new Date(expiresAtMs).toISOString(), reason: 'expired' }
+  }
+  return {
+    allowed: true,
+    expiresAt: new Date(expiresAtMs).toISOString(),
+    reason: 'eligible',
+  }
 }
 
 function randomHex(bytes = 32) {
@@ -394,6 +508,240 @@ function isApplicationLike(value: unknown): value is ApplicationRecord {
     typeof value.program === 'string'
 }
 
+const OFFLINE_SERVER_AUTHORITY_KEYS = new Set<keyof ApplicationRecord>([
+  'id',
+  'ownerId',
+  'teamId',
+  'teamTransferRequest',
+  'shares',
+  'reviewComments',
+  'backupSettings',
+  'versions',
+  'createdAt',
+  'updatedAt',
+])
+
+function sanitizeStoredVersion<T extends {
+  fileId?: string
+  storageName?: string
+}>(version: T): Omit<T, 'fileId' | 'storageName'> {
+  const { fileId: _fileId, storageName: _storageName, ...safe } = version
+  return safe
+}
+
+/**
+ * Persist only user-owned personal application content. Server-authoritative
+ * access fields, public share tokens, Team review data, backup policy and
+ * opaque vault identifiers never enter the offline cache or replay queue.
+ */
+export function sanitizePersonalApplicationForOffline(
+  application: ApplicationRecord,
+  userId: string,
+): ApplicationRecord | null {
+  if (
+    application.ownerId !== userId
+    || Boolean(application.teamId)
+    || Boolean(application.teamTransferRequest)
+  ) {
+    return null
+  }
+
+  const materials = application.materials.map((material) => {
+    const {
+      fileId: _fileId,
+      storageName: _storageName,
+      versions,
+      ...safe
+    } = material
+    return {
+      ...safe,
+      versions: versions?.map(sanitizeStoredVersion),
+    }
+  })
+  const tasks = application.tasks.map((task) => {
+    const {
+      fileId: _fileId,
+      storageName: _storageName,
+      versions,
+      ...safe
+    } = task
+    return {
+      ...safe,
+      versions: versions?.map(sanitizeStoredVersion),
+    }
+  })
+  const communications = application.communications.map((communication) => {
+    const {
+      sourceMessageKey: _sourceMessageKey,
+      sourceMailbox: _sourceMailbox,
+      attachments,
+      ...safe
+    } = communication
+    return {
+      ...safe,
+      attachments: attachments?.map((attachment) => {
+        const {
+          id: _id,
+          fileId: _fileId,
+          assetId: _assetId,
+          storageName: _storageName,
+          source: _source,
+          ...safeAttachment
+        } = attachment
+        return safeAttachment
+      }),
+    }
+  })
+
+  const {
+    shares: _shares,
+    reviewComments: _reviewComments,
+    backupSettings: _backupSettings,
+    versions,
+    ...safeApplication
+  } = application
+  return {
+    ...safeApplication,
+    ownerId: userId,
+    teamId: null,
+    teamTransferRequest: null,
+    materials,
+    tasks,
+    communications,
+    versions: versions.map(sanitizeStoredVersion),
+  }
+}
+
+function restoreMaterialAuthority(
+  offlineMaterials: ApplicationRecord['materials'],
+  serverMaterials: ApplicationRecord['materials'],
+) {
+  const serverById = new Map(serverMaterials.map((item) => [item.id, item]))
+  return offlineMaterials.map((item) => {
+    const server = serverById.get(item.id)
+    if (!server) {
+      const {
+        fileId: _fileId,
+        storageName: _storageName,
+        fileName: _fileName,
+        fileSize: _fileSize,
+        mimeType: _mimeType,
+        versions: _versions,
+        ...safe
+      } = item
+      return safe
+    }
+    return {
+      ...item,
+      fileId: server.fileId,
+      storageName: server.storageName,
+      fileName: server.fileName,
+      fileSize: server.fileSize,
+      mimeType: server.mimeType,
+      versions: server.versions,
+    }
+  })
+}
+
+function restoreTaskAuthority(
+  offlineTasks: ApplicationRecord['tasks'],
+  serverTasks: ApplicationRecord['tasks'],
+) {
+  const serverById = new Map(serverTasks.map((item) => [item.id, item]))
+  return offlineTasks.map((item) => {
+    const server = serverById.get(item.id)
+    if (!server) {
+      const {
+        fileId: _fileId,
+        storageName: _storageName,
+        fileName: _fileName,
+        fileSize: _fileSize,
+        mimeType: _mimeType,
+        versions: _versions,
+        ...safe
+      } = item
+      return safe
+    }
+    return {
+      ...item,
+      fileId: server.fileId,
+      storageName: server.storageName,
+      fileName: server.fileName,
+      fileSize: server.fileSize,
+      mimeType: server.mimeType,
+      versions: server.versions,
+    }
+  })
+}
+
+function restoreCommunicationAuthority(
+  offlineCommunications: ApplicationRecord['communications'],
+  serverCommunications: ApplicationRecord['communications'],
+) {
+  const serverById = new Map(serverCommunications.map((item) => [item.id, item]))
+  return offlineCommunications.map((item) => {
+    const server = serverById.get(item.id)
+    if (!server) return { ...item, attachments: [] }
+    return {
+      ...item,
+      attachments: server.attachments,
+      sourceMessageKey: server.sourceMessageKey,
+      sourceMailbox: server.sourceMailbox,
+      importedAt: server.importedAt,
+    }
+  })
+}
+
+/**
+ * Rehydrate fields that can only come from the current server record before a
+ * replay or a conflict-review draft is saved. Offline content is never allowed
+ * to mint share tokens, Team state, backup policy or encrypted-vault handles.
+ */
+export function restoreOfflineApplicationAuthority(
+  offlineApplication: ApplicationRecord,
+  serverApplication: ApplicationRecord,
+): ApplicationRecord {
+  return {
+    ...offlineApplication,
+    id: serverApplication.id,
+    ownerId: serverApplication.ownerId,
+    teamId: serverApplication.teamId ?? null,
+    teamTransferRequest: serverApplication.teamTransferRequest ?? null,
+    shares: serverApplication.shares,
+    reviewComments: serverApplication.reviewComments,
+    backupSettings: serverApplication.backupSettings,
+    versions: serverApplication.versions,
+    createdAt: serverApplication.createdAt,
+    updatedAt: serverApplication.updatedAt,
+    materials: restoreMaterialAuthority(offlineApplication.materials, serverApplication.materials),
+    tasks: restoreTaskAuthority(offlineApplication.tasks, serverApplication.tasks),
+    communications: restoreCommunicationAuthority(
+      offlineApplication.communications,
+      serverApplication.communications,
+    ),
+  }
+}
+
+export function personalOfflineSnapshotDataForSession(
+  session: AuthSession,
+  value: OfflineSnapshotData,
+): OfflineSnapshotData | null {
+  if (!offlineAccessForSession(session).allowed) return null
+  const applications = value.applications
+    .map((application) => sanitizePersonalApplicationForOffline(application, session.user.id))
+    .filter((application): application is ApplicationRecord => Boolean(application))
+  return {
+    applications,
+    profileAssets: [],
+    backups: [],
+    applicationTrash: [],
+    teamWorkspaces: [],
+    activeTeamId: null,
+    teamSummary: null,
+    teamApplications: [],
+  }
+}
+
 function isOfflineSnapshotData(value: unknown): value is OfflineSnapshotData {
   return isRecord(value) &&
     Array.isArray(value.applications) &&
@@ -407,18 +755,91 @@ function isOfflineSnapshotData(value: unknown): value is OfflineSnapshotData {
     Array.isArray(value.teamApplications)
 }
 
+function hasNoOfflineCapabilityFields(application: ApplicationRecord) {
+  if (
+    !Array.isArray(application.versions)
+    || !Array.isArray(application.materials)
+    || !Array.isArray(application.tasks)
+    || !Array.isArray(application.communications)
+  ) return false
+  const storedVersionsSafe = application.versions.every((version) => (
+    !version.fileId && !version.storageName
+  ))
+  const materialsSafe = application.materials.every((material) => (
+    !material.fileId
+    && !material.storageName
+    && (material.versions ?? []).every((version) => !version.fileId && !version.storageName)
+  ))
+  const tasksSafe = application.tasks.every((task) => (
+    !task.fileId
+    && !task.storageName
+    && (task.versions ?? []).every((version) => !version.fileId && !version.storageName)
+  ))
+  const communicationsSafe = application.communications.every((communication) => (
+    !communication.sourceMessageKey
+    && !communication.sourceMailbox
+    && (communication.attachments ?? []).every((attachment) => (
+      !attachment.id
+      && !attachment.fileId
+      && !attachment.assetId
+      && !attachment.storageName
+      && !attachment.source
+    ))
+  ))
+  return storedVersionsSafe && materialsSafe && tasksSafe && communicationsSafe
+}
+
+function isPersonalOnlyOfflineSnapshotData(value: OfflineSnapshotData, userId: string) {
+  return value.profileAssets.length === 0
+    && value.backups.length === 0
+    && value.applicationTrash.length === 0
+    && value.teamWorkspaces.length === 0
+    && value.activeTeamId === null
+    && value.teamSummary === null
+    && value.teamApplications.length === 0
+    && value.applications.every((application) => (
+      application.ownerId === userId
+      && !application.teamId
+      && !application.teamTransferRequest
+      && !application.shares
+      && !application.reviewComments
+      && !application.backupSettings
+      && hasNoOfflineCapabilityFields(application)
+    ))
+}
+
 function isOfflineApplicationUpdate(value: unknown, userId: string): value is OfflineApplicationUpdate {
   if (!isRecord(value)) return false
   if (value.type !== 'updateApplication' || value.userId !== userId) return false
   if (typeof value.id !== 'string' || typeof value.applicationId !== 'string') return false
   if (value.baseUpdatedAt !== null && typeof value.baseUpdatedAt !== 'string') return false
   if (value.baseApplication !== undefined && !isApplicationLike(value.baseApplication)) return false
+  if (
+    value.baseApplication
+    && (
+      value.baseApplication.ownerId !== userId
+      || value.baseApplication.teamId
+      || value.baseApplication.teamTransferRequest
+      || value.baseApplication.shares
+      || value.baseApplication.reviewComments
+      || value.baseApplication.backupSettings
+      || !hasNoOfflineCapabilityFields(value.baseApplication)
+    )
+  ) return false
   if (typeof value.createdAt !== 'string' || typeof value.updatedAt !== 'string') return false
   if (value.status !== undefined && value.status !== 'pending' && value.status !== 'blocked') return false
   if (value.blockedReason !== undefined && typeof value.blockedReason !== 'string') return false
   if (!isApplicationLike(value.application)) return false
   if (value.application.id !== value.applicationId) return false
-  if (value.application.ownerId && value.application.ownerId !== userId) return false
+  if (value.application.ownerId !== userId) return false
+  if (
+    value.application.teamId
+    || value.application.teamTransferRequest
+    || value.application.shares
+    || value.application.reviewComments
+    || value.application.backupSettings
+    || !hasNoOfflineCapabilityFields(value.application)
+  ) return false
   return true
 }
 
@@ -495,17 +916,56 @@ function getSnapshotWorker() {
 }
 
 function createOfflineId(applicationId: string) {
-  return `offline_${applicationId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  const randomId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}_${randomHex(8)}`
+  return `offline_${applicationId}_${randomId}`
+}
+
+function authorizationForSnapshot(session: AuthSession, savedAt: string): OfflineAuthorization | null {
+  const savedAtMs = Date.parse(savedAt)
+  const access = offlineAccessForSession(session, Number.isFinite(savedAtMs) ? savedAtMs : Date.now())
+  if (!access.allowed || !access.expiresAt) return null
+  return {
+    scope: 'personal-owner',
+    subject: session.user.id,
+    expiresAt: access.expiresAt,
+  }
+}
+
+function validSnapshotAuthorization(
+  session: AuthSession,
+  savedAt: string,
+  authorization: unknown,
+) {
+  if (!isRecord(authorization)) return false
+  if (authorization.scope !== 'personal-owner' || authorization.subject !== session.user.id) return false
+  if (typeof authorization.expiresAt !== 'string') return false
+
+  const savedAtMs = Date.parse(savedAt)
+  const expiresAtMs = Date.parse(authorization.expiresAt)
+  if (!Number.isFinite(savedAtMs) || !Number.isFinite(expiresAtMs)) return false
+  if (expiresAtMs <= Date.now() || expiresAtMs > savedAtMs + MAX_OFFLINE_ACCESS_MS) return false
+
+  const currentAccess = offlineAccessForSession(session)
+  if (!currentAccess.allowed || !currentAccess.expiresAt) return false
+  return expiresAtMs <= Date.parse(currentAccess.expiresAt)
 }
 
 export function saveOfflineSnapshot(session: AuthSession, data: OfflineSnapshotData) {
+  const savedAt = new Date().toISOString()
+  const authorization = authorizationForSnapshot(session, savedAt)
+  const personalData = personalOfflineSnapshotDataForSession(session, data)
+  if (!authorization || !personalData) return null
   const payload: OfflineSnapshotPayload = {
-    version: 2,
+    version: 3,
     userId: session.user.id,
-    savedAt: new Date().toISOString(),
-    data,
+    savedAt,
+    authorization,
+    data: personalData,
   }
   const key = snapshotKey(session.user.id)
+  removeStoredJson(legacySnapshotKey(session.user.id))
   const worker = getSnapshotWorker()
   if (worker) {
     const id = ++snapshotWorkerSequence
@@ -525,19 +985,53 @@ export function saveOfflineSnapshot(session: AuthSession, data: OfflineSnapshotD
     } catch {
       disableSnapshotWorker()
     }
-    return
+    return { savedAt, authorization }
   }
   const snapshot: OfflineSnapshot = {
     ...payload,
     integrity: signOfflinePayload('snapshot', session.user.id, payload),
   }
   writeJson(key, snapshot)
+  return { savedAt, authorization }
 }
 
 export function loadOfflineSnapshot(session: AuthSession): OfflineSnapshot | null {
   const key = snapshotKey(session.user.id)
-  const snapshot = safeParse<OfflineSnapshot>(localStorage.getItem(key))
-  if (!snapshot || snapshot.version !== 2 || snapshot.userId !== session.user.id) {
+  let snapshot = safeParse<OfflineSnapshot>(localStorage.getItem(key))
+
+  if (!snapshot) {
+    const legacyKey = legacySnapshotKey(session.user.id)
+    const legacy = safeParse<LegacyOfflineSnapshot>(localStorage.getItem(legacyKey))
+    if (legacy && legacy.version === 2 && legacy.userId === session.user.id && isOfflineSnapshotData(legacy.data)) {
+      const { integrity, ...legacyPayload } = legacy
+      const authorization = authorizationForSnapshot(session, legacy.savedAt)
+      if (
+        authorization
+        && hasValidIntegrity('snapshot', session.user.id, legacyPayload, integrity)
+      ) {
+        const personalData = personalOfflineSnapshotDataForSession(session, legacy.data)
+        if (!personalData) {
+          removeStoredJson(legacyKey)
+          return null
+        }
+        const payload: OfflineSnapshotPayload = {
+          version: 3,
+          userId: session.user.id,
+          savedAt: legacy.savedAt,
+          authorization,
+          data: personalData,
+        }
+        snapshot = {
+          ...payload,
+          integrity: signOfflinePayload('snapshot', session.user.id, payload),
+        }
+        writeJson(key, snapshot)
+      }
+    }
+    removeStoredJson(legacyKey)
+  }
+
+  if (!snapshot || snapshot.version !== 3 || snapshot.userId !== session.user.id) {
     removeStoredJson(key)
     return null
   }
@@ -550,13 +1044,21 @@ export function loadOfflineSnapshot(session: AuthSession): OfflineSnapshot | nul
     removeStoredJson(key)
     return null
   }
+  if (
+    !validSnapshotAuthorization(session, snapshot.savedAt, snapshot.authorization)
+    || !isPersonalOnlyOfflineSnapshotData(snapshot.data, session.user.id)
+  ) {
+    removeStoredJson(key)
+    return null
+  }
   return snapshot
 }
 
 function writeOfflineQueue(userId: string, items: OfflineApplicationUpdate[]) {
   const payload = {
-    version: 2 as const,
+    version: 3 as const,
     userId,
+    scope: 'personal-owner' as const,
     updatedAt: new Date().toISOString(),
     items,
   }
@@ -569,8 +1071,43 @@ function writeOfflineQueue(userId: string, items: OfflineApplicationUpdate[]) {
 
 export function readOfflineQueue(userId: string): OfflineApplicationUpdate[] {
   const key = queueKey(userId)
-  const store = safeParse<OfflineQueueStore>(localStorage.getItem(key))
-  if (!store || store.version !== 2 || store.userId !== userId || !Array.isArray(store.items)) {
+  let store = safeParse<OfflineQueueStore>(localStorage.getItem(key))
+  if (!store) {
+    const legacyKey = legacyQueueKey(userId)
+    const legacy = safeParse<LegacyOfflineQueueStore>(localStorage.getItem(legacyKey))
+    if (legacy && legacy.version === 2 && legacy.userId === userId && Array.isArray(legacy.items)) {
+      const { integrity, ...legacyPayload } = legacy
+      if (hasValidIntegrity('queue', userId, legacyPayload, integrity)) {
+        const migratedItems = legacy.items
+          .flatMap((item): OfflineApplicationUpdate[] => {
+            if (!isApplicationLike(item?.application)) return []
+            const application = sanitizePersonalApplicationForOffline(item.application, userId)
+            const baseApplication = item.baseApplication
+              ? sanitizePersonalApplicationForOffline(item.baseApplication, userId)
+              : undefined
+            if (!application) return []
+            return [{
+              ...item,
+              userId,
+              applicationId: application.id,
+              application,
+              baseApplication: baseApplication ?? undefined,
+            }]
+          })
+        writeOfflineQueue(userId, migratedItems)
+        store = safeParse<OfflineQueueStore>(localStorage.getItem(key))
+      }
+    }
+    removeStoredJson(legacyKey)
+  }
+
+  if (
+    !store
+    || store.version !== 3
+    || store.userId !== userId
+    || store.scope !== 'personal-owner'
+    || !Array.isArray(store.items)
+  ) {
     removeStoredJson(key)
     return []
   }
@@ -599,11 +1136,21 @@ export function blockedOfflineQueueSize(userId: string) {
 }
 
 export function enqueueApplicationUpdate(
-  userId: string,
+  session: AuthSession,
   application: ApplicationRecord,
   baseUpdatedAt: string | null,
   baseApplication?: ApplicationRecord | null,
 ) {
+  const userId = session.user.id
+  if (!canQueueApplicationUpdate(session, application, { isTeamMode: false })) {
+    return readOfflineQueue(userId)
+  }
+  const safeApplication = sanitizePersonalApplicationForOffline(application, userId)
+  const safeBaseApplication = baseApplication
+    ? sanitizePersonalApplicationForOffline(baseApplication, userId) ?? undefined
+    : undefined
+  if (!safeApplication) return readOfflineQueue(userId)
+
   const now = new Date().toISOString()
   const queue = readOfflineQueue(userId)
   const existingIndex = queue.findIndex((item) =>
@@ -616,7 +1163,7 @@ export function enqueueApplicationUpdate(
     const existing = queue[existingIndex]
     queue[existingIndex] = {
       ...existing,
-      application,
+      application: safeApplication,
       updatedAt: now,
       status: 'pending',
       blockedReason: undefined,
@@ -626,12 +1173,12 @@ export function enqueueApplicationUpdate(
       id: createOfflineId(application.id),
       type: 'updateApplication',
       userId,
-      applicationId: application.id,
+      applicationId: safeApplication.id,
       baseUpdatedAt,
-      baseApplication: baseApplication ?? undefined,
+      baseApplication: safeBaseApplication,
       createdAt: now,
       updatedAt: now,
-      application,
+      application: safeApplication,
       status: 'pending',
     })
   }
@@ -658,29 +1205,26 @@ export function mergeOfflineApplicationUpdate(
   operation: OfflineApplicationUpdate,
   serverApplication: ApplicationRecord,
 ): { application: ApplicationRecord; merged: boolean } | null {
-  if (serverApplication.updatedAt === operation.baseUpdatedAt) {
-    return { application: operation.application, merged: false }
-  }
   const base = operation.baseApplication
-  if (!base || base.id !== serverApplication.id || base.id !== operation.application.id) return null
+  const serverUnchanged = serverApplication.updatedAt === operation.baseUpdatedAt
+  if (
+    !serverUnchanged
+    && (!base || base.id !== serverApplication.id || base.id !== operation.application.id)
+  ) return null
 
   const keys = new Set([
-    ...Object.keys(base),
+    ...Object.keys(base ?? serverApplication),
     ...Object.keys(operation.application),
     ...Object.keys(serverApplication),
   ] as Array<keyof ApplicationRecord>)
-  keys.delete('id')
-  keys.delete('ownerId')
-  keys.delete('teamId')
-  keys.delete('teamTransferRequest')
-  keys.delete('updatedAt')
-  keys.delete('createdAt')
+  for (const key of OFFLINE_SERVER_AUTHORITY_KEYS) keys.delete(key)
 
   const localChanges = new Set<keyof ApplicationRecord>()
   const serverChanges = new Set<keyof ApplicationRecord>()
   for (const key of keys) {
-    if (!valuesEqual(operation.application[key], base[key])) localChanges.add(key)
-    if (!valuesEqual(serverApplication[key], base[key])) serverChanges.add(key)
+    const baselineValue = (base ?? serverApplication)[key]
+    if (!valuesEqual(operation.application[key], baselineValue)) localChanges.add(key)
+    if (!serverUnchanged && !valuesEqual(serverApplication[key], baselineValue)) serverChanges.add(key)
   }
   for (const key of localChanges) {
     if (serverChanges.has(key) && !valuesEqual(operation.application[key], serverApplication[key])) return null
@@ -690,7 +1234,10 @@ export function mergeOfflineApplicationUpdate(
   for (const key of localChanges) {
     ;(merged as unknown as Record<string, unknown>)[key] = operation.application[key]
   }
-  return { application: merged, merged: true }
+  return {
+    application: restoreOfflineApplicationAuthority(merged, serverApplication),
+    merged: !serverUnchanged,
+  }
 }
 
 export function removeOfflineQueueItems(userId: string, operationIds: string[]) {
@@ -723,9 +1270,18 @@ export function canQueueApplicationUpdate(
   options: { isTeamMode: boolean },
 ) {
   if (options.isTeamMode) return false
-  if (application.ownerId && application.ownerId !== session.user.id) return false
+  if (!offlineAccessForSession(session).allowed) return false
+  if (application.ownerId !== session.user.id) return false
+  if (application.teamId || application.teamTransferRequest) return false
   if (!application.updatedAt) return false
   return true
+}
+
+export function purgeOfflineAccountData(userId: string) {
+  removeStoredJson(snapshotKey(userId))
+  removeStoredJson(queueKey(userId))
+  removeStoredJson(legacySnapshotKey(userId))
+  removeStoredJson(legacyQueueKey(userId))
 }
 
 export function isNetworkLikeError(error: unknown) {

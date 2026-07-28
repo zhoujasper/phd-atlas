@@ -5,6 +5,80 @@ section per version using the exact heading `## v<package.json version>`.
 Automation extracts only the matching section, so older notes remain immutable
 history while the next version can be prepared in the same file.
 
+## v0.1.0-beta.6
+
+**Prerelease — Beta / 预发布版本。** Back up the complete workspace before
+upgrading.
+
+> **Required migration for Beta.5 and earlier:** do not rely on the old
+> **Check for updates → Install** path for this one transition. Download
+> `phd-atlas-update-0.1.0-beta.6-release.tar.gz` from this Release and upload it
+> through **Admin → System information → System update → Manual update**.
+> Once Beta.6 is running, later Release updates can complete automatically.
+>
+> **Beta.5 及更早版本必须手动过渡：** 本次不要依赖旧版的“检查更新 → 安装”流程。
+> 请从本 Release 下载 `phd-atlas-update-0.1.0-beta.6-release.tar.gz`，然后在
+> **管理后台 → 系统信息 → 系统更新 → 手动更新**中上传。成功运行 Beta.6 后，
+> 后续 Release 可恢复全自动更新。
+
+### Highlights
+
+- **Future server dependencies are automatic.** The update builder derives the
+  complete production graph directly from standard `dependencies`,
+  `optionalDependencies`, and lockfile metadata. A new server extension no
+  longer needs a second handwritten allowlist.
+- **Every production package travels with the Release.** Exact dependency
+  archives are downloaded during publishing, checked against
+  `package-lock.json` integrity, embedded below the legacy-compatible `tools/`
+  boundary, and proven with a real offline `npm ci`. Compiled frontend
+  libraries remain development/build dependencies and are not reinstalled on
+  the server.
+- **International and mainland source fallback.** Publishing and legacy
+  recovery may use the original third-party URL, npmjs, npmmirror, Yarn's
+  compatible registry, and fixed GitHub mirrors where applicable. Every mirror
+  result must match the lockfile integrity; source fallback never weakens
+  verification.
+- **No unbounded dependency spinner.** npm output, source changes, and
+  heartbeats are stored in the durable update journal. Per-attempt no-progress
+  and total deadlines terminate a stuck process tree, try the next source when
+  possible, and then use the existing verified rollback path.
+- **The whole update is server-owned.** Download, checksum verification,
+  backup, dependency installation, restart, and first-boot recovery continue
+  after the browser closes. Reopening Admin restores persisted status and
+  privacy-redacted diagnostics; polling reads no longer exhaust the upload
+  limiter.
+- **Transport stalls recover safely.** GitHub Release downloads have separate
+  response-header and streamed no-progress bounds. A progressing official
+  transfer may finish; only a stalled attempt is cancelled before fixed HTTPS
+  mirrors are probed, and every payload must still match GitHub's exact size
+  and SHA-256 sidecar.
+
+### 中文摘要
+
+- **后续服务端依赖自动进入更新。** 构建器直接读取标准 `dependencies`、
+  `optionalDependencies` 和 lockfile，不再要求维护第二份手写白名单；新增服务扩展
+  不会因为漏填清单而缺失。
+- **生产依赖随 Release 一起交付。** 发布时下载精确依赖归档，逐个校验
+  `package-lock.json` 完整性，放入旧版也允许的 `tools/` 边界，并执行一次真实离线
+  `npm ci`。已编译进网页包的前端库仍属于开发/构建依赖，不会在服务器重复安装。
+- **国内、国际多源回退。** 发布和旧运行时恢复可依次使用原始第三方地址、npmjs、
+  npmmirror、Yarn 兼容源，以及适用时的固定 GitHub 镜像；任何来源都必须匹配
+  lockfile 完整性，切换镜像不会降低校验标准。
+- **依赖安装不再无限转圈。** npm 输出、来源切换和心跳会写入持久更新日志；单次
+  无进展与总时限会终止卡住的进程树，在可行时继续尝试下一来源，最终仍走已验证的
+  自动回滚。
+- **整次更新由服务端持久接管。** 关闭浏览器后，下载、校验、备份、依赖安装、
+  重启和首次启动恢复仍会继续；重新打开后台可恢复状态和脱敏日志，只读轮询也不会
+  再耗尽上传限流。
+- **Release 正文停滞可安全恢复。** GitHub 下载分别限制响应头等待和流式无进展时间；
+  持续产生字节的官方传输可正常结束，只有真正停滞时才取消并探测固定 HTTPS 镜像，
+  所有文件仍必须匹配 GitHub 精确大小和官方 SHA-256 sidecar。
+
+Full details / 完整记录:
+[English changelog](https://github.com/zhoujasper/phd-atlas/blob/v0.1.0-beta.6/CHANGELOG.md)
+·
+[简体中文更新日志](https://github.com/zhoujasper/phd-atlas/blob/v0.1.0-beta.6/CHANGELOG.zh-CN.md)
+
 ## v0.1.0-beta.5
 
 **Prerelease — Beta / 预发布版本。** Back up the complete workspace before

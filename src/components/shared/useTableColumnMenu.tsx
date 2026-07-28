@@ -1,5 +1,5 @@
 import { Columns3, Eye, EyeOff, RotateCcw } from 'lucide-react'
-import { useCallback, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { useI18n } from '../hooks/useI18n'
 import {
   ExplorerContextMenu,
@@ -13,10 +13,31 @@ export function useTableColumnMenu(storageKey: string, columns: TableColumnDef[]
   const { tx } = useI18n()
   const api = useTableColumns(storageKey, columns)
   const [menu, setMenu] = useState<ExplorerContextMenuState | null>(null)
+  const triggerRef = useRef<HTMLElement | null>(null)
+  const closeFromTriggerRef = useRef(false)
+
+  useEffect(() => {
+    if (!menu) return undefined
+    const markTriggerClick = (event: PointerEvent) => {
+      closeFromTriggerRef.current = Boolean(
+        event.button === 0
+        && event.target instanceof Node
+        && triggerRef.current?.contains(event.target),
+      )
+    }
+    window.addEventListener('pointerdown', markTriggerClick, true)
+    return () => window.removeEventListener('pointerdown', markTriggerClick, true)
+  }, [menu])
 
   const openMenu = useCallback((event: ReactMouseEvent, title?: string) => {
     event.preventDefault()
     event.stopPropagation()
+    if (closeFromTriggerRef.current) {
+      closeFromTriggerRef.current = false
+      setMenu(null)
+      return
+    }
+    triggerRef.current = event.currentTarget as HTMLElement
     const items: ExplorerContextMenuItem[] = [
       ...columns.map((column) => {
         const visible = api.isVisible(column.id)

@@ -53,11 +53,15 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     css: true,
-    testTimeout: 15000,
-    // Server-route suites share the workspace storage fixture. Bounding file
-    // concurrency prevents Windows file locks and UI timer starvation while
-    // still keeping the full suite parallel and fast.
-    maxWorkers: 4,
+    // App-level tests exercise several real lazy route chunks. On Windows a
+    // cold transform cache or concurrent filesystem scan can legitimately push
+    // those integration flows beyond 15 seconds without indicating a hang.
+    testTimeout: 45_000,
+    // Server-route suites share the workspace storage fixture. Release
+    // preflight runs the source and a clean public export back to back while
+    // Docker Desktop is resident, so two workers keep Windows and smaller CI
+    // runners below the process/memory cliff without making the suite serial.
+    maxWorkers: 2,
     include: ['src/**/*.test.{ts,tsx}', 'server/**/*.test.js'],
   },
 })

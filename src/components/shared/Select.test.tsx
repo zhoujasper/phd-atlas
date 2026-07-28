@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Select } from './Select'
@@ -83,6 +83,43 @@ describe('Select', () => {
     await user.click(screen.getByRole('button', { name: 'Add custom option' }))
     const input = screen.getByRole('textbox', { name: 'Create option' })
     await user.type(input, 'My option{enter}')
+
+    expect(onCreate).toHaveBeenCalledWith('My option')
+  })
+
+  it('preserves typing that begins before a pending positioning frame', async () => {
+    const queuedFrames: FrameRequestCallback[] = []
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      queuedFrames.push(callback)
+      return queuedFrames.length
+    })
+    const user = userEvent.setup()
+    const onCreate = vi.fn()
+
+    render(
+      <Select
+        value="one"
+        options={[{ value: 'one', label: 'One' }]}
+        onChange={vi.fn()}
+        create={{
+          label: 'Add custom option',
+          placeholder: 'Option name',
+          createAriaLabel: 'Create option',
+          renameAriaLabel: 'Rename option',
+          deleteAriaLabel: 'Delete option',
+          onCreate,
+        }}
+      />,
+    )
+
+    await user.click(screen.getByRole('button'))
+    await user.click(screen.getByRole('button', { name: 'Add custom option' }))
+    const input = screen.getByRole('textbox', { name: 'Create option' })
+    await user.type(input, 'M')
+    act(() => {
+      for (const frame of queuedFrames.splice(0)) frame(performance.now())
+    })
+    await user.type(input, 'y option{enter}')
 
     expect(onCreate).toHaveBeenCalledWith('My option')
   })

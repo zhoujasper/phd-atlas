@@ -4,6 +4,10 @@ import {
   hasOfflineReplayConflict,
   parseOrThrow,
 } from './validation.js'
+import {
+  applyOfflineReplayAuthorityBoundary,
+  offlineReplayScopeAllowed,
+} from './offlineReplay.js'
 
 describe('offline replay validation', () => {
   it('accepts a matching trusted baseline and rejects a stale one', () => {
@@ -22,5 +26,148 @@ describe('offline replay validation', () => {
     expect(() => parseOrThrow(OfflineReplayMetadataSchema, {
       clientBaseUpdatedAt: '',
     })).toThrow()
+  })
+
+  it('allows replay only for the signed-in owner of a personal application', () => {
+    const personal = {
+      id: 'app-personal',
+      ownerId: 'user-1',
+      teamId: null,
+      teamTransferRequest: null,
+    }
+
+    expect(offlineReplayScopeAllowed({
+      application: personal,
+      requestUserId: 'user-1',
+      requestUserRole: 'user',
+      requestScope: 'app',
+      impersonation: null,
+    })).toBe(true)
+    expect(offlineReplayScopeAllowed({
+      application: { ...personal, teamId: 'team-1' },
+      requestUserId: 'user-1',
+      requestUserRole: 'user',
+      requestScope: 'app',
+      impersonation: null,
+    })).toBe(false)
+    expect(offlineReplayScopeAllowed({
+      application: personal,
+      requestUserId: 'teacher-1',
+      requestUserRole: 'user',
+      requestScope: 'app',
+      impersonation: null,
+    })).toBe(false)
+    expect(offlineReplayScopeAllowed({
+      application: personal,
+      requestUserId: 'user-1',
+      requestUserRole: 'user',
+      requestScope: 'app',
+      impersonation: { actorId: 'admin-1' },
+    })).toBe(false)
+    expect(offlineReplayScopeAllowed({
+      application: personal,
+      requestUserId: 'user-1',
+      requestUserRole: 'admin',
+      requestScope: 'app',
+      impersonation: null,
+    })).toBe(false)
+    expect(offlineReplayScopeAllowed({
+      application: personal,
+      requestUserId: 'user-1',
+      requestUserRole: 'user',
+      requestScope: 'admin',
+      impersonation: null,
+    })).toBe(false)
+  })
+
+  it('keeps permissions, share capabilities and vault handles server-authoritative', () => {
+    const current = {
+      id: 'app-1',
+      ownerId: 'user-1',
+      teamId: null,
+      teamTransferRequest: null,
+      shares: [{ id: 'share-1', token: 'server-token' }],
+      reviewComments: [{ id: 'comment-1' }],
+      backupSettings: { autoBackup: true },
+      versions: [{ id: 'version-1', fileId: 'server-version-file' }],
+      createdAt: '2026-07-01T00:00:00.000Z',
+      materials: [{
+        id: 'material-1',
+        name: 'CV',
+        fileId: 'server-material-file',
+        storageName: 'encrypted-material',
+        versions: [{ id: 'material-version-1', fileId: 'server-material-version-file' }],
+      }],
+      tasks: [{
+        id: 'task-1',
+        title: 'Upload transcript',
+        fileId: 'server-task-file',
+        versions: [],
+      }],
+      communications: [{
+        id: 'message-1',
+        subject: 'Current subject',
+        attachments: [{ id: 'attachment-1', fileId: 'server-attachment-file' }],
+        sourceMessageKey: 'server-message-key',
+      }],
+    }
+    const incoming = {
+      ...current,
+      ownerId: 'attacker',
+      teamId: 'team-forged',
+      shares: [{ id: 'share-forged', token: 'forged-token' }],
+      backupSettings: { autoBackup: false },
+      tasks: [{
+        ...current.tasks[0],
+        title: 'Updated transcript',
+        fileId: 'forged-task-file',
+      }],
+      communications: [{
+        ...current.communications[0],
+        subject: 'Updated subject',
+        attachments: [{ id: 'forged-attachment' }],
+        sourceMessageKey: 'forged-message-key',
+      }],
+      materials: [
+        {
+          ...current.materials[0],
+          name: 'Updated CV',
+          fileId: 'forged-material-file',
+        },
+        {
+          id: 'material-new',
+          name: 'New offline note',
+          fileId: 'forged-new-file',
+          storageName: 'forged-new-storage',
+          versions: [{ id: 'forged-version', fileId: 'forged-version-file' }],
+        },
+      ],
+    }
+
+    const bounded = applyOfflineReplayAuthorityBoundary(current, incoming)
+
+    expect(bounded.ownerId).toBe('user-1')
+    expect(bounded.teamId).toBeNull()
+    expect(bounded.shares).toEqual(current.shares)
+    expect(bounded.backupSettings).toEqual(current.backupSettings)
+    expect(bounded.versions).toEqual(current.versions)
+    expect(bounded.materials[0]).toMatchObject({
+      name: 'Updated CV',
+      fileId: 'server-material-file',
+      storageName: 'encrypted-material',
+    })
+    expect(bounded.materials[1]).toEqual({
+      id: 'material-new',
+      name: 'New offline note',
+    })
+    expect(bounded.tasks[0]).toMatchObject({
+      title: 'Updated transcript',
+      fileId: 'server-task-file',
+    })
+    expect(bounded.communications[0]).toMatchObject({
+      subject: 'Updated subject',
+      attachments: current.communications[0].attachments,
+      sourceMessageKey: 'server-message-key',
+    })
   })
 })

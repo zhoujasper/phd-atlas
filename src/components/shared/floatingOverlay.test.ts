@@ -49,6 +49,8 @@ describe('getAnchoredOverlayStyle', () => {
     expect(style.top).toBe(430)
     expect(style.maxHeight).toBe(708)
     expect(style['--floating-transform-origin' as keyof typeof style]).toBe('bottom left')
+    expect(style['--floating-enter-y' as keyof typeof style]).toBe('4px')
+    expect(style['--floating-exit-y' as keyof typeof style]).toBe('3px')
   })
 
   it('clamps wide overlays to narrow screens without horizontal overflow', () => {

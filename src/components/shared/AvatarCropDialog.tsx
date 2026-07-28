@@ -21,7 +21,6 @@ import {
   type ChangeEvent,
   type DragEvent,
   type PointerEvent as ReactPointerEvent,
-  type WheelEvent,
 } from 'react'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { useI18n } from '../hooks/useI18n'
@@ -242,11 +241,22 @@ export function AvatarCropDialog({
     setDragging(false)
   }
 
-  const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
+  const handleWheel = (event: WheelEvent) => {
     if (!source) return
     event.preventDefault()
     updateZoom(zoom + (event.deltaY > 0 ? -0.08 : 0.08))
   }
+
+  useEffect(() => {
+    if (!open) return undefined
+    const stage = stageRef.current
+    if (!stage) return undefined
+    // React registers wheel delegation passively in modern browsers. The crop
+    // surface intentionally consumes wheel input, so it needs its own explicit
+    // non-passive listener instead of calling preventDefault through React.
+    stage.addEventListener('wheel', handleWheel, { passive: false })
+    return () => stage.removeEventListener('wheel', handleWheel)
+  }, [open, source, zoom, rotation, imageSize, stageSize])
 
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -387,7 +397,6 @@ export function AvatarCropDialog({
                 onPointerUp={endPointerDrag}
                 onPointerCancel={endPointerDrag}
                 onDoubleClick={resetCrop}
-                onWheel={handleWheel}
                 onDragEnter={(event) => { event.preventDefault(); setDragOver(true) }}
                 onDragOver={(event) => event.preventDefault()}
                 onDragLeave={(event) => {

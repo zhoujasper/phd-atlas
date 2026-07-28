@@ -109,6 +109,7 @@
     "hiddenCount": "{count} oculto",
     "watchedBadge": "Assistindo",
     "importedToast": "Importado para aplicativos",
+    "partialImportToast": "Os dados disponíveis foram adicionados. Ainda faltam fontes oficiais ou o prazo atual; verifique-os na candidatura.",
     "savedToast": "Descubra preferências salvas",
     "researchToast": "Agentes de pesquisa terminaram",
     "prefRising": "Estrelas em ascensão",

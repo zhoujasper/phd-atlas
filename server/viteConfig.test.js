@@ -14,4 +14,8 @@ describe('Vite workspace isolation', () => {
     expect(viteConfig.server?.port).toBe(5173)
     expect(viteConfig.server?.strictPort).toBe(true)
   })
+
+  it('bounds full-suite workers for back-to-back source/public release checks', () => {
+    expect(viteConfig.test?.maxWorkers).toBe(2)
+  })
 })

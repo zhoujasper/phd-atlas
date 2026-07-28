@@ -15,6 +15,36 @@ const i18nContext: I18nContextValue = {
 describe('ApplicationPane owner picker', () => {
   afterEach(() => vi.useRealTimers())
 
+  it('keeps the trash dock after a flexible empty application region', () => {
+    const view = render(
+      <I18nContext.Provider value={i18nContext}>
+        <ApplicationPane
+          applications={[]}
+          totalApplicationCount={0}
+          applicationLimit={10}
+          isPro
+          selectedId={null}
+          query=""
+          statusFilters={[]}
+          sort="deadline:asc"
+          onQuery={vi.fn()}
+          onStatusFilters={vi.fn()}
+          onSort={vi.fn()}
+          onSelect={vi.fn()}
+          onUpgrade={vi.fn()}
+          showTrash
+          trashEnabled
+        />
+      </I18nContext.Provider>,
+    )
+
+    const emptyRegion = view.container.querySelector('.application-list-empty')
+    const trashDock = view.container.querySelector('.application-trash-dock')
+    expect(emptyRegion).toBeInTheDocument()
+    expect(trashDock).toBeInTheDocument()
+    expect(emptyRegion?.nextElementSibling).toBe(trashDock)
+  })
+
   it('keeps the picker mounted while its close motion plays', () => {
     vi.useFakeTimers()
     render(
@@ -46,9 +76,11 @@ describe('ApplicationPane owner picker', () => {
     const trigger = screen.getByRole('button', { name: 'workspace.ownerFilter' })
     fireEvent.click(trigger)
     expect(screen.getByRole('listbox', { name: 'workspace.ownerFilter' })).toBeInTheDocument()
+    expect(screen.getByRole('listbox', { name: 'workspace.ownerFilter' })).toHaveClass('owner-picker-menu-surface')
 
     fireEvent.click(trigger)
     expect(document.querySelector('.owner-picker')).toHaveClass('exiting')
+    expect(document.querySelector('.owner-picker-menu-surface')).toBeInTheDocument()
     expect(screen.getByRole('listbox', { name: 'workspace.ownerFilter' })).toBeInTheDocument()
 
     act(() => vi.advanceTimersByTime(160))

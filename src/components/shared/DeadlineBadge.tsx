@@ -10,6 +10,7 @@ export function DeadlineBadge({
   compact?: boolean
 }) {
   const { tx, format } = useI18n()
+  if (!deadline) return null
   const days = daysUntil(deadline)
   const urgency = deadlineUrgency(days)
 

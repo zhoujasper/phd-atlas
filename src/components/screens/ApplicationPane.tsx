@@ -26,7 +26,11 @@ import {
   X,
 } from 'lucide-react'
 import type { ApplicationTrashItem } from '../../api/phdApi'
-import type { ApplicationRecord, ApplicationStatus } from '../../data/applications'
+import {
+  applicationStatusOrder,
+  type ApplicationRecord,
+  type ApplicationStatus,
+} from '../../data/applications'
 import type { SortField, SortKey } from '../../appModel'
 import { daysUntil, deadlineUrgency } from '../../appModel'
 import { localeForLanguage } from '../../i18n'
@@ -46,10 +50,6 @@ type TeamApplicationRelation = {
   studentName: string
   advisorName?: string | null
 }
-
-const statusOrder: Array<ApplicationStatus | 'All'> = [
-  'All', 'Draft', 'Preparing', 'Submitted', 'Interview', 'Accepted', 'Rejected', 'Waitlist',
-]
 
 function sortApplications(apps: ApplicationRecord[], key: SortKey, locale: string): ApplicationRecord[] {
   const sorted = [...apps]
@@ -258,6 +258,16 @@ export function ApplicationPane({
   resizeHandle,
 }: ApplicationPaneProps) {
   const { tx, format, lang } = useI18n()
+  const filterStatusOrder = useMemo<Array<ApplicationStatus | 'All'>>(
+    () => [
+      'All',
+      ...applicationStatusOrder(
+        applications.map((application) => application.status),
+        statusFilters,
+      ),
+    ],
+    [applications, statusFilters],
+  )
   const [currentPage, setCurrentPage] = useState(1)
   const [pageAnimDirection, setPageAnimDirection] = useState<'next' | 'prev' | 'none'>('none')
   const [contextMenu, setContextMenu] = useState<ExplorerContextMenuState | null>(null)
@@ -336,7 +346,17 @@ export function ApplicationPane({
     if (!resolver || typeof navigator !== 'undefined' && !navigator.onLine) return undefined
     let cancelled = false
     const candidates = visiblePage.filter((application) => (
-      !application.school.logo
+      (
+        !application.school.logo
+        // Refresh legacy automatic results that predate compact-mark geometry
+        // ranking. This upgrades already-saved Cambridge-style wordmarks on
+        // sight instead of requiring the user to remove the old image first.
+        || (
+          application.school.logo.source === 'website'
+          && ['page-logo', 'structured-logo', 'metadata-logo']
+            .includes(application.school.logo.candidateKind ?? '')
+        )
+      )
       && application.school.logoAutoDetect !== false
       && Boolean(application.school.website.trim())
       && !readOnlyIds?.has(application.id)
@@ -706,7 +726,7 @@ export function ApplicationPane({
       />
 
       <div className="status-filter" aria-label={tx('workspace.statusFilter')}>
-        {statusOrder.map((item) => {
+        {filterStatusOrder.map((item) => {
           const active = item === 'All' ? statusFilters.length === 0 : statusFilters.includes(item)
           return (
             <button
@@ -747,64 +767,68 @@ export function ApplicationPane({
             <ChevronDown size={14} aria-hidden="true" />
           </button>
           {ownerPickerOpen ? (
-            <div className="owner-picker-menu" role="listbox" aria-label={tx('workspace.ownerFilter')}>
-              <label className="owner-picker-search">
-                <Search size={13} aria-hidden="true" />
-                <span className="sr-only">{tx('workspace.ownerFilterSearch')}</span>
-                <input
-                  autoFocus
-                  value={ownerPickerQuery}
-                  onChange={(event) => setOwnerPickerQuery(event.target.value)}
-                  placeholder={tx('workspace.ownerFilterSearch')}
-                />
-                {ownerPickerQuery ? (
-                  <button type="button" onClick={() => setOwnerPickerQuery('')} aria-label={tx('workspace.ownerFilterClear')}>
-                    <X size={12} aria-hidden="true" />
-                  </button>
-                ) : null}
-              </label>
-              <div className="owner-picker-list">
-                <button
-                  type="button"
-                  className={!ownerFilter ? 'active' : ''}
-                  role="option"
-                  aria-selected={!ownerFilter}
-                  onClick={() => {
-                    onOwnerFilter?.(null)
-                    requestOwnerPickerClose()
-                  }}
-                >
-                  <span>
-                    <strong>{tx('workspace.ownerFilterAll')}</strong>
-                    <em>{format(tx('workspace.ownerFilterAllDesc'), { count: ownerFilterOptions.length })}</em>
-                  </span>
-                  {!ownerFilter ? <Check size={13} aria-hidden="true" /> : null}
-                </button>
-                {filteredOwnerOptions.length === 0 ? (
-                  <div className="owner-picker-empty">{tx('workspace.ownerFilterNoMatch')}</div>
-                ) : filteredOwnerOptions.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    className={ownerFilter === option.id ? 'active' : ''}
-                    role="option"
-                    aria-selected={ownerFilter === option.id}
-                    onClick={() => {
-                      onOwnerFilter?.(option.id)
-                      requestOwnerPickerClose()
-                    }}
-                  >
-                    <span>
-                      <strong>{option.name}</strong>
-                      <em>
-                        {option.advisorName
-                          ? format(tx('workspace.ownerFilterAdvisorDesc'), { advisor: option.advisorName, count: option.count ?? 0 })
-                          : format(tx('workspace.ownerFilterApplicationDesc'), { count: option.count ?? 0 })}
-                      </em>
-                    </span>
-                    {ownerFilter === option.id ? <Check size={13} aria-hidden="true" /> : null}
-                  </button>
-                ))}
+            <div className="owner-picker-menu">
+              <div className="owner-picker-menu-surface" role="listbox" aria-label={tx('workspace.ownerFilter')}>
+                <div className="owner-picker-menu-content">
+                  <label className="owner-picker-search">
+                    <Search size={13} aria-hidden="true" />
+                    <span className="sr-only">{tx('workspace.ownerFilterSearch')}</span>
+                    <input
+                      autoFocus
+                      value={ownerPickerQuery}
+                      onChange={(event) => setOwnerPickerQuery(event.target.value)}
+                      placeholder={tx('workspace.ownerFilterSearch')}
+                    />
+                    {ownerPickerQuery ? (
+                      <button type="button" onClick={() => setOwnerPickerQuery('')} aria-label={tx('workspace.ownerFilterClear')}>
+                        <X size={12} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                  </label>
+                  <div className="owner-picker-list">
+                    <button
+                      type="button"
+                      className={!ownerFilter ? 'active' : ''}
+                      role="option"
+                      aria-selected={!ownerFilter}
+                      onClick={() => {
+                        onOwnerFilter?.(null)
+                        requestOwnerPickerClose()
+                      }}
+                    >
+                      <span>
+                        <strong>{tx('workspace.ownerFilterAll')}</strong>
+                        <em>{format(tx('workspace.ownerFilterAllDesc'), { count: ownerFilterOptions.length })}</em>
+                      </span>
+                      {!ownerFilter ? <Check size={13} aria-hidden="true" /> : null}
+                    </button>
+                    {filteredOwnerOptions.length === 0 ? (
+                      <div className="owner-picker-empty">{tx('workspace.ownerFilterNoMatch')}</div>
+                    ) : filteredOwnerOptions.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={ownerFilter === option.id ? 'active' : ''}
+                        role="option"
+                        aria-selected={ownerFilter === option.id}
+                        onClick={() => {
+                          onOwnerFilter?.(option.id)
+                          requestOwnerPickerClose()
+                        }}
+                      >
+                        <span>
+                          <strong>{option.name}</strong>
+                          <em>
+                            {option.advisorName
+                              ? format(tx('workspace.ownerFilterAdvisorDesc'), { advisor: option.advisorName, count: option.count ?? 0 })
+                              : format(tx('workspace.ownerFilterApplicationDesc'), { count: option.count ?? 0 })}
+                          </em>
+                        </span>
+                        {ownerFilter === option.id ? <Check size={13} aria-hidden="true" /> : null}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           ) : null}
@@ -822,10 +846,11 @@ export function ApplicationPane({
               type="button"
               className={`sort-chip ${active ? 'active' : ''}`}
               aria-pressed={active}
+              title={label}
               onClick={() => onSort(buildSortKey(field, nextDirection))}
             >
               <span>{label}</span>
-              <DirectionIcon size={12} aria-hidden="true" />
+              <DirectionIcon size={11} aria-hidden="true" />
             </button>
           )
         })}
@@ -903,7 +928,7 @@ export function ApplicationPane({
       />
 
       {sorted.length === 0 ? (
-        <div className="empty-list">
+        <div className="empty-list application-list-empty">
           <Inbox size={32} aria-hidden="true" />
           <span>{tx('workspace.noMatch')}</span>
         </div>
@@ -999,7 +1024,9 @@ export function ApplicationPane({
                       <StatusPill status={application.status} />
                     </span>
                     <small className={`deadline-days ${urgency === 'urgent' ? 'urgent' : ''}`}>
-                      {due === 0
+                      {!application.deadline
+                        ? '—'
+                        : due === 0
                         ? tx('workspace.today')
                         : due > 0
                           ? format(tx('workspace.dayShort'), { count: due })

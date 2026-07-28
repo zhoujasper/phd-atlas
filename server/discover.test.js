@@ -18,6 +18,7 @@ import {
   scoreProgram,
 } from './discover-catalog.js'
 import { attachRequirements, normalizeRequirements } from './discover-requirements.js'
+import { CreateApplicationSchema } from './validation.js'
 
 function fixtureState() {
   const state = defaultDiscoverState()
@@ -287,6 +288,39 @@ describe('discover-catalog', () => {
     expect(payload.professor).toBe(pi.name)
     expect(payload.deadline).toMatch(/^\d{4}-\d{2}-\d{2}$/)
     expect(payload.notes).toContain('Imported from Discover')
+  })
+
+  it('keeps an unknown deadline empty so partial imports do not invent a date', () => {
+    const sourceProgram = findProgramById('prog_cmu_ml')
+    const program = {
+      ...sourceProgram,
+      deadlineIso: '',
+      deadlineAndTests: '',
+      requirements: {
+        ...sourceProgram.requirements,
+        deadlines: [],
+      },
+    }
+    const pi = {
+      ...program.pis[0],
+      email: 'advisor@cmu.edu',
+      url: 'https://www.cmu.edu/faculty/advisor',
+    }
+    const payload = buildImportPayload(program, pi)
+
+    expect(payload.deadline).toBe('')
+    expect(CreateApplicationSchema.safeParse({
+      professor: payload.professor,
+      professorChinese: payload.professorChinese,
+      professorEmail: payload.professorEmail,
+      professorHomepage: payload.professorHomepage,
+      university: payload.university,
+      country: payload.country,
+      website: payload.website,
+      program: payload.program,
+      deadline: payload.deadline,
+      notes: payload.notes,
+    }).success).toBe(true)
   })
 
   it('runs research and emits match notification candidates for new tops', () => {

@@ -49,6 +49,7 @@ import {
   getLatestSessionToken,
   phdApi,
   readSessionTokenSubject,
+  sessionTokenIsDefinitelyExpired,
   sessionIdentityMatches,
   setSessionTokenHandler,
   setUnauthorizedHandler,
@@ -75,6 +76,11 @@ import type { ApplicationRecord, ApplicationStatus, MaterialStatus, SharePermiss
 import type { SharedLinkInfo } from './components/screens/settingsShareModel'
 import { canAccessDiscover, discoverStudentMembers, hasPersonalDiscoverAccess, hasTeamDiscoverAccess } from './components/screens/discoverAccess'
 import { teachersForStudent } from './teamRelationships'
+import {
+  canCreateTeamApplication,
+  canCreateTeamShare,
+  canEditTeamApplication,
+} from './teamPermissions'
 import { toggleWorkspacePaneClass } from './workspaceLayoutMotion'
 import { shareSections as allShareSections } from './data/applications'
 import { appendReviewComment } from './reviewComments'
@@ -119,8 +125,10 @@ import type { ShareExpiry } from './components/shared/shareOptions'
 import type { NewApplicationStudentOption, NewApplicationTeamMode } from './components/shared/NewApplicationDialog'
 import type { CommandPaletteAction } from './components/shared/CommandPalette'
 import { FormValidationPrompt } from './components/shared/FormValidationPrompt'
+import { GlobalOverflowReveal } from './components/shared/GlobalOverflowReveal'
 import { LazyOverlayBoundary } from './components/shared/LazyOverlayBoundary'
 import { OfflineStatusCenter } from './components/shared/OfflineStatusCenter'
+import { OfflineUnavailableScreen } from './components/shared/OfflineUnavailableScreen'
 import { NotFoundScreen } from './components/screens/NotFoundScreen'
 import {
   normalizeRemoteSchoolLogoDataUrl,
@@ -144,19 +152,24 @@ import { normalizeErrorMessage } from './errorMessages'
 import { downloadBlob } from './downloadBlob'
 import { connectivityUnavailable, probeServerConnectivity, setManualOfflineMode } from './connectivity'
 import { activatePwaUpdate, PWA_OFFLINE_SYNC_EVENT, requestOfflineSync } from './serviceWorker'
+import { passkeyLoginEmailHint } from './passkeyClient'
 import {
   blockedOfflineQueueSize,
   canQueueApplicationUpdate,
   enqueueApplicationUpdate,
   isNetworkLikeError,
   loadOfflineSnapshot,
+  offlineAccessForSession,
   offlineQueueSize,
   pendingOfflineQueueSize,
+  personalOfflineSnapshotDataForSession,
+  purgeOfflineAccountData,
   readOfflineQueue,
   markOfflineQueueItemBlocked,
   mergeOfflineApplicationUpdate,
   removeOfflineApplicationUpdates,
   removeOfflineQueueItems,
+  restoreOfflineApplicationAuthority,
   saveOfflineSnapshot,
   type OfflineSnapshotData,
 } from './offline'
@@ -253,6 +266,11 @@ function markTransitionedSurface(root: HTMLElement, scope: AnimatedScreenTransit
  */
 function cssFallbackExitDuration(scope: AnimatedScreenTransitionScope) {
   if (scope === 'screen') return 160
+  // Record changes commit immediately. Supported browsers overlap the old
+  // snapshot and live destination through a scoped View Transition; fallback
+  // browsers receive the destination's opacity-only entrance without a blank
+  // sequential exit hold.
+  if (scope === 'dossier-record') return 0
   // Workspace surfaces replace one another inside the already-mounted shell.
   // Committing immediately lets the incoming compositor animation start on the
   // tap frame; holding an invisible mobile surface here reads as a white flash.
@@ -261,8 +279,9 @@ function cssFallbackExitDuration(scope: AnimatedScreenTransitionScope) {
 }
 
 function cssFallbackEnterDuration(scope: AnimatedScreenTransitionScope) {
-  if (scope === 'screen' || scope === 'workspace-view') return 260
-  if (scope === 'dossier-record') return 220
+  if (scope === 'screen') return 260
+  if (scope === 'workspace-view') return 210
+  if (scope === 'dossier-record') return 190
   if (scope === 'dossier-tab') return 220
   return 180
 }
@@ -410,6 +429,23 @@ const validTabs: DetailTab[] = ['dossier', 'materials', 'mail', 'funding', 'time
 const validTeamSections: TeamSection[] = ['overview', 'applications', 'members', 'resources', 'discover', 'audit', 'settings']
 const shortcutTabs: DetailTab[] = ['dossier', 'materials', 'mail', 'funding', 'timeline', 'review']
 
+function readStartupSession(): AuthSession | null {
+  const stored = safeParseJson<AuthSession>(localStorage.getItem(SESSION_KEY))
+  if (!stored?.token || !stored.user?.id) {
+    if (stored) localStorage.removeItem(SESSION_KEY)
+    return null
+  }
+  const tokenSubject = readSessionTokenSubject(stored.token)
+  if (
+    sessionTokenIsDefinitelyExpired(stored.token)
+    || (tokenSubject !== null && tokenSubject !== stored.user.id)
+  ) {
+    localStorage.removeItem(SESSION_KEY)
+    return null
+  }
+  return stored
+}
+
 function isPasskeyAbort(error: unknown) {
   return error instanceof Error && ['AbortError', 'NotAllowedError'].includes(error.name)
 }
@@ -420,7 +456,7 @@ const INSPECTOR_WIDTH_MIN = 260
 const INSPECTOR_WIDTH_MAX = 460
 const PANE_COLLAPSE_DISTANCE = 56
 const PANE_REVEAL_DISTANCE = 32
-type WorkspaceJumpTarget = Omit<DossierJumpIntent, 'token'>
+type WorkspaceJumpTarget = Omit<DossierJumpIntent, 'applicationId' | 'token'>
 
 type WorkspaceLayoutState = {
   applicationPaneWidth: number
@@ -1320,14 +1356,25 @@ export default function App() {
   const isOnline = connectivity.mode !== 'offline' && connectivity.mode !== 'server-unreachable'
 
   // Session
-  const [session, setSession] = useState<AuthSession | null>(() =>
-    safeParseJson<AuthSession>(localStorage.getItem(SESSION_KEY)),
-  )
+  const [session, setSession] = useState<AuthSession | null>(readStartupSession)
+  const [initialOfflineMetadata] = useState(() => {
+    if (!session) return null
+    const snapshot = loadOfflineSnapshot(session)
+    return snapshot
+      ? {
+          savedAt: snapshot.savedAt,
+          expiresAt: snapshot.authorization.expiresAt,
+        }
+      : null
+  })
   const [authLanguage, setAuthLanguage] = useState<Language>(readInitialLanguage)
   const [offlineDataActive, setOfflineDataActive] = useState(false)
-  const [offlineSnapshotSavedAt, setOfflineSnapshotSavedAt] = useState<string | null>(() => (
-    session ? loadOfflineSnapshot(session)?.savedAt ?? null : null
-  ))
+  const [offlineSnapshotSavedAt, setOfflineSnapshotSavedAt] = useState<string | null>(
+    initialOfflineMetadata?.savedAt ?? null,
+  )
+  const [offlineAccessExpiresAt, setOfflineAccessExpiresAt] = useState<string | null>(
+    initialOfflineMetadata?.expiresAt ?? null,
+  )
   const [offlineQueueCount, setOfflineQueueCount] = useState(() =>
     session ? offlineQueueSize(session.user.id) : 0,
   )
@@ -1567,6 +1614,9 @@ export default function App() {
   const [workspaceOpeningFromDashboard, setWorkspaceOpeningFromDashboard] = useState(false)
   const [workspaceJumpIntent, setWorkspaceJumpIntent] = useState<DossierJumpIntent | null>(null)
   const workspaceJumpTokenRef = useRef(0)
+  const consumeWorkspaceJumpIntent = useCallback((token: number) => {
+    setWorkspaceJumpIntent((current) => current?.token === token ? null : current)
+  }, [])
   const workspaceViewExitTimerRef = useRef<number | null>(null)
   const detailDraftHydrationRef = useRef<{ handle: number; idle: boolean } | null>(null)
   const detailDraftHydrationGenerationRef = useRef(0)
@@ -1970,7 +2020,14 @@ export default function App() {
       }
     }, {
       ...transitionOptions,
-      forceCssFallback: true,
+      // Scoped native snapshots let record changes and board-to-dossier changes
+      // overlap as one local cross-fade without mounting duplicate interactive
+      // trees. Tabs remain on the lighter CSS path.
+      forceCssFallback: transitionOptions.forceCssFallback
+        ?? (
+          transitionOptions.scope !== 'dossier-record'
+          && transitionOptions.scope !== 'workspace-view'
+        ),
       onTransitionFinished,
     })
   }, [runAnimatedScreenUpdate])
@@ -2108,16 +2165,46 @@ export default function App() {
   const isTeamMode = effectiveInterfaceMode === 'team'
   const canUseWorkspaceBoard = !isTeamMode || teamViewerRole !== 'member'
   const canUsePersonalDiscover = hasPersonalDiscoverAccess(session)
-  const canUseTeamDiscover = isTeamMode && hasTeamDiscoverAccess(teamViewerRole)
-  const canUseDiscover = canAccessDiscover(effectiveInterfaceMode, session, teamViewerRole)
-  const teamDiscoverScope = useMemo(() => (
-    isTeamMode
-      && teamViewerRole !== 'member'
-      && teamDiscoverTargetUserId
-      && (activeTeamId || visibleTeamSummary?.team.id)
-      ? { teamId: activeTeamId || visibleTeamSummary!.team.id, targetUserId: teamDiscoverTargetUserId }
+  const teamMembershipRelationships = visibleTeamSummary?.membership?.relationships
+  const canUseTeamDiscover = isTeamMode && hasTeamDiscoverAccess(
+    teamViewerRole,
+    teamMembershipRelationships,
+  )
+  const canUseDiscover = canAccessDiscover(
+    effectiveInterfaceMode,
+    session,
+    teamViewerRole,
+    teamMembershipRelationships,
+  )
+  const canCreateInCurrentTeam = !isTeamMode || canCreateTeamApplication(
+    teamViewerRole,
+    visibleTeamSummary?.membership,
+  )
+  const canEditInCurrentTeam = !isTeamMode || canEditTeamApplication(
+    teamViewerRole,
+    visibleTeamSummary?.membership,
+  )
+  const canShareInCurrentTeam = !isTeamMode || canCreateTeamShare(
+    teamViewerRole,
+    visibleTeamSummary?.membership,
+  )
+  const teamDiscoverScope = useMemo(() => {
+    const targetUserId = teamViewerRole === 'member'
+      ? session?.user.id
+      : teamDiscoverTargetUserId
+    const teamId = activeTeamId || visibleTeamSummary?.team.id
+    return isTeamMode && canUseTeamDiscover && targetUserId && teamId
+      ? { teamId, targetUserId }
       : undefined
-  ), [activeTeamId, isTeamMode, teamDiscoverTargetUserId, teamViewerRole, visibleTeamSummary?.team.id])
+  }, [
+    activeTeamId,
+    canUseTeamDiscover,
+    isTeamMode,
+    session?.user.id,
+    teamDiscoverTargetUserId,
+    teamViewerRole,
+    visibleTeamSummary?.team.id,
+  ])
 
   useEffect(() => {
     if (!applicationsLoaded || screen !== 'discover') return
@@ -2171,12 +2258,21 @@ export default function App() {
   }, [session?.user.id, session?.user.settings.avatarDataUrl, visibleTeamSummary?.members])
   const studentGuidanceTeam = useMemo(() => {
     if (!visibleTeamSummary || teamViewerRole !== 'member') return undefined
-    const members = visibleTeamSummary.members
-      .filter((member) => (
-        member.status === 'active'
-        && (member.role === 'owner' || member.role === 'admin')
-        && member.userId !== session?.user.id
+    const activeMembers = visibleTeamSummary.members.filter((member) => member.status === 'active')
+    const membersByUserId = new Map(
+      activeMembers
+        .filter((member) => member.userId)
+        .map((member) => [member.userId!, member]),
+    )
+    const studentMember = session?.user.id ? membersByUserId.get(session.user.id) : undefined
+    const assignedTeachers = teachersForStudent(studentMember, membersByUserId)
+    const organizationOwners = activeMembers.filter((member) => member.role === 'owner')
+    const guidanceMembers = [...assignedTeachers, ...organizationOwners]
+      .filter((member, index, items) => (
+        member.userId !== session?.user.id
+        && items.findIndex((candidate) => candidate.id === member.id) === index
       ))
+    const members = guidanceMembers
       .sort((left, right) => {
         if (left.role !== right.role) return left.role === 'admin' ? -1 : 1
         return (left.displayName ?? left.invitedEmail).localeCompare(right.displayName ?? right.invitedEmail)
@@ -2279,7 +2375,12 @@ export default function App() {
     }
     return relations
   }, [teamApplications, visibleTeamSummary?.members])
-  const readOnlyApplicationIds = useMemo(() => new Set<string>(), [])
+  const readOnlyApplicationIds = useMemo(
+    () => isTeamMode && !canEditInCurrentTeam
+      ? new Set(teamApplications.map((application) => application.id))
+      : new Set<string>(),
+    [canEditInCurrentTeam, isTeamMode, teamApplications],
+  )
   const effectiveOwnerFilter = isTeamMode ? ownerFilter : null
 
   useEffect(() => {
@@ -2290,7 +2391,7 @@ export default function App() {
 
   useEffect(() => {
     if (!teamLookupComplete || screen !== 'team' || teamViewerRole !== 'member') return
-    if (teamSection !== 'members' && teamSection !== 'discover') return
+    if (teamSection !== 'members') return
     startTransition(() => setTeamSection('overview'))
   }, [screen, teamLookupComplete, teamSection, teamViewerRole])
 
@@ -2325,20 +2426,26 @@ export default function App() {
   }, [interfaceMode, screen, session?.impersonation?.teamId, setDraftState, teamSection])
 
   function viewMemberApplications(ownerId: string) {
-    runWithNavigationGuard(() => startTransition(() => {
-      const memberApplications = teamApplications.filter((application) => application.ownerId === ownerId)
-      setInterfaceMode('team')
-      setTeamSection('applications')
-      setQuery('')
-      setStatusFilters([])
-      setSort('deadline')
-      setOwnerFilter(ownerId)
-      setViewModeDirection('to-list')
-      setViewMode('list')
-      setSelectedId(memberApplications[0]?.id ?? teamApplications[0]?.id ?? null)
-      setScreen('workspace')
-      setMobileDetailOpen(true)
-    }))
+    runWithNavigationGuard(() => {
+      runAnimatedRailScreenUpdate(() => {
+        const memberApplications = teamApplications.filter((application) => application.ownerId === ownerId)
+        setInterfaceMode('team')
+        setTeamSection('applications')
+        setQuery('')
+        setStatusFilters([])
+        setSort('deadline')
+        setOwnerFilter(ownerId)
+        setViewModeDirection('to-list')
+        setViewMode('list')
+        setSelectedId(memberApplications[0]?.id ?? teamApplications[0]?.id ?? null)
+        setScreen('workspace')
+        setMobileDetailOpen(true)
+      }, {
+        direction: 'forward',
+        ready: warmCriticalScreenAssets('workspace', tab, lang, 'list'),
+        readinessGate: readinessGateForScreen('workspace', 'list'),
+      })
+    })
   }
 
   function openPersonalWorkspaceForTeamTransfer() {
@@ -2518,9 +2625,18 @@ export default function App() {
     isTeamMode &&
     selectedManagerTeamWorkspace,
   )
-  const selectedTeamTransferOptions = canDirectlyMoveSelectedTeamApplication && selectedManagerTeamWorkspace
-    ? [selectedManagerTeamWorkspace]
-    : studentTeamTransferOptions
+  const selectedTeamTransferOptions = useMemo(
+    () => (
+      canDirectlyMoveSelectedTeamApplication && selectedManagerTeamWorkspace
+        ? [selectedManagerTeamWorkspace]
+        : studentTeamTransferOptions
+    ),
+    [
+      canDirectlyMoveSelectedTeamApplication,
+      selectedManagerTeamWorkspace,
+      studentTeamTransferOptions,
+    ],
+  )
   useEffect(() => {
     if (!isTeamMode && tab === 'review') setTab('dossier')
   }, [isTeamMode, tab])
@@ -2674,18 +2790,43 @@ export default function App() {
     [backups, selected?.id],
   )
 
-  function applyWorkspaceSnapshot(data: OfflineSnapshotData) {
+  function applyWorkspaceSnapshot(
+    data: OfflineSnapshotData,
+    options: { offline?: boolean } = {},
+  ) {
     setApplications(data.applications)
     setProfileAssets(data.profileAssets)
     setBackups(data.backups)
     setApplicationTrash(data.applicationTrash)
-    setTeamWorkspaces(data.teamWorkspaces ?? [])
-    setActiveTeamId(data.activeTeamId ?? data.teamSummary?.team.id ?? null)
-    setTeamSummary(data.teamSummary)
-    setTeamApplications(data.teamApplications)
+    const nextTeamId = options.offline
+      ? null
+      : data.activeTeamId ?? data.teamSummary?.team.id ?? null
+    setTeamWorkspaces(options.offline ? [] : data.teamWorkspaces ?? [])
+    setActiveTeamId(nextTeamId)
+    activeTeamIdRef.current = nextTeamId
+    setTeamSummary(options.offline ? null : data.teamSummary)
+    setTeamApplications(options.offline ? [] : data.teamApplications)
+    if (options.offline) {
+      setAiKeys([])
+      setPasskeys([])
+      setNotifications([])
+      setUnreadNotificationCount(0)
+      setInterfaceMode('personal')
+      setOwnerFilter(null)
+      setDraftState(null, { clean: true })
+      setMobileDetailOpen(false)
+      if (screen === 'team' || interfaceMode === 'team') {
+        setScreen('dashboard')
+        setTeamSection('overview')
+      }
+    }
     setTeamLookupComplete(true)
     setApplicationsLoaded(true)
-    setSelectedId((current) => current ?? data.applications[0]?.id ?? null)
+    setSelectedId((current) => (
+      current && data.applications.some((application) => application.id === current)
+        ? current
+        : data.applications[0]?.id ?? null
+    ))
   }
 
   function currentSnapshotData(nextApplications = applications): OfflineSnapshotData {
@@ -2699,6 +2840,24 @@ export default function App() {
       teamSummary,
       teamApplications,
     }
+  }
+
+  function activateSecureOfflineWorkspace(activeSession: AuthSession) {
+    const personalData = personalOfflineSnapshotDataForSession(
+      activeSession,
+      currentSnapshotData(),
+    )
+    if (!personalData) return false
+
+    const saved = saveOfflineSnapshot(activeSession, personalData)
+    applyWorkspaceSnapshot(personalData, { offline: true })
+    setOfflineDataActive(true)
+    if (saved) {
+      setOfflineSnapshotSavedAt(saved.savedAt)
+      setOfflineAccessExpiresAt(saved.authorization.expiresAt)
+    }
+    refreshOfflineQueueCounts(activeSession.user.id)
+    return true
   }
 
   function cancelScheduledOfflineSnapshotSave() {
@@ -2720,8 +2879,11 @@ export default function App() {
     }
     const runSave = () => {
       offlineSnapshotSaveRef.current = null
-      saveOfflineSnapshot(nextSession, snapshotData)
-      setOfflineSnapshotSavedAt(new Date().toISOString())
+      const saved = saveOfflineSnapshot(nextSession, snapshotData)
+      if (saved) {
+        setOfflineSnapshotSavedAt(saved.savedAt)
+        setOfflineAccessExpiresAt(saved.authorization.expiresAt)
+      }
     }
     if (idleWindow.requestIdleCallback) {
       offlineSnapshotSaveRef.current = {
@@ -2804,7 +2966,10 @@ export default function App() {
   }, [ensureTourSampleApplication])
 
   const browserNotificationsEnabled = session?.user.settings.browserNotificationsEnabled !== false
-  const webPushNotifications = useWebPushNotifications(session?.token, browserNotificationsEnabled, (notification) => {
+  const verifiedOnlineSessionToken = applicationsLoaded && !offlineDataActive && isOnline
+    ? session?.token
+    : undefined
+  const webPushNotifications = useWebPushNotifications(verifiedOnlineSessionToken, browserNotificationsEnabled, (notification) => {
     const sourceToken = currentSessionTokenRef.current
     if (!sourceToken || !isCurrentSessionToken(sourceToken)) return
     const token = getLatestSessionToken(sourceToken)
@@ -2877,6 +3042,7 @@ export default function App() {
     setTeamLookupComplete(false)
     setOfflineDataActive(false)
     setOfflineSnapshotSavedAt(null)
+    setOfflineAccessExpiresAt(null)
     setOfflineQueueCount(0)
     setBlockedOfflineCount(0)
     setSyncingOffline(false)
@@ -2899,6 +3065,43 @@ export default function App() {
     clearSessionState()
     notify(t(languageRef.current, 'toast.sessionExpired'), 'error')
   }, [clearSessionState, isActiveSessionRequestToken, notify])
+
+  useEffect(() => {
+    if (!session || !connectivityUnavailable(connectivity)) return undefined
+
+    const access = offlineAccessForSession(session)
+    const accessExpiryMs = access.expiresAt ? Date.parse(access.expiresAt) : Number.NaN
+    const snapshotExpiryMs = offlineAccessExpiresAt
+      ? Date.parse(offlineAccessExpiresAt)
+      : Number.NaN
+    const effectiveExpiryMs = Number.isFinite(snapshotExpiryMs)
+      ? Math.min(snapshotExpiryMs, accessExpiryMs)
+      : accessExpiryMs
+
+    const endOfflineAccess = () => {
+      setManualOfflineMode(false)
+      clearSessionState()
+      notify(t(languageRef.current, 'offlineStatus.authorizationExpired'), 'warning')
+    }
+
+    if (!access.allowed || !Number.isFinite(effectiveExpiryMs) || effectiveExpiryMs <= Date.now()) {
+      endOfflineAccess()
+      return undefined
+    }
+
+    const timeout = window.setTimeout(
+      endOfflineAccess,
+      Math.min(2_147_000_000, Math.max(0, effectiveExpiryMs - Date.now())),
+    )
+    return () => window.clearTimeout(timeout)
+  }, [
+    clearSessionState,
+    connectivity.manualOffline,
+    connectivity.mode,
+    notify,
+    offlineAccessExpiresAt,
+    session,
+  ])
 
   useEffect(() => {
     if (!session || screen !== 'settings') return
@@ -2932,6 +3135,15 @@ export default function App() {
       setDraftState(null, { clean: true })
     }
   }, [clearDetailDraftHydration, scheduleDetailDraftHydration, selected, setDraftState])
+
+  // Jump intents are transient and application-scoped. Any ordinary route or
+  // record change invalidates an unconsumed intent so it cannot replay when a
+  // keyed dossier mounts later.
+  useEffect(() => {
+    if (!workspaceJumpIntent) return
+    if (screen === 'workspace' && selectedId === workspaceJumpIntent.applicationId) return
+    consumeWorkspaceJumpIntent(workspaceJumpIntent.token)
+  }, [consumeWorkspaceJumpIntent, screen, selectedId, workspaceJumpIntent])
 
 
   // Initial data load — cold-start only. Must not re-run after logout/re-login or
@@ -3011,9 +3223,10 @@ export default function App() {
             && sessionIdentityEpochRef.current === requestEpoch
             && currentSessionUserIdRef.current === initialSession.user.id
           ) {
-            applyWorkspaceSnapshot(snapshot.data)
+            applyWorkspaceSnapshot(snapshot.data, { offline: true })
             setOfflineDataActive(true)
             setOfflineSnapshotSavedAt(snapshot.savedAt)
+            setOfflineAccessExpiresAt(snapshot.authorization.expiresAt)
             refreshOfflineQueueCounts(initialSession.user.id)
             notify(t(languageRef.current, 'toast.offlineSnapshotLoaded'), 'info')
           } else if (
@@ -3101,12 +3314,48 @@ export default function App() {
       || connectivity.manualOffline
       || connectivity.serverReachable !== true
     ) return
-    if (pendingOfflineQueueSize(session.user.id) === 0) return
-    void syncOfflineQueue(session)
-    // syncOfflineQueue is intentionally not a dependency; this effect should be
-    // driven by durable state transitions, not by function identity.
+    if (pendingOfflineQueueSize(session.user.id) > 0) {
+      void syncOfflineQueue(session)
+    } else if (offlineDataActive) {
+      void refreshAll(session).catch((error) => {
+        if (!isNetworkLikeError(error) && !isAuthExpired(error)) {
+          notify(normalizeError(error, languageRef.current), 'error')
+        }
+      })
+    }
+    // The sync/refresh functions are intentionally not dependencies; this
+    // effect is driven by durable connectivity and local-workspace state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applicationsLoaded, connectivity.serverReachable, offlineQueueCount, session?.token, session?.user.id])
+  }, [
+    applicationsLoaded,
+    connectivity.manualOffline,
+    connectivity.serverReachable,
+    offlineDataActive,
+    offlineQueueCount,
+    session?.token,
+    session?.user.id,
+  ])
+
+  useEffect(() => {
+    if (
+      !session
+      || !applicationsLoaded
+      || offlineDataActive
+      || !connectivityUnavailable(connectivity)
+    ) return
+    activateSecureOfflineWorkspace(session)
+    // Entering offline mode is a security transition. Mount a freshly filtered
+    // personal-only workspace even when the full online workspace was already
+    // in memory; Team, admin-adjacent and capability data must not linger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    applicationsLoaded,
+    connectivity.manualOffline,
+    connectivity.mode,
+    offlineDataActive,
+    session?.token,
+    session?.user.id,
+  ])
 
   // Cleanup non-toast timers owned directly by App.
   useEffect(() => {
@@ -3336,17 +3585,10 @@ export default function App() {
       if (editingText) return
 
       if (key === 'f') {
+        if (screen !== 'workspace') return
         event.preventDefault()
-        if (screen !== 'workspace') {
-          startTransition(() => setScreen('workspace'))
-          window.setTimeout(() => {
-            const input = document.querySelector('.search-field input') as HTMLInputElement | null
-            input?.focus()
-          }, 100)
-        } else {
-          const input = document.querySelector('.search-field input') as HTMLInputElement | null
-          input?.focus()
-        }
+        const input = document.querySelector('.application-pane .search-field input') as HTMLInputElement | null
+        input?.focus()
         return
       }
 
@@ -4288,6 +4530,9 @@ export default function App() {
 
   function toggleManualOffline() {
     const next = !connectivity.manualOffline
+    if (next && activeSession) {
+      activateSecureOfflineWorkspace(activeSession)
+    }
     setManualOfflineMode(next)
     if (next) {
       notify(i18nValue.tx('toast.manualOfflineEnabled'), 'info')
@@ -4316,7 +4561,10 @@ export default function App() {
       // preserved local copy as an explicitly dirty draft. Nothing is uploaded
       // until the user reviews it and presses Save.
       setDraftState(cloneApplication(serverApplication), { clean: true })
-      setDraftState(cloneApplication(blocked.application), { dirty: true })
+      setDraftState(
+        cloneApplication(restoreOfflineApplicationAuthority(blocked.application, serverApplication)),
+        { dirty: true },
+      )
     }
     notify(i18nValue.tx(`offlineStatus.blockedReason.${blocked.blockedReason ?? 'conflict'}`), 'info')
     notify(i18nValue.tx('offlineStatus.reviewLoaded'), 'warning')
@@ -4434,11 +4682,11 @@ export default function App() {
 
   function resolveAndStoreSchoolLogo(
     application: ApplicationRecord,
-    input: { website?: string; imageUrl?: string },
+    input: { website?: string; imageUrl?: string; refresh?: boolean },
     options: { silent?: boolean } = {},
   ) {
     const requestValue = input.imageUrl?.trim() || input.website?.trim() || ''
-    const requestKey = `${application.id}::${input.imageUrl ? 'link' : 'website'}::${requestValue}`
+    const requestKey = `${application.id}::${input.imageUrl ? 'link' : 'website'}::${input.refresh ? 'refresh' : 'cached'}::${requestValue}`
     const inFlight = schoolLogoInFlightRef.current.get(requestKey)
     if (inFlight) return inFlight
 
@@ -4456,6 +4704,13 @@ export default function App() {
             dataUrl,
             source: input.imageUrl ? 'link' : 'website',
             sourceUrl: resolved.sourceUrl,
+            ...(input.website
+              ? {
+                  websiteUrl: resolved.websiteUrl ?? input.website,
+                  cacheKey: resolved.cacheKey,
+                  candidateKind: resolved.candidateKind,
+                }
+              : {}),
             updatedAt: new Date().toISOString(),
           },
           !input.imageUrl,
@@ -4577,8 +4832,10 @@ export default function App() {
     let sessionEstablished = false
     let establishedToken: string | null = null
     try {
-      const { options } = await phdApi.beginPasskeyLogin(email.trim())
-      const { startAuthentication } = await import('@simplewebauthn/browser')
+      const [{ options }, { startAuthentication }] = await Promise.all([
+        phdApi.beginPasskeyLogin(passkeyLoginEmailHint(email)),
+        import('@simplewebauthn/browser'),
+      ])
       const assertion = await startAuthentication({
         optionsJSON: options as Parameters<typeof startAuthentication>[0]['optionsJSON'],
       })
@@ -4660,6 +4917,8 @@ export default function App() {
   function logout() {
     sessionExpiredRef.current = false
     cleanupTourSampleApplication(false)
+    if (session) purgeOfflineAccountData(session.user.id)
+    setManualOfflineMode(false)
     clearSessionState()
   }
 
@@ -4674,39 +4933,52 @@ export default function App() {
   }
 
   if (!session) {
+    const showOfflineUnavailable = connectivity.mode === 'offline'
+      && !connectivity.browserOnline
     return (
       <ThemeContext.Provider value={themeProvider}>
         <I18nContext.Provider value={i18nValue}>
           <FormValidationPrompt />
-          <AuthScreen
-            busy={busy}
-            onLogin={handleLogin}
-            onPasskeyLogin={handlePasskeyLogin}
-            passkeyAvailable={passkeyAvailable}
-            onRegister={handleRegister}
-            onForgotPassword={handleForgotPassword}
-            onCaptcha={phdApi.captcha}
-            onSendEmailCode={phdApi.sendRegisterEmailCode}
-            languages={languageOptions()}
-            onLanguageChange={changeAuthLanguage}
-          />
-          <OfflineStatusCenter
-            connectivity={connectivity}
-            language={lang}
-            snapshotActive={false}
-            snapshotSavedAt={null}
-            pendingCount={0}
-            blockedCount={0}
-            syncing={false}
-            updateReady={false}
-            onRetry={() => { void probeServerConnectivity({ force: true }) }}
-            onReviewBlocked={() => undefined}
-            onInstallUpdate={() => undefined}
-            onToggleOffline={() => undefined}
-            tx={i18nValue.tx}
-            authSurface
-            allowManualOffline={false}
-          />
+          <GlobalOverflowReveal />
+          {showOfflineUnavailable ? (
+            <OfflineUnavailableScreen
+              onRetry={() => probeServerConnectivity({ force: true })}
+              tx={i18nValue.tx}
+            />
+          ) : (
+            <>
+              <AuthScreen
+                busy={busy}
+                onLogin={handleLogin}
+                onPasskeyLogin={handlePasskeyLogin}
+                passkeyAvailable={passkeyAvailable}
+                onRegister={handleRegister}
+                onForgotPassword={handleForgotPassword}
+                onCaptcha={phdApi.captcha}
+                onSendEmailCode={phdApi.sendRegisterEmailCode}
+                languages={languageOptions()}
+                onLanguageChange={changeAuthLanguage}
+              />
+              <OfflineStatusCenter
+                connectivity={connectivity}
+                language={authLanguage}
+                snapshotActive={false}
+                snapshotSavedAt={null}
+                offlineAccessExpiresAt={null}
+                pendingCount={0}
+                blockedCount={0}
+                syncing={false}
+                updateReady={pwaUpdateReady}
+                onRetry={() => { void probeServerConnectivity({ force: true }) }}
+                onReviewBlocked={() => undefined}
+                onInstallUpdate={requestPwaUpdateInstall}
+                onToggleOffline={() => undefined}
+                tx={i18nValue.tx}
+                authSurface
+                allowManualOffline={false}
+              />
+            </>
+          )}
           <ToastStack toasts={toasts} onClose={dismissToast} onPause={pauseToast} onResume={resumeToast} />
         </I18nContext.Provider>
       </ThemeContext.Provider>
@@ -4743,6 +5015,7 @@ export default function App() {
     setTeamLookupComplete(false)
     setOfflineDataActive(false)
     setOfflineSnapshotSavedAt(null)
+    setOfflineAccessExpiresAt(null)
     setOfflineQueueCount(0)
     setBlockedOfflineCount(0)
     setSyncingOffline(false)
@@ -4925,7 +5198,7 @@ export default function App() {
     const queueForSync = () => {
       const baseUpdatedAt = baseApplication?.updatedAt ?? nextApp.updatedAt ?? null
       const nextQueue = enqueueApplicationUpdate(
-        queuedSession.user.id,
+        queuedSession,
         nextApp,
         baseUpdatedAt,
         baseApplication,
@@ -4934,8 +5207,11 @@ export default function App() {
         application.id === nextApp.id ? nextApp : application,
       )
       replaceApplication(nextApp)
-      saveOfflineSnapshot(queuedSession, currentSnapshotData(nextApplications))
-      setOfflineSnapshotSavedAt(new Date().toISOString())
+      const saved = saveOfflineSnapshot(queuedSession, currentSnapshotData(nextApplications))
+      if (saved) {
+        setOfflineSnapshotSavedAt(saved.savedAt)
+        setOfflineAccessExpiresAt(saved.authorization.expiresAt)
+      }
       setOfflineDataActive(true)
       setOfflineQueueCount(nextQueue.length)
       setBlockedOfflineCount(nextQueue.filter((item) => item.status === 'blocked').length)
@@ -5433,9 +5709,9 @@ export default function App() {
     action()
   }
 
-  function createWorkspaceJumpIntent(target: WorkspaceJumpTarget): DossierJumpIntent {
+  function createWorkspaceJumpIntent(applicationId: string, target: WorkspaceJumpTarget): DossierJumpIntent {
     workspaceJumpTokenRef.current += 1
-    return { ...target, token: workspaceJumpTokenRef.current }
+    return { ...target, applicationId, token: workspaceJumpTokenRef.current }
   }
 
   function clearWorkspaceViewExit() {
@@ -5547,6 +5823,9 @@ export default function App() {
   }
 
   function selectApplication(applicationId: string, jumpTarget?: WorkspaceJumpTarget) {
+    // Cancel the previous one-shot focus immediately, before a lazy destination
+    // or View Transition can delay the next record commit.
+    setWorkspaceJumpIntent(null)
     if (compactWorkspaceViewport && !mobileDetailOpen) {
       mobileDetailOriginRef.current = screen === 'dashboard'
         ? 'dashboard'
@@ -5568,7 +5847,7 @@ export default function App() {
     const needsScreenTransition = screen !== 'workspace'
     const needsWorkspaceViewTransition = screen === 'workspace'
       && (viewMode === 'kanban' || !selected || !draftRef.current)
-    const nextJumpIntent = jumpTarget ? createWorkspaceJumpIntent(jumpTarget) : null
+    const nextJumpIntent = jumpTarget ? createWorkspaceJumpIntent(applicationId, jumpTarget) : null
     const draftAlreadyReady = draftRef.current?.id === applicationId
     if (!draftAlreadyReady) clearDetailDraftHydration()
 
@@ -5615,6 +5894,7 @@ export default function App() {
   }
 
   function openTourSampleWorkspace(nextTab: DetailTab, jumpTarget?: WorkspaceJumpTarget) {
+    setWorkspaceJumpIntent(null)
     ensureTourSampleApplication()
     setWorkspaceLayout(defaultWorkspaceLayout)
     setViewModeDirection('to-list')
@@ -5622,7 +5902,9 @@ export default function App() {
     setStatusFilters([])
     setSort('deadline')
     setWorkspaceOpeningFromDashboard(true)
-    const nextJumpIntent = jumpTarget ? createWorkspaceJumpIntent(jumpTarget) : null
+    const nextJumpIntent = jumpTarget
+      ? createWorkspaceJumpIntent(TOUR_SAMPLE_APPLICATION_ID, jumpTarget)
+      : null
     startTransition(() => {
       setSelectedId(TOUR_SAMPLE_APPLICATION_ID)
       setViewMode('list')
@@ -5684,6 +5966,10 @@ export default function App() {
   }
 
   function openNewApplicationDialog(ownerId: string | null) {
+    if (isTeamMode && !canCreateInCurrentTeam) {
+      notify(i18nValue.tx('team.permissionCreateApplicationsDenied', 'Your Team permissions do not allow creating applications.'), 'info')
+      return
+    }
     const limit = isProUser ? applicationLimit : applicationCreateLimit
     const shouldCheckOwnCreateLimit = !isTeamMode
     if (shouldCheckOwnCreateLimit && !isAdminUser && applicationLimitUsageCount >= limit) {
@@ -5692,7 +5978,8 @@ export default function App() {
     }
     setNewApplicationOwnerHint(ownerId ?? null)
     if (ownerId) {
-      setOwnerFilter(ownerId)
+      // The student id seeds the dialog only. A card-level add action must not
+      // narrow the board or application list behind the modal.
       setInterfaceMode('team')
     }
     runWithNavigationGuard(() => {
@@ -5707,6 +5994,10 @@ export default function App() {
   }
 
   function openShareDialog() {
+    if (isTeamMode && !canShareInCurrentTeam) {
+      notify(i18nValue.tx('team.permissionShareDenied', 'Your Team permissions do not allow creating share links.'), 'info')
+      return
+    }
     void Promise.all([
       preloadLanguage(lang, ['core', 'shared', 'share']),
       loadShareDialog(),
@@ -6316,12 +6607,18 @@ export default function App() {
   // reveal dense rows concurrently so a large checklist cannot block the tap.
   const deferScreenProgressiveReveal = false
   const deferDossierHeavyContent = compactWorkspaceViewport && dossierContentDeferred
+  const isTeamStudentDashboard = (
+    screen === 'team'
+    && isTeamMode
+    && teamViewerRole === 'member'
+    && teamSection === 'overview'
+  )
 
   // Main content based on screen
   const mainContent =
     screen === 'discover' && (!canUseDiscover || (isTeamMode && !teamDiscoverScope)) ? (
       <DeferredPanel variant="dashboard" />
-    ) : screen === 'dashboard' ? (
+    ) : screen === 'dashboard' || isTeamStudentDashboard ? (
       <Dashboard
         applications={workspaceApplications}
         recentOpenedIds={isTeamMode ? [] : recentOpenedIds}
@@ -6460,15 +6757,29 @@ export default function App() {
             throw error
           }
         }}
-        onNew={() => openNewApplicationDialog(null)}
-        guidanceTeam={!isTeamMode ? studentGuidanceTeam : undefined}
-        ownerNames={isTeamMode ? teamApplicationOwnerNames : undefined}
-        eyebrow={isTeamMode ? i18nValue.tx('dashboard.teamEyebrow') : undefined}
-        title={isTeamMode ? i18nValue.tx('dashboard.teamTitle') : undefined}
-        subtitle={isTeamMode ? i18nValue.tx('dashboard.teamSubtitle') : undefined}
-        ownerDirectory={isTeamMode ? ownerDirectory : undefined}
-        ownerAvatars={isTeamMode ? ownerAvatarDirectory : undefined}
-        onViewMember={isTeamMode ? viewMemberApplications : undefined}
+        onNew={canCreateInCurrentTeam ? () => openNewApplicationDialog(null) : undefined}
+        guidanceTeam={isTeamStudentDashboard ? studentGuidanceTeam : undefined}
+        onSendGuidanceMessage={isTeamStudentDashboard && visibleTeamSummary ? async (
+          memberId,
+          messageTitle,
+          messageBody,
+        ) => {
+          await phdApi.publishTeamNotification(activeSession.token, visibleTeamSummary.team.id, {
+            title: messageTitle,
+            body: messageBody,
+            channels: ['in_app'],
+            memberIds: [memberId],
+          })
+          const recipientName = studentGuidanceTeam?.members.find((member) => member.id === memberId)?.name ?? ''
+          notify(tpl(i18nValue.tx('dashboard.guidanceMessageSent', 'Message sent to {name}.'), { name: recipientName }), 'success')
+        } : undefined}
+        ownerNames={isTeamMode && !isTeamStudentDashboard ? teamApplicationOwnerNames : undefined}
+        eyebrow={isTeamMode && !isTeamStudentDashboard ? i18nValue.tx('dashboard.teamEyebrow') : undefined}
+        title={isTeamMode && !isTeamStudentDashboard ? i18nValue.tx('dashboard.teamTitle') : undefined}
+        subtitle={isTeamMode && !isTeamStudentDashboard ? i18nValue.tx('dashboard.teamSubtitle') : undefined}
+        ownerDirectory={isTeamMode && !isTeamStudentDashboard ? ownerDirectory : undefined}
+        ownerAvatars={isTeamMode && !isTeamStudentDashboard ? ownerAvatarDirectory : undefined}
+        onViewMember={isTeamMode && !isTeamStudentDashboard ? viewMemberApplications : undefined}
         onOpenDiscover={
           isTeamMode || !canUsePersonalDiscover
             ? undefined
@@ -6888,11 +7199,11 @@ export default function App() {
         }}
         onOpenApplicationInNewPage={(applicationId) => openApplicationsInTabs([applicationId])}
         onImpersonateMember={enterTemporaryUserView}
-        onCreateApplication={(ownerId) => {
-          setInterfaceMode('team')
-          setTeamSection('applications')
-          openNewApplicationDialog(ownerId ?? null)
-        }}
+        onCreateApplication={canCreateInCurrentTeam ? (ownerId) => {
+            setInterfaceMode('team')
+            setTeamSection('applications')
+            openNewApplicationDialog(ownerId ?? null)
+          } : undefined}
         onSwitchToPersonal={openPersonalWorkspaceForTeamTransfer}
         onCopy={copyValue}
         onOpenTeamDiscover={(studentUserId) => {
@@ -6910,9 +7221,10 @@ export default function App() {
     ) : screen === 'workspace' && viewMode === 'kanban' && canUseWorkspaceBoard ? (
       <KanbanBoard
         applications={visibleApplications}
+        customApplicationStatuses={activeSession.user.settings.customApplicationStatuses}
         onNew={isTeamMode ? undefined : () => openNewApplicationDialog(null)}
         teamStudents={isTeamMode ? teamBoardStudents : undefined}
-        onNewForStudent={isTeamMode ? (studentId) => openNewApplicationDialog(studentId) : undefined}
+        onNewForStudent={isTeamMode && canCreateInCurrentTeam ? (studentId) => openNewApplicationDialog(studentId) : undefined}
         onPrefetch={prefetchDossierAssets}
         onStatusChange={(id, status) => {
           const app = workspaceApplications.find((application) => application.id === id)
@@ -6954,9 +7266,15 @@ export default function App() {
         session={activeSession}
         currentUserApplicationRole={selectedTeamMeta?.currentUserApplicationRole}
         applicationOwnerName={selectedTeamMeta && selectedTeamMeta.ownerId !== activeSession.user.id ? selectedTeamMeta.ownerName : undefined}
+        readOnly={isTeamMode && !canEditInCurrentTeam}
+        canShareApplication={canShareInCurrentTeam}
         jumpIntent={workspaceJumpIntent}
+        onJumpIntentConsumed={consumeWorkspaceJumpIntent}
         onTab={(nextTab, direction) => runAnimatedDossierUpdate(
-          () => setTab(nextTab),
+          () => {
+            setWorkspaceJumpIntent(null)
+            setTab(nextTab)
+          },
           {
             scope: 'dossier-tab',
             direction,
@@ -6981,6 +7299,9 @@ export default function App() {
           if (!selected) return undefined
           return toggleApplicationTeamVisibility(selected.id, visibleToTeam, teamId)
         }}
+        onCustomApplicationStatusesChange={(statuses) => updateUserSettings({
+          customApplicationStatuses: statuses,
+        })}
         onSave={() => {
           const latestDraft = draftRef.current
           return latestDraft ? saveApplication(latestDraft, i18nValue.tx('toast.appSaved')) : undefined
@@ -7430,7 +7751,7 @@ export default function App() {
       </div>
     ) : (
       <EmptyDossier
-        onNew={() => openNewApplicationDialog(null)}
+        onNew={canCreateInCurrentTeam ? () => openNewApplicationDialog(null) : undefined}
         description={isTeamMode ? i18nValue.tx('dossier.noAppDescTeam') : undefined}
       />
     )
@@ -7500,6 +7821,7 @@ export default function App() {
     <ThemeContext.Provider value={themeProvider}>
       <I18nContext.Provider value={i18nValue}>
         <FormValidationPrompt />
+        <GlobalOverflowReveal />
         <LoadingCurtain
           loading={!applicationsLoaded || !shellPaintReady || !i18nValue.ready || Boolean(workspaceHandoff)}
           delayMs={!applicationsLoaded || !shellPaintReady || !i18nValue.ready ? 0 : 90}
@@ -7545,7 +7867,8 @@ export default function App() {
         language={lang}
         snapshotActive={offlineDataActive}
         snapshotSavedAt={offlineSnapshotSavedAt}
-        pendingCount={pendingOfflineQueueSize(activeSession.user.id)}
+        offlineAccessExpiresAt={offlineAccessExpiresAt}
+        pendingCount={Math.max(0, offlineQueueCount - blockedOfflineCount)}
         blockedCount={blockedOfflineCount}
         syncing={syncingOffline}
         updateReady={pwaUpdateReady}
@@ -7606,6 +7929,22 @@ export default function App() {
 
           // Team applications reuse the application workspace. Teachers and owners
           // enter the student board; students retain the focused list/dossier flow.
+          if (section === 'discover' && teamViewerRole === 'member') {
+            if (!canUseTeamDiscover || !activeSession.user.id) return
+            setTeamDiscoverTargetUserId(activeSession.user.id)
+            runWithNavigationGuard(() => {
+              runAnimatedRailScreenUpdate(() => {
+                setTeamSection('discover')
+                setScreen('discover')
+              }, {
+                direction: 'forward',
+                ready: warmCriticalScreenAssets('discover', tab, lang, viewMode),
+                readinessGate: readinessGateForScreen('discover', viewMode),
+              })
+            })
+            return
+          }
+
           if (section === 'applications') {
             const destinationViewMode = teamViewerRole === 'member' ? 'list' as const : 'kanban' as const
             const direction = validTeamSections.indexOf(section) >= validTeamSections.indexOf(teamSection)
@@ -7761,7 +8100,7 @@ export default function App() {
           ownerFilterOptions={isTeamMode ? ownerFilterOptions : undefined}
           ownerFilter={effectiveOwnerFilter}
           onOwnerFilter={setOwnerFilter}
-          teamRelations={isTeamMode ? teamApplicationRelations : undefined}
+          teamRelations={isTeamMode && teamViewerRole !== 'member' ? teamApplicationRelations : undefined}
           readOnlyIds={isTeamMode ? readOnlyApplicationIds : undefined}
           selectedId={selected?.id ?? null}
           query={query}
@@ -7776,6 +8115,7 @@ export default function App() {
           )}
           onSelect={(id) => {
             if (id === selected?.id) {
+              setWorkspaceJumpIntent(null)
               // The first row is commonly auto-selected before the user taps it.
               // Opening that already-selected record still changes the entire
               // mobile surface, so give it the same forward handoff as any row.
@@ -7791,7 +8131,7 @@ export default function App() {
             }
             runWithNavigationGuard(() => selectApplication(id))
           }}
-          onNew={() => openNewApplicationDialog(null)}
+          onNew={canCreateInCurrentTeam ? () => openNewApplicationDialog(null) : undefined}
           onUpgrade={() => openUpgradePage('application-limit', String(applicationLimitUsageCount + 1), String(isProUser ? applicationLimit : applicationCreateLimit))}
           onShowBoard={canUseWorkspaceBoard ? () => runWithNavigationGuard(openWorkspaceBoard) : undefined}
           onOpenMany={isTeamMode ? undefined : openApplicationsInTabs}

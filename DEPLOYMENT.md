@@ -497,7 +497,7 @@ start the service. See the template comments for details.
 docker compose pull
 docker compose up -d --wait
 
-# Or in-app Admin update (beta.2+): Admin → System info → System update → Check
+# Or in-app Admin update (beta.6+): Admin → System info → System update → Check
 ```
 
 ### Native
@@ -513,8 +513,17 @@ sudo -u phd-atlas npm prune --omit=dev
 sudo systemctl start phd-atlas
 ```
 
-Admin Release package update (beta.2+): Admin → System info → System update.
-Supports automatic GitHub Release checks or manual `.tar.gz` upload.
+Admin Release package update (beta.6+): Admin → System info → System update.
+Supports automatic GitHub Release checks or manual `.tar.gz` upload. For the
+one-time transition from Beta.5 or earlier to Beta.6, download the Beta.6
+Release `.tar.gz` on a trusted machine and upload it through **Manual update**;
+do not rely on the older automatic Install path.
+
+Beta.6 and later update packages derive every production dependency directly
+from the standard package manifest and lockfile. Exact integrity-pinned
+dependency archives travel inside the Release package, while bounded npmjs,
+npmmirror, Yarn-compatible, and applicable GitHub mirror fallback remains
+available for legacy recovery and third-party lifecycle downloads.
 
 ## Backup and rollback
 

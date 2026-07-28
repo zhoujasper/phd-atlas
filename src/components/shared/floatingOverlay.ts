@@ -69,6 +69,8 @@ export function getAnchoredOverlayStyle(
     maxHeight: availableHeight,
     '--floating-available-height': `${availableHeight}px`,
     '--floating-transform-origin': openAbove ? 'bottom left' : 'top left',
+    '--floating-enter-y': openAbove ? '4px' : '-4px',
+    '--floating-exit-y': openAbove ? '3px' : '-3px',
   } as CSSProperties
 }
 

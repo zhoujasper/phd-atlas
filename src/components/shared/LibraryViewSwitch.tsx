@@ -2,7 +2,7 @@ import { flushSync } from 'react-dom'
 import { LayoutGrid, List } from 'lucide-react'
 
 export type LibraryViewMode = 'cards' | 'list'
-export type LibraryViewTransitionScope = 'profile' | 'team'
+export type LibraryViewTransitionScope = 'profile' | 'team' | 'team-discover'
 
 type LibraryViewTransition = {
   finished: Promise<unknown>
@@ -28,6 +28,17 @@ function clearTransitionAttributes(root: HTMLElement, token: string) {
   delete root.dataset.libraryViewTransitionMode
 }
 
+function stabilizeLibraryHeight(controlsId: string) {
+  const currentView = document.getElementById(controlsId)
+  const host = currentView?.parentElement
+  if (!currentView || !host) return
+  const measuredHeight = currentView.getBoundingClientRect().height
+  if (!Number.isFinite(measuredHeight) || measuredHeight <= 0) return
+  const previousHeight = Number.parseFloat(host.style.getPropertyValue('--library-view-stable-height')) || 0
+  host.style.setProperty('--library-view-stable-height', `${Math.max(previousHeight, measuredHeight)}px`)
+  host.dataset.libraryViewStable = 'true'
+}
+
 export function LibraryViewSwitch({
   value,
   onChange,
@@ -49,6 +60,7 @@ export function LibraryViewSwitch({
 }) {
   const changeView = (nextValue: LibraryViewMode) => {
     if (value === nextValue) return
+    stabilizeLibraryHeight(controlsId)
     if (typeof document === 'undefined' || prefersReducedMotion()) {
       onChange(nextValue)
       return

@@ -58,6 +58,7 @@ import type { WebPushNotificationStatus } from '../hooks/useWebPushNotifications
 import { CollapsiblePanel } from '../shared/CollapsiblePanel'
 import { AsyncActionButton } from '../shared/AsyncActionButton'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
+import { ProjectFooter } from '../shared/ProjectFooter'
 import { InlineConfirm } from '../shared/InlineConfirm'
 import { InlinePresence } from '../shared/InlinePresence'
 import { InfoTooltip } from '../shared/InfoTooltip'
@@ -3156,6 +3157,7 @@ export function SettingsScreen({
         </div> : null}
         </div>
       </div>
+      <ProjectFooter />
       <AvatarCropDialog
         open={avatarDialogOpen}
         currentAvatar={session.user.settings.avatarDataUrl}

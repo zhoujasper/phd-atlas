@@ -173,6 +173,7 @@ describe('container update supervisor', () => {
       prepareRuntime: async () => {},
       claimPendingBoot,
       recoverPendingRuntime,
+      recordBootRollback: async () => {},
       sleep: async () => {},
       spawnWorker: () => {
         const worker = workers[spawnCount]

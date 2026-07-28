@@ -119,6 +119,11 @@
     "guidanceShowDetails": "{name}の詳細を表示",
     "guidanceOffice": "研究室・オフィス",
     "guidanceAvailability": "連絡可能時間",
-    "guidanceSupport": "サポートできること"
+    "guidanceSupport": "サポートできること",
+    "guidanceContact": "{name}に連絡",
+    "guidanceContactOptions": "{name}への連絡方法",
+    "guidanceInApp": "アプリ内メッセージ",
+    "guidanceMessageTitle": "{name}にメッセージ",
+    "guidanceMessageSent": "{name}にメッセージを送信しました。"
   }
 }

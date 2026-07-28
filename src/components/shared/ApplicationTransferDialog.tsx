@@ -89,6 +89,13 @@ export function ApplicationTransferDialog({
   const { exiting, requestClose } = useAnimatedClose(open, onClose, 150, application.id)
   const selectedPreflight = selectedTeamId ? preflightByTeam[selectedTeamId] : null
   const selectedLoading = Boolean(selectedTeamId && loadingTeamIds.has(selectedTeamId))
+  const preflightView = !selectedTeamId
+    ? 'choose'
+    : selectedLoading || (!selectedPreflight && !error)
+      ? 'checking'
+      : !selectedPreflight
+        ? 'failed'
+        : 'result'
   const canSubmit = Boolean(selectedTeamId && selectedPreflight?.eligible && !selectedLoading && !submitting)
   const dialogRef = useModalA11y<HTMLDivElement>({
     open: open && !exiting,
@@ -106,13 +113,18 @@ export function ApplicationTransferDialog({
     const current = organizations.find((organization) => organization.teamId === application.teamId)
     return current ? [current] : organizations.slice(0, 1)
   }, [application.teamId, direction, organizations])
+  const preflightScopeKey = useMemo(() => Array.from(new Set([
+    ...(direction === 'leave' && application.teamId ? [application.teamId] : []),
+    ...visibleOrganizations.map((organization) => organization.teamId),
+  ])).join('\u0001'), [application.teamId, direction, visibleOrganizations])
 
   useEffect(() => {
     if (!open || submittingRef.current) return
+    const ids = preflightScopeKey ? preflightScopeKey.split('\u0001') : []
     const nextSelected = direction === 'leave'
-      ? application.teamId ?? visibleOrganizations[0]?.teamId ?? ''
-      : visibleOrganizations.length === 1
-        ? visibleOrganizations[0]?.teamId ?? ''
+      ? application.teamId ?? ids[0] ?? ''
+      : ids.length === 1
+        ? ids[0] ?? ''
         : ''
     setSelectedTeamId(nextSelected)
     setPreflightByTeam({})
@@ -120,7 +132,6 @@ export function ApplicationTransferDialog({
     setSubmitting(false)
 
     let cancelled = false
-    const ids = visibleOrganizations.map((organization) => organization.teamId)
     setLoadingTeamIds(new Set(ids))
     for (const teamId of ids) {
       void onPreflightRef.current(teamId)
@@ -143,7 +154,7 @@ export function ApplicationTransferDialog({
     return () => {
       cancelled = true
     }
-  }, [application.id, application.teamId, direction, lang, open, visibleOrganizations])
+  }, [application.id, application.teamId, direction, lang, open, preflightScopeKey])
 
   async function submit() {
     if (!canSubmit) return
@@ -260,19 +271,41 @@ export function ApplicationTransferDialog({
 
           <section className="application-transfer-preflight" aria-labelledby={`${titleId}-preflight`}>
             <h3 id={`${titleId}-preflight`}>{tx('dossier.teamTransferPreflightTitle')}</h3>
-            {!selectedTeamId ? (
-              <div className="application-transfer-placeholder">
+            <div className="application-transfer-preflight-stage" data-view={preflightView}>
+              <div
+                className={`application-transfer-preflight-view application-transfer-placeholder${preflightView === 'choose' ? ' active' : ''}`}
+                aria-hidden={preflightView !== 'choose'}
+                inert={preflightView !== 'choose' || undefined}
+              >
                 <Building2 size={16} aria-hidden="true" />
                 <span>{tx('dossier.teamTransferChooseOrganizationFirst')}</span>
               </div>
-            ) : selectedLoading || !selectedPreflight ? (
-              <div className="application-transfer-placeholder checking" role="status">
-                <LoaderCircle size={16} className="spin" aria-hidden="true" />
+              <div
+                className={`application-transfer-preflight-view application-transfer-placeholder checking${preflightView === 'checking' ? ' active' : ''}`}
+                role="status"
+                aria-hidden={preflightView !== 'checking'}
+                inert={preflightView !== 'checking' || undefined}
+              >
+                <span className="application-transfer-checking-indicator" aria-hidden="true">
+                  <LoaderCircle size={16} />
+                </span>
                 <span>{tx('dossier.teamTransferChecking')}</span>
               </div>
-            ) : (
-              <div className="application-transfer-check-list">
-                {selectedPreflight.checks.map((check, index) => {
+              <div
+                className={`application-transfer-preflight-view application-transfer-placeholder failed${preflightView === 'failed' ? ' active' : ''}`}
+                role="alert"
+                aria-hidden={preflightView !== 'failed'}
+                inert={preflightView !== 'failed' || undefined}
+              >
+                <CircleAlert size={16} aria-hidden="true" />
+                <span>{error}</span>
+              </div>
+              <div
+                className={`application-transfer-preflight-view application-transfer-check-list${preflightView === 'result' ? ' active' : ''}`}
+                aria-hidden={preflightView !== 'result'}
+                inert={preflightView !== 'result' || undefined}
+              >
+                {selectedPreflight?.checks.map((check, index) => {
                   const Icon = checkIcons[check.id]
                   return (
                     <div
@@ -292,7 +325,7 @@ export function ApplicationTransferDialog({
                   )
                 })}
               </div>
-            )}
+            </div>
           </section>
 
           <div className="application-transfer-note">
@@ -300,7 +333,7 @@ export function ApplicationTransferDialog({
             <span>{tx(approvalRequired ? 'dossier.teamTransferApprovalNote' : 'dossier.teamTransferDirectNote')}</span>
           </div>
 
-          {error ? <p className="application-transfer-error" role="alert">{error}</p> : null}
+          {error && selectedPreflight ? <p className="application-transfer-error" role="alert">{error}</p> : null}
 
           <footer className="application-transfer-actions">
             <button type="button" className="quiet-action" disabled={submitting} onClick={() => requestClose()}>

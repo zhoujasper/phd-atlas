@@ -6,16 +6,26 @@ import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 import { createGzip } from 'node:zlib'
 import tarFs from 'tar-fs'
+import { dependencyArtifactCandidates } from '../server/dependencyInstall.js'
+import {
+  createRuntimePackageJson,
+  createRuntimePackageLock,
+  createVendoredRuntimePackageLock,
+} from './runtime-package-manifest.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const projectRoot = resolve(dirname(__filename), '..')
 const packageJson = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8'))
+const packageLock = JSON.parse(readFileSync(join(projectRoot, 'package-lock.json'), 'utf8'))
 const outRoot = join(projectRoot, 'storage', 'update-packages')
 const stageRoot = join(projectRoot, 'storage', 'update-package-stage')
+const dependencyCacheRoot = join(projectRoot, 'storage', 'update-dependency-cache')
 const packageName = `phd-atlas-update-${packageJson.version}-release.tar.gz`
 const packagePath = join(outRoot, packageName)
 const checksumPath = `${packagePath}.sha256`
 const maximumPackageBytes = 100 * 1024 * 1024
+const maximumDependencyArtifactBytes = 128 * 1024 * 1024
+const dependencyDownloadConcurrency = 8
 const buildCommand = process.platform === 'win32' ? 'cmd.exe' : 'npm'
 const buildArgs = process.platform === 'win32' ? ['/d', '/s', '/c', 'npm run build'] : ['run', 'build']
 
@@ -31,6 +41,121 @@ function run(command, args, options = {}) {
   if (result.status !== 0) {
     process.exit(result.status ?? 1)
   }
+}
+
+function verifyDependencyIntegrity(contents, integrity) {
+  const checks = String(integrity)
+    .split(/\s+/)
+    .map((value) => /^([a-z0-9]+)-([A-Za-z0-9+/=]+)(?:\?.*)?$/i.exec(value))
+    .filter(Boolean)
+  if (checks.length === 0) return false
+  return checks.some(([, algorithm, expected]) => {
+    try {
+      return createHash(algorithm).update(contents).digest().equals(Buffer.from(expected, 'base64'))
+    } catch {
+      return false
+    }
+  })
+}
+
+async function downloadDependencyArtifact(artifact, destination) {
+  const cached = join(dependencyCacheRoot, artifact.fileName)
+  if (existsSync(cached)) {
+    const contents = readFileSync(cached)
+    if (verifyDependencyIntegrity(contents, artifact.integrity)) {
+      writeFileSync(destination, contents)
+      return
+    }
+    rmSync(cached, { force: true })
+  }
+
+  const failures = []
+  for (const candidate of dependencyArtifactCandidates(artifact.source)) {
+    try {
+      const response = await fetch(candidate, {
+        headers: {
+          accept: 'application/octet-stream',
+          'user-agent': 'phd-atlas-release-builder',
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(45_000),
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const declaredSize = Number(response.headers.get('content-length'))
+      if (Number.isFinite(declaredSize) && declaredSize > maximumDependencyArtifactBytes) {
+        throw new Error(`declared size ${declaredSize} exceeds the safety limit`)
+      }
+      const contents = Buffer.from(await response.arrayBuffer())
+      if (contents.length > maximumDependencyArtifactBytes) {
+        throw new Error(`downloaded size ${contents.length} exceeds the safety limit`)
+      }
+      if (!verifyDependencyIntegrity(contents, artifact.integrity)) {
+        throw new Error('integrity did not match package-lock.json')
+      }
+      writeFileSync(cached, contents)
+      writeFileSync(destination, contents)
+      return
+    } catch (error) {
+      failures.push(`${candidate}: ${error?.message ?? error}`)
+    }
+  }
+  throw new Error(
+    `Could not vendor ${artifact.packagePaths.join(', ')} from any dependency source:\n${failures.join('\n')}`,
+  )
+}
+
+async function vendorProductionDependencies(runtimeLock) {
+  const { packageLock: vendoredLock, artifacts } = createVendoredRuntimePackageLock(runtimeLock)
+  const vendorRoot = join(stageRoot, 'tools', 'runtime-packages')
+  mkdirSync(vendorRoot, { recursive: true })
+  mkdirSync(dependencyCacheRoot, { recursive: true })
+
+  const uniqueArtifacts = new Map()
+  for (const artifact of artifacts) {
+    const existing = uniqueArtifacts.get(artifact.fileName)
+    if (existing) {
+      existing.packagePaths.push(artifact.packagePath)
+    } else {
+      uniqueArtifacts.set(artifact.fileName, {
+        ...artifact,
+        packagePaths: [artifact.packagePath],
+      })
+    }
+  }
+  const pending = [...uniqueArtifacts.values()]
+    .sort((left, right) => left.fileName < right.fileName ? -1 : left.fileName > right.fileName ? 1 : 0)
+  let nextIndex = 0
+  let completed = 0
+  const workers = Array.from(
+    { length: Math.min(dependencyDownloadConcurrency, pending.length) },
+    async () => {
+      while (nextIndex < pending.length) {
+        const artifact = pending[nextIndex]
+        nextIndex += 1
+        await downloadDependencyArtifact(artifact, join(vendorRoot, artifact.fileName))
+        completed += 1
+        if (completed % 25 === 0 || completed === pending.length) {
+          console.log(`Vendored ${completed}/${pending.length} production dependency archives.`)
+        }
+      }
+    },
+  )
+  await Promise.all(workers)
+  writeFileSync(
+    join(vendorRoot, 'index.json'),
+    `${JSON.stringify({
+      formatVersion: 1,
+      packageCount: artifacts.length,
+      artifactCount: pending.length,
+      artifacts: pending.map((artifact) => ({
+        file: artifact.fileName,
+        integrity: artifact.integrity,
+        packages: artifact.packagePaths.sort(),
+      })),
+    }, null, 2)}\n`,
+    'utf8',
+  )
+  return vendoredLock
 }
 
 function releaseTimestamp() {
@@ -56,12 +181,24 @@ mkdirSync(stageRoot, { recursive: true })
 
 run(buildCommand, buildArgs)
 
-for (const entry of ['dist', 'server', 'package.json', 'package-lock.json']) {
+for (const entry of ['dist', 'server']) {
   const source = join(projectRoot, entry)
   if (existsSync(source)) {
     cpSync(source, join(stageRoot, entry), { recursive: true })
   }
 }
+writeFileSync(
+  join(stageRoot, 'package.json'),
+  `${JSON.stringify(createRuntimePackageJson(packageJson), null, 2)}\n`,
+  'utf8',
+)
+const runtimePackageLock = createRuntimePackageLock(packageJson, packageLock)
+const vendoredPackageLock = await vendorProductionDependencies(runtimePackageLock)
+writeFileSync(
+  join(stageRoot, 'package-lock.json'),
+  `${JSON.stringify(vendoredPackageLock, null, 2)}\n`,
+  'utf8',
+)
 
 const runtimeToolNames = ['start-server.mjs', 'apply-update.mjs', 'container-entrypoint.mjs']
 mkdirSync(join(stageRoot, 'tools'), { recursive: true })
@@ -129,9 +266,11 @@ writeFileSync(
     `version=${packageJson.version}`,
     `createdAt=${createdAt}`,
     '',
-    'For PhD Atlas 0.1.0-beta.2 and later, upload this .tar.gz file from',
-    'Admin > System information > System update when automatic Release download is unavailable.',
-    'Older installations must follow the version-specific bootstrap instructions in DEPLOYMENT.md.',
+    'Migration boundary: installations older than 0.1.0-beta.6 must download this .tar.gz',
+    'Release asset and upload it from Admin > System information > System update.',
+    'After 0.1.0-beta.6 is installed, later Release updates can complete automatically.',
+    'The package carries its complete integrity-pinned production dependency graph and',
+    'retains bounded international/mainland source fallback for future extensions.',
     'The server validates, stores, installs, and first-boot checks the package with rollback protection.',
   ].join('\n'),
   'utf8',

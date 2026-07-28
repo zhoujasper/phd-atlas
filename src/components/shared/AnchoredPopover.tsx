@@ -3,12 +3,14 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
   type ReactNode,
 } from 'react'
 import { addFloatingViewportListeners, getAnchoredOverlayStyle } from './floatingOverlay'
+import { getMotionDelay, useAnimatedClose } from '../hooks/useAnimatedClose'
 
 const focusableSelector = 'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
 
@@ -36,10 +38,13 @@ export function AnchoredPopover({
   children: (close: () => void) => ReactNode
 }) {
   const [open, setOpen] = useState(false)
+  const [positionReady, setPositionReady] = useState(false)
   const [popoverStyle, setPopoverStyle] = useState<CSSProperties>({ visibility: 'hidden' })
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const popoverRef = useRef<HTMLDivElement | null>(null)
   const positionFrameRef = useRef<number | null>(null)
+  const restoreFocusTimerRef = useRef<number | null>(null)
+  const restoreFocusFrameRef = useRef<number | null>(null)
   const onOpenChangeRef = useRef(onOpenChange)
   const popoverId = useId()
 
@@ -52,12 +57,19 @@ export function AnchoredPopover({
     onOpenChangeRef.current?.(nextOpen)
   }, [])
 
+  const {
+    exiting,
+    requestClose,
+  } = useAnimatedClose(open, () => setOpenState(false))
+
   const getPopoverPosition = useCallback((): CSSProperties => {
     return getAnchoredOverlayStyle(triggerRef.current, {
       minWidth: width,
       maxWidth: width,
       estimatedHeight,
-      actualHeight: popoverRef.current?.getBoundingClientRect().height,
+      // offsetHeight is unaffected by the surface scale animation. Measuring
+      // the transformed rect here makes an above-opening popover jump twice.
+      actualHeight: popoverRef.current?.offsetHeight || undefined,
       gap: 6,
       align,
     })
@@ -75,10 +87,49 @@ export function AnchoredPopover({
     })
   }, [updatePopoverPosition])
 
+  const cancelFocusRestore = useCallback(() => {
+    if (typeof window === 'undefined') {
+      restoreFocusTimerRef.current = null
+      restoreFocusFrameRef.current = null
+      return
+    }
+    if (restoreFocusTimerRef.current !== null) {
+      window.clearTimeout(restoreFocusTimerRef.current)
+      restoreFocusTimerRef.current = null
+    }
+    if (restoreFocusFrameRef.current !== null) {
+      window.cancelAnimationFrame(restoreFocusFrameRef.current)
+      restoreFocusFrameRef.current = null
+    }
+  }, [])
+
   const close = useCallback((restoreFocus = true) => {
-    setOpenState(false)
-    if (restoreFocus) window.requestAnimationFrame(() => triggerRef.current?.focus())
-  }, [setOpenState])
+    requestClose()
+    cancelFocusRestore()
+    if (restoreFocus) {
+      const browserWindow = window
+      restoreFocusTimerRef.current = browserWindow.setTimeout(() => {
+        restoreFocusTimerRef.current = null
+        const triggerElement = triggerRef.current
+        if (!triggerElement?.isConnected) return
+        restoreFocusFrameRef.current = browserWindow.requestAnimationFrame(() => {
+          restoreFocusFrameRef.current = null
+          triggerElement.focus()
+        })
+      }, getMotionDelay(150))
+    }
+  }, [cancelFocusRestore, requestClose])
+
+  useEffect(() => () => cancelFocusRestore(), [cancelFocusRestore])
+
+  useLayoutEffect(() => {
+    if (!open) return
+    // Mount hidden, measure the real surface, and commit its anchor before the
+    // browser paints. The motion class is added only after this positioning
+    // pass, so users never see the estimated-height frame.
+    setPopoverStyle(getPopoverPosition())
+    setPositionReady(true)
+  }, [getPopoverPosition, open])
 
   useEffect(() => {
     if (!open) return undefined
@@ -127,6 +178,19 @@ export function AnchoredPopover({
     }
   }, [close, open, schedulePopoverPosition])
 
+  useEffect(() => {
+    if (!open || !positionReady) return undefined
+
+    // Dynamic content can still change the surface height after it opens.
+    // Re-anchor the fixed positioner while leaving surface motion independent.
+    const popover = popoverRef.current
+    if (!popover || typeof ResizeObserver === 'undefined') return undefined
+
+    const observer = new ResizeObserver(schedulePopoverPosition)
+    observer.observe(popover)
+    return () => observer.disconnect()
+  }, [open, positionReady, schedulePopoverPosition])
+
   return (
     <span className="anchored-popover-root">
       <button
@@ -137,7 +201,9 @@ export function AnchoredPopover({
           if (open) {
             close()
           } else {
-            setPopoverStyle(getPopoverPosition())
+            cancelFocusRestore()
+            setPositionReady(false)
+            setPopoverStyle({ visibility: 'hidden' })
             setOpenState(true)
           }
         }}
@@ -150,14 +216,18 @@ export function AnchoredPopover({
       </button>
       {open && typeof document !== 'undefined' ? createPortal(
         <div
-          ref={popoverRef}
           id={popoverId}
-          className={`anchored-popover ${popoverClassName}`}
+          className={`anchored-popover-positioner${positionReady ? ' is-positioned' : ''}${exiting ? ' is-exiting' : ''}`}
           style={popoverStyle}
           role="dialog"
           aria-label={popoverAriaLabel}
         >
-          {children(() => close())}
+          <div
+            ref={popoverRef}
+            className={`anchored-popover${popoverClassName ? ` ${popoverClassName}` : ''}`}
+          >
+            {children(() => close())}
+          </div>
         </div>,
         document.body,
       ) : null}

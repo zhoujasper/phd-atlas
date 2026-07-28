@@ -13,6 +13,7 @@ import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { useModalA11y } from '../hooks/useModalA11y'
 import { ModalPortal } from './ModalPortal'
 import { LazyMarkdownTextarea as MarkdownTextarea } from './LazyMarkdownTextarea'
+import { InfoTooltip } from './InfoTooltip'
 
 export type SnippetPhraseSettings = {
   leadZh: string
@@ -64,6 +65,10 @@ export function SnippetPhraseSettingsDialog({
 
   const primaryLabel = languageLabel(pair.primary)
   const secondaryLabel = languageLabel(pair.secondary)
+  const phraseHelp = `${tx('profile.globalPhraseHint')} ${format(
+    tx('profile.contentLanguagePhraseHint', 'Columns follow your content languages: {primary} / {secondary}. Interface language is unchanged.'),
+    { primary: primaryLabel, secondary: secondaryLabel },
+  )}`
 
   const previewSingle = (slot: 'primary' | 'secondary') => {
     const language = slot === 'primary' ? pair.primary : pair.secondary
@@ -172,15 +177,13 @@ export function SnippetPhraseSettingsDialog({
         <form className="snippet-editor-form" onSubmit={handleSubmit}>
           <div className="snippet-phrase-field">
             <div className="snippet-phrase-head">
-              <div>
+              <div className="snippet-phrase-title">
                 <span className="snippet-section-label">{tx('profile.emailPhrase')}</span>
-                <p className="snippet-section-hint">{tx('profile.globalPhraseHint')}</p>
-                <p className="snippet-section-hint">
-                  {format(tx('profile.contentLanguagePhraseHint', 'Columns follow your content languages: {primary} / {secondary}. Interface language is unchanged.'), {
-                    primary: primaryLabel,
-                    secondary: secondaryLabel,
-                  })}
-                </p>
+                <InfoTooltip
+                  className="snippet-phrase-info"
+                  content={phraseHelp}
+                  label={phraseHelp}
+                />
               </div>
             </div>
             <div className="snippet-phrase-grid">
