@@ -49,7 +49,10 @@ import {
   verifyDatabaseConnection,
   writeExternalDatabaseState,
 } from './databaseConnection.js'
-import { normalizeTeamMemberRelationships } from './teamPermissions.js'
+import {
+  normalizeTeamMemberRelationships,
+  normalizeTeamPermissionDefaults,
+} from './teamPermissions.js'
 import {
   DEFAULT_ADMIN_EMAIL,
   DEFAULT_ADMIN_PASSWORD,
@@ -173,6 +176,7 @@ const DEFAULT_ADMIN_SESSION_MINUTES = 120
 const DEFAULT_APPLICATION_QUOTA = 3
 const DEFAULT_PRO_APPLICATION_QUOTA = 300
 const MAX_APPLICATION_QUOTA = 10_000
+const UNLIMITED_QUOTA_VALUE = -1
 const DEFAULT_FREE_STORAGE_QUOTA_MB = 5
 const DEFAULT_PRO_STORAGE_QUOTA_MB = 100
 const DEFAULT_FREE_SHARE_ACTIVE_QUOTA = 5
@@ -363,12 +367,14 @@ function normalizeSessionMinutes(value, fallback = DEFAULT_USER_SESSION_MINUTES)
 function normalizeShareQuota(value) {
   const quota = Number(value ?? DEFAULT_SHARE_QUOTA)
   if (!Number.isFinite(quota)) return DEFAULT_SHARE_QUOTA
+  if (quota === UNLIMITED_QUOTA_VALUE) return UNLIMITED_QUOTA_VALUE
   return Math.min(MAX_SHARE_QUOTA, Math.max(1, Math.round(quota)))
 }
 
 function normalizeApplicationQuota(value) {
   const quota = Number(value ?? DEFAULT_APPLICATION_QUOTA)
   if (!Number.isFinite(quota)) return DEFAULT_APPLICATION_QUOTA
+  if (quota === UNLIMITED_QUOTA_VALUE) return UNLIMITED_QUOTA_VALUE
   return Math.min(MAX_APPLICATION_QUOTA, Math.max(1, Math.round(quota)))
 }
 
@@ -1753,6 +1759,8 @@ function getDb() {
       sync_job_result_json TEXT NOT NULL DEFAULT '{}',
       sync_job_error_code TEXT,
       sync_job_error_message TEXT,
+      sync_job_attempt_count INTEGER NOT NULL DEFAULT 0,
+      sync_job_next_attempt_at TEXT,
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
@@ -1785,6 +1793,7 @@ function getDb() {
       target_id TEXT,
       metadata_json TEXT NOT NULL DEFAULT '{}',
       emailed_at TEXT,
+      push_enqueued_at TEXT,
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
@@ -1792,6 +1801,28 @@ function getDb() {
       ON notifications(user_id, dedupe_key);
     CREATE INDEX IF NOT EXISTS idx_notifications_user_created
       ON notifications(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS system_mail_jobs (
+      id TEXT PRIMARY KEY,
+      dedupe_key TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      payload_encrypted TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      available_at TEXT NOT NULL,
+      expires_at TEXT,
+      started_at TEXT,
+      completed_at TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at TEXT,
+      last_error_code TEXT,
+      last_error_message TEXT,
+      last_error_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_system_mail_jobs_claim
+      ON system_mail_jobs(status, next_attempt_at, available_at, created_at);
 
     CREATE TABLE IF NOT EXISTS push_subscriptions (
       endpoint TEXT PRIMARY KEY,
@@ -1832,6 +1863,7 @@ function getDb() {
       logo_data_url TEXT NOT NULL DEFAULT '',
       profile_presets_json TEXT,
       teacher_groups_json TEXT,
+      permission_defaults_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY(owner_id) REFERENCES users(id) ON DELETE CASCADE
@@ -1994,6 +2026,9 @@ function getDb() {
   if (!teamColumns.has('teacher_groups_json')) {
     db.prepare('ALTER TABLE teams ADD COLUMN teacher_groups_json TEXT').run()
   }
+  if (!teamColumns.has('permission_defaults_json')) {
+    db.prepare("ALTER TABLE teams ADD COLUMN permission_defaults_json TEXT NOT NULL DEFAULT '{}'").run()
+  }
   const notificationColumns = new Set(
     db.prepare('PRAGMA table_info(notifications)').all().map((column) => column.name),
   )
@@ -2012,6 +2047,12 @@ function getDb() {
   if (!notificationColumns.has('metadata_json')) {
     db.prepare("ALTER TABLE notifications ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'").run()
   }
+  if (!notificationColumns.has('push_enqueued_at')) {
+    db.prepare('ALTER TABLE notifications ADD COLUMN push_enqueued_at TEXT').run()
+  }
+  db.prepare(
+    'CREATE INDEX IF NOT EXISTS idx_notifications_pending_push ON notifications(push_enqueued_at, created_at)',
+  ).run()
   const mailFetchColumns = new Set(
     db.prepare('PRAGMA table_info(mail_fetch_state)').all().map((column) => column.name),
   )
@@ -2037,6 +2078,8 @@ function getDb() {
     ['sync_job_result_json', "TEXT NOT NULL DEFAULT '{}'"],
     ['sync_job_error_code', 'TEXT'],
     ['sync_job_error_message', 'TEXT'],
+    ['sync_job_attempt_count', 'INTEGER NOT NULL DEFAULT 0'],
+    ['sync_job_next_attempt_at', 'TEXT'],
   ]
   for (const [column, definition] of mailSyncJobColumns) {
     if (!mailFetchColumns.has(column)) {
@@ -2047,7 +2090,8 @@ function getDb() {
   // so the server worker resumes it after restart instead of leaving it stuck.
   db.prepare(
     `UPDATE mail_fetch_state
-     SET sync_job_status = 'queued', sync_job_started_at = NULL
+     SET sync_job_status = 'queued', sync_job_started_at = NULL,
+         sync_job_next_attempt_at = NULL
      WHERE sync_job_status = 'running'`,
   ).run()
   db.prepare("UPDATE users SET role = 'user' WHERE role = 'owner'").run()
@@ -3655,7 +3699,10 @@ export async function writeSchoolLogoCache(entry) {
   })
 }
 
-export async function writeStore(store) {
+export async function writeStore(store, {
+  systemMailJobs = [],
+  notifications = [],
+} = {}) {
   await fs.mkdir(storageRoot, { recursive: true })
   const database = getDb()
   const now = nowStamp()
@@ -3674,6 +3721,7 @@ export async function writeStore(store) {
       .all()
       .map((row) => [row.id, fromJson(row.settings_json)]),
   )
+  const createdNotifications = []
 
   const transaction = database.transaction(() => {
     database
@@ -3994,6 +4042,17 @@ export async function writeStore(store) {
     if (retentionCutoff) {
       database.prepare('DELETE FROM system_events WHERE time < ?').run(retentionCutoff)
     }
+    for (const job of systemMailJobs) {
+      insertSystemMailJob(database, job)
+    }
+    for (const notification of notifications) {
+      const created = insertNotificationRow(
+        database,
+        notification.userId,
+        notification.candidate,
+      )
+      if (created) createdNotifications.push(created)
+    }
   })
 
   transaction()
@@ -4015,6 +4074,7 @@ export async function writeStore(store) {
   // Full-store writes are the primary synchronization boundary: wait for the
   // remote commit so successful API mutations are durable in the selected engine.
   await synchronizeExternalDatabase({ force: true })
+  return { createdNotifications }
 }
 
 /**
@@ -4115,6 +4175,16 @@ export async function reencryptAllEncryptionMaterial(fromProfile = {}, nextSetti
       for (const row of database.prepare('SELECT id, payload_json FROM profile_assets').all()) {
         database.prepare('UPDATE profile_assets SET payload_json = ? WHERE id = ?')
           .run(rewrapPayload(row.payload_json), row.id)
+      }
+      for (const row of database.prepare('SELECT id, payload_encrypted FROM system_mail_jobs').all()) {
+        if (!row.payload_encrypted) continue
+        let plainText = row.payload_encrypted
+        if (isEncryptedPayload(row.payload_encrypted)) {
+          const body = row.payload_encrypted.slice('payload:'.length)
+          plainText = recoverPlain(body) || decryptPayload(row.payload_encrypted)
+        }
+        database.prepare('UPDATE system_mail_jobs SET payload_encrypted = ? WHERE id = ?')
+          .run(encryptPayload(plainText), row.id)
       }
 
       if (nextSettings) {
@@ -4502,10 +4572,16 @@ function hashResetToken(token) {
   return createHash('sha256').update(token).digest('hex')
 }
 
-export async function createPasswordResetToken(userId, token, expiresAt) {
+export async function createPasswordResetToken(
+  userId,
+  token,
+  expiresAt,
+  { systemMailJobs = [] } = {},
+) {
   await ensureStorage()
-  getDb()
-    .prepare(
+  const database = getDb()
+  database.transaction(() => {
+    database.prepare(
       `INSERT INTO password_reset_tokens (
         id,
         user_id,
@@ -4517,6 +4593,10 @@ export async function createPasswordResetToken(userId, token, expiresAt) {
       VALUES (?, ?, ?, ?, ?, NULL)`,
     )
     .run(createId('reset'), userId, hashResetToken(token), nowStamp(), expiresAt)
+    for (const job of systemMailJobs) {
+      insertSystemMailJob(database, job)
+    }
+  })()
 }
 
 export async function findPasswordResetToken(token) {
@@ -4562,7 +4642,7 @@ export async function markPasswordResetTokenUsed(token) {
     .run(nowStamp(), hashResetToken(token))
 }
 
-export async function createSecurityChallenge(challenge) {
+export async function createSecurityChallenge(challenge, { systemMailJobs = [] } = {}) {
   await ensureStorage()
   const database = getDb()
   const now = Date.now()
@@ -4603,6 +4683,9 @@ export async function createSecurityChallenge(challenge) {
       new Date(now - 60_000).toISOString(),
       new Date(now - 60 * 60_000).toISOString(),
     )
+    for (const job of systemMailJobs) {
+      insertSystemMailJob(database, job)
+    }
   })
   transaction()
 }
@@ -4662,6 +4745,9 @@ function normalizeSecurityRateLimitEntry(entry) {
     blockMs: Math.max(1_000, Number(entry.blockMs ?? entry.windowMs)),
   }
 }
+
+const MAX_SECURITY_RATE_LIMIT_ROWS = 100_000
+const SECURITY_RATE_LIMIT_RETENTION_MS = 2 * 24 * 60 * 60_000
 
 export async function consumeSecurityRateLimits(entries, options = {}) {
   await ensureStorage()
@@ -4734,7 +4820,21 @@ export async function consumeSecurityRateLimits(entries, options = {}) {
       }
       database.prepare(
         'DELETE FROM security_rate_limits WHERE updated_at < ?',
-      ).run(nowMs - 7 * 24 * 60 * 60_000)
+      ).run(nowMs - SECURITY_RATE_LIMIT_RETENTION_MS)
+      const rowCount = Number(
+        database.prepare('SELECT COUNT(*) AS count FROM security_rate_limits').get()?.count ?? 0,
+      )
+      if (rowCount > MAX_SECURITY_RATE_LIMIT_ROWS) {
+        database.prepare(
+          `DELETE FROM security_rate_limits
+           WHERE key_hash IN (
+             SELECT key_hash
+             FROM security_rate_limits
+             ORDER BY updated_at ASC, key_hash ASC
+             LIMIT ?
+           )`,
+        ).run(rowCount - MAX_SECURITY_RATE_LIMIT_ROWS)
+      }
     }
     return { allowed: true }
   })
@@ -5008,6 +5108,8 @@ export async function getMailFetchState(userId) {
         result: fromJson(row.sync_job_result_json, null),
         errorCode: row.sync_job_error_code ?? null,
         errorMessage: row.sync_job_error_message ?? null,
+        attemptCount: Number(row.sync_job_attempt_count ?? 0),
+        nextAttemptAt: row.sync_job_next_attempt_at ?? null,
       }
     : null
   return {
@@ -5077,9 +5179,11 @@ export async function saveMailFetchState(userId, patch) {
          sync_job_completed_at,
          sync_job_result_json,
          sync_job_error_code,
-         sync_job_error_message
+         sync_job_error_message,
+         sync_job_attempt_count,
+         sync_job_next_attempt_at
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(user_id) DO UPDATE SET
          protocol = excluded.protocol,
          account_key = excluded.account_key,
@@ -5099,7 +5203,9 @@ export async function saveMailFetchState(userId, patch) {
          sync_job_completed_at = excluded.sync_job_completed_at,
          sync_job_result_json = excluded.sync_job_result_json,
          sync_job_error_code = excluded.sync_job_error_code,
-         sync_job_error_message = excluded.sync_job_error_message`,
+         sync_job_error_message = excluded.sync_job_error_message,
+         sync_job_attempt_count = excluded.sync_job_attempt_count,
+         sync_job_next_attempt_at = excluded.sync_job_next_attempt_at`,
     )
     .run(
       userId,
@@ -5122,6 +5228,8 @@ export async function saveMailFetchState(userId, patch) {
       toJson(next.syncJob?.result ?? {}),
       next.syncJob?.errorCode ?? null,
       next.syncJob?.errorMessage ?? null,
+      Number(next.syncJob?.attemptCount ?? 0),
+      next.syncJob?.nextAttemptAt ?? null,
     )
   return next
 }
@@ -5139,6 +5247,8 @@ function mailSyncJobFromRow(row) {
     result: fromJson(row.sync_job_result_json, null),
     errorCode: row.sync_job_error_code ?? null,
     errorMessage: row.sync_job_error_message ?? null,
+    attemptCount: Number(row.sync_job_attempt_count ?? 0),
+    nextAttemptAt: row.sync_job_next_attempt_at ?? null,
   }
 }
 
@@ -5150,6 +5260,18 @@ export async function enqueueMailSyncJob(userId, mode) {
     const current = database.prepare('SELECT * FROM mail_fetch_state WHERE user_id = ?').get(userId)
     const currentJob = mailSyncJobFromRow(current)
     if (currentJob && ['queued', 'running'].includes(currentJob.status)) {
+      if (currentJob.status === 'queued' && currentJob.nextAttemptAt) {
+        database.prepare(
+          `UPDATE mail_fetch_state
+           SET sync_job_next_attempt_at = NULL,
+               sync_job_error_code = NULL,
+               sync_job_error_message = NULL
+           WHERE user_id = ? AND sync_job_id = ? AND sync_job_status = 'queued'`,
+        ).run(userId, currentJob.id)
+        currentJob.nextAttemptAt = null
+        currentJob.errorCode = null
+        currentJob.errorMessage = null
+      }
       return { job: currentJob, alreadyQueued: true }
     }
 
@@ -5164,6 +5286,8 @@ export async function enqueueMailSyncJob(userId, mode) {
       result: null,
       errorCode: null,
       errorMessage: null,
+      attemptCount: 0,
+      nextAttemptAt: null,
     }
     database.prepare(
       `INSERT INTO mail_fetch_state (
@@ -5179,7 +5303,9 @@ export async function enqueueMailSyncJob(userId, mode) {
          sync_job_completed_at = NULL,
          sync_job_result_json = '{}',
          sync_job_error_code = NULL,
-         sync_job_error_message = NULL`,
+         sync_job_error_message = NULL,
+         sync_job_attempt_count = 0,
+         sync_job_next_attempt_at = NULL`,
     ).run(userId, job.id, job.mode, job.createdAt)
     return { job, alreadyQueued: false }
   })()
@@ -5193,19 +5319,23 @@ export async function claimNextMailSyncJob(jobId = null) {
       ? database.prepare(
           `SELECT * FROM mail_fetch_state
            WHERE sync_job_status = 'queued' AND sync_job_id = ?
+             AND (sync_job_next_attempt_at IS NULL OR sync_job_next_attempt_at <= ?)
            LIMIT 1`,
-        ).get(jobId)
+        ).get(jobId, nowStamp())
       : database.prepare(
           `SELECT * FROM mail_fetch_state
            WHERE sync_job_status = 'queued'
+             AND (sync_job_next_attempt_at IS NULL OR sync_job_next_attempt_at <= ?)
            ORDER BY sync_job_created_at ASC
            LIMIT 1`,
-        ).get()
+        ).get(nowStamp())
     if (!row) return null
     const startedAt = nowStamp()
     const claimed = database.prepare(
       `UPDATE mail_fetch_state
-       SET sync_job_status = 'running', sync_job_started_at = ?
+       SET sync_job_status = 'running', sync_job_started_at = ?,
+           sync_job_attempt_count = sync_job_attempt_count + 1,
+           sync_job_next_attempt_at = NULL
        WHERE user_id = ? AND sync_job_id = ? AND sync_job_status = 'queued'`,
     ).run(startedAt, row.user_id, row.sync_job_id)
     if (claimed.changes === 0) return null
@@ -5213,6 +5343,8 @@ export async function claimNextMailSyncJob(jobId = null) {
       ...row,
       sync_job_status: 'running',
       sync_job_started_at: startedAt,
+      sync_job_attempt_count: Number(row.sync_job_attempt_count ?? 0) + 1,
+      sync_job_next_attempt_at: null,
     })
   })()
 }
@@ -5224,11 +5356,36 @@ export async function finishMailSyncJob(jobId, { status, result = null, errorCod
   const updated = database.prepare(
     `UPDATE mail_fetch_state
      SET sync_job_status = ?, sync_job_completed_at = ?, sync_job_result_json = ?,
-         sync_job_error_code = ?, sync_job_error_message = ?
+         sync_job_error_code = ?, sync_job_error_message = ?,
+         sync_job_next_attempt_at = NULL
      WHERE sync_job_id = ? AND sync_job_status IN ('queued', 'running')`,
   ).run(status, completedAt, toJson(result ?? {}), errorCode, errorMessage, jobId)
   if (updated.changes === 0) return null
   return mailSyncJobFromRow(database.prepare('SELECT * FROM mail_fetch_state WHERE sync_job_id = ?').get(jobId))
+}
+
+export async function retryMailSyncJob(jobId, {
+  nextAttemptAt,
+  errorCode = null,
+  errorMessage = null,
+}) {
+  await ensureStorage()
+  const database = getDb()
+  const updated = database.prepare(
+    `UPDATE mail_fetch_state
+     SET sync_job_status = 'queued',
+         sync_job_started_at = NULL,
+         sync_job_completed_at = NULL,
+         sync_job_result_json = '{}',
+         sync_job_next_attempt_at = ?,
+         sync_job_error_code = ?,
+         sync_job_error_message = ?
+     WHERE sync_job_id = ? AND sync_job_status = 'running'`,
+  ).run(nextAttemptAt, errorCode, errorMessage, jobId)
+  if (updated.changes === 0) return null
+  return mailSyncJobFromRow(
+    database.prepare('SELECT * FROM mail_fetch_state WHERE sync_job_id = ?').get(jobId),
+  )
 }
 
 export async function resetMailFetchState(userId) {
@@ -5260,6 +5417,246 @@ export async function markMessageProcessed(userId, messageId, applicationId = nu
   return result.changes > 0
 }
 
+const SYSTEM_MAIL_STALE_CLAIM_MS = 2 * 60_000
+
+function systemMailJobFromRow(row) {
+  if (!row) return null
+  let payload = {}
+  let payloadError = null
+  try {
+    const plain = isEncryptedPayload(row.payload_encrypted)
+      ? decryptPayload(row.payload_encrypted)
+      : row.payload_encrypted
+    payload = fromJson(plain, {})
+  } catch (error) {
+    payloadError = error instanceof Error ? error.message : 'System mail payload could not be decrypted.'
+  }
+  return {
+    id: row.id,
+    dedupeKey: row.dedupe_key,
+    kind: row.kind,
+    status: row.status,
+    payload,
+    payloadError,
+    messageId: row.message_id,
+    createdAt: row.created_at,
+    availableAt: row.available_at,
+    expiresAt: row.expires_at ?? null,
+    startedAt: row.started_at ?? null,
+    completedAt: row.completed_at ?? null,
+    attemptCount: Number(row.attempt_count ?? 0),
+    nextAttemptAt: row.next_attempt_at ?? null,
+    lastErrorCode: row.last_error_code ?? null,
+    lastErrorMessage: row.last_error_message ?? null,
+    lastErrorAt: row.last_error_at ?? null,
+  }
+}
+
+/**
+ * Persists product-generated email before delivery. Payloads are always sealed,
+ * even when optional application payload encryption is disabled, because they
+ * may contain one-time verification codes or reset links.
+ */
+function insertSystemMailJob(database, {
+  dedupeKey,
+  kind,
+  to,
+  subject,
+  text,
+  html,
+  scope,
+  metadata = {},
+  availableAt = nowStamp(),
+  expiresAt = null,
+}) {
+  const normalizedDedupeKey = String(dedupeKey ?? '').trim()
+  const normalizedRecipient = String(to ?? '').trim().toLowerCase()
+  if (!normalizedDedupeKey || !normalizedRecipient || !String(subject ?? '').trim()) {
+    throw new Error('System mail jobs require a dedupe key, recipient, and subject.')
+  }
+  const id = createId('system-mail')
+  const createdAt = nowStamp()
+  const messageId = `<phd-atlas.system.${createHash('sha256')
+    .update(normalizedDedupeKey)
+    .digest('hex')
+    .slice(0, 40)}@mail.local>`
+  const payloadEncrypted = encryptPayload(toJson({
+    to: normalizedRecipient,
+    subject: String(subject),
+    text: String(text ?? ''),
+    html: typeof html === 'string' ? html : undefined,
+    scope: String(scope ?? 'System mail'),
+    metadata: metadata && typeof metadata === 'object' ? metadata : {},
+  }))
+  const inserted = database.prepare(
+    `INSERT INTO system_mail_jobs (
+       id, dedupe_key, kind, status, payload_encrypted, message_id,
+       created_at, available_at, expires_at
+     ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)
+     ON CONFLICT(dedupe_key) DO NOTHING`,
+  ).run(
+    id,
+    normalizedDedupeKey,
+    String(kind ?? 'system-mail'),
+    payloadEncrypted,
+    messageId,
+    createdAt,
+    availableAt,
+    expiresAt,
+  )
+  const row = database.prepare('SELECT * FROM system_mail_jobs WHERE dedupe_key = ?')
+    .get(normalizedDedupeKey)
+  return {
+    job: systemMailJobFromRow(row),
+    alreadyQueued: inserted.changes === 0,
+  }
+}
+
+export async function enqueueSystemMailJob(input) {
+  await ensureStorage()
+  return insertSystemMailJob(getDb(), input)
+}
+
+export async function getSystemMailJob(jobId) {
+  await ensureStorage()
+  return systemMailJobFromRow(
+    getDb().prepare('SELECT * FROM system_mail_jobs WHERE id = ?').get(jobId),
+  )
+}
+
+export async function getSystemMailJobByDedupeKey(dedupeKey) {
+  await ensureStorage()
+  return systemMailJobFromRow(
+    getDb().prepare('SELECT * FROM system_mail_jobs WHERE dedupe_key = ?')
+      .get(String(dedupeKey ?? '').trim()),
+  )
+}
+
+/**
+ * Claims a due job or reclaims a delivery whose process disappeared while
+ * sending. The stable Message-ID makes that unavoidable SMTP boundary
+ * idempotent for providers that honor duplicate Message-IDs.
+ */
+export async function claimNextSystemMailJob(jobId = null, {
+  at = nowStamp(),
+  staleAfterMs = SYSTEM_MAIL_STALE_CLAIM_MS,
+} = {}) {
+  await ensureStorage()
+  const database = getDb()
+  const staleBefore = new Date(
+    Date.parse(at) - Math.max(1_000, Number(staleAfterMs) || SYSTEM_MAIL_STALE_CLAIM_MS),
+  ).toISOString()
+  return database.transaction(() => {
+    database.prepare(
+      `UPDATE system_mail_jobs
+       SET status = 'expired', completed_at = ?,
+           last_error_code = COALESCE(last_error_code, 'EXPIRED'),
+           last_error_message = COALESCE(last_error_message, 'The system email expired before delivery.'),
+           last_error_at = ?
+       WHERE status IN ('queued', 'sending')
+         AND expires_at IS NOT NULL AND expires_at <= ?`,
+    ).run(at, at, at)
+
+    const dueClause = `(
+      (status = 'queued'
+        AND available_at <= ?
+        AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
+      OR
+      (status = 'sending' AND started_at IS NOT NULL AND started_at <= ?)
+    )`
+    const row = jobId
+      ? database.prepare(
+          `SELECT * FROM system_mail_jobs
+           WHERE id = ? AND ${dueClause}
+             AND (expires_at IS NULL OR expires_at > ?)
+           LIMIT 1`,
+        ).get(jobId, at, at, staleBefore, at)
+      : database.prepare(
+          `SELECT * FROM system_mail_jobs
+           WHERE ${dueClause}
+             AND (expires_at IS NULL OR expires_at > ?)
+           ORDER BY available_at ASC, created_at ASC
+           LIMIT 1`,
+        ).get(at, at, staleBefore, at)
+    if (!row) return null
+
+    const claimed = database.prepare(
+      `UPDATE system_mail_jobs
+       SET status = 'sending', started_at = ?, completed_at = NULL,
+           attempt_count = attempt_count + 1, next_attempt_at = NULL
+       WHERE id = ? AND (
+         status = 'queued'
+         OR (status = 'sending' AND started_at IS NOT NULL AND started_at <= ?)
+       )`,
+    ).run(at, row.id, staleBefore)
+    if (claimed.changes === 0) return null
+    return systemMailJobFromRow({
+      ...row,
+      status: 'sending',
+      started_at: at,
+      completed_at: null,
+      attempt_count: Number(row.attempt_count ?? 0) + 1,
+      next_attempt_at: null,
+    })
+  })()
+}
+
+export async function finishSystemMailJob(jobId, { messageId = null, at = nowStamp() } = {}) {
+  await ensureStorage()
+  const database = getDb()
+  const updated = database.prepare(
+    `UPDATE system_mail_jobs
+     SET status = 'sent', completed_at = ?, started_at = NULL,
+         next_attempt_at = NULL, last_error_code = NULL,
+         last_error_message = NULL, last_error_at = NULL,
+         message_id = COALESCE(?, message_id)
+     WHERE id = ? AND status = 'sending'`,
+  ).run(at, messageId, jobId)
+  if (updated.changes === 0) return getSystemMailJob(jobId)
+  return systemMailJobFromRow(
+    database.prepare('SELECT * FROM system_mail_jobs WHERE id = ?').get(jobId),
+  )
+}
+
+export async function retrySystemMailJob(jobId, {
+  nextAttemptAt,
+  errorCode = null,
+  errorMessage = null,
+  at = nowStamp(),
+} = {}) {
+  await ensureStorage()
+  const database = getDb()
+  return database.transaction(() => {
+    const current = database.prepare('SELECT * FROM system_mail_jobs WHERE id = ?').get(jobId)
+    if (!current) return null
+    if (current.expires_at && current.expires_at <= at) {
+      database.prepare(
+        `UPDATE system_mail_jobs
+         SET status = 'expired', completed_at = ?, started_at = NULL,
+             next_attempt_at = NULL, last_error_code = ?,
+             last_error_message = ?, last_error_at = ?
+         WHERE id = ? AND status = 'sending'`,
+      ).run(at, errorCode ?? 'EXPIRED', errorMessage ?? 'The system email expired before delivery.', at, jobId)
+    } else {
+      database.prepare(
+        `UPDATE system_mail_jobs
+         SET status = 'queued', started_at = NULL, completed_at = NULL,
+             next_attempt_at = ?, last_error_code = ?,
+             last_error_message = ?, last_error_at = ?
+         WHERE id = ? AND status = 'sending'`,
+      ).run(nextAttemptAt ?? at, errorCode, errorMessage, at, jobId)
+    }
+    return systemMailJobFromRow(
+      database.prepare('SELECT * FROM system_mail_jobs WHERE id = ?').get(jobId),
+    )
+  })()
+}
+
+export async function deleteSystemMailJob(jobId) {
+  await ensureStorage()
+  return getDb().prepare('DELETE FROM system_mail_jobs WHERE id = ?').run(jobId).changes > 0
+}
+
 function notificationFromRow(row) {
   return {
     id: row.id,
@@ -5277,15 +5674,14 @@ function notificationFromRow(row) {
     targetId: row.target_id,
     metadata: fromJson(row.metadata_json, {}),
     emailedAt: row.emailed_at,
+    pushEnqueuedAt: row.push_enqueued_at,
   }
 }
 
-/** Inserts a notification unless one with the same (userId, dedupeKey) already exists. Returns the row if newly created, else null. */
-export async function insertNotificationIfNew(userId, candidate) {
-  await ensureStorage()
+function insertNotificationRow(database, userId, candidate) {
   const id = createId('notif')
   const createdAt = nowStamp()
-  const result = getDb()
+  const result = database
     .prepare(
       `INSERT INTO notifications (
         id, user_id, type, application_id, title, body, dedupe_key, trigger_date,
@@ -5310,7 +5706,13 @@ export async function insertNotificationIfNew(userId, candidate) {
       toJson(candidate.metadata ?? {}),
     )
   if (result.changes === 0) return null
-  return notificationFromRow(getDb().prepare('SELECT * FROM notifications WHERE id = ?').get(id))
+  return notificationFromRow(database.prepare('SELECT * FROM notifications WHERE id = ?').get(id))
+}
+
+/** Inserts a notification unless one with the same (userId, dedupeKey) already exists. Returns the row if newly created, else null. */
+export async function insertNotificationIfNew(userId, candidate) {
+  await ensureStorage()
+  return insertNotificationRow(getDb(), userId, candidate)
 }
 
 export async function markNotificationEmailed(id) {
@@ -5343,6 +5745,38 @@ export async function markNotificationsEmailed(notificationIds) {
   const placeholders = ids.map(() => '?').join(', ')
   const result = getDb()
     .prepare(`UPDATE notifications SET emailed_at = ? WHERE emailed_at IS NULL AND id IN (${placeholders})`)
+    .run(nowStamp(), ...ids)
+  return result.changes
+}
+
+/** Returns notification rows not yet handed to the encrypted browser-push journal. */
+export async function listPendingNotificationPushes({ limit = 200 } = {}) {
+  await ensureStorage()
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM notifications
+       WHERE push_enqueued_at IS NULL AND archived_at IS NULL
+       ORDER BY created_at ASC
+       LIMIT ?`,
+    )
+    .all(Math.min(500, Math.max(1, Number(limit) || 200)))
+  return rows.map(notificationFromRow)
+}
+
+/** Marks rows only after the durable browser-push journal accepted or deliberately skipped them. */
+export async function markNotificationsPushEnqueued(notificationIds) {
+  await ensureStorage()
+  const ids = [...new Set((Array.isArray(notificationIds) ? notificationIds : [])
+    .map((id) => String(id ?? '').trim())
+    .filter(Boolean))]
+  if (ids.length === 0) return 0
+  const placeholders = ids.map(() => '?').join(', ')
+  const result = getDb()
+    .prepare(
+      `UPDATE notifications
+       SET push_enqueued_at = ?
+       WHERE push_enqueued_at IS NULL AND id IN (${placeholders})`,
+    )
     .run(nowStamp(), ...ids)
   return result.changes
 }
@@ -5453,9 +5887,12 @@ function pushSubscriptionFromRow(row) {
   }
 }
 
+export const MAX_PUSH_SUBSCRIPTIONS_PER_USER = 20
+
 /**
  * Keeps one subscription per browser endpoint. Reassigning an endpoint on sign-in prevents
  * a shared device from delivering the previous account's notifications to the next account.
+ * The per-user cap also prevents forged endpoints from creating an unbounded push fan-out.
  */
 export async function upsertPushSubscription(userId, subscription) {
   await ensureStorage()
@@ -5477,6 +5914,26 @@ export async function upsertPushSubscription(userId, subscription) {
       subscription.keys.auth,
       stamp,
       stamp,
+    )
+  getDb()
+    .prepare(
+      `DELETE FROM push_subscriptions
+       WHERE user_id = ?
+         AND endpoint <> ?
+         AND endpoint NOT IN (
+           SELECT endpoint
+           FROM push_subscriptions
+           WHERE user_id = ? AND endpoint <> ?
+           ORDER BY updated_at DESC, endpoint DESC
+           LIMIT ?
+         )`,
+    )
+    .run(
+      userId,
+      subscription.endpoint,
+      userId,
+      subscription.endpoint,
+      MAX_PUSH_SUBSCRIPTIONS_PER_USER - 1,
     )
   invalidateSharedStoreCache()
   return pushSubscriptionFromRow(
@@ -5634,6 +6091,7 @@ function teamFromRow(row) {
     profilePresets: fromJson(row.profile_presets_json, null),
     roleLabels: normalizeTeamRoleLabels(fromJson(row.role_labels_json, null)),
     teacherGroups: normalizeTeamTeacherGroups(fromJson(row.teacher_groups_json, [])),
+    permissionDefaults: normalizeTeamPermissionDefaults(fromJson(row.permission_defaults_json, {})),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -5653,20 +6111,7 @@ function teamMemberFromRow(row) {
     role: row.role,
     status: row.status,
     invitedBy: row.invited_by,
-    relationships: {
-      ...relationships,
-      // Team membership has always behaved as the paid collaboration tier.
-      // Make that legacy default explicit at the API boundary without forcing
-      // a destructive data migration.
-      accessLevel: relationships.accessLevel === 'standard' ? 'standard' : 'pro',
-      ...(row.role === 'admin'
-        ? {
-            studentProLimit: Number.isInteger(relationships.studentProLimit)
-              ? Math.max(0, Math.min(100, relationships.studentProLimit))
-              : 100,
-          }
-        : {}),
-    },
+    relationships,
     contactProfile: fromJson(row.profile_json, {}),
     inviteExpiresAt: row.invite_expires_at,
     createdAt: row.created_at,
@@ -5789,6 +6234,28 @@ export async function updateTeamRoleLabels(teamId, roleLabels) {
   return getTeamById(teamId)
 }
 
+export async function updateTeamPermissionDefaults(teamId, patch) {
+  await ensureStorage()
+  const currentRow = getDb().prepare('SELECT * FROM teams WHERE id = ?').get(teamId)
+  if (!currentRow) return null
+  const current = normalizeTeamPermissionDefaults(fromJson(currentRow.permission_defaults_json, {}))
+  const next = normalizeTeamPermissionDefaults({
+    student: {
+      ...current.student,
+      ...(patch?.student ?? {}),
+    },
+    teacher: {
+      ...current.teacher,
+      ...(patch?.teacher ?? {}),
+    },
+  })
+  getDb()
+    .prepare('UPDATE teams SET permission_defaults_json = ?, updated_at = ? WHERE id = ?')
+    .run(toJson(next), nowStamp(), teamId)
+  invalidateSharedStoreCache()
+  return getTeamById(teamId)
+}
+
 export async function updateTeamTeacherGroups(teamId, teacherGroups) {
   await ensureStorage()
   const normalized = normalizeTeamTeacherGroups(teacherGroups)
@@ -5907,13 +6374,25 @@ export async function computeTeamVisibleOwnerIds(userId, knownMemberships) {
 
 export async function createTeamInvite(
   teamId,
-  { email, role, invitedBy, existingUserId, token, expiresAt, relationships = {} },
+  {
+    id: requestedId,
+    email,
+    role,
+    invitedBy,
+    existingUserId,
+    token,
+    expiresAt,
+    relationships = {},
+  },
+  { systemMailJobs = [], notification = null } = {},
 ) {
   await ensureStorage()
-  const id = createId('tmem')
+  const id = requestedId || createId('tmem')
   const now = nowStamp()
-  getDb()
-    .prepare(
+  const database = getDb()
+  let createdNotification = null
+  database.transaction(() => {
+    database.prepare(
       `INSERT INTO team_members (
         id, team_id, user_id, invited_email, role, status, invited_by,
         relationship_json, invite_token_hash, invite_expires_at, created_at, updated_at
@@ -5933,7 +6412,21 @@ export async function createTeamInvite(
       now,
       now,
     )
-  return teamMemberFromRow(getDb().prepare('SELECT * FROM team_members WHERE id = ?').get(id))
+    for (const job of systemMailJobs) {
+      insertSystemMailJob(database, job)
+    }
+    if (notification?.userId && notification?.candidate) {
+      createdNotification = insertNotificationRow(
+        database,
+        notification.userId,
+        notification.candidate,
+      )
+    }
+  })()
+  return {
+    member: teamMemberFromRow(database.prepare('SELECT * FROM team_members WHERE id = ?').get(id)),
+    notification: createdNotification,
+  }
 }
 
 export async function findTeamInviteByToken(token) {

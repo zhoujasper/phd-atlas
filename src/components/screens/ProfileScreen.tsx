@@ -252,6 +252,11 @@ export function ProfileScreen({
   const familyWheelStateRef = useRef(new Map<string, StackedCardWheelState & {
     releaseTimer?: number
   }>())
+  const handleFamilyWheelRef = useRef<(
+    event: WheelEvent,
+    familyId: string,
+    versions: ProfileAsset[],
+  ) => void>(() => undefined)
   const familySwipeStateRef = useRef(new Map<string, FamilySwipeState>())
   const familyBrowseLocksRef = useRef(new Set<string>())
   const familyTurnQueuesRef = useRef(new Map<string, QueuedFamilyCardTurn[]>())
@@ -379,7 +384,7 @@ export function ProfileScreen({
     const listeners = [...familyStackRefs.current.entries()].map(([familyId, stack]) => {
       const onWheel = (event: WheelEvent) => {
         if (expandedFamilies.has(familyId)) return
-        handleFamilyWheel(event, familyId, versionLookup.get(familyId) ?? [])
+        handleFamilyWheelRef.current(event, familyId, versionLookup.get(familyId) ?? [])
       }
       // Keep the non-passive listener on the stable family shell. The front card changes
       // identity after every turn, while this article remains mounted for the whole deck.
@@ -519,6 +524,7 @@ export function ProfileScreen({
     familyWheelStateRef.current.set(familyId, wheelState)
     if (direction) cycleFamilyVersion(familyId, versions, direction)
   }
+  handleFamilyWheelRef.current = handleFamilyWheel
 
   const resetFamilySwipeVisual = (familyId: string, settle = false, preserveTurnOrigin = false) => {
     const front = familyFrontRefs.current.get(familyId)
@@ -831,7 +837,7 @@ export function ProfileScreen({
     return () => window.cancelAnimationFrame(frame)
   }, [enteredPresetId])
 
-  const finalizeDeletePreset = (presetId: string) => {
+  const finalizeDeletePreset = useCallback((presetId: string) => {
     // Guard against animationend + timeout both firing.
     if (exitingPresetIdRef.current !== presetId) return
     exitingPresetIdRef.current = null
@@ -845,7 +851,7 @@ export function ProfileScreen({
       { profilePresets: current.filter((item) => item.id !== presetId) },
       tx('profile.presetDeleted'),
     )
-  }
+  }, [enteredPresetId, onUpdateSettings, tx])
 
   const requestDeletePreset = (preset: ProfilePreset) => {
     if (preset.builtIn || exitingPresetIdRef.current) return
@@ -870,7 +876,7 @@ export function ProfileScreen({
     if (!exitingPresetId) return
     const timer = window.setTimeout(() => finalizeDeletePreset(exitingPresetId), 420)
     return () => window.clearTimeout(timer)
-  }, [exitingPresetId])
+  }, [exitingPresetId, finalizeDeletePreset])
   const openPhraseSettings = () => {
     void loadSnippetPhraseSettingsDialog().catch(() => undefined)
     setPhraseSettingsOpen(true)
@@ -1553,7 +1559,7 @@ export function ProfileScreen({
       <ProjectFooter />
 
       {dialogOpen ? (
-        <LazyOverlayBoundary namespaces={['core', 'shared', 'profile']}>
+        <LazyOverlayBoundary namespaces={['core', 'shared', 'profile', 'dossier', 'share']}>
           <SnippetEditorDialog
             open
             asset={editingAsset}

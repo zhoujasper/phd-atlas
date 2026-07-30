@@ -1,10 +1,10 @@
 import {
+  Activity,
   type CSSProperties,
   type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
-  type UIEvent,
-  type WheelEvent,
+  memo,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -40,19 +40,19 @@ import { DeadlineBadge } from '../shared/DeadlineBadge'
 import { StatusPill } from '../shared/StatusPill'
 import { UserAvatar } from '../shared/UserAvatar'
 import { InfoTooltip } from '../shared/InfoTooltip'
+import { ProjectFooter } from '../shared/ProjectFooter'
 import { useI18n } from '../hooks/useI18n'
 import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/ExplorerContextMenu'
+import { ApplicationPipelineViewSwitch } from './ApplicationPipelineViewSwitch'
+import { ApplicationSmartTable } from './ApplicationSmartTable'
+import {
+  applicationPriorityBand,
+  type ApplicationPipelineScope,
+  type ApplicationPipelineViewMode,
+  type TeamKanbanStudent,
+} from './applicationPipelineModel'
 
-export type TeamKanbanStudent = {
-  id: string
-  name: string
-  email?: string
-  avatarUrl?: string
-  advisorName?: string | null
-  applications: ApplicationRecord[]
-  allApplications: ApplicationRecord[]
-  canCreateApplication?: boolean
-}
+export type { TeamKanbanStudent } from './applicationPipelineModel'
 
 interface KanbanBoardProps {
   applications: ApplicationRecord[]
@@ -61,18 +61,15 @@ interface KanbanBoardProps {
   onSelect: (id: string) => void
   onPrefetch?: () => void
   onOpenInNewPage?: (id: string) => void
+  onOpenMany?: (ids: string[]) => void
   onExportApplication?: (id: string) => void
+  onExportMany?: (ids: string[]) => void
   onCopy?: (value: string, label: string) => void
   onDeleteApplication?: (id: string) => void
+  onDeleteMany?: (ids: string[]) => void
   onNew?: () => void
   teamStudents?: TeamKanbanStudent[]
   onNewForStudent?: (studentId: string) => void
-}
-
-function priorityLabel(p: number): 'high' | 'medium' | 'low' {
-  if (p >= 80) return 'high'
-  if (p >= 50) return 'medium'
-  return 'low'
 }
 
 const KANBAN_COLUMN_INITIAL_COUNT = 4
@@ -80,6 +77,27 @@ const KANBAN_COLUMN_COMPACT_INITIAL_COUNT = 8
 const KANBAN_COLUMN_BATCH_SIZE = 8
 const TEAM_STUDENT_PREVIEW_COUNT = 3
 const terminalStatuses = new Set<ApplicationStatus>(['Accepted', 'Rejected', 'Waitlist'])
+const PIPELINE_VIEW_STORAGE_PREFIX = 'phd-atlas:application-pipeline-view:v1:'
+
+function readPipelineView(scope: ApplicationPipelineScope): ApplicationPipelineViewMode {
+  if (typeof window === 'undefined') return 'board'
+  try {
+    return window.localStorage.getItem(`${PIPELINE_VIEW_STORAGE_PREFIX}${scope}`) === 'table'
+      ? 'table'
+      : 'board'
+  } catch {
+    return 'board'
+  }
+}
+
+function writePipelineView(scope: ApplicationPipelineScope, view: ApplicationPipelineViewMode) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(`${PIPELINE_VIEW_STORAGE_PREFIX}${scope}`, view)
+  } catch {
+    // Ignore private-mode and quota failures.
+  }
+}
 
 type TeamStudentBoardState = 'missing' | 'risk' | 'due' | 'steady'
 
@@ -149,9 +167,6 @@ function TeamStudentKanbanBoard({
   ), [customApplicationStatuses, students])
 
   const boardData = useMemo(() => {
-    let totalApplications = 0
-    let attentionApplications = 0
-    let dueSoonApplications = 0
     const rows = students.map((student) => {
       const allApplications = student.allApplications
       const state = teamStudentBoardState(allApplications)
@@ -176,10 +191,6 @@ function TeamStudentKanbanBoard({
         return left.deadline.localeCompare(right.deadline)
       })
 
-      totalApplications += allApplications.length
-      attentionApplications += attentionCount
-      dueSoonApplications += dueSoonCount
-
       return {
         ...student,
         state,
@@ -195,12 +206,7 @@ function TeamStudentKanbanBoard({
       return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })
     })
 
-    return {
-      rows,
-      totalApplications,
-      attentionApplications,
-      dueSoonApplications,
-    }
+    return { rows }
   }, [statusOrder, students])
   const masonryGridRef = useRef<HTMLDivElement | null>(null)
   const masonryLayoutKey = boardData.rows.map((student) => student.id).join('\u0001')
@@ -215,14 +221,11 @@ function TeamStudentKanbanBoard({
     const trackGap = Number.parseFloat(gridStyle.getPropertyValue('--team-kanban-masonry-track-gap')) || 1
     const cards = Array.from(grid.querySelectorAll<HTMLElement>('.team-kanban-student'))
 
-    const updateCards = (targets: HTMLElement[]) => {
-      const measurements = targets.map((card) => ({
-        card,
-        height: card.getBoundingClientRect().height,
-      })).filter(({ height }) => height > 0)
-      if (measurements.length === 0) return
+    const applyMeasurements = (measurements: Array<{ card: HTMLElement; height: number }>) => {
+      const visibleMeasurements = measurements.filter(({ height }) => height > 0)
+      if (visibleMeasurements.length === 0) return
 
-      for (const { card, height } of measurements) {
+      for (const { card, height } of visibleMeasurements) {
         const span = Math.max(1, Math.ceil((height + visualGap) / (rowUnit + trackGap)))
         const nextValue = String(span)
         if (card.style.getPropertyValue('--team-kanban-masonry-span') !== nextValue) {
@@ -232,27 +235,40 @@ function TeamStudentKanbanBoard({
       grid.classList.add('is-masonry-ready')
     }
 
-    updateCards(cards)
+    const measureCards = (targets: HTMLElement[]) => {
+      applyMeasurements(targets.map((card) => ({
+        card,
+        height: card.getBoundingClientRect().height,
+      })))
+    }
+
+    const hasCompleteCachedLayout = grid.classList.contains('is-masonry-ready')
+      && cards.every((card) => card.style.getPropertyValue('--team-kanban-masonry-span'))
+    if (!hasCompleteCachedLayout) measureCards(cards)
 
     if (typeof ResizeObserver !== 'function') {
-      const updateAllCards = () => updateCards(cards)
+      const updateAllCards = () => measureCards(cards)
       window.addEventListener('resize', updateAllCards)
       return () => {
         window.removeEventListener('resize', updateAllCards)
-        grid.classList.remove('is-masonry-ready')
-        cards.forEach((card) => card.style.removeProperty('--team-kanban-masonry-span'))
       }
     }
 
     const resizeObserver = new ResizeObserver((entries) => {
-      updateCards(entries.map((entry) => entry.target as HTMLElement))
+      applyMeasurements(entries.map((entry) => {
+        const borderBox = Array.isArray(entry.borderBoxSize)
+          ? entry.borderBoxSize[0]
+          : entry.borderBoxSize
+        return {
+          card: entry.target as HTMLElement,
+          height: borderBox?.blockSize ?? entry.contentRect.height,
+        }
+      }))
     })
     cards.forEach((card) => resizeObserver.observe(card))
 
     return () => {
       resizeObserver.disconnect()
-      grid.classList.remove('is-masonry-ready')
-      cards.forEach((card) => card.style.removeProperty('--team-kanban-masonry-span'))
     }
   }, [masonryLayoutKey])
 
@@ -343,39 +359,7 @@ function TeamStudentKanbanBoard({
   }
 
   return (
-    <section className="kanban-workspace team-kanban-workspace" aria-label={tx('team.teacherApplicationsTitle')}>
-      <div className="kanban-hero team-kanban-hero">
-        <div className="kanban-hero-info">
-          <span className="eyebrow">{tx('team.teacherApplicationsEyebrow')}</span>
-          <div className="team-kanban-title-row">
-            <h2>{tx('team.teacherApplicationsTitle')}</h2>
-            <InfoTooltip
-              className="team-kanban-help"
-              content={tx('team.teacherApplicationsDesc')}
-              label={tx('team.teacherApplicationsDesc')}
-            />
-          </div>
-        </div>
-        <div className="kanban-summary" aria-label={tx('team.studentMetricsLabel')}>
-          <span>
-            <UsersRound size={13} aria-hidden="true" />
-            {format(tx('team.teacherStudentsTitle'), { count: boardData.rows.length })}
-          </span>
-          <span>
-            <LayoutGrid size={13} aria-hidden="true" />
-            {format(tx('kanban.totalCount'), { count: boardData.totalApplications })}
-          </span>
-          <span>
-            <AlertTriangle size={13} aria-hidden="true" />
-            {format(tx('team.teacherWorkbenchRisk'), { count: boardData.attentionApplications })}
-          </span>
-          <span>
-            <CalendarClock size={13} aria-hidden="true" />
-            {format(tx('team.teacherWorkbenchDue'), { count: boardData.dueSoonApplications })}
-          </span>
-        </div>
-      </div>
-
+    <section className="application-pipeline-view application-pipeline-board-view team-kanban-workspace" aria-label={tx('kanban.boardView')}>
       {boardData.rows.length === 0 ? (
         <div className="kanban-empty-state team-kanban-empty-state">
           <UsersRound size={28} aria-hidden="true" />
@@ -637,12 +621,9 @@ function PersonalKanbanBoard({
       columnStatusOrder.map((status) => [status, [] as ApplicationRecord[]]),
     ) as Record<ApplicationStatus, ApplicationRecord[]>
     const applicationIds: string[] = []
-    let urgentCount = 0
     for (const application of applications) {
       buckets[application.status].push(application)
       applicationIds.push(application.id)
-      const due = daysUntil(application.deadline)
-      if (due >= 0 && due <= 30) urgentCount += 1
     }
     const groupedColumns = statusGroups.map((group) => ({
       ...group,
@@ -651,14 +632,11 @@ function PersonalKanbanBoard({
     }))
     return {
       groupedColumns,
-      urgentCount,
       datasetKey: applicationIds.join('\u0001'),
     }
   }, [applications, columnStatusOrder, statusGroups])
   const visibilityKey = `${boardData.datasetKey}:${compactViewport ? 'compact' : 'desktop'}`
   const visibleCounts = visibilityState.key === visibilityKey ? visibilityState.counts : {}
-  const activeCount = boardData.groupedColumns.find((group) => group.key === 'active')?.items.length ?? 0
-  const decisionCount = boardData.groupedColumns.find((group) => group.key === 'decision')?.items.length ?? 0
 
   // Drop in-flight reveal styling when the underlying dataset or density mode changes.
   useEffect(() => {
@@ -715,25 +693,6 @@ function PersonalKanbanBoard({
         [status]: nextCount,
       },
     })
-  }
-
-  function revealWhenNearColumnEnd(
-    status: ApplicationStatus,
-    total: number,
-    target: HTMLDivElement,
-    direction: number,
-  ) {
-    if (direction <= 0) return
-    const distanceFromEnd = target.scrollHeight - target.scrollTop - target.clientHeight
-    if (distanceFromEnd <= 72) showMoreApplications(status, total)
-  }
-
-  function handleColumnScroll(event: UIEvent<HTMLDivElement>, status: ApplicationStatus, total: number) {
-    revealWhenNearColumnEnd(status, total, event.currentTarget, 1)
-  }
-
-  function handleColumnWheel(event: WheelEvent<HTMLDivElement>, status: ApplicationStatus, total: number) {
-    revealWhenNearColumnEnd(status, total, event.currentTarget, event.deltaY)
   }
 
   function handleRevealAnimationEnd(status: ApplicationStatus, revealIndex: number, batchSize: number) {
@@ -855,39 +814,7 @@ function PersonalKanbanBoard({
   }
 
   return (
-    <section className="kanban-workspace" aria-label={tx('kanban.boardView')}>
-      <div className="kanban-hero">
-        <div className="kanban-hero-info">
-          <span className="eyebrow">{tx('kanban.eyebrow')}</span>
-          <h2>{tx('kanban.title')}</h2>
-          <p>{tx('kanban.subtitle')}</p>
-        </div>
-        {onNew && applications.length > 0 ? (
-          <button type="button" className="kanban-mobile-new primary-action" onClick={onNew}>
-            <Plus size={17} aria-hidden="true" />
-            <span>{tx('workspace.new')}</span>
-          </button>
-        ) : null}
-        <div className="kanban-summary" aria-label={tx('kanban.summary')}>
-          <span>
-            <LayoutGrid size={13} aria-hidden="true" />
-            {format(tx('kanban.totalCount'), { count: applications.length })}
-          </span>
-          <span>
-            <ListChecks size={13} aria-hidden="true" />
-            {format(tx('kanban.activeCount'), { count: activeCount })}
-          </span>
-          <span>
-            <ArrowRight size={13} aria-hidden="true" />
-            {format(tx('kanban.decisionCount'), { count: decisionCount })}
-          </span>
-          <span>
-            <CalendarClock size={13} aria-hidden="true" />
-            {format(tx('kanban.urgentCount'), { count: boardData.urgentCount })}
-          </span>
-        </div>
-      </div>
-
+    <section className="application-pipeline-view application-pipeline-board-view" aria-label={tx('kanban.boardView')}>
       {applications.length === 0 ? (
         <div className="kanban-empty-state">
           <LayoutGrid size={28} aria-hidden="true" />
@@ -898,7 +825,7 @@ function PersonalKanbanBoard({
           {onNew ? (
             <button type="button" className="kanban-empty-action primary-action" onClick={onNew}>
               <Plus size={16} aria-hidden="true" />
-              <span>{tx('dashboard.newApplication')}</span>
+              <span>{tx('workspace.new')}</span>
             </button>
           ) : null}
         </div>
@@ -935,12 +862,9 @@ function PersonalKanbanBoard({
                         <span className="count">{col.items.length}</span>
                       </div>
                       <div
-                        className={`kanban-column-body${col.items.length > initialColumnCount ? ' is-scrollable' : ''}`}
+                        className="kanban-column-body"
                         role="region"
                         aria-label={statusLabel(col.status, tx)}
-                        tabIndex={col.items.length > initialColumnCount ? 0 : undefined}
-                        onScroll={(event) => handleColumnScroll(event, col.status, col.items.length)}
-                        onWheel={(event) => handleColumnWheel(event, col.status, col.items.length)}
                       >
                         {col.items.length === 0 ? (
                           <div className="kanban-empty-slot">
@@ -993,14 +917,14 @@ function PersonalKanbanBoard({
                                   <div className="kanban-card-professor">{app.professor.english}</div>
                                   <div className="kanban-card-meta">
                                     <DeadlineBadge deadline={app.deadline} compact />
-                                    <span className={`kanban-priority kanban-priority-${priorityLabel(app.priority)}`}>
+                                    <span className={`kanban-priority kanban-priority-${applicationPriorityBand(app.priority)}`}>
                                       {format(tx('kanban.priorityValue'), { value: app.priority })}
                                     </span>
                                   </div>
                                 </div>
                               )
                             })}
-                            {compactViewport && remainingCount > 0 ? (
+                            {remainingCount > 0 ? (
                               <button
                                 type="button"
                                 className={`kanban-load-more${columnReveal ? ' is-settling' : ''}`}
@@ -1027,19 +951,222 @@ function PersonalKanbanBoard({
   )
 }
 
+const MemoizedApplicationSmartTable = memo(ApplicationSmartTable)
+const MemoizedTeamStudentKanbanBoard = memo(TeamStudentKanbanBoard)
+const MemoizedPersonalKanbanBoard = memo(PersonalKanbanBoard)
+
 export function KanbanBoard(props: KanbanBoardProps) {
-  if (props.teamStudents) {
-    return (
-      <TeamStudentKanbanBoard
-        students={props.teamStudents}
-        onSelect={props.onSelect}
-        onPrefetch={props.onPrefetch}
-        onNewForStudent={props.onNewForStudent}
-        onOpenInNewPage={props.onOpenInNewPage}
-        onCopy={props.onCopy}
-        customApplicationStatuses={props.customApplicationStatuses}
-      />
-    )
+  const { tx, format } = useI18n()
+  const scope: ApplicationPipelineScope = props.teamStudents ? 'team' : 'personal'
+  const [viewModes, setViewModes] = useState<Record<ApplicationPipelineScope, ApplicationPipelineViewMode>>(
+    () => ({
+      personal: readPipelineView('personal'),
+      team: readPipelineView('team'),
+    }),
+  )
+  const viewMode = viewModes[scope]
+  const controlsId = `application-pipeline-${scope}-view`
+
+  useEffect(() => {
+    writePipelineView(scope, viewMode)
+  }, [scope, viewMode])
+
+  const summary = useMemo(() => {
+    if (props.teamStudents) {
+      const applicationsById = new Map<string, ApplicationRecord>()
+      for (const student of props.teamStudents) {
+        for (const application of student.allApplications) {
+          applicationsById.set(application.id, application)
+        }
+      }
+      const allApplications = [...applicationsById.values()]
+      return {
+        total: allApplications.length,
+        active: 0,
+        decisions: 0,
+        urgent: allApplications.filter((application) => {
+          if (terminalStatuses.has(application.status)) return false
+          const due = daysUntil(application.deadline)
+          return due >= 0 && due <= 30
+        }).length,
+        attention: allApplications.filter(applicationNeedsAttention).length,
+        students: props.teamStudents.length,
+      }
+    }
+
+    let active = 0
+    let decisions = 0
+    let urgent = 0
+    for (const application of props.applications) {
+      if (terminalStatuses.has(application.status)) decisions += 1
+      else active += 1
+      const due = daysUntil(application.deadline)
+      if (!terminalStatuses.has(application.status) && due >= 0 && due <= 30) urgent += 1
+    }
+    return {
+      total: props.applications.length,
+      active,
+      decisions,
+      urgent,
+      attention: 0,
+      students: 0,
+    }
+  }, [props.applications, props.teamStudents])
+
+  const changePipelineView = (nextView: ApplicationPipelineViewMode) => {
+    setViewModes((current) => (
+      current[scope] === nextView ? current : { ...current, [scope]: nextView }
+    ))
   }
-  return <PersonalKanbanBoard {...props} />
+  const tableMode = viewMode === 'table'
+  const teamMode = Boolean(props.teamStudents)
+
+  return (
+    <section
+      className={`kanban-workspace application-pipeline-workspace${teamMode ? ' team-application-pipeline-workspace' : ''}`}
+      data-pipeline-view={viewMode}
+      aria-label={tx(tableMode ? 'kanban.tableView' : 'kanban.boardView')}
+    >
+      <div className={`kanban-hero${teamMode ? ' team-kanban-hero' : ''}`}>
+        <div className="kanban-hero-info">
+          <div className="application-pipeline-heading-stack" data-view={viewMode}>
+            {(['board', 'table'] as const).map((headingView) => {
+              const tableHeading = headingView === 'table'
+              const activeHeading = headingView === viewMode
+              return (
+                <div
+                  key={headingView}
+                  className="application-pipeline-heading-copy"
+                  data-heading-view={headingView}
+                  aria-hidden={!activeHeading}
+                  inert={activeHeading ? undefined : true}
+                >
+                  {teamMode ? (
+                    <>
+                      <span className="eyebrow">
+                        {tx(tableHeading ? 'kanban.teamTableEyebrow' : 'team.teacherApplicationsEyebrow')}
+                      </span>
+                      <div className="team-kanban-title-row">
+                        <h2>{tx(tableHeading ? 'kanban.teamTableTitle' : 'team.teacherApplicationsTitle')}</h2>
+                        <InfoTooltip
+                          className="team-kanban-help"
+                          content={tx(tableHeading ? 'kanban.teamTableSubtitle' : 'team.teacherApplicationsDesc')}
+                          label={tx(tableHeading ? 'kanban.teamTableSubtitle' : 'team.teacherApplicationsDesc')}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span className="eyebrow">{tx(tableHeading ? 'kanban.tableEyebrow' : 'kanban.eyebrow')}</span>
+                      <h2>{tx(tableHeading ? 'kanban.tableTitle' : 'kanban.title')}</h2>
+                      <p>{tx(tableHeading ? 'kanban.tableSubtitle' : 'kanban.subtitle')}</p>
+                    </>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        {props.onNew && props.applications.length > 0 ? (
+          <button type="button" className="kanban-mobile-new primary-action" onClick={props.onNew}>
+            <Plus size={17} aria-hidden="true" />
+            <span>{tx('workspace.new')}</span>
+          </button>
+        ) : null}
+
+        <div className="application-pipeline-hero-tools">
+          <ApplicationPipelineViewSwitch
+            value={viewMode}
+            onChange={changePipelineView}
+            label={tx('kanban.viewMode')}
+            boardLabel={tx('kanban.board')}
+            tableLabel={tx('kanban.table')}
+            scope={scope}
+            controlsId={controlsId}
+          />
+          <div
+            className="kanban-summary"
+            aria-label={tx(teamMode ? 'team.studentMetricsLabel' : 'kanban.summary')}
+          >
+            {teamMode ? (
+              <>
+                <span>
+                  <UsersRound size={13} aria-hidden="true" />
+                  {format(tx('team.teacherStudentsTitle'), { count: summary.students })}
+                </span>
+                <span>
+                  <LayoutGrid size={13} aria-hidden="true" />
+                  {format(tx('kanban.totalCount'), { count: summary.total })}
+                </span>
+                <span>
+                  <AlertTriangle size={13} aria-hidden="true" />
+                  {format(tx('team.teacherWorkbenchRisk'), { count: summary.attention })}
+                </span>
+                <span>
+                  <CalendarClock size={13} aria-hidden="true" />
+                  {format(tx('team.teacherWorkbenchDue'), { count: summary.urgent })}
+                </span>
+              </>
+            ) : (
+              <>
+                <span>
+                  <LayoutGrid size={13} aria-hidden="true" />
+                  {format(tx('kanban.totalCount'), { count: summary.total })}
+                </span>
+                <span>
+                  <ListChecks size={13} aria-hidden="true" />
+                  {format(tx('kanban.activeCount'), { count: summary.active })}
+                </span>
+                <span>
+                  <ArrowRight size={13} aria-hidden="true" />
+                  {format(tx('kanban.decisionCount'), { count: summary.decisions })}
+                </span>
+                <span>
+                  <CalendarClock size={13} aria-hidden="true" />
+                  {format(tx('kanban.urgentCount'), { count: summary.urgent })}
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div
+        id={controlsId}
+        className="application-pipeline-view-stage"
+        data-view={viewMode}
+        data-pipeline-scope={scope}
+      >
+        <span
+          className="application-pipeline-transition-veil"
+          data-application-pipeline-transition-veil
+          aria-hidden="true"
+        />
+        <Activity mode={tableMode ? 'visible' : 'hidden'}>
+          <div className="application-pipeline-view-slot" data-pipeline-view-slot="table">
+            <MemoizedApplicationSmartTable key={scope} {...props} />
+          </div>
+        </Activity>
+        <Activity mode={tableMode ? 'hidden' : 'visible'}>
+          <div className="application-pipeline-view-slot" data-pipeline-view-slot="board">
+            {props.teamStudents ? (
+              <MemoizedTeamStudentKanbanBoard
+                students={props.teamStudents}
+                onSelect={props.onSelect}
+                onPrefetch={props.onPrefetch}
+                onNewForStudent={props.onNewForStudent}
+                onOpenInNewPage={props.onOpenInNewPage}
+                onCopy={props.onCopy}
+                customApplicationStatuses={props.customApplicationStatuses}
+              />
+            ) : (
+              <MemoizedPersonalKanbanBoard {...props} />
+            )}
+          </div>
+        </Activity>
+      </div>
+      <ProjectFooter />
+    </section>
+  )
 }

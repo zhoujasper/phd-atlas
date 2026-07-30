@@ -8,6 +8,92 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0-beta.7] - 2026-07-29
+
+### Added
+
+- Added durable authored-mail and system-mail outboxes with stable delivery
+  identities, scheduled delivery, retry metadata, stale-claim recovery, startup
+  processing, and attachment-vault references.
+- Added persisted mailbox-sync jobs, notification and digest recovery, and an
+  encrypted browser-push journal so accepted background work survives restarts.
+- Added one safe authored-rich-text contract across Markdown/HTML editing,
+  GFM rendering, source highlighting, formatting, contextual completion,
+  sanitization, immutable sent snapshots, and multipart SMTP delivery.
+- Added server-authorized AI email attachment planning across profile,
+  Checklist, task, and safe correspondence files without exposing vault
+  handles or file bytes to the browser.
+- Added AI-only existing-application enrichment with bounded context assembly,
+  link auditing, targeted search, public-network crawling, prompt-injection
+  quarantine, independent evidence verification, and reviewable idempotent
+  additions.
+- Added a 120-profile professional research taxonomy, OpenAlex Topic
+  validation, affiliation-checked Crossref fallback, and discipline-routed
+  Europe PMC lead discovery while keeping official university pages as the
+  saved-fact boundary.
+- Added a content-unique catalog of 225 provenance-backed school PNG marks,
+  directly covering 119 of the 145 built-in Discover school adapters.
+- Added personal and Team smart tables, progressive pagination, batch
+  selection, inline status editing, retained board/table state, and responsive
+  Team student portrait drill-down.
+- Added automatic application saving, timestamp-aware offline reconciliation,
+  bulk Team invitation validation, recipient management, checklist pointer
+  sorting, and shared rich correspondence identities.
+
+### Changed
+
+- Team permissions now use owner-managed role defaults plus sparse personal
+  overrides, with capability and usage-limit enforcement remaining
+  server-authoritative.
+- Immediate and scheduled authored mail now persist before SMTP, share the same
+  communication record, and reuse the exact stored HTML/plain-text payload for
+  retries.
+- Application switching, board/table presentation, Settings loading, large
+  tables, Checklist disclosure, and overlay positioning now use bounded,
+  interruption-safe motion with fewer layout reads and React commits.
+- The signed-out product story now mirrors the real Applications, Discover,
+  Profile, Dossier, Checklist, Correspondence, Funding, Timeline, and Inspector
+  workflows on desktop and mobile.
+- Source authorization, AI attachment selection, outgoing attachment editing,
+  temporary recipients, and attachment-omission confirmation now have one
+  coherent draft-email ownership path.
+
+### Fixed
+
+- Fixed stale API failures reopening recovered connectivity, repeated health
+  WebSocket handshakes, startup fallback fan-out during transport faults, and
+  development restarts waiting behind resident WebSocket/SSE streams.
+- Fixed application-selection overshoot, board/table handoff jank, append-time
+  full-table scans, mobile navigation handoff coverage, picker gutter drift,
+  clipped compact actions, and numerous narrow-screen localization wraps.
+- Fixed mailbox folder discovery and per-message failure isolation, exact
+  counterparty avatars, multi-recipient classification, imported-message
+  safety boundaries, and AI access to unsafe correspondence.
+- Fixed settings export behavior for empty personal workspaces, automatic-save
+  conflict recovery, Team concurrent-edit resolution, and stale manual draft
+  paths.
+
+### Security
+
+- Added DNS-pinned outbound HTTPS connections, exact production Host policy,
+  safe request-target logging, bounded password-verifier work, and private-mail
+  destination allowlisting.
+- Added exact-signature upload validation, image and ZIP/OOXML resource bounds,
+  active-content rejection, imported-mail threat analysis, and download-only
+  handling for unknown inbound formats.
+- Added a repository source-secret/runtime-data audit and documented the
+  cross-surface security model. High-severity npm dependency audit remains
+  clean.
+
+### Performance
+
+- Centralized browser request coalescing and the global API circuit, retained
+  attempt-scoped realtime ownership, and made server recurring tasks
+  non-overlapping and startup-owned.
+- Preheated progressive table batches and board/table presentations, memoized
+  heavy resident views, and limited high-frequency motion to scoped refs,
+  CSS variables, and compositor transforms.
+
 ## [0.1.0-beta.6] - 2026-07-28
 
 ### Added
@@ -336,6 +422,7 @@ the selected external database when applicable.
   light/dark themes, and twelve language packs.
 - Published the first GitHub Release update archive and SHA-256 sidecar.
 
+[0.1.0-beta.7]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.7
 [0.1.0-beta.6]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.6
 [0.1.0-beta.5]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.5
 [0.1.0-beta.4]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.4

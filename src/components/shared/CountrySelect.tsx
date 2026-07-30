@@ -13,7 +13,11 @@ import {
 import { localeForLanguage } from '../../i18n'
 import { getMotionDelay } from '../hooks/useAnimatedClose'
 import { useI18n } from '../hooks/useI18n'
-import { addFloatingViewportListeners, getAnchoredOverlayStyle } from './floatingOverlay'
+import {
+  addFloatingViewportListeners,
+  FLOATING_CONTROL_BASE_Z_INDEX,
+  getAnchoredOverlayStyle,
+} from './floatingOverlay'
 
 type CountryRow = { entry: CountryEntry; label: string; flag: string }
 
@@ -149,16 +153,14 @@ export function CountrySelect({
   )
 
   const getDropdownPosition = useCallback((): CSSProperties => {
-    return {
-      ...getAnchoredOverlayStyle(containerRef.current, {
-        minWidth: 300,
-        maxWidth: 360,
-        estimatedHeight: 400,
-        actualHeight: dropdownRef.current?.getBoundingClientRect().height,
-        gap: 6,
-      }),
-      zIndex: 520,
-    }
+    return getAnchoredOverlayStyle(containerRef.current, {
+      minWidth: 300,
+      maxWidth: 360,
+      estimatedHeight: 400,
+      actualHeight: dropdownRef.current?.getBoundingClientRect().height,
+      gap: 6,
+      baseZIndex: FLOATING_CONTROL_BASE_Z_INDEX,
+    })
   }, [])
 
   const updateDropdownPosition = useCallback(() => {
@@ -423,6 +425,7 @@ export function CountrySelect({
           aria-label={ariaLabel ?? displayPlaceholder}
           ref={dropdownRef}
           style={dropdownStyle}
+          data-floating-overlay="true"
           onMouseDown={(event) => event.stopPropagation()}
         >
           <div className="country-select-search">
@@ -504,7 +507,6 @@ export function CountrySelect({
                                 <span className="country-select-flag" aria-hidden="true">{row.flag || '🌐'}</span>
                                 <span className="country-select-option-copy">
                                   <strong>{row.label}</strong>
-                                  <small>{row.entry.code}</small>
                                 </span>
                               </span>
                               {selected ? <Check size={15} strokeWidth={2.4} aria-hidden="true" className="custom-select-check" /> : null}

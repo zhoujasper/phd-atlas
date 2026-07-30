@@ -59,7 +59,7 @@ export function SnippetPhraseSettingsDialog({
   }, [open, settings.leadZh, settings.tailZh, settings.leadEn, settings.tailEn])
 
   const { exiting, requestClose } = useAnimatedClose(open, onClose, 120)
-  const dialogRef = useModalA11y({ open: open && !exiting, onClose: () => requestClose(), initialFocusRef: leadPrimaryRef })
+  const dialogRef = useModalA11y({ open, onClose: () => requestClose(), initialFocusRef: leadPrimaryRef })
 
   if (!open && !exiting) return null
 

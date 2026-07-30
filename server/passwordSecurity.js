@@ -5,6 +5,7 @@ import {
   randomBytes,
   timingSafeEqual,
 } from 'node:crypto'
+import { withAbortDeadline } from './abortDeadline.js'
 
 export const PASSWORD_MIN_LENGTH = 15
 export const PASSWORD_MAX_LENGTH = 128
@@ -13,6 +14,19 @@ const ARGON2_MEMORY_KIB = 19_456
 const ARGON2_PASSES = 2
 const ARGON2_PARALLELISM = 1
 const ARGON2_TAG_LENGTH = 32
+// Stored hashes are data, not trusted work instructions. These ceilings keep a
+// corrupted or attacker-controlled backup from turning login into an
+// unbounded CPU/memory request while still accepting sensibly stronger legacy
+// hashes and rehashing weaker ones after a successful login.
+const ARGON2_MAX_MEMORY_KIB = 65_536
+const ARGON2_MAX_PASSES = 6
+const ARGON2_MAX_PARALLELISM = 4
+const ARGON2_MIN_NONCE_LENGTH = 8
+const ARGON2_MAX_NONCE_LENGTH = 64
+const ARGON2_MIN_TAG_LENGTH = 16
+const ARGON2_MAX_TAG_LENGTH = 64
+const BCRYPT_MIN_COST = 4
+const BCRYPT_MAX_COST = 14
 const PWNED_PREFIX_CACHE_LIMIT = 256
 const PWNED_PREFIX_CACHE_TTL_MS = 12 * 60 * 60_000
 const pwnedPrefixCache = new Map()
@@ -61,13 +75,32 @@ function parseArgon2Hash(encoded) {
     /^\$argon2id\$v=19\$m=(\d+),t=(\d+),p=(\d+)\$([A-Za-z0-9_-]+)\$([A-Za-z0-9_-]+)$/,
   )
   if (!match) return null
-  return {
+  const parsed = {
     memory: Number(match[1]),
     passes: Number(match[2]),
     parallelism: Number(match[3]),
     nonce: Buffer.from(match[4], 'base64url'),
     hash: Buffer.from(match[5], 'base64url'),
   }
+  if (
+    !Number.isSafeInteger(parsed.memory)
+    || parsed.memory < 8
+    || parsed.memory > ARGON2_MAX_MEMORY_KIB
+    || !Number.isSafeInteger(parsed.passes)
+    || parsed.passes < 1
+    || parsed.passes > ARGON2_MAX_PASSES
+    || !Number.isSafeInteger(parsed.parallelism)
+    || parsed.parallelism < 1
+    || parsed.parallelism > ARGON2_MAX_PARALLELISM
+    || parsed.memory < 8 * parsed.parallelism
+    || parsed.nonce.length < ARGON2_MIN_NONCE_LENGTH
+    || parsed.nonce.length > ARGON2_MAX_NONCE_LENGTH
+    || parsed.hash.length < ARGON2_MIN_TAG_LENGTH
+    || parsed.hash.length > ARGON2_MAX_TAG_LENGTH
+  ) {
+    return null
+  }
+  return parsed
 }
 
 export async function hashAccountPassword(password) {
@@ -93,8 +126,12 @@ export async function verifyAccountPassword(password, encoded) {
       || parsed.hash.length < ARGON2_TAG_LENGTH
     return { valid, needsRehash }
   }
-  if (/^\$2[aby]\$\d{2}\$/.test(String(encoded ?? ''))) {
-    return { valid: await bcrypt.compare(password, encoded), needsRehash: true }
+  const bcryptMatch = String(encoded ?? '').match(/^\$2[aby]\$(\d{2})\$[./A-Za-z0-9]{53}$/)
+  if (bcryptMatch) {
+    const cost = Number(bcryptMatch[1])
+    if (cost >= BCRYPT_MIN_COST && cost <= BCRYPT_MAX_COST) {
+      return { valid: await bcrypt.compare(password, encoded), needsRehash: true }
+    }
   }
   return { valid: false, needsRehash: false }
 }
@@ -146,9 +183,7 @@ async function fetchPwnedPrefix(prefix, options) {
   const cached = pwnedPrefixCache.get(prefix)
   if (cached && cached.expiresAt > Date.now()) return cached.value
   if (cached) pwnedPrefixCache.delete(prefix)
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), Number(options.timeoutMs ?? 2_500))
-  try {
+  return withAbortDeadline(async (signal) => {
     const response = await (options.fetchImpl ?? fetch)(
       `https://api.pwnedpasswords.com/range/${prefix}`,
       {
@@ -156,16 +191,14 @@ async function fetchPwnedPrefix(prefix, options) {
           'Add-Padding': 'true',
           'User-Agent': 'PhD-Atlas-Password-Policy',
         },
-        signal: controller.signal,
+        signal,
       },
     )
     if (!response.ok) throw new Error(`Pwned Passwords returned ${response.status}`)
     const body = await response.text()
     rememberPwnedPrefix(prefix, body)
     return body
-  } finally {
-    clearTimeout(timeout)
-  }
+  }, { timeoutMs: options.timeoutMs ?? 2_500 })
 }
 
 export async function pwnedPasswordCount(password, options = {}) {

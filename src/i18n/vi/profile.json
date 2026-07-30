@@ -1,8 +1,8 @@
 {
   "profile": {
     "eyebrow": "Hồ sơ có thể tái sử dụng",
-    "title": "Thư viện đoạn trích",
-    "subtitle": "Văn bản, cụm từ email và tệp đính kèm có thể sử dụng lại mà bạn có thể chèn vào bất kỳ email hồ sơ tuyển sinh nào.",
+    "title": "Hồ sơ của tôi",
+    "subtitle": "Duy trì câu chuyện học thuật, tài liệu tái sử dụng và tùy chọn viết trong một nguồn đáng tin cậy. Lưu các phiên bản tại đây rồi chủ động dùng lại trong hồ sơ, email và bản nháp AI.",
     "insert": "Chèn",
     "inserted": "Đã chèn!",
     "updateInsertion": "Cập nhật",
@@ -134,7 +134,7 @@
       "sparkles": "Lấp lánh",
       "target": "Mục tiêu",
       "flag": "Cờ",
-      "rocket": "Tên Lửa\nTòa nhà",
+      "rocket": "Tên lửa",
       "plane": "Du lịch",
       "home": "Trang chủ",
       "building": "Tòa nhà",

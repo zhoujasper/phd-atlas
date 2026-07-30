@@ -2,7 +2,8 @@
   "share": {
     "eyebrow": "Read-only preview",
     "title": "Share \"{name}\"",
-    "activeLinks": "Active shares",
+    "activeLinks": "Active share links",
+    "activeCount": "{count}/{limit} active links",
     "noLinks": "No share links yet.",
     "createNew": "Create new share link",
     "create": "Create share link",
@@ -36,8 +37,8 @@
       "30d": "30 days",
       "never": "Never"
     },
-    "packageMode": "Share package mode",
-    "completePackage": "Complete project",
+    "packageMode": "Sharing mode",
+    "completePackage": "Entire project",
     "completePackageDesc": "Share every public project page as one polished dossier.",
     "customPackage": "Choose pages",
     "customPackageDesc": "Limit the link to specific pages and workflows.",

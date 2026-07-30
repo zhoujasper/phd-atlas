@@ -24,7 +24,7 @@ describe('workspace layout motion CSS', () => {
     expect(innerRule).toContain('contain: layout paint')
   })
 
-  it('collapses the hidden toolbar width so dirty actions remain beside the toggle', () => {
+  it('collapses the hidden toolbar width while preserving the fixed toggle edge', () => {
     const closedBodyRule = cssRule('.workspace-layout-toolbar-body')
     const openBodyRule = cssRule('.workspace-layout-toolbar-panel:hover .workspace-layout-toolbar-body,\n.workspace-layout-toolbar-panel:focus-within .workspace-layout-toolbar-body')
 

@@ -26,6 +26,12 @@ describe('dashboard and dossier switch motion CSS', () => {
     expect(styles).not.toContain('--expired-stagger')
   })
 
+  it('keeps dashboard checklist rows and their actions at full scale while pressed', () => {
+    expect(cssRule('.stat-task-toggle:active:not(:disabled)')).toContain('transform: none')
+    expect(cssRule('.stat-task-jump:active:not(:disabled)')).toContain('transform: none')
+    expect(cssRule('.stat-task-toggle:active .stat-task-check:not(.on)')).toContain('transform: none')
+  })
+
   it('uses a short opacity-only handoff for detailed deadline content', () => {
     const exit = cssRule('.deadline-view-panel.is-exiting')
     const enter = cssRule('.deadline-view-panel.is-entering')
@@ -53,6 +59,11 @@ describe('dashboard and dossier switch motion CSS', () => {
     }
     expect(cssRule('::view-transition-old(atlas-dossier-record)')).toContain('mix-blend-mode: plus-lighter')
     expect(cssRule('::view-transition-new(atlas-dossier-record)')).toContain('mix-blend-mode: plus-lighter')
+    expect(cssRule('html[data-atlas-transition-scope="dossier-record"] .dossier-handoff-content')).toContain(
+      'view-transition-name: atlas-dossier-record',
+    )
+    expect(cssRule('::view-transition-group(atlas-dossier-record)')).toContain('animation: none')
+    expect(cssRule('.dossier-handoff-content')).toContain('overflow-anchor: none')
   })
 
   it('starts board-to-dossier replacement as one local opacity cross-fade', () => {

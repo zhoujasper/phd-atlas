@@ -135,7 +135,7 @@ describe.sequential('team join credentials', () => {
     expect(summary.payload.data.members.filter((member) => member.role === 'owner')).toHaveLength(1)
   })
 
-  it('reuses teacher and student codes while preserving every selected teacher assignment', async () => {
+  it('reuses join codes while preserving assignments and applying default → personal permission precedence', async () => {
     const adminToken = await login('admin@phd-atlas.local', 'admin123456')
     const ownerToken = await login('jasper@example.com')
     const teacherToken = await login('teacher@phd-atlas.local')
@@ -193,10 +193,9 @@ describe.sequential('team join credentials', () => {
       expect(joined.payload.data.membership).toMatchObject({
         role: 'member',
         status: 'active',
-        relationships: {
-          accessLevel: 'pro',
-        },
       })
+      expect(joined.payload.data.membership.relationships).not.toHaveProperty('accessLevel')
+      expect(joined.payload.data.membership.relationships).not.toHaveProperty('studentPermissions')
       expect(joined.payload.data.membership.relationships.teacherIds)
         .toEqual(expect.arrayContaining(teachers.map((teacher) => teacher.userId)))
     }
@@ -208,31 +207,66 @@ describe.sequential('team join credentials', () => {
     const lina = populatedSummary.payload.data.members.find(
       (member) => member.invitedEmail === 'student.lina@phd-atlas.local',
     )
-    const teacherPolicy = await request(`/api/teams/${created.team.id}/members/${primaryTeacher.id}`, {
+    const defaultsUpdate = await request(`/api/teams/${created.team.id}`, {
       token: ownerToken,
       method: 'PATCH',
-      body: { accessLevel: 'pro', studentProLimit: 1 },
+      body: {
+        permissionDefaults: {
+          student: { useDiscover: true },
+        },
+      },
     })
-    expect(teacherPolicy.response.status).toBe(200)
-    expect(teacherPolicy.payload.data.relationships).toMatchObject({
-      accessLevel: 'pro',
-      studentProLimit: 1,
+    expect(defaultsUpdate.response.status).toBe(200)
+    expect(defaultsUpdate.payload.data.permissionDefaults.student).toMatchObject({
+      useDiscover: true,
+      activeApplicationLimit: null,
+      lifetimeApplicationLimit: null,
+      activeShareLimit: null,
+      lifetimeShareLimit: null,
     })
 
-    const restrictStudent = await request(`/api/teams/${created.team.id}/members/${lina.id}`, {
-      token: teacherToken,
+    const restrictTeacher = await request(`/api/teams/${created.team.id}/members/${primaryTeacher.id}`, {
+      token: ownerToken,
       method: 'PATCH',
-      body: { accessLevel: 'standard' },
+      body: { teacherPermissions: { manageStudentPermissions: false } },
     })
-    expect(restrictStudent.response.status).toBe(200)
+    expect(restrictTeacher.response.status).toBe(200)
+    expect(restrictTeacher.payload.data.relationships.teacherPermissions).toEqual({
+      manageStudentPermissions: false,
+    })
 
-    const overLimitGrant = await request(`/api/teams/${created.team.id}/members/${lina.id}`, {
+    const blockedTeacherOverride = await request(`/api/teams/${created.team.id}/members/${lina.id}`, {
       token: teacherToken,
       method: 'PATCH',
-      body: { accessLevel: 'pro' },
+      body: { studentPermissions: { useDiscover: false } },
     })
-    expect(overLimitGrant.response.status).toBe(409)
-    expect(overLimitGrant.payload.error.code).toBe('SEAT_LIMIT_REACHED')
+    expect(blockedTeacherOverride.response.status).toBe(403)
+
+    const restoreTeacherDefaults = await request(`/api/teams/${created.team.id}/members/${primaryTeacher.id}`, {
+      token: ownerToken,
+      method: 'PATCH',
+      body: { teacherPermissions: null },
+    })
+    expect(restoreTeacherDefaults.response.status).toBe(200)
+    expect(restoreTeacherDefaults.payload.data.relationships).not.toHaveProperty('teacherPermissions')
+
+    const studentOverride = await request(`/api/teams/${created.team.id}/members/${lina.id}`, {
+      token: teacherToken,
+      method: 'PATCH',
+      body: { studentPermissions: { useDiscover: false } },
+    })
+    expect(studentOverride.response.status).toBe(200)
+    expect(studentOverride.payload.data.relationships.studentPermissions).toEqual({
+      useDiscover: false,
+    })
+
+    const restoreStudentDefaults = await request(`/api/teams/${created.team.id}/members/${lina.id}`, {
+      token: ownerToken,
+      method: 'PATCH',
+      body: { studentPermissions: null },
+    })
+    expect(restoreStudentDefaults.response.status).toBe(200)
+    expect(restoreStudentDefaults.payload.data.relationships).not.toHaveProperty('studentPermissions')
 
     const store = await readStore()
     for (const email of ['teacher@phd-atlas.local', 'student.lina@phd-atlas.local']) {

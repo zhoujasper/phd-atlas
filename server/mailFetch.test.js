@@ -44,7 +44,7 @@ describe('mail fetch safety', () => {
     })])
   })
 
-  it('adds security warnings and safe attachment metadata to imported communications', () => {
+  it('preserves structured security status and safe attachment metadata on imported communications', () => {
     const input = messageToCommunicationInput({
       subject: 'Suspicious professor mail',
       from: 'prof@example.edu',
@@ -52,7 +52,12 @@ describe('mail fetch safety', () => {
       date: new Date('2026-07-09T09:15:00.000Z'),
       text: 'Please sign in.',
       attachments: [{ id: 'mail-1-1', fileName: 'note.txt', fileSize: 4, mimeType: 'text/plain', source: 'mail' }],
-      securityWarnings: ['phishing-link', 'unsafe-attachment'],
+      mailSecurity: {
+        level: 'danger',
+        signals: ['deceptive-link', 'unsafe-attachment'],
+        linksDisabled: true,
+        quarantinedAttachmentCount: 1,
+      },
     })
 
     expect(input).toMatchObject({
@@ -61,9 +66,14 @@ describe('mail fetch safety', () => {
       date: '2026-07-09',
       time: '09:15',
       attachments: [expect.objectContaining({ fileName: 'note.txt', source: 'mail' })],
+      mailSecurity: {
+        level: 'danger',
+        signals: ['deceptive-link', 'unsafe-attachment'],
+        linksDisabled: true,
+        quarantinedAttachmentCount: 1,
+      },
     })
-    expect(input.summary).toContain('Security warning')
-    expect(input.summary).toContain('Please sign in.')
+    expect(input.summary).toBe('Please sign in.')
   })
 
   it('classifies only exact professor correspondence and recognizes external sent mail', () => {

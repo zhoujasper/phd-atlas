@@ -67,6 +67,26 @@ describe('mail delivery transport policy', () => {
     expect(sendMail).toHaveBeenCalledWith(userSettings, expect.objectContaining({
       from: 'author@example.com',
       to: 'recipient@example.com',
+      text: 'Body',
+      html: '<p>Body</p>',
+    }))
+  })
+
+  it('forwards a stable message id used to deduplicate crash-window retries', async () => {
+    const settings = {
+      smtpHost: 'smtp.user.example',
+      smtpUser: 'author@example.com',
+      smtpPass: 'user-secret',
+    }
+    const store = { settings: {}, systemEvents: [] }
+
+    await deliverUserComposedEmail(store, { settings }, {
+      ...message,
+      messageId: '<stable-delivery@mail.local>',
+    })
+
+    expect(sendMail).toHaveBeenCalledWith(settings, expect.objectContaining({
+      messageId: '<stable-delivery@mail.local>',
     }))
   })
 

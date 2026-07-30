@@ -43,7 +43,7 @@ describe('NewApplicationDialog', () => {
     expect(emailInput).toHaveFocus()
   })
 
-  it('uses the shared searchable country picker for every new application flow', async () => {
+  it('uses an optional shared searchable country picker for every new application flow', async () => {
     const user = userEvent.setup()
 
     render(
@@ -59,9 +59,11 @@ describe('NewApplicationDialog', () => {
     )
 
     expect(screen.queryByRole('textbox', { name: 'Country' })).not.toBeInTheDocument()
+    expect(document.querySelectorAll('.new-dialog .field-required-mark')).toHaveLength(4)
 
     const countryTrigger = screen.getByRole('button', { name: 'Country' })
-    expect(countryTrigger).toHaveTextContent('United States')
+    expect(countryTrigger.querySelector('.country-select-value')).toHaveClass('placeholder')
+    expect(countryTrigger).not.toHaveTextContent('United States')
 
     await user.click(countryTrigger)
     const countrySearch = await screen.findByRole('searchbox', { name: 'Search countries…' })
@@ -69,5 +71,33 @@ describe('NewApplicationDialog', () => {
     await user.click(screen.getByRole('option', { name: /Canada/ }))
 
     expect(countryTrigger).toHaveTextContent('Canada')
+  })
+
+  it('creates an application without a country while retaining required-field markers', async () => {
+    const user = userEvent.setup()
+    const onCreate = vi.fn(() => false)
+
+    render(
+      <NewApplicationDialog
+        open
+        busy={false}
+        onClose={vi.fn()}
+        onCreate={onCreate}
+      />,
+    )
+
+    await user.type(screen.getByLabelText(/^Professor \*$/), 'Professor Lee')
+    await user.type(screen.getByLabelText(/^Professor email \*$/), 'lee@example.edu')
+    await user.type(screen.getByLabelText(/^University \*$/), 'Example University')
+    await user.type(screen.getByLabelText(/^Program \*$/), 'Computer Science PhD')
+    await user.click(screen.getByRole('button', { name: /create dossier/i }))
+
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      country: '',
+      professor: 'Professor Lee',
+      professorEmail: 'lee@example.edu',
+      university: 'Example University',
+      program: 'Computer Science PhD',
+    }))
   })
 })

@@ -2,6 +2,7 @@ import '@testing-library/jest-dom/vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import workspaceStyles from '../../index.css?raw'
 import { I18nContext, type I18nContextValue } from '../hooks/useI18n'
 import { CountrySelect } from './CountrySelect'
 
@@ -86,5 +87,32 @@ describe('CountrySelect', () => {
 
     await user.click(screen.getByRole('option', { name: /Canada/ }))
     expect(onChange).toHaveBeenCalledWith('Canada')
+  })
+
+  it('keeps each country on one compact identity row without a repeated code chip', async () => {
+    const user = userEvent.setup()
+    renderCountrySelect('')
+
+    await user.click(screen.getByRole('button', { name: 'Country / Region' }))
+    await user.type(screen.getByRole('searchbox', { name: 'Search countries…' }), 'Oman')
+
+    const option = screen.getByRole('option', { name: 'Oman' })
+    expect(option.querySelector('.country-select-option-copy')).toHaveTextContent(/^Oman$/)
+    expect(option.querySelector('small')).not.toBeInTheDocument()
+  })
+
+  it('leaves phone portal geometry to the shared viewport-clamped positioner', () => {
+    const optionRule = workspaceStyles.match(
+      /\.country-select-option\.custom-select-option\s*\{([^}]*)\}/,
+    )?.[1] ?? ''
+
+    expect(workspaceStyles).not.toMatch(/\.country-select-dropdown\s*\{[^}]*left:\s*0\s*!important/s)
+    expect(workspaceStyles).not.toMatch(/\.country-select-dropdown\s*\{[^}]*right:\s*0\s*!important/s)
+    expect(workspaceStyles).not.toMatch(/\.country-select-dropdown\s*\{[^}]*width:\s*100%\s*!important/s)
+    expect(workspaceStyles).toMatch(
+      /@media \(max-width: 480px\)\s*\{\s*\.country-select-list\s*\{\s*max-height: min\(56vh, 420px\);/,
+    )
+    expect(optionRule).toContain('min-height: 36px')
+    expect(optionRule).toContain('padding: 4px 8px')
   })
 })

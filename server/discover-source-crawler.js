@@ -1,6 +1,8 @@
 import { lookup as nodeDnsLookup } from 'node:dns/promises'
 import { BlockList, isIP } from 'node:net'
+import { AbortDeadlineError, withAbortDeadline } from './abortDeadline.js'
 import { listDiscoverResearchSources } from './discover-source-registry.js'
+import { pinnedHttpsFetch } from './pinnedHttpsFetch.js'
 
 const DISCOVER_CRAWLER_USER_AGENT = 'PhDAtlasDiscover/1.0 (+https://phd-atlas.local/research)'
 const CANDIDATE_LIMIT_PER_SOURCE = 160
@@ -212,11 +214,36 @@ function htmlText(html) {
     .trim()
 }
 
+function isUntrustedInvisibleCodePoint(codePoint) {
+  return codePoint <= 0x0008
+    || (codePoint >= 0x000b && codePoint <= 0x000c)
+    || (codePoint >= 0x000e && codePoint <= 0x001f)
+    || codePoint === 0x007f
+    || (codePoint >= 0x200b && codePoint <= 0x200f)
+    || (codePoint >= 0x202a && codePoint <= 0x202e)
+    || (codePoint >= 0x2060 && codePoint <= 0x206f)
+    || codePoint === 0xfeff
+}
+
+function replaceUntrustedInvisibleText(value) {
+  let output = ''
+  let cleanStart = 0
+  for (let index = 0; index < value.length;) {
+    const codePoint = value.codePointAt(index) ?? 0
+    const width = codePoint > 0xffff ? 2 : 1
+    if (isUntrustedInvisibleCodePoint(codePoint)) {
+      output += `${value.slice(cleanStart, index)} `
+      cleanStart = index + width
+    }
+    index += width
+  }
+  return cleanStart === 0 ? value : output + value.slice(cleanStart)
+}
+
 function sanitizeUntrustedWebText(value, maxLength = 4_000) {
-  let text = String(value || '')
+  let text = replaceUntrustedInvisibleText(String(value || ''))
     // Directional controls and invisible separators can conceal instruction
     // text from reviewers while leaving it visible to a model tokenizer.
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
   let promptInjectionSuspected = false
@@ -789,68 +816,67 @@ async function fetchText(url, {
     onFailure?.({ reason, ...details })
     return null
   }
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), boundedInteger(
+  const deadlineMs = boundedInteger(
     timeoutMs,
     12_000,
     250,
     MAX_REQUEST_TIMEOUT_MS,
-  ))
+  )
   try {
-    let current = sourceAllowedUrl(url, source)
-    if (!current) return fail('invalid-or-disallowed-url')
-    for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect += 1) {
-      if (!(await isDiscoverPublicNetworkTarget(current, dnsLookup))) {
-        return fail('non-public-network-target', { url: current.toString() })
-      }
-      if (allowRequest && !(await allowRequest(current))) {
-        return fail('robots-denied', { url: current.toString() })
-      }
-      await beforeFetch?.(current)
-      const response = await fetchImpl(current.toString(), {
-        headers: { 'User-Agent': DISCOVER_CRAWLER_USER_AGENT, Accept: 'text/html, text/plain;q=0.9' },
-        redirect: 'manual',
-        signal: controller.signal,
-      })
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers?.get?.('location')
-        let next = null
-        try {
-          next = location ? sourceAllowedUrl(new URL(location, current).toString(), source) : null
-        } catch {
-          next = null
+    return await withAbortDeadline(async (signal) => {
+      let current = sourceAllowedUrl(url, source)
+      if (!current) return fail('invalid-or-disallowed-url')
+      for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect += 1) {
+        if (!(await isDiscoverPublicNetworkTarget(current, dnsLookup))) {
+          return fail('non-public-network-target', { url: current.toString() })
         }
-        if (!next) return fail('redirect-left-allowed-hosts', { status: response.status })
-        current = next
-        continue
+        if (allowRequest && !(await allowRequest(current))) {
+          return fail('robots-denied', { url: current.toString() })
+        }
+        await beforeFetch?.(current)
+        const response = await fetchImpl(current.toString(), {
+          headers: { 'User-Agent': DISCOVER_CRAWLER_USER_AGENT, Accept: 'text/html, text/plain;q=0.9' },
+          redirect: 'manual',
+          signal,
+        })
+        if (response.status >= 300 && response.status < 400) {
+          const location = response.headers?.get?.('location')
+          let next = null
+          try {
+            next = location ? sourceAllowedUrl(new URL(location, current).toString(), source) : null
+          } catch {
+            next = null
+          }
+          if (!next) return fail('redirect-left-allowed-hosts', { status: response.status })
+          current = next
+          continue
+        }
+        if (!response.ok) {
+          onHttpStatus?.(response.status)
+          return fail('http-error', { status: response.status, url: current.toString() })
+        }
+        const finalUrl = sourceAllowedUrl(response.url || current.toString(), source)
+        if (!finalUrl) return fail('final-url-left-allowed-hosts')
+        const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase()
+        if (
+          contentType
+          && !contentType.includes('text/html')
+          && !contentType.includes('text/plain')
+          && !contentType.includes('application/xml')
+          && !contentType.includes('text/xml')
+        ) return fail('unsupported-content-type', { contentType })
+        const body = await readDiscoverResponseText(response)
+        return {
+          url: finalUrl.toString(),
+          text: body.text,
+          truncated: body.truncated,
+          contentType,
+        }
       }
-      if (!response.ok) {
-        onHttpStatus?.(response.status)
-        return fail('http-error', { status: response.status, url: current.toString() })
-      }
-      const finalUrl = sourceAllowedUrl(response.url || current.toString(), source)
-      if (!finalUrl) return fail('final-url-left-allowed-hosts')
-      const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase()
-      if (
-        contentType
-        && !contentType.includes('text/html')
-        && !contentType.includes('text/plain')
-        && !contentType.includes('application/xml')
-        && !contentType.includes('text/xml')
-      ) return fail('unsupported-content-type', { contentType })
-      const body = await readDiscoverResponseText(response)
-      return {
-        url: finalUrl.toString(),
-        text: body.text,
-        truncated: body.truncated,
-        contentType,
-      }
-    }
-    return fail('too-many-redirects')
+      return fail('too-many-redirects')
+    }, { timeoutMs: deadlineMs })
   } catch (error) {
-    return fail(error?.name === 'AbortError' ? 'timeout' : 'network-error')
-  } finally {
-    clearTimeout(timer)
+    return fail(error instanceof AbortDeadlineError ? 'timeout' : 'network-error')
   }
 }
 
@@ -872,6 +898,9 @@ export async function crawlDiscoverSource(source, {
   if (!source?.url || typeof fetchImpl !== 'function') return { source, pages: [], candidatePages: [], skipped: 'invalid-source' }
   const origin = sourceAllowedUrl(source.url, source)
   if (!origin) return { source, pages: [], candidatePages: [], skipped: 'invalid-source' }
+  const outboundFetch = process.env.NODE_ENV === 'production' && fetchImpl === globalThis.fetch
+    ? pinnedHttpsFetch
+    : fetchImpl
   const networkLookup = dnsLookup === undefined
     ? (fetchImpl === globalThis.fetch ? nodeDnsLookup : null)
     : dnsLookup
@@ -921,7 +950,7 @@ export async function crawlDiscoverSource(source, {
       }
     : null
   const fetchOptions = {
-    fetchImpl,
+    fetchImpl: outboundFetch,
     timeoutMs: requestTimeoutMs,
     source,
     beforeFetch,

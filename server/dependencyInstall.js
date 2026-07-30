@@ -11,6 +11,7 @@ export const DEFAULT_DEPENDENCY_IDLE_TIMEOUT_MS = 5 * 60_000
 export const DEFAULT_DEPENDENCY_ATTEMPT_TIMEOUT_MS = 15 * 60_000
 export const DEFAULT_DEPENDENCY_TOTAL_TIMEOUT_MS = 30 * 60_000
 const DEFAULT_HEARTBEAT_MS = 30_000
+const DEFAULT_PROCESS_TERMINATION_TIMEOUT_MS = 10_000
 const MAX_OUTPUT_TAIL = 64 * 1024
 
 export function dependencyArtifactCandidates(source) {
@@ -100,27 +101,145 @@ async function hasVendoredRuntimePackages(cwd) {
   }
 }
 
-function terminateProcessTree(child, spawnProcess = spawn) {
-  if (!child?.pid) return
-  if (process.platform === 'win32') {
-    const killer = spawnProcess(
-      'taskkill.exe',
-      ['/pid', String(child.pid), '/t', '/f'],
-      { windowsHide: true, stdio: 'ignore' },
-    )
-    killer.once('error', () => child.kill('SIGKILL'))
+function processHasExited(child) {
+  return (
+    (child?.exitCode !== undefined && child.exitCode !== null)
+    || (child?.signalCode !== undefined && child.signalCode !== null)
+  )
+}
+
+function waitForProcessCompletion(child, timeoutMs) {
+  if (!child) return Promise.resolve({ exited: false, error: new Error('Process handle is unavailable.') })
+  if (processHasExited(child)) {
+    return Promise.resolve({
+      exited: true,
+      code: child.exitCode ?? null,
+      signal: child.signalCode ?? null,
+    })
+  }
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.removeListener('exit', onExit)
+      child.removeListener('error', onError)
+      resolve(result)
+    }
+    const onExit = (code, signal) => finish({ exited: true, code, signal })
+    const onError = (error) => finish({ exited: false, error })
+    const timer = setTimeout(() => finish({
+      exited: processHasExited(child),
+      code: child.exitCode ?? null,
+      signal: child.signalCode ?? null,
+    }), timeoutMs)
+    timer.unref?.()
+    child.once('exit', onExit)
+    child.once('error', onError)
+  })
+}
+
+function processGroupExists(pid, killProcess) {
+  try {
+    killProcess(-pid, 0)
+    return true
+  } catch (error) {
+    return error?.code !== 'ESRCH'
+  }
+}
+
+function waitForProcessGroupExit(pid, timeoutMs, killProcess) {
+  const deadline = Date.now() + timeoutMs
+  return new Promise((resolve) => {
+    let timer = null
+    const finish = (exited) => {
+      if (timer !== null) clearTimeout(timer)
+      resolve(exited)
+    }
+    const check = () => {
+      if (!processGroupExists(pid, killProcess)) {
+        finish(true)
+        return
+      }
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) {
+        finish(false)
+        return
+      }
+      // Keep this timer referenced: once the npm root exits it is the lifecycle
+      // owner that prevents the updater from leaving live grandchildren behind.
+      timer = setTimeout(check, Math.min(50, remainingMs))
+    }
+    check()
+  })
+}
+
+async function terminateProcessTree(
+  child,
+  {
+    spawnProcess = spawn,
+    processPlatform = process.platform,
+    killProcess = process.kill,
+    timeoutMs = DEFAULT_PROCESS_TERMINATION_TIMEOUT_MS,
+  } = {},
+) {
+  if (!child?.pid) throw new Error('Cannot terminate a process tree without its root pid.')
+  const killChild = (signal) => {
+    try {
+      child.kill(signal)
+    } catch {
+      // The process may have exited between the status check and the signal.
+    }
+  }
+  if (processPlatform === 'win32') {
+    let killer
+    try {
+      killer = spawnProcess(
+        'taskkill.exe',
+        ['/pid', String(child.pid), '/t', '/f'],
+        { windowsHide: true, stdio: 'ignore' },
+      )
+    } catch (cause) {
+      killChild('SIGKILL')
+      throw new Error(`taskkill could not start for process tree ${child.pid}.`, { cause })
+    }
+    const [killerResult, childResult] = await Promise.all([
+      waitForProcessCompletion(killer, timeoutMs),
+      waitForProcessCompletion(child, timeoutMs),
+    ])
+    if (!killerResult.exited || killerResult.code !== 0 || !childResult.exited) {
+      killChild('SIGKILL')
+      let detail = killerResult.error?.message
+      if (!detail && !killerResult.exited) detail = 'taskkill timeout'
+      if (!detail && killerResult.code !== 0) detail = `taskkill exit code ${killerResult.code}`
+      if (!detail) detail = 'target process exit timeout'
+      throw new Error(`Process tree ${child.pid} was not confirmed stopped (${detail}).`)
+    }
     return
   }
+
   const killGroup = (signal) => {
     try {
-      process.kill(-child.pid, signal)
-    } catch {
-      child.kill(signal)
+      killProcess(-child.pid, signal)
+    } catch (error) {
+      if (error?.code !== 'ESRCH') killChild(signal)
     }
   }
   killGroup('SIGTERM')
-  const forceTimer = setTimeout(() => killGroup('SIGKILL'), 5_000)
+  const forceDelayMs = Math.min(5_000, Math.max(100, timeoutMs - 1_000))
+  const forceTimer = setTimeout(() => killGroup('SIGKILL'), forceDelayMs)
   forceTimer.unref?.()
+  try {
+    const exited = await waitForProcessGroupExit(child.pid, timeoutMs, killProcess)
+    if (exited) return
+    killGroup('SIGKILL')
+    throw new Error(`Process group ${child.pid} did not exit within ${timeoutMs}ms.`)
+  } finally {
+    // Clear the delayed SIGKILL as soon as the whole group is gone so a future
+    // process cannot be hit if the operating system later reuses the group id.
+    clearTimeout(forceTimer)
+  }
 }
 
 function runInstallAttempt(cwd, source, options) {
@@ -167,25 +286,39 @@ function runInstallAttempt(cwd, source, options) {
     let settled = false
     let outputTail = ''
     const outputBuffers = { stdout: '', stderr: '' }
-    const finish = (callback) => {
-      if (settled) return
+    const claimSettlement = () => {
+      if (settled) return false
       settled = true
       clearInterval(watchdog)
-      callback()
+      return true
     }
     const failForTimeout = (kind, elapsedMs) => {
-      finish(() => {
-        terminateProcessTree(child, spawnProcess)
-        const error = Object.assign(
-          new Error(`npm ci ${kind} timeout after ${Math.round(elapsedMs / 1_000)} seconds.`),
+      const error = Object.assign(
+        new Error(`npm ci ${kind} timeout after ${Math.round(elapsedMs / 1_000)} seconds.`),
+        {
+          code: 'UPDATE_DEPENDENCY_INSTALL_TIMEOUT',
+          updateDependencyOutput: outputTail,
+          dependencySource: source.label,
+        },
+      )
+      if (!claimSettlement()) return
+      void terminateProcessTree(child, {
+        spawnProcess,
+        processPlatform: options.processPlatform,
+        killProcess: options.killProcess,
+        timeoutMs: options.terminationTimeoutMs,
+      })
+        .then(() => reject(error))
+        .catch((cause) => reject(Object.assign(
+          new Error(`npm ci timed out and its process tree could not be confirmed stopped: ${cause.message}`),
           {
-            code: 'UPDATE_DEPENDENCY_INSTALL_TIMEOUT',
+            code: 'UPDATE_DEPENDENCY_INSTALL_FAILED',
+            dependencyRetryable: false,
             updateDependencyOutput: outputTail,
             dependencySource: source.label,
+            cause,
           },
-        )
-        reject(error)
-      })
+        )))
     }
     const capture = (streamName, chunk) => {
       const text = cleanProcessOutput(chunk)
@@ -214,7 +347,8 @@ function runInstallAttempt(cwd, source, options) {
       }
     }, Math.min(heartbeatMs, idleTimeoutMs, attemptTimeoutMs))
     watchdog.unref?.()
-    child.once('error', (error) => finish(() => {
+    child.once('error', (error) => {
+      if (!claimSettlement()) return
       const spawnCode = error?.code ?? null
       Object.assign(error, {
         code: 'UPDATE_DEPENDENCY_INSTALL_FAILED',
@@ -223,8 +357,9 @@ function runInstallAttempt(cwd, source, options) {
         dependencySource: source.label,
       })
       reject(error)
-    }))
-    child.once('exit', (code, signal) => finish(() => {
+    })
+    child.once('exit', (code, signal) => {
+      if (!claimSettlement()) return
       for (const [streamName, remainder] of Object.entries(outputBuffers)) {
         const message = remainder.trim()
         if (message) options.onLine?.({ source, streamName, message })
@@ -241,7 +376,7 @@ function runInstallAttempt(cwd, source, options) {
           dependencySource: source.label,
         },
       ))
-    }))
+    })
   })
 }
 
@@ -271,6 +406,10 @@ export async function runProductionDependencyInstall(cwd, options = {}) {
     DEFAULT_DEPENDENCY_TOTAL_TIMEOUT_MS,
   )
   const heartbeatMs = configuredTimeout(options.heartbeatMs, DEFAULT_HEARTBEAT_MS)
+  const terminationTimeoutMs = configuredTimeout(
+    options.terminationTimeoutMs,
+    DEFAULT_PROCESS_TERMINATION_TIMEOUT_MS,
+  )
   const startedAt = Date.now()
   const failures = []
   for (let index = 0; index < sources.length; index += 1) {
@@ -285,6 +424,7 @@ export async function runProductionDependencyInstall(cwd, options = {}) {
         idleTimeoutMs: Math.min(idleTimeoutMs, remainingMs),
         attemptTimeoutMs: Math.min(configuredAttemptTimeoutMs, remainingMs),
         heartbeatMs,
+        terminationTimeoutMs: Math.min(terminationTimeoutMs, remainingMs),
         cacheRoot: options.cacheRoot
           ?? env.npm_config_cache
           ?? path.join(options.storageRoot ?? cwd, 'update-npm-cache'),
@@ -292,6 +432,7 @@ export async function runProductionDependencyInstall(cwd, options = {}) {
     } catch (error) {
       failures.push(error)
       options.onAttemptFailure?.({ source, index, total: sources.length, error })
+      if (error?.dependencyRetryable === false) break
     }
   }
   const lastError = failures.at(-1)

@@ -75,6 +75,8 @@
     "editShareQuota": "Chỉnh sửa giới hạn link chia sẻ",
     "editShareCreateQuota": "Chỉnh sửa giới hạn link chia sẻ trọn đời",
     "editStorageQuota": "Chỉnh sửa hạn mức bộ nhớ",
+    "quotaUsageHelpLabel": "Cách hoạt động của giới hạn sử dụng",
+    "quotaUsageHelp": "Di chuột lên một hàng sử dụng và chọn biểu tượng bút chì để sửa giới hạn. Nhập -1 để đặt giới hạn đó thành không giới hạn (∞).",
     "recordUsage": "{count}/{limit} hồ sơ",
     "recordUsageLabel": "hồ sơ tuyển sinh sử dụng hồ sơ hồ sơ",
     "recordCreateUsage": "{count}/{limit} đã tạo",

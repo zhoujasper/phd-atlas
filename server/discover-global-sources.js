@@ -1,3 +1,5 @@
+import { withAbortDeadline } from './abortDeadline.js'
+
 const OPENALEX_BASE = 'https://api.openalex.org'
 const OPENALEX_TIMEOUT_MS = 12_000
 const OPENALEX_RETRY_ATTEMPTS = 3
@@ -129,18 +131,24 @@ async function fetchOpenAlexJson(url, {
   timeoutMs = OPENALEX_TIMEOUT_MS,
   attempts = OPENALEX_RETRY_ATTEMPTS,
 } = {}) {
+  const requestUrl = new URL(url)
+  if (process.env.OPENALEX_API_KEY) requestUrl.searchParams.set('api_key', process.env.OPENALEX_API_KEY)
+  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(process.env.OPENALEX_MAILTO || ''))) {
+    requestUrl.searchParams.set('mailto', process.env.OPENALEX_MAILTO)
+  }
   let lastError = null
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeoutMs)
     try {
-      const response = await fetchImpl(url.toString(), {
-        signal: controller.signal,
-        headers: {
-          accept: 'application/json',
-          'user-agent': 'PhD-Atlas/0.1 (official-source discovery)',
-        },
-      })
+      const response = await withAbortDeadline(
+        (signal) => fetchImpl(requestUrl.toString(), {
+          signal,
+          headers: {
+            accept: 'application/json',
+            'user-agent': 'PhD-Atlas/0.1 (official-source discovery)',
+          },
+        }),
+        { timeoutMs },
+      )
       if (response.ok) return await response.json()
       lastError = new Error(`OpenAlex HTTP ${response.status}`)
       if (![429, 500, 502, 503, 504].includes(response.status) || attempt + 1 >= attempts) break
@@ -149,8 +157,6 @@ async function fetchOpenAlexJson(url, {
       lastError = error
       if (attempt + 1 >= attempts) break
       await new Promise((resolve) => setTimeout(resolve, retryAfterMs(null, attempt)))
-    } finally {
-      clearTimeout(timer)
     }
   }
   throw lastError || new Error('OpenAlex request failed')
@@ -171,14 +177,62 @@ async function mapWithConcurrency(items, concurrency, worker) {
   return output
 }
 
-function queryText(terms) {
-  return [...new Set((Array.isArray(terms) ? terms : [terms])
+function queryTexts(terms, limit = 2) {
+  const values = [...new Set((Array.isArray(terms) ? terms : [terms])
     .flatMap((value) => cleanText(value, 180).split(/[,;\n|]/))
     .map((value) => cleanText(value, 80))
     .filter(Boolean))]
-    .slice(0, 3)
-    .join(' ')
-    .slice(0, 220) || 'doctoral research'
+  const latin = values.filter((value) => /[a-z]/i.test(value))
+  const native = values.filter((value) => !/[a-z]/i.test(value))
+  return [...latin, ...native].slice(0, Math.max(1, Math.min(3, Number(limit) || 2)))
+}
+
+function globalResearchQueries(terms, topics, limit = 2) {
+  const boundedLimit = Math.max(1, Math.min(2, Number(limit) || 2))
+  const output = []
+  const seenTopics = new Set()
+  const seenQueries = new Set()
+  for (const topic of topics || []) {
+    if (topic?.primaryForQuery === false) continue
+    const topicId = String(topic?.id || topic?.openAlexId || '').match(/(?:^|\/)(T\d+)$/i)?.[1]?.toUpperCase()
+    const query = cleanText(topic?.query || topic?.displayName, 100)
+    if (!topicId || !query || seenTopics.has(topicId) || output.length >= boundedLimit) continue
+    seenTopics.add(topicId)
+    seenQueries.add(query.normalize('NFKC').toLocaleLowerCase())
+    output.push({ kind: 'topic', query, topicId })
+  }
+  for (const query of queryTexts(terms, boundedLimit)) {
+    if (output.length >= boundedLimit) break
+    const key = query.normalize('NFKC').toLocaleLowerCase()
+    if (seenQueries.has(key)) continue
+    seenQueries.add(key)
+    output.push({ kind: 'text', query })
+  }
+  return output
+}
+
+function applyResearchQuery(url, query, filters) {
+  const nextFilters = [...filters]
+  if (query.kind === 'topic') nextFilters.push(`topics.id:${query.topicId}`)
+  else url.searchParams.set('search', query.query)
+  url.searchParams.set('filter', nextFilters.join(','))
+}
+
+function mergeOpenAlexGroups(payloads) {
+  const merged = new Map()
+  for (const payload of payloads || []) {
+    for (const group of payload?.group_by || []) {
+      if (!group?.key) continue
+      const current = merged.get(group.key) || {
+        ...group,
+        count: 0,
+      }
+      current.count += Math.max(0, Number(group.count) || 0)
+      current.key_display_name ||= group.key_display_name
+      merged.set(group.key, current)
+    }
+  }
+  return [...merged.values()].sort((left, right) => right.count - left.count)
 }
 
 function countryPlan(groups, selectedRegions, limit) {
@@ -295,6 +349,7 @@ export function clearDiscoverGlobalSourceCache() {
  */
 export async function discoverGlobalInstitutionSources({
   terms = [],
+  topics = [],
   regions = [],
   existingSources = [],
   limit = 24,
@@ -303,42 +358,52 @@ export async function discoverGlobalInstitutionSources({
 } = {}) {
   if (typeof fetchImpl !== 'function') return []
   const sourceLimit = boundedInteger(limit, 24, 1, MAX_DYNAMIC_SOURCES)
-  const search = queryText(terms)
+  const searches = globalResearchQueries(terms, topics)
+  if (!searches.length) searches.push({ kind: 'text', query: 'doctoral research' })
   const regionKeys = [...new Set((regions || []).map((value) => cleanText(value, 32)).filter(Boolean))].sort()
   const existingDomains = new Set((existingSources || []).flatMap((source) => [
     canonicalHomepage(source?.url)?.hostname,
     ...(source?.allowedHosts || []),
   ]).map(registrableDomain).filter(Boolean))
   const existingSchools = new Set((existingSources || []).map((source) => normalizeSchool(source?.school)).filter(Boolean))
-  const cacheKey = JSON.stringify([search, regionKeys, sourceLimit, [...existingDomains].sort()])
+  const cacheKey = JSON.stringify([searches, regionKeys, sourceLimit, [...existingDomains].sort()])
   const cached = cache.get(cacheKey)
   if (cached && now - cached.cachedAt < CACHE_TTL_MS) return cached.sources
 
-  const countryUrl = new URL(`${OPENALEX_BASE}/works`)
-  countryUrl.searchParams.set('search', search)
-  countryUrl.searchParams.set(
-    'filter',
-    'from_publication_date:2023-01-01,authorships.institutions.type:education',
-  )
-  countryUrl.searchParams.set('group_by', 'authorships.institutions.country_code')
-  countryUrl.searchParams.set('per-page', '200')
-  const countryPayload = await fetchOpenAlexJson(countryUrl, { fetchImpl })
+  const countryPayloads = await mapWithConcurrency(searches, 2, async (search) => {
+    const countryUrl = new URL(`${OPENALEX_BASE}/works`)
+    applyResearchQuery(countryUrl, search, [
+      'from_publication_date:2023-01-01',
+      'authorships.institutions.type:education',
+    ])
+    countryUrl.searchParams.set('group_by', 'authorships.institutions.country_code')
+    countryUrl.searchParams.set('per-page', '200')
+    return fetchOpenAlexJson(countryUrl, { fetchImpl }).catch(() => null)
+  })
+  const availableCountryPayloads = countryPayloads.filter(Boolean)
+  if (!availableCountryPayloads.length) throw new Error('OpenAlex field discovery unavailable')
   const selectedRegions = regionKeys.length
     ? regionKeys
     : ['US', 'UK', 'EU', 'CA', 'SG', 'HK', 'CN', 'AU', 'OTHER']
-  const plannedCountries = countryPlan(countryPayload?.group_by, selectedRegions, sourceLimit)
+  const plannedCountries = countryPlan(
+    mergeOpenAlexGroups(availableCountryPayloads),
+    selectedRegions,
+    sourceLimit,
+  )
   const countryCandidates = await mapWithConcurrency(plannedCountries, 4, async (country) => {
-    const institutionUrl = new URL(`${OPENALEX_BASE}/works`)
-    institutionUrl.searchParams.set('search', search)
-    institutionUrl.searchParams.set(
-      'filter',
-      `from_publication_date:2023-01-01,authorships.institutions.type:education,authorships.institutions.country_code:${country.countryCode}`,
-    )
-    institutionUrl.searchParams.set('group_by', 'authorships.institutions.id')
-    institutionUrl.searchParams.set('per-page', String(MAX_INSTITUTION_GROUPS_PER_COUNTRY))
-    const payload = await fetchOpenAlexJson(institutionUrl, { fetchImpl }).catch(() => null)
+    const payloads = await mapWithConcurrency(searches, 2, async (search) => {
+      const institutionUrl = new URL(`${OPENALEX_BASE}/works`)
+      applyResearchQuery(institutionUrl, search, [
+        'from_publication_date:2023-01-01',
+        'authorships.institutions.type:education',
+        `authorships.institutions.country_code:${country.countryCode}`,
+      ])
+      institutionUrl.searchParams.set('group_by', 'authorships.institutions.id')
+      institutionUrl.searchParams.set('per-page', String(MAX_INSTITUTION_GROUPS_PER_COUNTRY))
+      return fetchOpenAlexJson(institutionUrl, { fetchImpl }).catch(() => null)
+    })
     const quota = institutionQuota(country, selectedRegions.length, sourceLimit)
-    const groups = (payload?.group_by || [])
+    const groups = mergeOpenAlexGroups(payloads)
       .filter((group) => openAlexId(group?.key))
       .filter((group) => !existingSchools.has(normalizeSchool(group?.key_display_name)))
       .slice(0, Math.min(MAX_INSTITUTION_GROUPS_PER_COUNTRY, quota * 5 + 8))

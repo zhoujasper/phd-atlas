@@ -46,6 +46,13 @@ export function InfoTooltip({
   }, [measure])
 
   const hide = useCallback(() => setOpen(false), [])
+  const toggle = useCallback(() => {
+    if (open) {
+      hide()
+      return
+    }
+    show()
+  }, [hide, open, show])
 
   useEffect(() => {
     if (!open) return undefined
@@ -54,13 +61,21 @@ export function InfoTooltip({
       if (next) setAnchor(next)
       else setOpen(false)
     }
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const trigger = triggerRef.current
+      const target = event.target
+      if (trigger && target instanceof Node && trigger.contains(target)) return
+      hide()
+    }
     window.addEventListener('scroll', updatePosition, true)
     window.addEventListener('resize', updatePosition)
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true)
     return () => {
       window.removeEventListener('scroll', updatePosition, true)
       window.removeEventListener('resize', updatePosition)
+      document.removeEventListener('pointerdown', closeOnOutsidePointer, true)
     }
-  }, [measure, open])
+  }, [hide, measure, open])
 
   const tooltipStyle = anchor
     ? ({
@@ -81,11 +96,8 @@ export function InfoTooltip({
         aria-label={label ?? content}
         aria-describedby={open ? tooltipId : undefined}
         aria-expanded={open}
-        onMouseEnter={show}
-        onMouseLeave={hide}
-        onFocus={show}
         onBlur={hide}
-        onClick={show}
+        onClick={toggle}
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
             event.stopPropagation()

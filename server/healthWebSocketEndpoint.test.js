@@ -1,7 +1,7 @@
 import { once } from 'node:events'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
-import { createApp } from './index.js'
+import { createApp, stopServer } from './index.js'
 
 let server
 let httpBase
@@ -43,5 +43,29 @@ describe('health WebSocket endpoint wiring', () => {
       ok: false,
       error: { code: 'WEBSOCKET_REQUIRED' },
     })
+  })
+
+  it('drains an open health socket before waiting for the listener to close', async () => {
+    const restartServer = createApp().listen(0, '127.0.0.1')
+    await once(restartServer, 'listening')
+    const address = restartServer.address()
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${address.port}/api/health/ws`,
+      { headers: { Origin: 'http://localhost:5173' } },
+    )
+    await once(socket, 'message')
+
+    const socketClosed = once(socket, 'close')
+    await Promise.race([
+      stopServer(restartServer),
+      new Promise((_, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error('Server shutdown waited on the health WebSocket.')),
+          500,
+        )
+        timeout.unref?.()
+      }),
+    ])
+    await socketClosed
   })
 })

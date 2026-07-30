@@ -7,6 +7,12 @@ const requiredLanguages = ['en', 'zh', 'ja', 'ko', 'es', 'fr', 'de', 'pt', 'it',
 // Translation providers may transliterate I18N/PH marker text while keeping the
 // surrounding double underscores, so reject the transport envelope itself.
 const markerPattern = /__/
+const reviewedIdenticalTechnicalKeys = new Set([
+  'admin.database.mssql',
+  'dossier.materialTypePlaceholder',
+  'notificationPublisher.csvTemplateFilename',
+  'team.bulkInvitePlaceholder',
+])
 
 function flatten(value, prefix = '', output = new Map()) {
   if (Array.isArray(value)) {
@@ -22,6 +28,14 @@ function flatten(value, prefix = '', output = new Map()) {
 function placeholders(value) {
   if (typeof value !== 'string') return []
   return Array.from(value.matchAll(/\{(\w+)\}/g), (match) => match[1]).sort()
+}
+
+function looksLikeUntranslatedEnglishPhrase(value) {
+  if (typeof value !== 'string' || value.length < 18) return false
+  const withoutTechnicalValues = value
+    .replace(/\{[^}]+\}/g, '')
+    .replace(/https?:\/\/\S+|\S+@\S+/g, '')
+  return (withoutTechnicalValues.match(/[A-Za-z]{3,}/g) ?? []).length >= 3
 }
 
 function readJson(filePath, errors) {
@@ -67,9 +81,20 @@ for (const language of requiredLanguages) {
   }
 
   let identical = 0
+  const localizedKeyOwners = new Map()
   for (const file of englishFiles) {
     const baseline = english.get(file)
     const localized = flatten(readJson(path.join(languageDir, file), errors) ?? {})
+    for (const [key, value] of localized) {
+      const previous = localizedKeyOwners.get(key)
+      if (previous && !Object.is(previous.value, value)) {
+        errors.push(
+          `${language}: duplicate key ${key} differs between ${previous.file} (${JSON.stringify(previous.value)}) and ${file} (${JSON.stringify(value)})`,
+        )
+      } else if (!previous) {
+        localizedKeyOwners.set(key, { file, value })
+      }
+    }
     for (const [key, source] of baseline) {
       if (!localized.has(key)) {
         errors.push(`${language}/${file}: missing ${key}`)
@@ -86,7 +111,20 @@ for (const language of requiredLanguages) {
         if (placeholders(source).join(',') !== placeholders(target).join(',')) {
           errors.push(`${language}/${file}:${key}: placeholders differ (${placeholders(source).join(',')} -> ${placeholders(target).join(',')})`)
         }
-        if (language !== 'en' && !key.startsWith('_staticText.') && target === source && /[A-Za-z]{3}/.test(source)) identical += 1
+        const sourceLineBreaks = (source.match(/\n/g) ?? []).length
+        const targetLineBreaks = (target.match(/\n/g) ?? []).length
+        if (sourceLineBreaks !== targetLineBreaks) {
+          errors.push(`${language}/${file}:${key}: line-break structure differs (${sourceLineBreaks} -> ${targetLineBreaks})`)
+        }
+        if (language !== 'en' && !key.startsWith('_staticText.') && target === source && /[A-Za-z]{3}/.test(source)) {
+          identical += 1
+          if (
+            looksLikeUntranslatedEnglishPhrase(source)
+            && !reviewedIdenticalTechnicalKeys.has(key)
+          ) {
+            errors.push(`${language}/${file}:${key}: likely untranslated English phrase ${JSON.stringify(source)}`)
+          }
+        }
       }
     }
     for (const key of localized.keys()) {

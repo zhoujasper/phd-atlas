@@ -170,7 +170,7 @@ export function patchForAccountType(accountType: AccountType): UserUpdatePatch {
 }
 
 export function isUnlimitedQuota(value: number) {
-  return value >= Number.MAX_SAFE_INTEGER
+  return value === -1 || value >= Number.MAX_SAFE_INTEGER
 }
 
 export function formatQuotaLimit(value: number) {

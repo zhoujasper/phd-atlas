@@ -9,10 +9,24 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react'
-import { addFloatingViewportListeners, getAnchoredOverlayStyle } from './floatingOverlay'
+import {
+  addFloatingViewportListeners,
+  FLOATING_POPOVER_BASE_Z_INDEX,
+  getAnchoredOverlayStyle,
+} from './floatingOverlay'
 import { getMotionDelay, useAnimatedClose } from '../hooks/useAnimatedClose'
 
 const focusableSelector = 'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+const openNestedOverlaySelector = '[aria-haspopup][aria-expanded="true"]'
+
+function closestFloatingOverlay(target: EventTarget | null) {
+  const element = target instanceof Element
+    ? target
+    : target instanceof Node
+      ? target.parentElement
+      : null
+  return element?.closest<HTMLElement>('[data-floating-overlay="true"]') ?? null
+}
 
 export function AnchoredPopover({
   trigger,
@@ -24,6 +38,7 @@ export function AnchoredPopover({
   estimatedHeight = 260,
   align = 'start',
   onOpenChange,
+  onTriggerDoubleClick,
   children,
 }: {
   trigger: ReactNode
@@ -35,6 +50,7 @@ export function AnchoredPopover({
   estimatedHeight?: number
   align?: 'start' | 'end'
   onOpenChange?: (open: boolean) => void
+  onTriggerDoubleClick?: () => void
   children: (close: () => void) => ReactNode
 }) {
   const [open, setOpen] = useState(false)
@@ -72,6 +88,7 @@ export function AnchoredPopover({
       actualHeight: popoverRef.current?.offsetHeight || undefined,
       gap: 6,
       align,
+      baseZIndex: FLOATING_POPOVER_BASE_Z_INDEX,
     })
   }, [align, estimatedHeight, width])
 
@@ -142,11 +159,20 @@ export function AnchoredPopover({
     function handlePointerDown(event: MouseEvent) {
       const target = event.target as Node
       if (triggerRef.current?.contains(target) || popoverRef.current?.contains(target)) return
+      const eventOverlay = closestFloatingOverlay(event.target)
+      const ownOverlay = popoverRef.current?.parentElement
+      if (eventOverlay && eventOverlay !== ownOverlay) return
       close(false)
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
+        const target = event.target as Node
+        const eventOverlay = closestFloatingOverlay(event.target)
+        const ownOverlay = popoverRef.current?.parentElement
+        const fromOwnTrigger = Boolean(triggerRef.current?.contains(target))
+        if (!fromOwnTrigger && eventOverlay && eventOverlay !== ownOverlay) return
+        if (popoverRef.current?.querySelector(openNestedOverlaySelector)) return
         event.preventDefault()
         event.stopImmediatePropagation()
         close()
@@ -207,6 +233,12 @@ export function AnchoredPopover({
             setOpenState(true)
           }
         }}
+        onDoubleClick={(event) => {
+          if (!onTriggerDoubleClick) return
+          event.preventDefault()
+          if (open) close(false)
+          onTriggerDoubleClick()
+        }}
         aria-label={triggerAriaLabel}
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -219,8 +251,10 @@ export function AnchoredPopover({
           id={popoverId}
           className={`anchored-popover-positioner${positionReady ? ' is-positioned' : ''}${exiting ? ' is-exiting' : ''}`}
           style={popoverStyle}
+          data-floating-overlay="true"
           role="dialog"
           aria-label={popoverAriaLabel}
+          onMouseDown={(event) => event.stopPropagation()}
         >
           <div
             ref={popoverRef}

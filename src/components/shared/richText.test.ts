@@ -22,18 +22,38 @@ describe('rich text conversion', () => {
   it('renders common Markdown formatting into one safe HTML surface', () => {
     const html = markdownToSafeHtml('# Fit\n\nNeeds **polish**, ++review++, and [portal](https://example.edu).\n\n- Draft\n- Submit')
 
-    expect(html).toContain('<h3>Fit</h3>')
+    expect(html).toContain('<h1>Fit</h1>')
     expect(html).toContain('<strong>polish</strong>')
     expect(html).toContain('<u>review</u>')
-    expect(html).toContain('<ul><li>Draft</li><li>Submit</li></ul>')
+    expect(html).toContain('<ul>\n<li>Draft</li>\n<li>Submit</li>\n</ul>')
     expect(html).toContain('href="https://example.edu"')
   })
 
   it('uses standard Markdown semantics for soft, hard, and paragraph breaks', () => {
-    expect(markdownToSafeHtml('Line one\nLine two')).toBe('<p>Line one Line two</p>')
-    expect(markdownToSafeHtml('Line one  \nLine two')).toBe('<p>Line one<br>Line two</p>')
-    expect(markdownToSafeHtml('Line one\\\nLine two')).toBe('<p>Line one<br>Line two</p>')
-    expect(markdownToSafeHtml('Paragraph one\n\nParagraph two')).toBe('<p>Paragraph one</p><p>Paragraph two</p>')
+    expect(markdownToSafeHtml('Line one\nLine two')).toBe('<p>Line one\nLine two</p>')
+    expect(markdownToSafeHtml('Line one  \nLine two')).toBe('<p>Line one<br>\nLine two</p>')
+    expect(markdownToSafeHtml('Line one\\\nLine two')).toBe('<p>Line one<br>\nLine two</p>')
+    expect(markdownToSafeHtml('Paragraph one\n\nParagraph two')).toBe('<p>Paragraph one</p>\n<p>Paragraph two</p>')
+  })
+
+  it('renders GFM tables, task lists, images, and footnotes', () => {
+    const html = markdownToSafeHtml(`- [x] Ready
+
+| Item | State |
+| --- | --- |
+| Proposal | Done |
+
+![Diagram](https://example.edu/diagram.png)
+
+Evidence.[^1]
+
+[^1]: Official source.`)
+
+    expect(html).toContain('type="checkbox"')
+    expect(html).toContain('<table>')
+    expect(html).toContain('src="https://example.edu/diagram.png"')
+    expect(html).toContain('class="footnotes"')
+    expect(html).toContain('Official source')
   })
 
   it('removes executable HTML while preserving safe formatting and links', () => {

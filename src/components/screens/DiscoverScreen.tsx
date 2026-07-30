@@ -26,6 +26,7 @@ import {
   programMatchesRequirementFilters,
 } from '../../data/discover'
 import { useI18n } from '../hooks/useI18n'
+import { useVisibilityAwarePolling } from '../hooks/useVisibilityAwarePolling'
 import {
   DiscoverResearchSheet,
   type DiscoverResearchSubmissionPhase,
@@ -175,14 +176,18 @@ export function DiscoverScreen({
     if (preferredKeyIds.length) setSelectedKeyIds(preferredKeyIds)
   }, [])
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true)
     setError(null)
     try {
       const [payload, keys] = await Promise.all([
-        phdApi.getDiscoverCatalog(token, teamScope),
-        phdApi.listAiKeys(token).catch(() => [] as AiKey[]),
+        phdApi.getDiscoverCatalog(token, teamScope, { signal }),
+        phdApi.listAiKeys(token, { signal }).catch((error) => {
+          if (signal?.aborted) throw error
+          return [] as AiKey[]
+        }),
       ])
+      if (signal?.aborted) return
       applyPayload(payload)
       const scopedKeys = teamScope
         ? keys.filter((key) => key.scope === 'team' && key.teamId === teamScope.teamId)
@@ -201,20 +206,27 @@ export function DiscoverScreen({
         setSelectedKeyIds([])
       }
     } catch (reason) {
-      setError(normalizeErrorMessage(reason, lang, tx('discover.loadError')))
+      if (!signal?.aborted) {
+        setError(normalizeErrorMessage(reason, lang, tx('discover.loadError')))
+      }
     } finally {
-      setLoading(false)
+      if (!signal?.aborted) setLoading(false)
     }
   }, [applyPayload, lang, teamScope, token, tx])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    const controller = new AbortController()
+    void load(controller.signal)
+    return () => controller.abort()
+  }, [load])
 
   const announcedResearchJobRef = useRef<string | null>(null)
   const researchJobId = state?.researchJob?.id
   const researchJobStatus = state?.researchJob?.status
-  const refreshResearchState = useCallback(async () => {
+  const refreshResearchState = useCallback(async (signal?: AbortSignal) => {
     try {
-      const payload = await phdApi.getDiscoverCatalog(token, teamScope)
+      const payload = await phdApi.getDiscoverCatalog(token, teamScope, { signal })
+      if (signal?.aborted) return
       applyPayload(payload)
       const nextJob = payload.state.researchJob
       if (!nextJob) return
@@ -237,20 +249,18 @@ export function DiscoverScreen({
     void refreshResearchState()
   }, [realtimeRevision, refreshResearchState])
 
-  useEffect(() => {
-    if (
-      realtimeConnected
-      || !researchJobId
-      || !researchJobStatus
-      || !['queued', 'running'].includes(researchJobStatus)
-    ) return undefined
-    const initialTimer = window.setTimeout(() => { void refreshResearchState() }, 8_000)
-    const fallbackTimer = window.setInterval(() => { void refreshResearchState() }, 60_000)
-    return () => {
-      window.clearTimeout(initialTimer)
-      window.clearInterval(fallbackTimer)
-    }
-  }, [realtimeConnected, refreshResearchState, researchJobId, researchJobStatus])
+  useVisibilityAwarePolling({
+    enabled: Boolean(
+      !realtimeConnected
+      && researchJobId
+      && researchJobStatus
+      && ['queued', 'running'].includes(researchJobStatus)
+    ),
+    initialDelayMs: 8_000,
+    intervalMs: 60_000,
+    restartKey: `${researchJobId ?? ''}:${researchJobStatus ?? ''}`,
+    poll: refreshResearchState,
+  })
 
   const saveState = useCallback(async (patch: Partial<DiscoverUserState>, toast = false) => {
     setSaving(true)

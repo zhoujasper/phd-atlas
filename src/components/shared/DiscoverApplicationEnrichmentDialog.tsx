@@ -13,6 +13,7 @@ export function DiscoverApplicationEnrichmentDialog({
   application,
   aiKeys,
   preferredKeyId,
+  onConfigureAiKeys,
   onApplied,
   onNotify,
   onClose,
@@ -22,6 +23,7 @@ export function DiscoverApplicationEnrichmentDialog({
   application: ApplicationRecord
   aiKeys: AiKey[]
   preferredKeyId?: string
+  onConfigureAiKeys?: () => void
   onApplied: (application: ApplicationRecord) => void
   onNotify: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
   onClose: () => void
@@ -61,6 +63,7 @@ export function DiscoverApplicationEnrichmentDialog({
               applications={[application]}
               aiKeys={aiKeys}
               preferredKeyId={preferredKeyId}
+              onConfigureAiKeys={onConfigureAiKeys}
               onApplied={(updated) => {
                 onApplied(updated)
                 requestClose()

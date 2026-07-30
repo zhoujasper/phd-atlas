@@ -125,6 +125,34 @@ export function Inspector({
     }
   }, [application, showPastDeadlines])
 
+  if (collapsed && !aiActive) {
+    return (
+      <aside
+        className="inspector-pane"
+        aria-label={tx('inspector.title')}
+        aria-hidden="true"
+        inert
+        style={style}
+        data-collapsed-shell="true"
+      >
+        {resizeHandle}
+        <div
+          key="inspector-default"
+          className="inspector-default-content"
+          aria-hidden="true"
+          inert
+        />
+        <div
+          key="ai-inspector-host"
+          id="ai-inspector-host"
+          className="ai-inspector-slot"
+          aria-hidden="true"
+          inert
+        />
+      </aside>
+    )
+  }
+
   const startEdit = (field: string, value: string) => {
     setEditingField(field)
     setEditValue(value)
@@ -232,7 +260,7 @@ export function Inspector({
         inert={collapsed ? true : undefined}
         style={style}
       >
-        <div className="inspector-default-content" aria-hidden={aiActive || undefined} inert={aiActive ? true : undefined}>
+        <div key="inspector-default" className="inspector-default-content" aria-hidden={aiActive || undefined} inert={aiActive ? true : undefined}>
           <div className="inspector-empty">
             <ClipboardList size={28} aria-hidden="true" style={{ opacity: 0.3 }} />
             <span className="eyebrow">{tx('inspector.title')}</span>
@@ -240,7 +268,7 @@ export function Inspector({
           </div>
         </div>
         {resizeHandle}
-        <div id="ai-inspector-host" className="ai-inspector-slot" aria-hidden={!aiActive || undefined} inert={!aiActive ? true : undefined} />
+        <div key="ai-inspector-host" id="ai-inspector-host" className="ai-inspector-slot" aria-hidden={!aiActive || undefined} inert={!aiActive ? true : undefined} />
       </aside>
     )
   }
@@ -403,7 +431,7 @@ export function Inspector({
       style={style}
     >
       {resizeHandle}
-      <div className="inspector-default-content" aria-hidden={aiActive || undefined} inert={aiActive ? true : undefined}>
+      <div key="inspector-default" className="inspector-default-content" aria-hidden={aiActive || undefined} inert={aiActive ? true : undefined}>
       <div className="inspector-head">
         <span className="eyebrow">{tx('inspector.title')}</span>
         <StatusPill status={application.status} />
@@ -520,11 +548,13 @@ export function Inspector({
             {renderLinkActions('school.name', application.school.name, tx('inspector.copySchool'))}
           </div>
 
-          <div className="inspector-link-row">
-            <MapPin size={14} className="inspector-link-icon" aria-hidden="true" />
-            {renderEditableValue('school.country', application.school.country, tx('inspector.copyCountry'))}
-            {renderLinkActions('school.country', application.school.country, tx('inspector.copyCountry'))}
-          </div>
+          {application.school.country.trim() ? (
+            <div className="inspector-link-row">
+              <MapPin size={14} className="inspector-link-icon" aria-hidden="true" />
+              {renderEditableValue('school.country', application.school.country, tx('inspector.copyCountry'))}
+              {renderLinkActions('school.country', application.school.country, tx('inspector.copyCountry'))}
+            </div>
+          ) : null}
 
           <div className="inspector-link-row">
             <BookOpen size={14} className="inspector-link-icon" aria-hidden="true" />
@@ -536,8 +566,8 @@ export function Inspector({
 
       {versionEntries.length > 0 ? (
         <div className="inspector-card">
-          <h4>{tx('inspector.versions', tx('share.sections.versions'))}</h4>
-          <div className="inspector-version-list" role="list" aria-label={tx('inspector.versions', tx('share.sections.versions'))}>
+          <h4>{tx('inspector.versions')}</h4>
+          <div className="inspector-version-list" role="list" aria-label={tx('inspector.versions')}>
             {versionEntries.slice(0, 12).map((version) => (
               <div key={version.id} className="inspector-version-row" role="listitem">
                 <strong>{version.file}</strong>
@@ -640,7 +670,7 @@ export function Inspector({
         </>
       ) : null}
       </div>
-      <div id="ai-inspector-host" className="ai-inspector-slot" aria-hidden={!aiActive || undefined} inert={!aiActive ? true : undefined} />
+      <div key="ai-inspector-host" id="ai-inspector-host" className="ai-inspector-slot" aria-hidden={!aiActive || undefined} inert={!aiActive ? true : undefined} />
     </aside>
   )
 }

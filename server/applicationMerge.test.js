@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   auditClone,
   buildApplicationAutoMerge,
-  buildApplicationMergePreview,
   compactChangeList,
   isMajorApplicationChange,
   resolveApplicationAutoMerge,
@@ -49,11 +48,6 @@ describe('application merge model', () => {
       program: '',
     }
 
-    expect(buildApplicationMergePreview(base, submitted, current)).toEqual([
-      expect.objectContaining({ field: 'school.name', status: 'conflict' }),
-      expect.objectContaining({ field: 'deadline', status: 'same' }),
-      expect.objectContaining({ field: 'program', status: 'clean' }),
-    ])
     expect(buildApplicationAutoMerge(base, submitted, current)).toMatchObject({
       cleanFields: ['program'],
       sameFields: ['deadline'],
@@ -111,5 +105,29 @@ describe('application merge model', () => {
     const teacherRemains = resolveApplicationAutoMerge(base, studentSubmission, currentTeacherCopy)
     expect(teacherRemains.application.school.name).toBe('Teacher University')
     expect(teacherRemains.retainedFields).toEqual(['school.name'])
+  })
+
+  it('lets the latest editor win when the edit starts from the newest saved version', () => {
+    const latestSavedTeacherVersion = {
+      school: { name: 'Teacher University' },
+      deadline: '2026-12-20',
+      program: 'Computer Science PhD',
+    }
+    const laterStudentSubmission = {
+      ...latestSavedTeacherVersion,
+      school: { name: 'Student Latest University' },
+    }
+
+    const latestWins = resolveApplicationAutoMerge(
+      latestSavedTeacherVersion,
+      laterStudentSubmission,
+      latestSavedTeacherVersion,
+    )
+
+    expect(latestWins.application.school.name).toBe('Student Latest University')
+    expect(latestWins.cleanFields).toEqual(['school.name'])
+    expect(latestWins.conflicts).toEqual([])
+    expect(latestWins.teacherPriorityFields).toEqual([])
+    expect(latestWins.retainedFields).toEqual([])
   })
 })

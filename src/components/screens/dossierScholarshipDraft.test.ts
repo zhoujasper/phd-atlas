@@ -4,9 +4,24 @@ import {
   cleanScholarshipDraft,
   createScholarshipDraft,
   scholarshipToDraft,
+  sortScholarshipTimelineNewestFirst,
 } from './dossierScholarshipDraft'
 
 describe('dossier scholarship drafts', () => {
+  it('orders scholarship timeline events newest first without mutating the draft', () => {
+    const timeline = [
+      { id: 'open', title: 'Funding opens', date: '2026-07-06', note: '' },
+      { id: 'review', title: 'Committee review', date: '2026-07-16', note: '' },
+      { id: 'decision', title: 'Award decision', date: '2026-07-26', note: '' },
+      { id: 'decision-follow-up', title: 'Decision follow-up', date: '2026-07-26', note: '' },
+    ]
+
+    expect(sortScholarshipTimelineNewestFirst(timeline).map((event) => event.id))
+      .toEqual(['decision', 'decision-follow-up', 'review', 'open'])
+    expect(timeline.map((event) => event.id))
+      .toEqual(['open', 'review', 'decision', 'decision-follow-up'])
+  })
+
   it('creates a complete default form without leaking UI-only state', () => {
     expect(createScholarshipDraft('Example University')).toMatchObject({
       name: '',

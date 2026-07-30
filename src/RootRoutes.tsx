@@ -28,7 +28,7 @@ const TeamJoinScreen = lazy(() =>
 function RouteFallback() {
   // Route-shaped skeleton while the main app chunk loads — message is language-agnostic
   // until i18n mounts inside App.
-  return <LaunchScreen message="PhD Atlas" detail="Loading workspace…" />
+  return <LaunchScreen message="PhD Atlas" />
 }
 
 export function RootRoutes() {

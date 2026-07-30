@@ -2,7 +2,7 @@
   "dashboard": {
     "overview": "Visão geral",
     "title": "Painel",
-    "subtitle": "Acompanhe rapidamente sua jornada de candidatura à universidade para doutorado.",
+    "subtitle": "Veja o que precisa de atenção, entenda o motivo e continue exatamente onde o trabalho está.",
     "teamEyebrow": "Visão geral da equipe",
     "teamTitle": "Visão geral da equipe",
     "teamSubtitle": "Veja rapidamente o progresso das candidaturas universitárias da sua equipe.",
@@ -56,7 +56,7 @@
     "applicationCardScroller": "cartões de candidatura universitária",
     "scrollApplicationsLeft": "Role os cartões de candidatura à universidade restantes",
     "scrollApplicationsRight": "Role os cartões de candidatura à universidade para a direita",
-    "applicationProgressValue": "{value}% progresso\nLista de verificação de",
+    "applicationProgressValue": "{value}% de progresso",
     "materialChecklistValue": "{done}/{total}",
     "openTaskValue": "{count} tarefas abertas",
     "nextActions": "Próximas ações",

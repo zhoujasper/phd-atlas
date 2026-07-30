@@ -4,7 +4,6 @@ import {
   ArrowDown,
   ArrowDownUp,
   ArrowUp,
-  ArrowRight,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -34,7 +33,7 @@ import {
 import type { SortField, SortKey } from '../../appModel'
 import { daysUntil, deadlineUrgency } from '../../appModel'
 import { localeForLanguage } from '../../i18n'
-import { statusLabel } from '../../statusLabels'
+import { statusCssSlug, statusLabel } from '../../statusLabels'
 import { StatusPill } from '../shared/StatusPill'
 import { CollapsiblePanel } from '../shared/CollapsiblePanel'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
@@ -43,8 +42,14 @@ import { hasExplorerSelectionModifier, useExplorerSelection } from '../hooks/use
 import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/ExplorerContextMenu'
 import { ExplorerSelectionBar } from '../shared/ExplorerSelectionBar'
 import { SchoolLogoMark } from '../shared/SchoolLogo'
+import { InlinePresence } from '../shared/InlinePresence'
 
 const APPLICATIONS_PER_PAGE = 10
+const APPLICATION_SELECTION_MOTION_FALLBACK_MS = 320
+
+function isJsdomRuntime() {
+  return typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent)
+}
 
 type TeamApplicationRelation = {
   studentName: string
@@ -177,6 +182,7 @@ type ApplicationPaneProps = {
   onNew?: () => void
   onUpgrade: () => void
   onShowBoard?: () => void
+  boardActive?: boolean
   onOpenMany?: (ids: string[]) => void
   onExportMany?: (ids: string[]) => void
   trashItems?: ApplicationTrashItem[]
@@ -232,6 +238,7 @@ export function ApplicationPane({
   onNew,
   onUpgrade,
   onShowBoard,
+  boardActive = false,
   onOpenMany,
   onExportMany,
   trashItems = [],
@@ -281,10 +288,12 @@ export function ApplicationPane({
   const applicationListRef = useRef<HTMLDivElement | null>(null)
   const applicationSelectionSliderRef = useRef<HTMLSpanElement | null>(null)
   const applicationRowRefs = useRef(new Map<string, HTMLButtonElement>())
+  const applicationRowGeometryRef = useRef(new Map<string, { top: number; height: number }>())
   const committedSelectionRef = useRef(selectedId)
   const optimisticSelectionRef = useRef<string | null>(null)
   const optimisticSelectionTimerRef = useRef<number | null>(null)
   const selectionMotionTimerRef = useRef<number | null>(null)
+  const selectionMotionReleaseFramesRef = useRef<{ first: number; second: number } | null>(null)
   const { exiting: ownerPickerExiting, requestClose: requestOwnerPickerClose } = useAnimatedClose(
     ownerPickerOpen,
     () => {
@@ -358,7 +367,6 @@ export function ApplicationPane({
         )
       )
       && application.school.logoAutoDetect !== false
-      && Boolean(application.school.website.trim())
       && !readOnlyIds?.has(application.id)
     ))
 
@@ -366,7 +374,11 @@ export function ApplicationPane({
       for (let index = 0; index < candidates.length; index += 2) {
         if (cancelled) return
         const batch = candidates.slice(index, index + 2).filter((application) => {
-          const key = `${application.id}::${application.school.website.trim()}`
+          const key = [
+            application.id,
+            application.school.name.trim(),
+            application.school.website.trim(),
+          ].join('::')
           if (schoolLogoAutoAttemptsRef.current.has(key)) return false
           schoolLogoAutoAttemptsRef.current.add(key)
           return true
@@ -390,12 +402,67 @@ export function ApplicationPane({
     })
   }, [])
 
+  const cancelSelectionSliderMotionRelease = useCallback(() => {
+    const scheduled = selectionMotionReleaseFramesRef.current
+    if (!scheduled) return
+    if (scheduled.first) window.cancelAnimationFrame(scheduled.first)
+    if (scheduled.second) window.cancelAnimationFrame(scheduled.second)
+    selectionMotionReleaseFramesRef.current = null
+  }, [])
+
   const finishSelectionSliderMotion = useCallback(() => {
     if (selectionMotionTimerRef.current !== null) {
       window.clearTimeout(selectionMotionTimerRef.current)
       selectionMotionTimerRef.current = null
     }
+    cancelSelectionSliderMotionRelease()
     applicationSelectionSliderRef.current?.classList.remove('is-moving')
+  }, [cancelSelectionSliderMotionRelease])
+
+  const scheduleSelectionSliderMotionFinish = useCallback(() => {
+    if (selectionMotionTimerRef.current !== null) {
+      window.clearTimeout(selectionMotionTimerRef.current)
+      selectionMotionTimerRef.current = null
+    }
+    cancelSelectionSliderMotionRelease()
+
+    const release = () => {
+      applicationSelectionSliderRef.current?.classList.remove('is-moving')
+    }
+    if (isJsdomRuntime() || typeof window.requestAnimationFrame !== 'function') {
+      release()
+      return
+    }
+
+    // Keep the promoted layer through one complete post-transition paint.
+    // Releasing it on transitionend (or at the exact CSS duration) can demote
+    // the layer during its final raster frame and produce a visible arrival
+    // hitch. Two frames make the first settled frame paint before cleanup.
+    const scheduled = { first: 0, second: 0 }
+    selectionMotionReleaseFramesRef.current = scheduled
+    scheduled.first = window.requestAnimationFrame(() => {
+      if (selectionMotionReleaseFramesRef.current !== scheduled) return
+      scheduled.first = 0
+      scheduled.second = window.requestAnimationFrame(() => {
+        if (selectionMotionReleaseFramesRef.current !== scheduled) return
+        selectionMotionReleaseFramesRef.current = null
+        release()
+      })
+    })
+  }, [cancelSelectionSliderMotionRelease])
+
+  const measureApplicationRows = useCallback(() => {
+    const geometry = applicationRowGeometryRef.current
+    const currentIds = new Set(applicationRowRefs.current.keys())
+    for (const id of geometry.keys()) {
+      if (!currentIds.has(id)) geometry.delete(id)
+    }
+    for (const [id, row] of applicationRowRefs.current) {
+      geometry.set(id, {
+        top: row.offsetTop,
+        height: row.offsetHeight || 46,
+      })
+    }
   }, [])
 
   const positionSelectionSlider = useCallback((
@@ -412,11 +479,18 @@ export function ApplicationPane({
       return
     }
 
-    // Read geometry first, then batch style/class writes. Pointer feedback calls
-    // this before the dossier's keyed record boundary starts its heavier render,
-    // so the list responds on the press instead of waiting for that commit.
-    const nextTop = row.offsetTop
-    const nextHeight = row.offsetHeight || 46
+    // Geometry is prepared after layout/resize. Pointer feedback can therefore
+    // remain write-only in normal browsers instead of forcing the entire
+    // dossier workspace to synchronously flush layout on press.
+    const cachedGeometry = targetId
+      ? applicationRowGeometryRef.current.get(targetId)
+      : undefined
+    const nextTop = cachedGeometry && !isJsdomRuntime()
+      ? cachedGeometry.top
+      : row.offsetTop
+    const nextHeight = cachedGeometry && !isJsdomRuntime()
+      ? cachedGeometry.height
+      : row.offsetHeight || 46
     const nextTopValue = `${nextTop}px`
     const nextHeightValue = `${nextHeight}px`
     const shouldAnimate = slider.classList.contains('is-visible')
@@ -429,14 +503,22 @@ export function ApplicationPane({
       if (selectionMotionTimerRef.current !== null) {
         window.clearTimeout(selectionMotionTimerRef.current)
       }
+      cancelSelectionSliderMotionRelease()
       slider.classList.add('is-moving')
-      selectionMotionTimerRef.current = window.setTimeout(finishSelectionSliderMotion, 280)
+      selectionMotionTimerRef.current = window.setTimeout(
+        scheduleSelectionSliderMotionFinish,
+        APPLICATION_SELECTION_MOTION_FALLBACK_MS,
+      )
     }
     slider.style.setProperty('--application-selection-y', nextTopValue)
     slider.style.setProperty('--application-selection-height', nextHeightValue)
     slider.classList.add('is-visible')
     list.classList.add('has-selection-slider')
-  }, [finishSelectionSliderMotion])
+  }, [
+    cancelSelectionSliderMotionRelease,
+    finishSelectionSliderMotion,
+    scheduleSelectionSliderMotionFinish,
+  ])
 
   const syncSelectionSlider = useCallback(() => {
     positionSelectionSlider(optimisticSelectionRef.current ?? committedSelectionRef.current)
@@ -463,9 +545,27 @@ export function ApplicationPane({
   }, [positionSelectionSlider])
 
   const openApplication = useCallback((id: string, row: HTMLButtonElement) => {
-    primeApplicationSelection(id, row)
+    if (optimisticSelectionRef.current !== id) {
+      primeApplicationSelection(id, row)
+    }
     onSelect(id)
   }, [onSelect, primeApplicationSelection])
+
+  useLayoutEffect(() => {
+    measureApplicationRows()
+    syncSelectionSlider()
+
+    const list = applicationListRef.current
+    if (!list || typeof ResizeObserver === 'undefined') return undefined
+
+    const observer = new ResizeObserver(() => {
+      measureApplicationRows()
+      syncSelectionSlider()
+    })
+    observer.observe(list)
+    applicationRowRefs.current.forEach((applicationRow) => observer.observe(applicationRow))
+    return () => observer.disconnect()
+  }, [measureApplicationRows, safeCurrentPage, syncSelectionSlider, visiblePageKey])
 
   useLayoutEffect(() => {
     const selectionChanged = committedSelectionRef.current !== selectedId
@@ -478,17 +578,7 @@ export function ApplicationPane({
       }
     }
     syncSelectionSlider()
-
-    const list = applicationListRef.current
-    const sliderTargetId = optimisticSelectionRef.current ?? committedSelectionRef.current
-    const row = sliderTargetId ? applicationRowRefs.current.get(sliderTargetId) : null
-    if (!list || typeof ResizeObserver === 'undefined') return undefined
-
-    const observer = new ResizeObserver(syncSelectionSlider)
-    observer.observe(list)
-    if (row) observer.observe(row)
-    return () => observer.disconnect()
-  }, [safeCurrentPage, selectedId, syncSelectionSlider, visiblePageKey])
+  }, [selectedId, syncSelectionSlider])
 
   useEffect(() => () => {
     if (optimisticSelectionTimerRef.current !== null) {
@@ -860,16 +950,23 @@ export function ApplicationPane({
         <span>{format(tx('workspace.records'), { count: applications.length })}</span>
         <div className="list-count-actions">
           {onShowBoard ? (
-            <button
-              type="button"
-              className="application-board-button"
-              onClick={onShowBoard}
-              aria-label={tx('kanban.boardView')}
-              title={tx('kanban.boardView')}
+            <InlinePresence
+              present={!boardActive}
+              className="application-board-action-presence"
+              durationMs={220}
+              parentGap="1px"
             >
-              <Columns size={12} aria-hidden="true" />
-              <span>{tx('kanban.board')}</span>
-            </button>
+              <button
+                type="button"
+                className="application-board-button"
+                onClick={onShowBoard}
+                aria-label={tx('kanban.boardView')}
+                title={tx('kanban.boardView')}
+              >
+                <Columns size={12} aria-hidden="true" />
+                <span>{tx('kanban.board')}</span>
+              </button>
+            </InlinePresence>
           ) : null}
           {onNew ? (
             <button
@@ -945,7 +1042,7 @@ export function ApplicationPane({
               className="application-selection-slider"
               aria-hidden="true"
               onTransitionEnd={(event) => {
-                if (event.propertyName === 'transform') finishSelectionSliderMotion()
+                if (event.propertyName === 'transform') scheduleSelectionSliderMotionFinish()
               }}
             />
             {visiblePage.map((application, index) => {
@@ -955,13 +1052,19 @@ export function ApplicationPane({
               const isExplorerSelected = selection.selectedIds.has(application.id)
               const isRemoving = Boolean(removingApplicationIds?.has(application.id))
               const relation = teamRelations?.[application.id]
+              const teacherNames = relation
+                ? relation.advisorName || tx('workspace.unassignedAdvisor')
+                : ''
 
               return (
                 <button
                   key={application.id}
                   ref={(node) => {
                     if (node) applicationRowRefs.current.set(application.id, node)
-                    else applicationRowRefs.current.delete(application.id)
+                    else {
+                      applicationRowRefs.current.delete(application.id)
+                      applicationRowGeometryRef.current.delete(application.id)
+                    }
                   }}
                   type="button"
                   className={`application-line${relation ? ' has-team-context' : ''}${isSelected ? ' selected' : ''}${isExplorerSelected ? ' explorer-selected' : ''}${isRemoving ? ' is-removing' : ''}`}
@@ -988,7 +1091,10 @@ export function ApplicationPane({
                   onContextMenu={(event) => openApplicationContextMenu(event, application)}
                   title={`${application.school.name} — ${application.professor.english}`}
                 >
-                  <span className="line-status" aria-hidden="true" />
+                  <span
+                    className={`line-status status-${statusCssSlug(application.status)}`}
+                    aria-hidden="true"
+                  />
                   <SchoolLogoMark
                     schoolName={application.school.name}
                     logo={application.school.logo}
@@ -998,15 +1104,16 @@ export function ApplicationPane({
                     <strong>{application.school.name}</strong>
                     {relation ? (
                       <span className="team-line-context">
-                        <span>
-                          <small>{tx('workspace.advisorLabel')}</small>
-                          <b>{relation.advisorName || tx('workspace.unassignedAdvisor')}</b>
-                        </span>
-                        <ArrowRight size={11} aria-hidden="true" />
-                        <span>
-                          <small>{tx('workspace.studentLabel')}</small>
-                          <b>{relation.studentName}</b>
-                        </span>
+                        <small>
+                          {tx('workspace.advisorLabel')}
+                          <span aria-hidden="true">:</span>
+                        </small>
+                        <b title={teacherNames}>{teacherNames}</b>
+                        <small>
+                          {tx('workspace.studentLabel')}
+                          <span aria-hidden="true">:</span>
+                        </small>
+                        <b title={relation.studentName}>{relation.studentName}</b>
                       </span>
                     ) : null}
                     <em>
@@ -1097,7 +1204,7 @@ export function ApplicationPane({
             {!trashEnabled ? <Lock size={9} className="application-trash-lock" /> : null}
           </span>
           <span>{tx('trash.title')}</span>
-          <em>{trashEnabled ? format(tx('trash.count'), { count: trashCount }) : tx('settings.proOnly')}</em>
+          <em>{trashEnabled ? format(tx('trash.count'), { count: trashCount }) : tx('proOnly')}</em>
         </button>
         {trashEnabled ? (
           <CollapsiblePanel
@@ -1126,7 +1233,10 @@ export function ApplicationPane({
                   const isRemoving = Boolean(removingTrashItemIds?.has(item.id))
                   return (
                   <div key={item.id} className={`application-trash-item${isRemoving ? ' is-removing' : ''}`} aria-busy={isRemoving || undefined}>
-                    <span className="line-status" aria-hidden="true" />
+                    <span
+                      className={`line-status status-${statusCssSlug(item.application.status)}`}
+                      aria-hidden="true"
+                    />
                     <span className="application-trash-copy">
                       <strong>{item.application.school.name}</strong>
                       <em>{item.application.program} · {item.application.professor.english}</em>

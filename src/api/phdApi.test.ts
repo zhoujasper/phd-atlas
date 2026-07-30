@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   clearClientSessionCaches,
   getLatestSessionToken,
@@ -9,7 +9,13 @@ import {
   setSessionTokenHandler,
   setUnauthorizedHandler,
 } from './phdApi'
-import { getConnectivitySnapshot, reportApiReachable } from '../connectivity'
+import {
+  getConnectivitySnapshot,
+  reportApiReachable,
+  reportApiUnavailable,
+  resetConnectivityForTests,
+  setManualOfflineMode,
+} from '../connectivity'
 import type { ApplicationRecord } from '../data/applications'
 
 function envelope<T>(data: T, sessionToken?: string, extraHeaders?: Record<string, string>) {
@@ -35,10 +41,17 @@ function jwtFor(sub: string, label: string) {
 }
 
 describe('phdApi session token tracking', () => {
+  beforeEach(() => {
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
+    resetConnectivityForTests()
+    reportApiReachable(80)
+  })
+
   afterEach(() => {
     setSessionTokenHandler(null)
     setUnauthorizedHandler(null)
     clearClientSessionCaches()
+    resetConnectivityForTests()
     vi.unstubAllGlobals()
     vi.useRealTimers()
   })
@@ -50,6 +63,47 @@ describe('phdApi session token tracking', () => {
       name: 'ApiError',
       code: 'SERVER_UNAVAILABLE',
       status: 502,
+    })
+  })
+
+  it('fails repeated reads locally after the API circuit opens', async () => {
+    reportApiUnavailable()
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(phdApi.listApplications('offline-read-token')).rejects.toMatchObject({
+      code: 'SERVER_UNAVAILABLE',
+      status: 503,
+    })
+    await expect(phdApi.listApplications('offline-read-token')).rejects.toMatchObject({
+      code: 'SERVER_UNAVAILABLE',
+      status: 503,
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('blocks every transport in deliberate offline mode but lets an explicit mutation recover an open server circuit', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(envelope({
+      token: 'restored-token',
+      user: { id: 'user-restored', email: 'restored@example.com' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    setManualOfflineMode(true)
+    await expect(phdApi.login('restored@example.com', 'password')).rejects.toMatchObject({
+      code: 'SERVER_UNAVAILABLE',
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    setManualOfflineMode(false)
+    reportApiUnavailable()
+    await expect(phdApi.login('restored@example.com', 'password')).resolves.toMatchObject({
+      token: 'restored-token',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(getConnectivitySnapshot()).toMatchObject({
+      mode: 'online',
+      serverReachable: true,
     })
   })
 
@@ -331,6 +385,45 @@ describe('phdApi session token tracking', () => {
     await expect(Promise.all([first, second])).resolves.toEqual([applications, applications])
   })
 
+  it('coalesces concurrent plain GET reads through the shared transport boundary', async () => {
+    const status = { phase: 'idle', operationInFlight: false, restartPending: false }
+    let resolveFetch!: (response: Response) => void
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const first = phdApi.systemUpdateStatus('admin-read-token')
+    const second = phdApi.systemUpdateStatus('admin-read-token')
+    await Promise.resolve()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    resolveFetch(envelope(status))
+    await expect(Promise.all([first, second])).resolves.toEqual([status, status])
+  })
+
+  it('aborts an owned conditional transport when its caller leaves', async () => {
+    let transportSignal: AbortSignal | undefined
+    const fetchMock = vi.fn((_path: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        transportSignal = init?.signal ?? undefined
+        transportSignal?.addEventListener('abort', () => reject(transportSignal?.reason), { once: true })
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+
+    const request = phdApi.unreadNotificationCount('notification-token', {
+      signal: controller.signal,
+    })
+    const assertion = expect(request).rejects.toMatchObject({ name: 'AbortError' })
+    await Promise.resolve()
+    controller.abort()
+
+    await assertion
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(transportSignal?.aborted).toBe(true)
+  })
+
   it('serves low-volatility reads from the short freshness cache even without an ETag', async () => {
     const assets = [{ id: 'asset_cached', name: 'Research statement' }]
     const fetchMock = vi.fn().mockResolvedValueOnce(envelope(assets))
@@ -340,6 +433,23 @@ describe('phdApi session token tracking', () => {
     await expect(phdApi.listProfileAssets('cache-token')).resolves.toEqual(assets)
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('bounds conditional response memory with least-recently-used eviction', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(envelope([])))
+    vi.stubGlobal('fetch', fetchMock)
+
+    for (let index = 0; index < 70; index += 1) {
+      await phdApi.listNotifications('bounded-cache-token', {
+        before: `2026-07-28T12:${String(index).padStart(2, '0')}:00.000Z`,
+      })
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(70)
+
+    await phdApi.listNotifications('bounded-cache-token', {
+      before: '2026-07-28T12:00:00.000Z',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(71)
   })
 
   it('advances the read-cache generation after a successful mutation', async () => {
@@ -361,6 +471,39 @@ describe('phdApi session token tracking', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('X-Phd-Client-Id')).toBeTruthy()
+  })
+
+  it('restarts an invalidated in-flight read instead of exposing stale data or an abort', async () => {
+    const freshApplications = [{ id: 'app_fresh', school: { name: 'After mutation' } }]
+    const created = { id: 'asset_created', name: 'Created', kind: 'other', description: '', attachments: [] }
+    let firstRead = true
+    const fetchMock = vi.fn((path: RequestInfo | URL, init?: RequestInit) => {
+      if (String(path) === '/api/applications' && firstRead) {
+        firstRead = false
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+        })
+      }
+      if (String(path) === '/api/profile-assets' && init?.method === 'POST') {
+        return Promise.resolve(envelope(created))
+      }
+      return Promise.resolve(envelope(freshApplications))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const read = phdApi.listApplications('mutation-race-token')
+    await phdApi.addProfileAsset('mutation-race-token', {
+      name: 'Created',
+      kind: 'other',
+      description: '',
+    })
+
+    await expect(read).resolves.toEqual(freshApplications)
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/applications',
+      '/api/profile-assets',
+      '/api/applications',
+    ])
   })
 
   it('routes team student profile edits and deletes through the scoped member endpoint', async () => {
@@ -421,6 +564,52 @@ describe('phdApi session token tracking', () => {
     const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers)
     expect(headers.get('Authorization')).toBe('Bearer realtime-token')
     expect(headers.get('X-Phd-Client-Id')).toBeTruthy()
+    expect(headers.get('Accept')).toBe('text/event-stream')
+  })
+
+  it('marks a failed no-deadline realtime stream as an unavailable transport', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch')))
+
+    await expect(phdApi.streamRealtimeUpdates('realtime-token', () => undefined))
+      .rejects.toBeInstanceOf(TypeError)
+    expect(getConnectivitySnapshot()).toMatchObject({
+      mode: 'server-unreachable',
+      serverReachable: false,
+    })
+  })
+
+  it('drops a frame that finishes reading after its realtime request is aborted', async () => {
+    let releaseRead!: (result: ReadableStreamReadResult<Uint8Array>) => void
+    const reader = {
+      read: vi.fn(() => new Promise<ReadableStreamReadResult<Uint8Array>>((resolve) => {
+        releaseRead = resolve
+      })),
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: { getReader: () => reader },
+    } as unknown as Response))
+    const controller = new AbortController()
+    const events: Array<{ type: string }> = []
+    const request = phdApi.streamRealtimeUpdates(
+      'realtime-token',
+      (event) => events.push(event),
+      controller.signal,
+    )
+    await vi.waitFor(() => expect(reader.read).toHaveBeenCalledTimes(1))
+
+    controller.abort()
+    releaseRead({
+      done: false,
+      value: new TextEncoder().encode(
+        'event: invalidate\ndata: {"type":"invalidate","scopes":["applications"],"revision":1,"at":"2026-07-20T00:00:01.000Z"}\n\n',
+      ),
+    })
+
+    await expect(request).resolves.toBeUndefined()
+    expect(events).toEqual([])
   })
 
   it('times out stalled API requests instead of leaving callers pending', async () => {
@@ -455,7 +644,31 @@ describe('phdApi session token tracking', () => {
     const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers)
     expect(headers.get('Authorization')).toBe('Bearer blob-token-1')
     expect(headers.get('Content-Type')).toBeNull()
+    expect(headers.get('Accept')).toBe('application/octet-stream')
     expect(getLatestSessionToken('blob-token-1')).toBe('blob-token-2')
+  })
+
+  it('keeps first-run secret reads and regeneration inside the shared API transport', async () => {
+    const secrets = {
+      jwtSecret: 'jwt-secret',
+      settingsEncryptionKey: 'settings-secret',
+      generatedAt: '2026-07-28T12:00:00.000Z',
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(envelope(secrets))
+      .mockResolvedValueOnce(envelope(secrets))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(phdApi.initialSetupSecrets()).resolves.toEqual(secrets)
+    await expect(phdApi.regenerateInitialSetupSecrets()).resolves.toEqual(secrets)
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/setup/secrets')
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/setup/secrets/regenerate')
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ confirm: 'REGENERATE' }),
+    })
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('X-Phd-Client-Id')).toBeTruthy()
   })
 
   it('sends the active interface language with localized PDF exports', async () => {

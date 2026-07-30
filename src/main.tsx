@@ -13,15 +13,19 @@ import './styles/application-transfer.css'
 import './styles/dashboard-guidance.css'
 import './styles/school-logo.css'
 import './styles/project-footer.css'
+import './styles/application-pipeline.css'
 import './styles/mobile.css'
 import './styles/marketing.css'
 import { RootRoutes } from './RootRoutes'
+import { startConnectivityMonitoring } from './connectivity'
 import { registerServiceWorker } from './serviceWorker'
 // Capture beforeinstallprompt before the lazy App chunk loads — browsers may
 // fire it during SW activation while the main shell is still hydrating.
 import { capturePwaInstallPrompt } from './components/hooks/usePwaInstall'
 
 capturePwaInstallPrompt()
+const stopConnectivityMonitoring = startConnectivityMonitoring()
+import.meta.hot?.dispose(stopConnectivityMonitoring)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

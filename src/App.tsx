@@ -22,6 +22,8 @@ import {
   ArrowLeft,
   ArrowRightLeft,
   Bell,
+  Check,
+  CloudOff,
   Columns,
   HelpCircle,
   GripVertical,
@@ -36,10 +38,9 @@ import {
   PanelRightOpen,
   Plus,
   RotateCcw,
-  Save,
   SlidersHorizontal,
   SunMoon,
-  Undo2,
+  TriangleAlert,
   UserRound,
   Users,
 } from 'lucide-react'
@@ -72,6 +73,8 @@ import {
   type UserSettings,
   type UserSettingsPatch,
 } from './api/phdApi'
+import { SupersedingTaskCoordinator } from './api/supersedingTaskCoordinator'
+import { shouldUseGranularWorkspaceFallback } from './api/workspaceBootstrapFallback'
 import type { ApplicationRecord, ApplicationStatus, MaterialStatus, SharePermission, ShareSection } from './data/applications'
 import type { SharedLinkInfo } from './components/screens/settingsShareModel'
 import { canAccessDiscover, discoverStudentMembers, hasPersonalDiscoverAccess, hasTeamDiscoverAccess } from './components/screens/discoverAccess'
@@ -98,8 +101,14 @@ import { I18nContext, useI18nValue } from './components/hooks/useI18n'
 import { usePwaInstall } from './components/hooks/usePwaInstall'
 import { useConnectivity } from './components/hooks/useConnectivity'
 import { useRealtimeUpdates } from './components/hooks/useRealtimeUpdates'
+import { useVisibilityAwarePolling } from './components/hooks/useVisibilityAwarePolling'
 import { useWebPushNotifications } from './components/hooks/useWebPushNotifications'
 import { useToastQueue } from './components/hooks/useToastQueue'
+import {
+  useApplicationAutoSave,
+  type ApplicationAutoSaveResult,
+  type ApplicationAutoSaveStatus,
+} from './components/hooks/useApplicationAutoSave'
 import { getMotionDelay } from './components/hooks/useAnimatedClose'
 import {
   ThemeContext,
@@ -139,6 +148,7 @@ import {
   applyDocumentLanguage,
   browserDefaultLanguage,
   languageOptions,
+  localizeStaticText,
   preloadLanguage,
   registerLanguage,
   resolveLanguage,
@@ -169,7 +179,6 @@ import {
   mergeOfflineApplicationUpdate,
   removeOfflineApplicationUpdates,
   removeOfflineQueueItems,
-  restoreOfflineApplicationAuthority,
   saveOfflineSnapshot,
   type OfflineSnapshotData,
 } from './offline'
@@ -450,6 +459,10 @@ function isPasskeyAbort(error: unknown) {
   return error instanceof Error && ['AbortError', 'NotAllowedError'].includes(error.name)
 }
 
+function isAbortLike(error: unknown) {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
 const PANE_WIDTH_MIN = 260
 const PANE_WIDTH_MAX = 520
 const INSPECTOR_WIDTH_MIN = 260
@@ -535,25 +548,34 @@ function languageNamespacesForScreen(
 
   if (screen === 'dashboard') {
     namespaces.add('dashboard')
+    // Dashboard application summaries reuse workspace field and status copy.
+    namespaces.add('workspace')
     // Inspector field labels (copy toast suffixes) live in the dossier pack.
     namespaces.add('dossier')
   } else if (screen === 'workspace') {
     namespaces.add('workspace')
     namespaces.add('dossier')
     namespaces.add('profile')
+    // Team-owned application rows and permission-aware actions reuse Team copy.
+    namespaces.add('team')
     if (tab === 'funding') namespaces.add('dossier')
   } else if (screen === 'discover') {
     namespaces.add('discover')
+    // Organization Discover surfaces show Team ownership and assignment copy.
+    namespaces.add('team')
   } else if (screen === 'profile') {
     namespaces.add('profile')
   } else if (screen === 'settings') {
     namespaces.add('settings')
+    namespaces.add('workspace')
     namespaces.add('share')
     namespaces.add('team')
   } else if (screen === 'team') {
     namespaces.add('team')
     namespaces.add('workspace')
     namespaces.add('profile')
+    // The owner transfer queue renders shared dossier field labels.
+    namespaces.add('dossier')
   }
 
   return Array.from(namespaces)
@@ -601,7 +623,8 @@ function isTourSampleApplication(application: ApplicationRecord) {
   return isTourSampleApplicationId(application.id)
 }
 
-function createTourSampleApplication(ownerId?: string): ApplicationRecord {
+function createTourSampleApplication(ownerId: string | undefined, lang: Language): ApplicationRecord {
+  const localize = (value: string) => localizeStaticText(value, lang)
   return {
     id: TOUR_SAMPLE_APPLICATION_ID,
     ownerId,
@@ -612,30 +635,30 @@ function createTourSampleApplication(ownerId?: string): ApplicationRecord {
       phone: '+1 415 555 0138',
       social: '@ada-chen-lab',
       homepage: 'https://example.edu/ada-chen',
-      research: 'human-AI collaboration, learning analytics, and trustworthy agent workflows',
-      lab: 'Applied Intelligence Lab',
+      research: localize('human-AI collaboration, learning analytics, and trustworthy agent workflows'),
+      lab: localize('Applied Intelligence Lab'),
     },
     school: {
       name: 'PhD Atlas Demo University',
       country: 'United States',
       website: 'https://example.edu/graduate-admissions',
     },
-    program: 'Human-AI Collaboration PhD',
+    program: localize('Human-AI Collaboration PhD'),
     deadline: '2026-12-15',
     status: 'Preparing',
     progress: 56,
     priority: 88,
-    tags: ['tour sample', 'HCI', 'funding'],
+    tags: [localize('tour sample'), 'HCI', localize('funding')],
     nextReminder: '2026-07-12',
-    result: 'Tutorial sample created locally. It will disappear when the guide ends.',
+    result: localize('Tutorial sample created locally. It will disappear when the guide ends.'),
     materials: [
       {
         id: 'tour-cv',
-        name: 'Academic CV',
+        name: localize('Academic CV'),
         type: 'PDF',
         status: 'Ready',
         group: 'Core materials',
-        details: 'Keep one polished CV version here, upload revisions, and copy the latest file name when needed.',
+        details: localize('Keep one polished CV version here, upload revisions, and copy the latest file name when needed.'),
         reminderEnabled: true,
         reminderDate: '2026-07-12',
         reminderTime: '09:00',
@@ -648,11 +671,11 @@ function createTourSampleApplication(ownerId?: string): ApplicationRecord {
       },
       {
         id: 'tour-recommendation',
-        name: 'Recommendation Letters',
+        name: localize('Recommendation Letters'),
         type: 'Request',
         status: 'Requested',
         group: 'Recommendations',
-        details: 'Track every recommender, contact address, and reminder date in the expanded detail panel.',
+        details: localize('Track every recommender, contact address, and reminder date in the expanded detail panel.'),
         reminderEnabled: true,
         reminderDate: '2026-07-18',
         reminderTime: '10:30',
@@ -669,11 +692,11 @@ function createTourSampleApplication(ownerId?: string): ApplicationRecord {
       },
       {
         id: 'tour-sop',
-        name: 'Statement of Purpose',
+        name: localize('Statement of Purpose'),
         type: 'DOCX',
         status: 'Draft',
         group: 'Writing',
-        details: 'Use the notes area for what needs revision before upload.',
+        details: localize('Use the notes area for what needs revision before upload.'),
         reminderEnabled: false,
         version: 'v1',
         updatedAt: '2026-06-30',
@@ -683,11 +706,11 @@ function createTourSampleApplication(ownerId?: string): ApplicationRecord {
     communications: [
       {
         id: 'tour-comm-1',
-        subject: 'Research fit and advisor availability',
+        subject: localize('Research fit and advisor availability'),
         channel: 'Email',
         date: '2026-07-01',
         time: '15:20',
-        summary: 'Professor replied positively and asked for a shorter project summary.',
+        summary: localize('Professor replied positively and asked for a shorter project summary.'),
         direction: 'incoming',
         messageType: 'incoming-email',
         from: 'ada.chen@example.edu',
@@ -696,10 +719,10 @@ function createTourSampleApplication(ownerId?: string): ApplicationRecord {
       },
       {
         id: 'tour-note-1',
-        subject: 'Portfolio note',
+        subject: localize('Portfolio note'),
         channel: 'Note',
         date: '2026-07-02',
-        summary: 'Mention the user study and attach the project abstract before the next follow-up.',
+        summary: localize('Mention the user study and attach the project abstract before the next follow-up.'),
         direction: 'note',
         messageType: 'note',
         attachments: [],
@@ -708,22 +731,22 @@ function createTourSampleApplication(ownerId?: string): ApplicationRecord {
     scholarships: [
       {
         id: 'tour-fellowship',
-        name: 'Graduate Research Fellowship',
-        amount: 'Full funding',
+        name: localize('Graduate Research Fellowship'),
+        amount: localize('Full funding'),
         startDate: '2027-09-01',
         endDate: '2032-08-31',
         school: 'PhD Atlas Demo University',
-        issuer: 'Graduate School',
+        issuer: localize('Graduate School'),
         status: 'Preparing',
-        notes: 'Use funding cards to track award requirements beside the main application.',
+        notes: localize('Use funding cards to track award requirements beside the main application.'),
         materials: [
-          { id: 'tour-fellowship-proposal', name: 'Research statement', status: 'Draft', due: '2026-10-01', details: 'Two-page statement' },
+          { id: 'tour-fellowship-proposal', name: localize('Research statement'), status: 'Draft', due: '2026-10-01', details: localize('Two-page statement') },
         ],
         tasks: [
-          { id: 'tour-fellowship-task', title: 'Ask department about nomination route', due: '2026-08-05', done: false },
+          { id: 'tour-fellowship-task', title: localize('Ask department about nomination route'), due: '2026-08-05', done: false },
         ],
         timeline: [
-          { id: 'tour-fellowship-event', title: 'Funding shortlist', date: '2026-09-10', note: 'Department review starts.' },
+          { id: 'tour-fellowship-event', title: localize('Funding shortlist'), date: '2026-09-10', note: localize('Department review starts.') },
         ],
       },
     ],
@@ -734,17 +757,17 @@ function createTourSampleApplication(ownerId?: string): ApplicationRecord {
         currency: 'USD',
         paidDate: null,
         waived: false,
-        notes: 'Sample fee entry',
+        notes: localize('Sample fee entry'),
         createdAt: '2026-07-01T09:00:00.000Z',
       },
     ],
     tasks: [
       {
         id: 'tour-task-outline',
-        title: 'Finalize research fit paragraph',
+        title: localize('Finalize research fit paragraph'),
         due: '2026-07-15',
         done: false,
-        details: 'Tie prior work to Prof. Chen\'s current lab direction.',
+        details: localize('Tie prior work to Prof. Chen\'s current lab direction.'),
         reminderEnabled: true,
         reminderOffsets: ['3d'],
         reminderTime: '09:00',
@@ -752,24 +775,24 @@ function createTourSampleApplication(ownerId?: string): ApplicationRecord {
       },
       {
         id: 'tour-task-portal',
-        title: 'Check portal document rules',
+        title: localize('Check portal document rules'),
         due: '2026-07-20',
         done: false,
-        details: 'Confirm PDF size limits and recommender invitation flow.',
+        details: localize('Confirm PDF size limits and recommender invitation flow.'),
       },
     ],
     timeline: [
       {
         id: 'tour-timeline-shortlist',
-        title: 'Shortlisted program',
+        title: localize('Shortlisted program'),
         date: '2026-06-28',
-        note: 'Strong research overlap and realistic deadline.',
+        note: localize('Strong research overlap and realistic deadline.'),
       },
       {
         id: 'tour-timeline-email',
-        title: 'Advisor email reply',
+        title: localize('Advisor email reply'),
         date: '2026-07-01',
-        note: 'Follow up with a one-page project summary.',
+        note: localize('Follow up with a one-page project summary.'),
       },
     ],
     versions: [],
@@ -1113,10 +1136,16 @@ function isAuthExpired(error: unknown) {
     ['TOKEN_EXPIRED', 'UNAUTHORIZED', 'UNKNOWN_USER', 'ACCOUNT_DISABLED'].includes(error.code)
 }
 
+const FILE_SEGMENT_RESERVED_CHARACTERS = new Set(Array.from('<>:"/\\|?*'))
+
 function safeFileSegment(value: string) {
-  return value
-    .trim()
-    .replace(/[<>:"/\\|?*\u0000-\u001F]+/g, '-')
+  const sanitized = Array.from(value.trim(), (character) => {
+    const codePoint = character.codePointAt(0) ?? 0
+    return codePoint <= 0x1f || FILE_SEGMENT_RESERVED_CHARACTERS.has(character)
+      ? '-'
+      : character
+  }).join('')
+  return sanitized
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
@@ -1162,31 +1191,23 @@ function WorkspaceResizeHandle({
 function WorkspaceLayoutToolbar({
   applicationsHidden,
   inspectorHidden,
-  isDirty,
-  saving,
   tx,
   viewMode,
   onToggleApplications,
   onToggleInspector,
   onSwap,
   onReset,
-  onSave,
-  onDiscard,
   onViewModeChange,
   showViewModeToggle = true,
 }: {
   applicationsHidden: boolean
   inspectorHidden: boolean
-  isDirty: boolean
-  saving: boolean
   tx: (path: string, fallback?: string) => string
   viewMode: 'list' | 'kanban'
   onToggleApplications: () => void
   onToggleInspector: () => void
   onSwap: () => void
   onReset: () => void
-  onSave: () => void
-  onDiscard: () => void
   onViewModeChange: (mode: 'list' | 'kanban') => void
   // False in the team-scoped workspace — the kanban board assumes single-owner bulk status
   // changes, which doesn't fit "browsing my team's applications."
@@ -1194,24 +1215,6 @@ function WorkspaceLayoutToolbar({
 }) {
   const ApplicationIcon = applicationsHidden ? PanelLeftOpen : PanelLeftClose
   const InspectorIcon = inspectorHidden ? PanelRightOpen : PanelRightClose
-  const [showSaveActions, setShowSaveActions] = useState(isDirty)
-  const [saveActionsClosing, setSaveActionsClosing] = useState(false)
-
-  useEffect(() => {
-    if (isDirty) {
-      setSaveActionsClosing(false)
-      setShowSaveActions(true)
-      return undefined
-    }
-    if (!showSaveActions) return undefined
-    setSaveActionsClosing(true)
-    const timer = window.setTimeout(() => {
-      setShowSaveActions(false)
-      setSaveActionsClosing(false)
-    }, 200)
-    return () => window.clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDirty])
 
   return (
     <div className="workspace-layout-toolbar">
@@ -1239,16 +1242,6 @@ function WorkspaceLayoutToolbar({
           </button>
         </div>
       ) : null}
-      {showSaveActions && (
-        <div className={`workspace-save-actions ${saveActionsClosing ? 'is-closing' : 'is-opening'}`}>
-          <button type="button" className="warning-action workspace-discard-btn" onClick={onDiscard}>
-            <Undo2 size={13} aria-hidden="true" /> {tx('dossier.discardChanges')}
-          </button>
-          <button type="button" className="primary-action workspace-save-btn" onClick={onSave} disabled={saving}>
-            <Save size={13} aria-hidden="true" /> {saving ? tx('dossier.saving') : tx('dossier.save')}
-          </button>
-        </div>
-      )}
       <div className="workspace-layout-toolbar-panel">
         <div className="workspace-layout-toolbar-body">
           <div className="workspace-layout-toolbar-body-inner">
@@ -1316,36 +1309,95 @@ function WorkspaceLayoutToolbar({
   )
 }
 
+function ApplicationSaveIndicator({
+  status,
+  tx,
+  onRetry,
+}: {
+  status: ApplicationAutoSaveStatus
+  tx: (path: string, fallback?: string) => string
+  onRetry: () => void
+}) {
+  if (status.phase === 'idle' || status.phase === 'pending') return null
+  const errorMessage = status.phase === 'error' ? status.message : undefined
+
+  const content = status.phase === 'saving'
+    ? {
+        icon: <LoaderCircle className="spin-icon" size={12} aria-hidden="true" />,
+        label: tx('dossier.saving', 'Saving…'),
+      }
+    : status.phase === 'saved'
+      ? {
+          icon: <Check size={12} aria-hidden="true" />,
+          label: tx('toast.appSaved', 'Application saved'),
+        }
+      : status.phase === 'queued'
+        ? {
+            icon: <CloudOff size={12} aria-hidden="true" />,
+            label: tpl(tx('toast.offlineChangeQueued', '{count} offline change(s) waiting to sync'), { count: 1 }),
+          }
+        : {
+            icon: <TriangleAlert size={12} aria-hidden="true" />,
+            label: errorMessage || tx('toast.offlineSaveNeedsOnline', 'This change needs an online connection.'),
+          }
+
+  return (
+    <div
+      className={`application-save-indicator is-${status.phase}`}
+      role="status"
+      aria-live={status.phase === 'error' ? 'assertive' : 'polite'}
+      aria-atomic="true"
+      data-overflow-reveal="off"
+    >
+      <span className="application-save-indicator-copy">
+        {content.icon}
+        <span>{content.label}</span>
+      </span>
+      {status.phase === 'error' && status.retryable ? (
+        <span className="application-save-indicator-actions">
+          <button type="button" onClick={onRetry}>
+            <RotateCcw size={11} aria-hidden="true" />
+            {tx('offlineStatus.retry', 'Retry and sync')}
+          </button>
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
 function MailSyncJobWatcher({
   job,
   onPoll,
 }: {
   job?: MailSyncJob | null
-  onPoll: (jobId: string) => Promise<boolean>
+  onPoll: (jobId: string, signal: AbortSignal) => Promise<boolean>
 }) {
-  const onPollRef = useRef(onPoll)
   const jobId = job?.id
   const jobStatus = job?.status
-  useEffect(() => {
-    onPollRef.current = onPoll
-  }, [onPoll])
+  const active = Boolean(jobId && jobStatus && ['queued', 'running'].includes(jobStatus))
+  const nextAttemptMs = Date.parse(job?.nextAttemptAt ?? '')
+  const delayedRetryMs = jobStatus === 'queued' && Number.isFinite(nextAttemptMs)
+    ? Math.max(0, nextAttemptMs - Date.now())
+    : 0
 
-  useEffect(() => {
-    if (!jobId || !jobStatus || !['queued', 'running'].includes(jobStatus)) return
-    let cancelled = false
-    let timer: number | null = null
-    const poll = async () => {
-      const keepPolling = await onPollRef.current(jobId).catch(() => true)
-      if (!cancelled && keepPolling) timer = window.setTimeout(poll, 1800)
-    }
-    timer = window.setTimeout(poll, 900)
-    return () => {
-      cancelled = true
-      if (timer !== null) window.clearTimeout(timer)
-    }
-  }, [jobId, jobStatus])
+  useVisibilityAwarePolling({
+    enabled: active,
+    initialDelayMs: delayedRetryMs > 5_000 ? Math.min(delayedRetryMs, 30_000) : 900,
+    intervalMs: delayedRetryMs > 5_000 ? 15_000 : 1_800,
+    restartKey: `${jobId ?? ''}:${jobStatus ?? ''}:${job?.nextAttemptAt ?? ''}`,
+    poll: async (signal) => {
+      if (!jobId) return false
+      const keepPolling = await onPoll(jobId, signal).catch(() => true)
+      return keepPolling ? undefined : false
+    },
+  })
 
   return null
+}
+
+type WorkspaceRefreshScope = 'all' | 'team'
+type ApplicationSaveOptions = {
+  feedback?: 'toast' | 'quiet'
 }
 
 export default function App() {
@@ -1490,6 +1542,7 @@ export default function App() {
   const draftBaselineTaskRef = useRef<{ handle: number; idle: boolean } | null>(null)
   const draftBaselinePendingRef = useRef<{ draft: ApplicationRecord | null; version: number } | null>(null)
   const schoolLogoInFlightRef = useRef(new Map<string, Promise<boolean>>())
+  const schoolLogoManualRevisionRef = useRef(new Map<string, number>())
 
   const clearDraftBaselineTask = useCallback(() => {
     const pending = draftBaselineTaskRef.current
@@ -1620,6 +1673,8 @@ export default function App() {
   const workspaceViewExitTimerRef = useRef<number | null>(null)
   const detailDraftHydrationRef = useRef<{ handle: number; idle: boolean } | null>(null)
   const detailDraftHydrationGenerationRef = useRef(0)
+  const applicationSelectionFrameRef = useRef<{ first: number; second: number } | null>(null)
+  const dossierTransitionSourceRef = useRef<ApplicationRecord | null>(null)
 
   const clearDetailDraftHydration = useCallback(() => {
     detailDraftHydrationGenerationRef.current += 1
@@ -1662,7 +1717,6 @@ export default function App() {
   const [saving, setSaving] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null)
-  const [pendingDiscard, setPendingDiscard] = useState(false)
   const [shareDialogOpen, setShareDialogOpen] = useState(false)
   const [dossierEnrichmentOpen, setDossierEnrichmentOpen] = useState(false)
   const [teamWorkspaceChooserOpen, setTeamWorkspaceChooserOpen] = useState(false)
@@ -1691,6 +1745,28 @@ export default function App() {
     tab,
   ])
   const i18nValue = useI18nValue(lang, i18nNamespaces)
+  const {
+    status: applicationSaveStatus,
+    schedule: scheduleApplicationAutoSave,
+    flush: flushApplicationAutoSave,
+    retry: retryApplicationAutoSave,
+    reset: resetApplicationAutoSave,
+    retainFailedDraft: retainFailedApplicationDraft,
+    beginExternalSave: beginExternalApplicationSave,
+    finishExternalSave: finishExternalApplicationSave,
+    failExternalSave: failExternalApplicationSave,
+  } = useApplicationAutoSave({
+    enabled: Boolean(session),
+    persist: (application) => saveApplication(
+      application,
+      i18nValue.tx('toast.appSaved'),
+      { feedback: 'quiet' },
+    ),
+  })
+
+  useEffect(() => {
+    resetApplicationAutoSave()
+  }, [resetApplicationAutoSave, selectedId, session?.user.id])
 
   // Notifications
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false)
@@ -1726,8 +1802,10 @@ export default function App() {
   const sessionTokenLineageRef = useRef<Set<string>>(new Set(session?.token ? [session.token] : []))
   const navigationGuardRef = useRef<NavigationGuard | null>(null)
   const activeTeamIdRef = useRef(activeTeamId)
-  const refreshAllInFlightRef = useRef<{ key: string; promise: Promise<void> } | null>(null)
-  const saveQueueByApplicationRef = useRef(new Map<string, Promise<void>>())
+  const workspaceRefreshTasksRef = useRef(
+    new SupersedingTaskCoordinator<WorkspaceRefreshScope>(),
+  )
+  const applicationWriteQueueRef = useRef(new Map<string, Promise<unknown>>())
   const pendingSaveCountRef = useRef(0)
   const offlineSnapshotSaveRef = useRef<{ handle: number; idle: boolean } | null>(null)
   const taskToggleRequestRef = useRef(new Map<string, number>())
@@ -1740,6 +1818,7 @@ export default function App() {
   const [, setScreenTransitionEpoch] = useState(0)
   const [dossierContentDeferred, setDossierContentDeferred] = useState(false)
   const dossierContentTransitionRef = useRef(0)
+  const dossierContentRevealTimerRef = useRef<number | null>(null)
   const animationSequenceRef = useRef(0)
   const animationFallbackTimersRef = useRef<number[]>([])
   const cssFallbackMotionRef = useRef<CssFallbackMotion | null>(null)
@@ -1798,6 +1877,16 @@ export default function App() {
   useEffect(() => () => {
     animationFallbackTimersRef.current.forEach((timer) => window.clearTimeout(timer))
     animationFallbackTimersRef.current = []
+    if (dossierContentRevealTimerRef.current !== null) {
+      window.clearTimeout(dossierContentRevealTimerRef.current)
+      dossierContentRevealTimerRef.current = null
+    }
+    const pendingSelection = applicationSelectionFrameRef.current
+    if (pendingSelection) {
+      if (pendingSelection.first) window.cancelAnimationFrame(pendingSelection.first)
+      if (pendingSelection.second) window.cancelAnimationFrame(pendingSelection.second)
+      applicationSelectionFrameRef.current = null
+    }
     clearCssFallbackMotion()
   }, [clearCssFallbackMotion])
 
@@ -1812,6 +1901,12 @@ export default function App() {
       forceCssFallback = false,
     }: AnimatedScreenTransitionOptions = {},
   ) => {
+    const pendingSelection = applicationSelectionFrameRef.current
+    if (pendingSelection) {
+      if (pendingSelection.first) window.cancelAnimationFrame(pendingSelection.first)
+      if (pendingSelection.second) window.cancelAnimationFrame(pendingSelection.second)
+      applicationSelectionFrameRef.current = null
+    }
     const reduceMotion = typeof window.matchMedia === 'function'
       && window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const transitionRoot = document.documentElement
@@ -2004,20 +2099,40 @@ export default function App() {
     options: AnimatedScreenTransitionOptions = {},
   ) => {
     const { onTransitionFinished, deferDossierContent = false, ...transitionOptions } = options
-    // Keep tab/record content mounted on the same frame as the click. Deferring
-    // the heavy shell produced a short blank stutter before every dossier tab.
-    runAnimatedScreenUpdate(() => {
-      const contentTransition = ++dossierContentTransitionRef.current
-      setDossierContentDeferred(deferDossierContent)
-      update()
-      if (deferDossierContent && !isJsdomRuntime()) {
-        window.requestAnimationFrame(() => {
-          window.requestAnimationFrame(() => {
-            if (dossierContentTransitionRef.current !== contentTransition) return
-            startTransition(() => setDossierContentDeferred(false))
-          })
-        })
+    const reduceMotion = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const shouldDeferContent = deferDossierContent && !reduceMotion && !isJsdomRuntime()
+    const contentTransition = ++dossierContentTransitionRef.current
+    if (dossierContentRevealTimerRef.current !== null) {
+      window.clearTimeout(dossierContentRevealTimerRef.current)
+      dossierContentRevealTimerRef.current = null
+    }
+    let contentCommitted = false
+    let contentRevealed = false
+
+    const revealDeferredContent = () => {
+      if (dossierContentTransitionRef.current !== contentTransition) return
+      if (!contentCommitted || contentRevealed) return
+      contentRevealed = true
+      if (dossierContentRevealTimerRef.current !== null) {
+        window.clearTimeout(dossierContentRevealTimerRef.current)
+        dossierContentRevealTimerRef.current = null
       }
+      dossierTransitionSourceRef.current = null
+      if (shouldDeferContent) {
+        startTransition(() => setDossierContentDeferred(false))
+      }
+      onTransitionFinished?.()
+    }
+
+    // Record switches publish only the identity, summary, and first editable
+    // cards into the transition snapshot. Dense tab-derived rows are mounted
+    // after the compositor handoff, keeping that 210ms interval free of a
+    // second large React commit.
+    runAnimatedScreenUpdate(() => {
+      contentCommitted = true
+      setDossierContentDeferred(shouldDeferContent)
+      update()
     }, {
       ...transitionOptions,
       // Scoped native snapshots let record changes and board-to-dossier changes
@@ -2028,9 +2143,51 @@ export default function App() {
           transitionOptions.scope !== 'dossier-record'
           && transitionOptions.scope !== 'workspace-view'
         ),
-      onTransitionFinished,
+      onTransitionFinished: revealDeferredContent,
     })
+
+    if (shouldDeferContent) {
+      // View Transition promises are normally finite, but an interrupted or
+      // vendor-buggy implementation must never strand the secondary dossier
+      // content. The token makes this fallback latest-request-wins.
+      dossierContentRevealTimerRef.current = window.setTimeout(revealDeferredContent, 480)
+    }
   }, [runAnimatedScreenUpdate])
+
+  const cancelPendingApplicationSelection = useCallback(() => {
+    const pending = applicationSelectionFrameRef.current
+    if (!pending) return
+    if (pending.first) window.cancelAnimationFrame(pending.first)
+    if (pending.second) window.cancelAnimationFrame(pending.second)
+    applicationSelectionFrameRef.current = null
+  }, [])
+
+  const scheduleApplicationSelectionAfterPaint = useCallback((commit: () => void) => {
+    cancelPendingApplicationSelection()
+
+    const reduceMotion = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduceMotion || isJsdomRuntime() || typeof window.requestAnimationFrame !== 'function') {
+      commit()
+      return
+    }
+
+    // pointerdown has already moved the selection layer. Crossing one paint
+    // boundary before the keyed dossier commit lets the browser promote and
+    // start that transform on the compositor instead of queuing it behind the
+    // large React render triggered by click.
+    const scheduled = { first: 0, second: 0 }
+    applicationSelectionFrameRef.current = scheduled
+    scheduled.first = window.requestAnimationFrame(() => {
+      if (applicationSelectionFrameRef.current !== scheduled) return
+      scheduled.first = 0
+      scheduled.second = window.requestAnimationFrame(() => {
+        if (applicationSelectionFrameRef.current !== scheduled) return
+        applicationSelectionFrameRef.current = null
+        commit()
+      })
+    })
+  }, [cancelPendingApplicationSelection])
 
   const runAnimatedRailScreenUpdate = useCallback((
     update: () => void,
@@ -2169,24 +2326,29 @@ export default function App() {
   const canUseTeamDiscover = isTeamMode && hasTeamDiscoverAccess(
     teamViewerRole,
     teamMembershipRelationships,
+    visibleTeamSummary?.team.permissionDefaults,
   )
   const canUseDiscover = canAccessDiscover(
     effectiveInterfaceMode,
     session,
     teamViewerRole,
     teamMembershipRelationships,
+    visibleTeamSummary?.team.permissionDefaults,
   )
   const canCreateInCurrentTeam = !isTeamMode || canCreateTeamApplication(
     teamViewerRole,
     visibleTeamSummary?.membership,
+    visibleTeamSummary?.team.permissionDefaults,
   )
   const canEditInCurrentTeam = !isTeamMode || canEditTeamApplication(
     teamViewerRole,
     visibleTeamSummary?.membership,
+    visibleTeamSummary?.team.permissionDefaults,
   )
   const canShareInCurrentTeam = !isTeamMode || canCreateTeamShare(
     teamViewerRole,
     visibleTeamSummary?.membership,
+    visibleTeamSummary?.team.permissionDefaults,
   )
   const teamDiscoverScope = useMemo(() => {
     const targetUserId = teamViewerRole === 'member'
@@ -2226,6 +2388,10 @@ export default function App() {
   // Which application list backs the dashboard/workspace right now — team-scoped browsing reuses
   // the exact same screens and state machinery as the personal workspace, just fed a different list.
   const workspaceApplications: ApplicationRecord[] = isTeamMode ? teamApplications : applications
+  const workspaceApplicationById = useMemo(
+    () => new Map(workspaceApplications.map((application) => [application.id, application])),
+    [workspaceApplications],
+  )
   const notificationApplications = useMemo(() => {
     const byId = new Map<string, ApplicationRecord>()
     applications.forEach((application) => byId.set(application.id, application))
@@ -2593,8 +2759,8 @@ export default function App() {
   }
 
   const selected = useMemo(
-    () => selectedId ? workspaceApplications.find((a) => a.id === selectedId) ?? null : null,
-    [workspaceApplications, selectedId],
+    () => selectedId ? workspaceApplicationById.get(selectedId) ?? null : null,
+    [selectedId, workspaceApplicationById],
   )
   const isDraftDirty = useMemo(
     () => {
@@ -2603,6 +2769,22 @@ export default function App() {
     },
     [draft, draftDirty, selected],
   )
+  const currentInspectorApplication = viewMode === 'kanban'
+    ? null
+    : draft?.id === selected?.id
+      ? draft
+      : selected
+  const transitionInspectorApplication = (
+    dossierContentDeferred
+    && dossierTransitionSourceRef.current
+    && dossierTransitionSourceRef.current.id !== currentInspectorApplication?.id
+  )
+    ? dossierTransitionSourceRef.current
+    : currentInspectorApplication
+  // Inspector deadline/version derivation is useful but not interaction
+  // critical. Let the dossier identity commit first, then update this separate
+  // pane concurrently after the record handoff.
+  const deferredInspectorApplication = useDeferredValue(transitionInspectorApplication)
   // Team-only metadata (viewer's role on this specific app, owner display name) for the currently
   // selected application — undefined in personal mode, where DossierView behaves exactly as before.
   const selectedTeamMeta = isTeamMode ? teamApplications.find((a) => a.id === selected?.id) : undefined
@@ -2648,40 +2830,67 @@ export default function App() {
     ),
   )
 
-  const visibleApplications = useMemo(() => {
-    const needle = deferredQuery.trim().toLowerCase()
-    const matchesQuery = (application: ApplicationRecord) => {
-      const relation = teamApplicationRelations[application.id]
-      return [
-        application.school.name,
-        application.program,
-        application.professor.english,
-        application.professor.chinese,
-        application.professor.email,
-        application.tags.join(' '),
-        application.ownerId ? ownerDirectory[application.ownerId] ?? '' : '',
-        relation?.studentName ?? '',
-        relation?.advisorName ?? '',
+  const normalizedApplicationQuery = deferredQuery.trim().toLowerCase()
+  const applicationMatchesDeferredQuery = useCallback((application: ApplicationRecord) => {
+    if (!normalizedApplicationQuery) return true
+    const relation = teamApplicationRelations[application.id]
+    return [
+      application.school.name,
+      application.program,
+      application.professor.english,
+      application.professor.chinese,
+      application.professor.email,
+      application.tags.join(' '),
+      application.ownerId ? ownerDirectory[application.ownerId] ?? '' : '',
+      relation?.studentName ?? '',
+      relation?.advisorName ?? '',
       ]
-        .join(' ')
-        .toLowerCase()
-        .includes(needle)
-    }
-    const matchesStatus = (application: ApplicationRecord) =>
-      statusFilters.length === 0 || statusFilters.includes(application.status)
-    const matchesOwner = (application: ApplicationRecord) =>
-      !effectiveOwnerFilter || application.ownerId === effectiveOwnerFilter
-    const filtered = workspaceApplications
-      .filter((application) => matchesStatus(application))
-      .filter((application) => matchesOwner(application))
-      .filter((application) => matchesQuery(application))
+      .join(' ')
+      .toLowerCase()
+      .includes(normalizedApplicationQuery)
+  }, [normalizedApplicationQuery, ownerDirectory, teamApplicationRelations])
 
-    if (!selected || filtered.some((application) => application.id === selected.id) || !matchesQuery(selected)) {
-      return filtered
+  const filteredApplications = useMemo(() => {
+    const filtered: ApplicationRecord[] = []
+    for (const application of workspaceApplications) {
+      if (statusFilters.length > 0 && !statusFilters.includes(application.status)) continue
+      if (effectiveOwnerFilter && application.ownerId !== effectiveOwnerFilter) continue
+      if (!applicationMatchesDeferredQuery(application)) continue
+      filtered.push(application)
+    }
+    return filtered
+  }, [
+    applicationMatchesDeferredQuery,
+    effectiveOwnerFilter,
+    statusFilters,
+    workspaceApplications,
+  ])
+  const filteredApplicationIds = useMemo(
+    () => new Set(filteredApplications.map((application) => application.id)),
+    [filteredApplications],
+  )
+
+  const visibleApplications = useMemo(() => {
+    if (
+      !selected
+      || filteredApplicationIds.has(selected.id)
+      || !applicationMatchesDeferredQuery(selected)
+    ) {
+      // Returning the exact filtered collection is important: ordinary record
+      // switches then leave ApplicationPane's sort/page inputs referentially
+      // stable instead of rebuilding the whole 131-row explorer pipeline.
+      return filteredApplications
     }
 
-    return [selected, ...filtered.filter(function(a) { return a.id !== selected.id })]
-  }, [workspaceApplications, deferredQuery, selected, statusFilters, effectiveOwnerFilter, ownerDirectory, teamApplicationRelations])
+    return [
+      selected,
+      ...filteredApplications.filter((application) => application.id !== selected.id),
+    ]
+  }, [applicationMatchesDeferredQuery, filteredApplicationIds, filteredApplications, selected])
+  const visibleApplicationIndexById = useMemo(
+    () => new Map(visibleApplications.map((application, index) => [application.id, index])),
+    [visibleApplications],
+  )
 
   const teamBoardStudents = useMemo(() => {
     if (!isTeamMode || teamViewerRole === 'member') return []
@@ -2786,8 +2995,11 @@ export default function App() {
   )
 
   const selectedBackups = useMemo(
-    () => backups.filter((backup) => !selected?.id || backup.applicationId === selected.id),
-    [backups, selected?.id],
+    () => backups.filter((backup) => (
+      !deferredInspectorApplication?.id
+      || backup.applicationId === deferredInspectorApplication.id
+    )),
+    [backups, deferredInspectorApplication?.id],
   )
 
   function applyWorkspaceSnapshot(
@@ -2899,12 +3111,12 @@ export default function App() {
   }
 
   const ensureTourSampleApplication = useCallback(() => {
-    const sample = createTourSampleApplication(session?.user.id)
+    const sample = createTourSampleApplication(session?.user.id, lang)
     try { localStorage.setItem(ONBOARDING_SAMPLE_ACTIVE_KEY, '1') } catch {}
     setApplications((items) => [sample, ...items.filter((item) => !isTourSampleApplication(item))])
     setDraftState(cloneApplication(sample), { clean: true })
     setSelectedId(sample.id)
-  }, [session?.user.id, setDraftState])
+  }, [lang, session?.user.id, setDraftState])
 
   const cleanupTourSampleApplication = useCallback((markDone = true) => {
     const fallbackId = realApplications[0]?.id ?? null
@@ -2939,7 +3151,6 @@ export default function App() {
   const startOnboardingTour = useCallback(() => {
     setDialogOpen(false)
     setConfirmDialog(null)
-    setPendingDiscard(false)
     setShareDialogOpen(false)
     setNotificationCenterOpen(false)
     setQuery('')
@@ -2994,7 +3205,7 @@ export default function App() {
     const handleBackgroundSync = () => {
       if (!session || !applicationsLoaded || connectivity.manualOffline) return
       void probeServerConnectivity({ force: true }).then((result) => {
-        if (result.serverReachable && pendingOfflineQueueSize(session.user.id) > 0) {
+        if (result.serverReachable && offlineQueueSize(session.user.id) > 0) {
           void syncOfflineQueue(session, { force: true })
         }
       })
@@ -3012,6 +3223,7 @@ export default function App() {
 
   const clearSessionState = useCallback(() => {
     cancelledRef.current = true
+    workspaceRefreshTasksRef.current.cancel()
     currentSessionTokenRef.current = null
     currentSessionUserIdRef.current = null
     sessionIdentityEpochRef.current += 1
@@ -3066,8 +3278,9 @@ export default function App() {
     notify(t(languageRef.current, 'toast.sessionExpired'), 'error')
   }, [clearSessionState, isActiveSessionRequestToken, notify])
 
+  const offlineConnectivityUnavailable = connectivityUnavailable(connectivity)
   useEffect(() => {
-    if (!session || !connectivityUnavailable(connectivity)) return undefined
+    if (!session || !offlineConnectivityUnavailable) return undefined
 
     const access = offlineAccessForSession(session)
     const accessExpiryMs = access.expiresAt ? Date.parse(access.expiresAt) : Number.NaN
@@ -3096,17 +3309,17 @@ export default function App() {
     return () => window.clearTimeout(timeout)
   }, [
     clearSessionState,
-    connectivity.manualOffline,
-    connectivity.mode,
     notify,
+    offlineConnectivityUnavailable,
     offlineAccessExpiresAt,
     session,
   ])
 
+  const settingsSessionToken = screen === 'settings' ? session?.token : undefined
   useEffect(() => {
-    if (!session || screen !== 'settings') return
+    if (!settingsSessionToken) return
     let cancelled = false
-    void phdApi.listPasskeys(getLatestSessionToken(session.token))
+    void phdApi.listPasskeys(getLatestSessionToken(settingsSessionToken))
       .then((items) => {
         if (!cancelled) setPasskeys(items)
       })
@@ -3121,7 +3334,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [notify, screen, session?.user.id])
+  }, [notify, settingsSessionToken])
 
   // Update draft when selection changes
   useEffect(() => {
@@ -3145,6 +3358,10 @@ export default function App() {
     consumeWorkspaceJumpIntent(workspaceJumpIntent.token)
   }, [consumeWorkspaceJumpIntent, screen, selectedId, workspaceJumpIntent])
 
+  const applyWorkspaceDataRef = useRef(applyWorkspaceData)
+  const applyWorkspaceSnapshotRef = useRef(applyWorkspaceSnapshot)
+  applyWorkspaceDataRef.current = applyWorkspaceData
+  applyWorkspaceSnapshotRef.current = applyWorkspaceSnapshot
 
   // Initial data load — cold-start only. Must not re-run after logout/re-login or
   // it would re-insert the expired token into lineage and toast "session expired"
@@ -3192,7 +3409,7 @@ export default function App() {
         ) {
           rememberSessionToken(initialSession.token)
         }
-        const applied = await applyWorkspaceData(initialSession, data, requestEpoch)
+        const applied = await applyWorkspaceDataRef.current(initialSession, data, requestEpoch)
         if (!applied) {
           // Never leave the signed-in shell stuck on the loading curtain.
           if (
@@ -3223,7 +3440,7 @@ export default function App() {
             && sessionIdentityEpochRef.current === requestEpoch
             && currentSessionUserIdRef.current === initialSession.user.id
           ) {
-            applyWorkspaceSnapshot(snapshot.data, { offline: true })
+            applyWorkspaceSnapshotRef.current(snapshot.data, { offline: true })
             setOfflineDataActive(true)
             setOfflineSnapshotSavedAt(snapshot.savedAt)
             setOfflineAccessExpiresAt(snapshot.authorization.expiresAt)
@@ -3249,6 +3466,9 @@ export default function App() {
       }
     })()
   }, [expireSession, rememberSessionToken, clearSessionState, notify, refreshOfflineQueueCounts])
+
+  const persistSessionRef = useRef(persistSession)
+  persistSessionRef.current = persistSession
 
   // Cross-tab identity isolation: another tab signing into a different account must
   // not leave this tab writing under the old identity (or reading the new one as if
@@ -3279,7 +3499,7 @@ export default function App() {
       }
       // Different account in another tab — hard-reset this tab onto that identity.
       clearClientSessionCaches()
-      persistSession(remote)
+      persistSessionRef.current(remote)
       window.location.reload()
     }
     window.addEventListener('storage', onStorage)
@@ -3314,7 +3534,7 @@ export default function App() {
       || connectivity.manualOffline
       || connectivity.serverReachable !== true
     ) return
-    if (pendingOfflineQueueSize(session.user.id) > 0) {
+    if (offlineQueueSize(session.user.id) > 0) {
       void syncOfflineQueue(session)
     } else if (offlineDataActive) {
       void refreshAll(session).catch((error) => {
@@ -3427,38 +3647,67 @@ export default function App() {
     },
   })
 
-  // The stream is the primary badge refresh path. Keep a slow visible-tab poll
-  // only as a compatibility fallback for proxies that block streaming responses.
-  useEffect(() => {
-    if (!session || !applicationsLoaded) return undefined
-    let cancelled = false
-    const poll = () => {
-      if (connectivityUnavailable(connectivity) || document.visibilityState === 'hidden') return
+  // The stream is the primary badge refresh path. A single shared poller owns
+  // the slow compatibility fallback for proxies that block streaming responses.
+  useVisibilityAwarePolling({
+    enabled: Boolean(
+      session
+      && applicationsLoaded
+      && !realtimeUpdates.connected
+      && !connectivityUnavailable(connectivity)
+    ),
+    initialDelayMs: 3_000,
+    intervalMs: 5 * 60_000,
+    restartKey: `${session?.user.id ?? ''}:${applicationsLoaded ? 'ready' : 'loading'}`,
+    poll: async (signal) => {
       const sourceToken = currentSessionTokenRef.current
       if (!sourceToken || !isCurrentSessionToken(sourceToken)) return
-      void phdApi.unreadNotificationCount(getLatestSessionToken(sourceToken))
-        .then((result) => { if (!cancelled) setUnreadNotificationCount(result.count) })
-        .catch(() => {})
-    }
-    const fallbackStart = window.setTimeout(() => {
-      if (!realtimeUpdates.connected) poll()
-    }, 3_000)
-    const interval = window.setInterval(() => {
-      if (!realtimeUpdates.connected) poll()
-    }, 5 * 60_000)
-    const pollWhenVisible = () => {
-      if (!realtimeUpdates.connected && document.visibilityState === 'visible') poll()
-    }
-    document.addEventListener('visibilitychange', pollWhenVisible)
-    window.addEventListener('online', pollWhenVisible)
-    return () => {
-      cancelled = true
-      window.clearTimeout(fallbackStart)
-      window.clearInterval(interval)
-      document.removeEventListener('visibilitychange', pollWhenVisible)
-      window.removeEventListener('online', pollWhenVisible)
-    }
-  }, [applicationsLoaded, connectivity, isCurrentSessionToken, realtimeUpdates.connected, session])
+      try {
+        const result = await phdApi.unreadNotificationCount(
+          getLatestSessionToken(sourceToken),
+          { signal },
+        )
+        if (!signal.aborted && isCurrentSessionToken(sourceToken)) {
+          setUnreadNotificationCount(result.count)
+        }
+      } catch {
+        // Realtime remains the primary path; transient fallback failures are quiet.
+      }
+    },
+  })
+
+  const shortcutRuntimeRef = useRef({
+    activeImpersonationTeamId: session?.impersonation?.teamId,
+    isDraftDirty,
+    isTeamMode,
+    openNewApplicationDialog,
+    openWorkspaceBoard,
+    runAnimatedDossierUpdate,
+    runAnimatedScreenUpdate,
+    runWithNavigationGuard,
+    saveCurrentDraft,
+    screen,
+    selectedId,
+    switchWorkspaceMode,
+    tab,
+    viewMode,
+  })
+  shortcutRuntimeRef.current = {
+    activeImpersonationTeamId: session?.impersonation?.teamId,
+    isDraftDirty,
+    isTeamMode,
+    openNewApplicationDialog,
+    openWorkspaceBoard,
+    runAnimatedDossierUpdate,
+    runAnimatedScreenUpdate,
+    runWithNavigationGuard,
+    saveCurrentDraft,
+    screen,
+    selectedId,
+    switchWorkspaceMode,
+    tab,
+    viewMode,
+  }
 
   // Keyboard shortcuts stay global but avoid hijacking rich text editing keys.
   useEffect(function() {
@@ -3470,6 +3719,7 @@ export default function App() {
     }
 
     function handleKey(event: KeyboardEvent) {
+      const runtime = shortcutRuntimeRef.current
       const key = event.key.toLowerCase()
       const mod = event.ctrlKey || event.metaKey
       const editingText = isEditingText(event)
@@ -3494,14 +3744,14 @@ export default function App() {
         const navigateWithShortcut = (action: () => void) => {
           event.preventDefault()
           pendingGoShortcutRef.current = null
-          runWithNavigationGuard(() => startTransition(action))
+          runtime.runWithNavigationGuard(() => startTransition(action))
         }
 
         if (pendingGo != null && now - pendingGo <= 900) {
           pendingGoShortcutRef.current = null
           if (key === 'd') {
             navigateWithShortcut(() => {
-              if (isTeamMode) {
+              if (runtime.isTeamMode) {
                 setTeamSection('overview')
                 setScreen('team')
               } else {
@@ -3512,23 +3762,23 @@ export default function App() {
           }
           if (key === 'a') {
             navigateWithShortcut(() => {
-              if (isTeamMode) {
+              if (runtime.isTeamMode) {
                 setTeamSection('applications')
                 setViewModeDirection('to-list')
                 setViewMode('list')
                 setMobileDetailOpen(false)
                 setScreen('workspace')
               } else {
-                openWorkspaceBoard()
+                runtime.openWorkspaceBoard()
               }
             })
             return
           }
           if (key === 'p') {
-            if (activeSession.impersonation?.teamId) return
+            if (runtime.activeImpersonationTeamId) return
             navigateWithShortcut(() => {
-              if (isTeamMode) {
-                void switchWorkspaceMode('personal', { screen: 'profile' })
+              if (runtime.isTeamMode) {
+                void runtime.switchWorkspaceMode('personal', { screen: 'profile' })
               } else {
                 setScreen('profile')
               }
@@ -3541,7 +3791,7 @@ export default function App() {
           }
           if (key === 't' && !PUBLIC_EDITION) {
             navigateWithShortcut(() => {
-              void switchWorkspaceMode('team', { screen: 'team', teamSection: 'overview' })
+              void runtime.switchWorkspaceMode('team', { screen: 'team', teamSection: 'overview' })
             })
             return
           }
@@ -3555,29 +3805,28 @@ export default function App() {
       }
 
       if (!mod) {
-        const accessibleShortcutTabs = isTeamMode ? shortcutTabs : shortcutTabs.slice(0, -1)
+        const accessibleShortcutTabs = runtime.isTeamMode ? shortcutTabs : shortcutTabs.slice(0, -1)
         const tabIndex = Number(event.key) - 1
         if (
           tabIndex >= 0
           && tabIndex < accessibleShortcutTabs.length
           && !editingText
-          && screen === 'workspace'
-          && viewMode === 'list'
-          && Boolean(selectedId)
+          && runtime.screen === 'workspace'
+          && runtime.viewMode === 'list'
+          && Boolean(runtime.selectedId)
         ) {
           event.preventDefault()
           const nextTab = accessibleShortcutTabs[tabIndex]
-          const direction = accessibleShortcutTabs.indexOf(nextTab) >= accessibleShortcutTabs.indexOf(tab) ? 'forward' : 'backward'
-          runAnimatedDossierUpdate(() => setTab(nextTab), { scope: 'dossier-tab', direction })
+          const direction = accessibleShortcutTabs.indexOf(nextTab) >= accessibleShortcutTabs.indexOf(runtime.tab) ? 'forward' : 'backward'
+          runtime.runAnimatedDossierUpdate(() => setTab(nextTab), { scope: 'dossier-tab', direction })
         }
         return
       }
 
       if (key === 's') {
         event.preventDefault()
-        const latestDraft = draftRef.current
-        if (latestDraft && selectedId && isDraftDirty) {
-          void saveApplication(latestDraft, i18nValue.tx('toast.appSaved'))
+        if (runtime.selectedId && runtime.isDraftDirty) {
+          void runtime.saveCurrentDraft()
         }
         return
       }
@@ -3585,30 +3834,30 @@ export default function App() {
       if (editingText) return
 
       if (key === 'f') {
-        if (screen !== 'workspace') return
+        if (runtime.screen !== 'workspace') return
         event.preventDefault()
         const input = document.querySelector('.application-pane .search-field input') as HTMLInputElement | null
         input?.focus()
         return
       }
 
-      if (key === 'n' && !isTeamMode) {
+      if (key === 'n' && !runtime.isTeamMode) {
         event.preventDefault()
-        openNewApplicationDialog(null)
+        runtime.openNewApplicationDialog(null)
         return
       }
 
-      if (key === 'b' && screen === 'workspace') {
+      if (key === 'b' && runtime.screen === 'workspace') {
         event.preventDefault()
-        runAnimatedScreenUpdate(() => {
+        runtime.runAnimatedScreenUpdate(() => {
           setWorkspaceLayout((current) => ({ ...current, applicationsHidden: !current.applicationsHidden }))
         })
         return
       }
 
-      if (key === 'i' && screen === 'workspace') {
+      if (key === 'i' && runtime.screen === 'workspace') {
         event.preventDefault()
-        runAnimatedScreenUpdate(() => {
+        runtime.runAnimatedScreenUpdate(() => {
           setWorkspaceLayout((current) => ({ ...current, inspectorHidden: !current.inspectorHidden }))
         })
       }
@@ -3616,10 +3865,10 @@ export default function App() {
 
     window.addEventListener('keydown', handleKey)
     return function() { window.removeEventListener('keydown', handleKey) }
-  }, [canUseTeamFeatures, i18nValue, isDraftDirty, isTeamMode, runAnimatedDossierUpdate, runAnimatedScreenUpdate, screen, selectedId, tab, viewMode])
+  }, [])
 
   useEffect(() => {
-    if (!session || !applicationsLoaded) return undefined
+    if (!session?.user.id || !applicationsLoaded) return undefined
     if (isJsdomRuntime()) return undefined
 
     let cancelled = false
@@ -3737,11 +3986,11 @@ export default function App() {
       setViewMode('list')
       return
     }
-    if (!selectedId || !workspaceApplications.some((application) => application.id === selectedId)) {
+    if (!selectedId || !workspaceApplicationById.has(selectedId)) {
       const myApps = workspaceApplications.filter(function (a) { return a.ownerId === session.user.id })
       setSelectedId(myApps[0]?.id ?? workspaceApplications[0]?.id ?? null)
     }
-  }, [applicationsLoaded, canUseWorkspaceBoard, screen, selectedId, session, setDraftState, viewMode, workspaceApplications])
+  }, [applicationsLoaded, canUseWorkspaceBoard, screen, selectedId, session, setDraftState, viewMode, workspaceApplicationById, workspaceApplications])
 
   useEffect(() => {
     if (!workspaceOpeningFromDashboard) return undefined
@@ -3796,10 +4045,24 @@ export default function App() {
     if (!session || screen !== 'workspace' || !selectedId) return
     if (!applications.some((application) => application.id === selectedId)) return
 
-    setRecentOpenedIds((current) => {
-      const next = [selectedId, ...current.filter((id) => id !== selectedId)].slice(0, RECENT_OPENED_LIMIT)
-      return next.every((id, index) => id === current[index]) && next.length === current.length ? current : next
-    })
+    const commitRecentSelection = () => {
+      startTransition(() => {
+        setRecentOpenedIds((current) => {
+          const next = [selectedId, ...current.filter((id) => id !== selectedId)].slice(0, RECENT_OPENED_LIMIT)
+          return next.every((id, index) => id === current[index]) && next.length === current.length ? current : next
+        })
+      })
+    }
+
+    if (isJsdomRuntime()) {
+      commitRecentSelection()
+      return
+    }
+
+    // Dashboard recency is bookkeeping, not click feedback. Keep its whole-App
+    // render outside the dossier's compositor interval.
+    const timer = window.setTimeout(commitRecentSelection, 240)
+    return () => window.clearTimeout(timer)
   }, [applications, screen, selectedId, session])
 
   useEffect(() => {
@@ -3882,7 +4145,7 @@ export default function App() {
     }
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
-  }, [])
+  }, [setDraftState])
 
   useEffect(() => {
     try {
@@ -4115,16 +4378,64 @@ export default function App() {
     }
   }
 
-  async function fetchWorkspaceData(activeSession: AuthSession) {
+  async function runApplicationMutation<T>(
+    applicationId: string,
+    action: () => Promise<T>,
+  ): Promise<T | undefined> {
+    const saveToken = beginExternalApplicationSave()
+    try {
+      const result = await enqueueApplicationWrite(applicationId, action)
+      finishExternalApplicationSave(saveToken, { status: 'saved' })
+      return result
+    } catch (error) {
+      if (isAuthExpired(error)) {
+        resetApplicationAutoSave()
+        return undefined
+      }
+      failExternalApplicationSave(
+        saveToken,
+        isNetworkLikeError(error)
+          ? i18nValue.tx('toast.offlineActionNeedsOnline')
+          : normalizeError(error, languageRef.current),
+      )
+      return undefined
+    }
+  }
+
+  function runInteractiveApplicationMutation<T>(
+    applicationId: string,
+    action: () => Promise<T>,
+    successMessage?: string,
+  ) {
+    return run(
+      async () => {
+        await enqueueApplicationWrite(applicationId, action)
+      },
+      successMessage,
+    )
+  }
+
+  async function fetchWorkspaceData(
+    activeSession: AuthSession,
+    signal?: AbortSignal,
+    requestedTeamId = activeTeamIdRef.current,
+  ) {
     const requestToken = activeSession.token
     const lockedTeamId = activeSession.impersonation?.teamId ?? null
-    const preferredTeamId = lockedTeamId ?? activeTeamIdRef.current
+    const preferredTeamId = lockedTeamId ?? requestedTeamId
     try {
-      const bootstrap = await phdApi.workspaceBootstrap(requestToken, preferredTeamId)
+      const bootstrap = await phdApi.workspaceBootstrap(
+        requestToken,
+        preferredTeamId,
+        { signal },
+      )
       if (!bootstrap || !Array.isArray(bootstrap.applications) || !Array.isArray(bootstrap.teamWorkspaces)) {
-        throw new Error('Workspace bootstrap payload is unavailable.')
+        throw new ApiError(
+          'Workspace bootstrap payload is unavailable.',
+          'WORKSPACE_BOOTSTRAP_UNAVAILABLE',
+          502,
+        )
       }
-      activeTeamIdRef.current = bootstrap.activeTeamId
       return {
         me: bootstrap.me,
         nextApps: bootstrap.applications,
@@ -4138,37 +4449,43 @@ export default function App() {
         aiKeys: Array.isArray(bootstrap.aiKeys) ? bootstrap.aiKeys : [],
       }
     } catch (error) {
+      signal?.throwIfAborted()
+      if (isAbortLike(error)) throw error
       if (isAuthExpired(error)) throw error
-      // Rolling deployments can briefly serve a new frontend from the service
-      // worker while the previous API process is still shutting down. Preserve
-      // the established granular bootstrap as a compatibility fallback.
+      if (!shouldUseGranularWorkspaceFallback(error)) throw error
+      // A rolling deployment can briefly serve a frontend whose aggregate
+      // bootstrap route does not exist on the previous API version. Preserve
+      // the established granular path only for that explicit compatibility
+      // shape; transport/server failures stay one failed request.
       const [me, nextApps, assets, nextBackups, trash, workspaces, nextAiKeys] = await Promise.all([
-        phdApi.me(requestToken),
-        lockedTeamId ? Promise.resolve([]) : phdApi.listApplications(requestToken),
-        lockedTeamId ? Promise.resolve([]) : phdApi.listProfileAssets(requestToken),
-        lockedTeamId ? Promise.resolve([]) : phdApi.listBackups(requestToken),
-        lockedTeamId ? Promise.resolve([]) : phdApi.listApplicationTrash(requestToken),
-        phdApi.myTeamWorkspaces(requestToken),
-        phdApi.listAiKeys(requestToken).catch((aiError) => {
+        phdApi.me(requestToken, { signal }),
+        lockedTeamId ? Promise.resolve([]) : phdApi.listApplications(requestToken, { signal }),
+        lockedTeamId ? Promise.resolve([]) : phdApi.listProfileAssets(requestToken, { signal }),
+        lockedTeamId ? Promise.resolve([]) : phdApi.listBackups(requestToken, undefined, { signal }),
+        lockedTeamId ? Promise.resolve([]) : phdApi.listApplicationTrash(requestToken, { signal }),
+        phdApi.myTeamWorkspaces(requestToken, { signal }),
+        phdApi.listAiKeys(requestToken, { signal }).catch((aiError) => {
+          signal?.throwIfAborted()
           if (isAuthExpired(aiError)) throw aiError
           return []
         }),
       ])
+      signal?.throwIfAborted()
       const availableTeamIds = new Set(workspaces.map((workspace) => workspace.teamId))
-      const requestedTeamId = lockedTeamId && availableTeamIds.has(lockedTeamId)
+      const resolvedTeamId = lockedTeamId && availableTeamIds.has(lockedTeamId)
         ? lockedTeamId
-        : activeTeamIdRef.current && availableTeamIds.has(activeTeamIdRef.current)
-          ? activeTeamIdRef.current
+        : preferredTeamId && availableTeamIds.has(preferredTeamId)
+          ? preferredTeamId
           : workspaces[0]?.teamId ?? null
       let team: TeamSummary | null = null
       let teamApps: TeamApplicationRecord[] = []
-      if (requestedTeamId) {
+      if (resolvedTeamId) {
         ;[team, teamApps] = await Promise.all([
-          phdApi.myTeam(requestToken, requestedTeamId),
-          phdApi.listTeamApplications(requestToken, requestedTeamId),
+          phdApi.myTeam(requestToken, resolvedTeamId, { signal }),
+          phdApi.listTeamApplications(requestToken, resolvedTeamId, { signal }),
         ])
       }
-      activeTeamIdRef.current = requestedTeamId
+      signal?.throwIfAborted()
       return {
         me,
         nextApps,
@@ -4176,7 +4493,7 @@ export default function App() {
         nextBackups,
         trash,
         teamWorkspaces: workspaces,
-        activeTeamId: requestedTeamId,
+        activeTeamId: resolvedTeamId,
         team,
         teamApps,
         aiKeys: Array.isArray(nextAiKeys) ? nextAiKeys : [],
@@ -4236,12 +4553,19 @@ export default function App() {
     return true
   }
 
-  async function performRefreshAll(activeSession: AuthSession, requestEpoch: number) {
+  async function performRefreshAll(
+    activeSession: AuthSession,
+    requestEpoch: number,
+    expectedTeamId: string | null,
+    signal: AbortSignal,
+  ) {
     const criticalAssets = warmCriticalScreenAssets(screen, tab, lang, viewMode)
-    const data = await fetchWorkspaceData(activeSession)
+    const data = await fetchWorkspaceData(activeSession, signal, expectedTeamId)
     await criticalAssets
+    signal.throwIfAborted()
     if (requestEpoch !== sessionIdentityEpochRef.current) return
     if (currentSessionUserIdRef.current !== activeSession.user.id) return
+    if ((activeSession.impersonation?.teamId ?? activeTeamIdRef.current) !== expectedTeamId) return
     await applyWorkspaceData(activeSession, data, requestEpoch)
   }
 
@@ -4256,26 +4580,30 @@ export default function App() {
     ) {
       return
     }
-    const requestKey = `${activeSession.user.id}:${requestToken}:${activeTeamIdRef.current ?? ''}:${requestEpoch}`
-    const current = refreshAllInFlightRef.current
-    if (current?.key === requestKey) return current.promise
-    const promise = performRefreshAll(activeSession, requestEpoch)
-    refreshAllInFlightRef.current = { key: requestKey, promise }
+    const expectedTeamId = activeSession.impersonation?.teamId ?? activeTeamIdRef.current
+    const requestKey = `${activeSession.user.id}:${requestToken}:${expectedTeamId ?? ''}:${requestEpoch}`
     try {
-      await promise
-    } finally {
-      if (refreshAllInFlightRef.current?.promise === promise) {
-        refreshAllInFlightRef.current = null
-      }
+      await workspaceRefreshTasksRef.current.run(
+        'all',
+        requestKey,
+        (signal) => performRefreshAll(activeSession, requestEpoch, expectedTeamId, signal),
+      )
+    } catch (error) {
+      if (isAbortLike(error)) return
+      throw error
     }
   }
 
-  async function refreshSessionMetadata(activeSession = session) {
+  async function refreshSessionMetadata(
+    activeSession = session,
+    options: { signal?: AbortSignal } = {},
+  ) {
     if (!activeSession || cancelledRef.current) return
     const requestToken = activeSession.token
     const requestEpoch = sessionIdentityEpochRef.current
     if (!isMountedSessionIdentity(activeSession.user.id, requestToken, requestEpoch)) return
-    const me = await phdApi.me(requestToken)
+    const me = await phdApi.me(requestToken, options)
+    if (options.signal?.aborted) return
     commitSessionMetadata(activeSession, me, requestToken, requestEpoch)
   }
 
@@ -4313,15 +4641,18 @@ export default function App() {
     })
   }
 
-  async function refreshApplicationsAndSessionMetadata(activeSession = session) {
+  async function refreshApplicationsAndSessionMetadata(
+    activeSession = session,
+    options: { signal?: AbortSignal } = {},
+  ) {
     if (!activeSession || cancelledRef.current) return
     const requestToken = activeSession.token
     if (!isCurrentSessionToken(requestToken)) return
     const [, nextApplications] = await Promise.all([
-      refreshSessionMetadata(activeSession),
-      phdApi.listApplications(requestToken),
+      refreshSessionMetadata(activeSession, options),
+      phdApi.listApplications(requestToken, options),
     ])
-    if (!isCurrentSessionToken(requestToken)) return
+    if (options.signal?.aborted || !isCurrentSessionToken(requestToken)) return
     setApplications(nextApplications)
     scheduleOfflineSnapshotSave(activeSession, {
       applications: nextApplications,
@@ -4343,40 +4674,51 @@ export default function App() {
     const requestToken = activeSession.token
     const requestEpoch = sessionIdentityEpochRef.current
     if (!isMountedSessionIdentity(activeSession.user.id, requestToken, requestEpoch)) return
-
-    const [me, workspaces] = await Promise.all([
-      phdApi.me(requestToken),
-      phdApi.myTeamWorkspaces(requestToken),
-    ])
-    if (!isMountedSessionIdentity(activeSession.user.id, requestToken, requestEpoch)) return
-
     const lockedTeamId = activeSession.impersonation?.teamId ?? null
-    const availableTeamIds = new Set(workspaces.map((workspace) => workspace.teamId))
-    const requestedTeamId = lockedTeamId && availableTeamIds.has(lockedTeamId)
-      ? lockedTeamId
-      : preferredTeamId && availableTeamIds.has(preferredTeamId)
-        ? preferredTeamId
-        : workspaces[0]?.teamId ?? null
-    let team: TeamSummary | null = null
-    let nextTeamApplications: TeamApplicationRecord[] = []
-    if (requestedTeamId) {
-      ;[team, nextTeamApplications] = await Promise.all([
-        phdApi.myTeam(requestToken, requestedTeamId),
-        phdApi.listTeamApplications(requestToken, requestedTeamId),
-      ])
-    }
-    if (!isMountedSessionIdentity(activeSession.user.id, requestToken, requestEpoch)) return
+    const expectedTeamId = lockedTeamId ?? preferredTeamId
+    const requestKey = `${activeSession.user.id}:${requestToken}:${expectedTeamId ?? ''}:${requestEpoch}`
+    try {
+      await workspaceRefreshTasksRef.current.run('team', requestKey, async (signal) => {
+        const [me, workspaces] = await Promise.all([
+          phdApi.me(requestToken, { signal }),
+          phdApi.myTeamWorkspaces(requestToken, { signal }),
+        ])
+        signal.throwIfAborted()
+        if (!isMountedSessionIdentity(activeSession.user.id, requestToken, requestEpoch)) return
 
-    const nextSession = commitSessionMetadata(activeSession, me, requestToken, requestEpoch)
-    if (!nextSession) return
-    activeTeamIdRef.current = requestedTeamId
-    startTransition(() => {
-      setTeamWorkspaces(workspaces)
-      setActiveTeamId(requestedTeamId)
-      setTeamSummary(team)
-      setTeamApplications(nextTeamApplications)
-      setTeamLookupComplete(true)
-    })
+        const availableTeamIds = new Set(workspaces.map((workspace) => workspace.teamId))
+        const resolvedTeamId = lockedTeamId && availableTeamIds.has(lockedTeamId)
+          ? lockedTeamId
+          : expectedTeamId && availableTeamIds.has(expectedTeamId)
+            ? expectedTeamId
+            : workspaces[0]?.teamId ?? null
+        let team: TeamSummary | null = null
+        let nextTeamApplications: TeamApplicationRecord[] = []
+        if (resolvedTeamId) {
+          ;[team, nextTeamApplications] = await Promise.all([
+            phdApi.myTeam(requestToken, resolvedTeamId, { signal }),
+            phdApi.listTeamApplications(requestToken, resolvedTeamId, { signal }),
+          ])
+        }
+        signal.throwIfAborted()
+        if (!isMountedSessionIdentity(activeSession.user.id, requestToken, requestEpoch)) return
+        if ((lockedTeamId ?? activeTeamIdRef.current) !== expectedTeamId) return
+
+        const nextSession = commitSessionMetadata(activeSession, me, requestToken, requestEpoch)
+        if (!nextSession) return
+        activeTeamIdRef.current = resolvedTeamId
+        startTransition(() => {
+          setTeamWorkspaces(workspaces)
+          setActiveTeamId(resolvedTeamId)
+          setTeamSummary(team)
+          setTeamApplications(nextTeamApplications)
+          setTeamLookupComplete(true)
+        })
+      })
+    } catch (error) {
+      if (isAbortLike(error)) return
+      throw error
+    }
   }
 
   function switchActiveTeam(teamId: string) {
@@ -4386,7 +4728,7 @@ export default function App() {
       const seq = ++workspaceHandoffSeqRef.current
       setWorkspaceHandoff({ target: 'team', variant: 'team' })
       activeTeamIdRef.current = teamId
-      refreshAllInFlightRef.current = null
+      workspaceRefreshTasksRef.current.cancel('all')
       startTransition(() => {
         setActiveTeamId(teamId)
         setTeamSummary(null)
@@ -4430,13 +4772,14 @@ export default function App() {
       || syncingOffline
     ) return
 
+    // Revisit older blocked entries as well. Personal offline edits now merge
+    // automatically, with same-field conflicts resolved by the later local or
+    // server timestamp instead of opening a separate review draft.
     const pendingQueue = readOfflineQueue(activeSession.user.id)
-      .filter((item) => item.status !== 'blocked')
     if (pendingQueue.length === 0) return
 
     setSyncingOffline(true)
     let synced = 0
-    let blocked = 0
     const syncedIds: string[] = []
 
     try {
@@ -4448,7 +4791,6 @@ export default function App() {
         if (!isCurrentSessionToken(requestToken)) return
         const current = serverApplications.find((application) => application.id === operation.applicationId)
         const block = (reason: string) => {
-          blocked += 1
           markOfflineQueueItemBlocked(activeSession.user.id, operation.id, reason)
         }
 
@@ -4460,13 +4802,21 @@ export default function App() {
           block('permission')
           continue
         }
-        if (!operation.baseUpdatedAt || !current.updatedAt) {
-          block('unverifiable')
-          continue
-        }
         const mergeResult = mergeOfflineApplicationUpdate(operation, current)
         if (!mergeResult) {
           block('conflict')
+          continue
+        }
+        if (!mergeResult.replayRequired) {
+          // The server already owns every winning value. Clearing the queued
+          // operation is the save: do not write an identical record merely to
+          // manufacture a newer server timestamp.
+          syncedIds.push(operation.id)
+          synced += 1
+          continue
+        }
+        if (!current.updatedAt) {
+          block('unverifiable')
           continue
         }
 
@@ -4490,9 +4840,6 @@ export default function App() {
         notify(tpl(i18nValue.tx('toast.offlineSyncComplete'), { count: synced }), 'success')
         await refreshAll({ ...activeSession, token: requestToken })
       }
-      if (blocked > 0) {
-        notify(tpl(i18nValue.tx('toast.offlineSyncBlocked'), { count: blocked }), 'error')
-      }
     } catch (error) {
       if (isAuthExpired(error)) return
       if (!isNetworkLikeError(error)) {
@@ -4513,7 +4860,7 @@ export default function App() {
     }
 
     notify(i18nValue.tx('toast.connectionRestored'), 'success')
-    if (pendingOfflineQueueSize(activeSession.user.id) > 0) {
+    if (offlineQueueSize(activeSession.user.id) > 0) {
       await syncOfflineQueue(activeSession, { force: true })
       return
     }
@@ -4546,47 +4893,9 @@ export default function App() {
     })
   }
 
-  function reviewBlockedOfflineChange() {
-    if (!activeSession) return
-    const blocked = readOfflineQueue(activeSession.user.id).find((item) => item.status === 'blocked')
-    if (!blocked) return
-    const serverApplication = applications.find((application) => application.id === blocked.applicationId)
-    setScreen('workspace')
-    setViewModeDirection('to-list')
-    setViewMode('list')
-    setSelectedId(blocked.applicationId)
-    setMobileDetailOpen(true)
-    if (serverApplication) {
-      // Keep the fresh server record as the save baseline, then surface the
-      // preserved local copy as an explicitly dirty draft. Nothing is uploaded
-      // until the user reviews it and presses Save.
-      setDraftState(cloneApplication(serverApplication), { clean: true })
-      setDraftState(
-        cloneApplication(restoreOfflineApplicationAuthority(blocked.application, serverApplication)),
-        { dirty: true },
-      )
-    }
-    notify(i18nValue.tx(`offlineStatus.blockedReason.${blocked.blockedReason ?? 'conflict'}`), 'info')
-    notify(i18nValue.tx('offlineStatus.reviewLoaded'), 'warning')
-  }
-
-  function requestPwaUpdateInstall() {
-    const install = () => {
-      if (activatePwaUpdate()) setPwaUpdateReady(false)
-    }
-    if (!isDraftDirty) {
-      install()
-      return
-    }
-    setConfirmDialog({
-      title: i18nValue.tx('offlineStatus.updateConfirmTitle'),
-      message: i18nValue.tx('offlineStatus.updateConfirmMessage'),
-      confirmLabel: i18nValue.tx('offlineStatus.installUpdate'),
-      onConfirm: () => {
-        setConfirmDialog(null)
-        install()
-      },
-    })
+  async function requestPwaUpdateInstall() {
+    if (isDraftDirty && !await flushApplicationAutoSave()) return
+    if (activatePwaUpdate()) setPwaUpdateReady(false)
   }
 
   function replaceApplication(saved: ApplicationRecord, expectedDraftMutationVersion?: number) {
@@ -4596,11 +4905,33 @@ export default function App() {
     // spread preserves the extra ownerName/ownerEmail/currentUserApplicationRole fields that
     // only this list carries (the saved ApplicationRecord from the API doesn't include them).
     setTeamApplications((items) => items.map((item) => (item.id === saved.id ? { ...item, ...saved } : item)))
+    const currentDraftMatchesBaseline = Boolean(
+      draftRef.current
+      && draftBaselineRef.current
+      && JSON.stringify(draftRef.current) === draftBaselineRef.current,
+    )
     const draftStillMatchesRequest = expectedDraftMutationVersion === undefined
-      || draftMutationVersionRef.current === expectedDraftMutationVersion
-    if (draftRef.current?.id === saved.id && draftStillMatchesRequest) {
+      ? currentDraftMatchesBaseline
+      : draftMutationVersionRef.current === expectedDraftMutationVersion
+    if (draftRef.current?.id !== saved.id) return
+    if (draftStillMatchesRequest) {
       setDraftState(cloneApplication(saved), { clean: true })
+      return
     }
+
+    // A user can keep typing while an autosave is in flight. Advance the
+    // baseline to the server-confirmed revision without replacing those newer
+    // local edits; the trailing save will then merge against the correct
+    // updatedAt/version instead of replaying a stale baseline.
+    const currentDraft = draftRef.current
+    const nextDraft = {
+      ...currentDraft,
+      updatedAt: saved.updatedAt,
+    }
+    setDraftState(cloneApplication(saved), { clean: true })
+    setDraftState(cloneApplication(nextDraft), {
+      dirty: JSON.stringify(nextDraft) !== JSON.stringify(saved),
+    })
   }
 
   function updateApplicationInState(
@@ -4616,9 +4947,20 @@ export default function App() {
     setTeamApplications((items) =>
       items.map((item) => (item.id === applicationId ? { ...item, ...updater(item) } : item)),
     )
-    if (draftRef.current?.id === applicationId && draftBaselineVersionRef.current === versionBefore) {
-      setDraftState(cloneApplication(updater(draftRef.current)), { clean: true })
-    }
+    const currentDraft = draftRef.current
+    if (currentDraft?.id !== applicationId || draftBaselineVersionRef.current !== versionBefore) return
+
+    // Granular endpoints (task, fee, communication, etc.) may complete while a
+    // different field is still waiting for its debounced autosave. Advance only
+    // the affected part of the baseline and preserve every newer local edit.
+    const currentBaseline = safeParseJson<ApplicationRecord>(draftBaselineRef.current)
+      ?? applications.find((application) => application.id === applicationId)
+      ?? currentDraft
+    const nextBaseline = updater(currentBaseline)
+    const nextDraft = updater(currentDraft)
+    const remainsDirty = JSON.stringify(nextDraft) !== JSON.stringify(nextBaseline)
+    setDraftState(cloneApplication(nextBaseline), { clean: true })
+    setDraftState(cloneApplication(nextDraft), { dirty: remainsDirty })
   }
 
   function commitSchoolLogoApplication(saved: ApplicationRecord) {
@@ -4664,12 +5006,23 @@ export default function App() {
     application: ApplicationRecord,
     logo: ApplicationRecord['school']['logo'] | null,
     autoDetect: boolean,
-    options: { silent?: boolean; removed?: boolean } = {},
+    options: {
+      silent?: boolean
+      removed?: boolean
+      expectedManualRevision?: number
+    } = {},
   ) {
-    const saved = await phdApi.updateSchoolLogo(activeSession.token, application.id, {
-      logo,
-      autoDetect,
+    const saved = await enqueueApplicationWrite(application.id, async () => {
+      if (
+        options.expectedManualRevision !== undefined
+        && (schoolLogoManualRevisionRef.current.get(application.id) ?? 0) !== options.expectedManualRevision
+      ) return null
+      return phdApi.updateSchoolLogo(activeSession.token, application.id, {
+        logo,
+        autoDetect,
+      })
     })
+    if (!saved) return false
     if (!isCurrentSessionToken(activeSession.token)) return false
     commitSchoolLogoApplication(saved)
     if (!options.silent) {
@@ -4682,13 +5035,23 @@ export default function App() {
 
   function resolveAndStoreSchoolLogo(
     application: ApplicationRecord,
-    input: { website?: string; imageUrl?: string; refresh?: boolean },
+    input: { website?: string; imageUrl?: string; auto?: true; refresh?: boolean },
     options: { silent?: boolean } = {},
   ) {
-    const requestValue = input.imageUrl?.trim() || input.website?.trim() || ''
-    const requestKey = `${application.id}::${input.imageUrl ? 'link' : 'website'}::${input.refresh ? 'refresh' : 'cached'}::${requestValue}`
+    const requestKind = input.imageUrl ? 'link' : input.auto ? 'auto' : 'website'
+    const requestValue = input.auto
+      ? `${application.school.name.trim()}::${input.website?.trim() || ''}`
+      : input.imageUrl?.trim() || input.website?.trim() || ''
+    const requestKey = `${application.id}::${requestKind}::${input.refresh ? 'refresh' : 'cached'}::${requestValue}`
     const inFlight = schoolLogoInFlightRef.current.get(requestKey)
     if (inFlight) return inFlight
+    const currentManualRevision = schoolLogoManualRevisionRef.current.get(application.id) ?? 0
+    const expectedManualRevision = input.auto
+      ? currentManualRevision
+      : currentManualRevision + 1
+    if (!input.auto) {
+      schoolLogoManualRevisionRef.current.set(application.id, expectedManualRevision)
+    }
 
     const promise = (async () => {
       try {
@@ -4704,7 +5067,7 @@ export default function App() {
             dataUrl,
             source: input.imageUrl ? 'link' : 'website',
             sourceUrl: resolved.sourceUrl,
-            ...(input.website
+            ...(!input.imageUrl && (resolved.websiteUrl || input.website)
               ? {
                   websiteUrl: resolved.websiteUrl ?? input.website,
                   cacheKey: resolved.cacheKey,
@@ -4713,8 +5076,8 @@ export default function App() {
               : {}),
             updatedAt: new Date().toISOString(),
           },
-          !input.imageUrl,
-          options,
+          Boolean(input.auto),
+          { ...options, expectedManualRevision },
         )
       } catch (error) {
         if (!isAuthExpired(error) && !options.silent) {
@@ -4732,13 +5095,15 @@ export default function App() {
   }
 
   async function uploadAndStoreSchoolLogo(application: ApplicationRecord, file: File) {
+    const expectedManualRevision = (schoolLogoManualRevisionRef.current.get(application.id) ?? 0) + 1
+    schoolLogoManualRevisionRef.current.set(application.id, expectedManualRevision)
     try {
       const dataUrl = await normalizeSchoolLogoFile(file)
       return await persistSchoolLogo(application, {
         dataUrl,
         source: 'upload',
         updatedAt: new Date().toISOString(),
-      }, false)
+      }, false, { expectedManualRevision })
     } catch (error) {
       if (!isAuthExpired(error)) notify(schoolLogoErrorMessage(error), 'error')
       return false
@@ -4746,8 +5111,13 @@ export default function App() {
   }
 
   async function removeStoredSchoolLogo(application: ApplicationRecord) {
+    const expectedManualRevision = (schoolLogoManualRevisionRef.current.get(application.id) ?? 0) + 1
+    schoolLogoManualRevisionRef.current.set(application.id, expectedManualRevision)
     try {
-      return await persistSchoolLogo(application, null, false, { removed: true })
+      return await persistSchoolLogo(application, null, false, {
+        removed: true,
+        expectedManualRevision,
+      })
     } catch (error) {
       if (!isAuthExpired(error)) notify(schoolLogoErrorMessage(error), 'error')
       return false
@@ -4970,8 +5340,7 @@ export default function App() {
                 syncing={false}
                 updateReady={pwaUpdateReady}
                 onRetry={() => { void probeServerConnectivity({ force: true }) }}
-                onReviewBlocked={() => undefined}
-                onInstallUpdate={requestPwaUpdateInstall}
+                onInstallUpdate={() => { void requestPwaUpdateInstall() }}
                 onToggleOffline={() => undefined}
                 tx={i18nValue.tx}
                 authSurface
@@ -5189,24 +5558,32 @@ export default function App() {
     window.open(`/upgrade-pro?${params.toString()}`, '_blank', 'noopener,noreferrer')
   }
 
-  async function performSaveApplication(nextApp: ApplicationRecord, message: string, queuedSession: AuthSession) {
-    if (!isCurrentSessionToken(queuedSession.token)) return
+  async function performSaveApplication(
+    nextApp: ApplicationRecord,
+    message: string,
+    queuedSession: AuthSession,
+    options: ApplicationSaveOptions,
+  ): Promise<ApplicationAutoSaveResult> {
+    if (!isCurrentSessionToken(queuedSession.token)) return { status: 'ignored' }
+    const applicationToSave = draftRef.current?.id === nextApp.id
+      ? cloneApplication(draftRef.current)
+      : nextApp
     const draftMutationVersion = draftMutationVersionRef.current
-    const baseApplication = draftRef.current?.id === nextApp.id
+    const baseApplication = draftRef.current?.id === applicationToSave.id
       ? safeParseJson<ApplicationRecord>(draftBaselineRef.current)
-      : applications.find((application) => application.id === nextApp.id) ?? null
-    const queueForSync = () => {
-      const baseUpdatedAt = baseApplication?.updatedAt ?? nextApp.updatedAt ?? null
+      : applications.find((application) => application.id === applicationToSave.id) ?? null
+    const queueForSync = (): ApplicationAutoSaveResult => {
+      const baseUpdatedAt = baseApplication?.updatedAt ?? applicationToSave.updatedAt ?? null
       const nextQueue = enqueueApplicationUpdate(
         queuedSession,
-        nextApp,
+        applicationToSave,
         baseUpdatedAt,
         baseApplication,
       )
       const nextApplications = applications.map((application) =>
-        application.id === nextApp.id ? nextApp : application,
+        application.id === applicationToSave.id ? applicationToSave : application,
       )
-      replaceApplication(nextApp)
+      replaceApplication(applicationToSave, draftMutationVersion)
       const saved = saveOfflineSnapshot(queuedSession, currentSnapshotData(nextApplications))
       if (saved) {
         setOfflineSnapshotSavedAt(saved.savedAt)
@@ -5215,62 +5592,122 @@ export default function App() {
       setOfflineDataActive(true)
       setOfflineQueueCount(nextQueue.length)
       setBlockedOfflineCount(nextQueue.filter((item) => item.status === 'blocked').length)
-      notify(tpl(i18nValue.tx('toast.offlineChangeQueued'), {
-        count: pendingOfflineQueueSize(queuedSession.user.id),
-      }), 'info')
+      if (options.feedback !== 'quiet') {
+        notify(tpl(i18nValue.tx('toast.offlineChangeQueued'), {
+          count: pendingOfflineQueueSize(queuedSession.user.id),
+        }), 'info')
+      }
       void requestOfflineSync()
+      return { status: 'queued' }
     }
 
-    if (connectivityUnavailable() && canQueueApplicationUpdate(queuedSession, nextApp, { isTeamMode })) {
-      queueForSync()
-      return
+    if (connectivityUnavailable() && canQueueApplicationUpdate(queuedSession, applicationToSave, { isTeamMode })) {
+      return queueForSync()
     }
 
     try {
-      const saved = await phdApi.updateApplication(queuedSession.token, nextApp, baseApplication)
-      if (!isCurrentSessionToken(queuedSession.token)) return
+      const saved = await phdApi.updateApplication(queuedSession.token, applicationToSave, baseApplication)
+      if (!isCurrentSessionToken(queuedSession.token)) return { status: 'ignored' }
       removeOfflineApplicationUpdates(queuedSession.user.id, saved.id)
       refreshOfflineQueueCounts(queuedSession.user.id)
       replaceApplication(saved, draftMutationVersion)
-      notify(message)
+      if (options.feedback !== 'quiet') notify(message)
+      return { status: 'saved' }
     } catch (error) {
       if (isAuthExpired(error)) {
-        return
+        return { status: 'ignored' }
       }
 
-      if (isNetworkLikeError(error) && canQueueApplicationUpdate(queuedSession, nextApp, { isTeamMode })) {
-        queueForSync()
-        return
+      if (isNetworkLikeError(error) && canQueueApplicationUpdate(queuedSession, applicationToSave, { isTeamMode })) {
+        return queueForSync()
       }
 
+      const errorMessage = isNetworkLikeError(error)
+        ? i18nValue.tx('toast.offlineSaveNeedsOnline')
+        : normalizeError(error, languageRef.current)
       if (isNetworkLikeError(error)) {
-        notify(i18nValue.tx('toast.offlineSaveNeedsOnline'), 'error')
-      } else {
-        notify(normalizeError(error, languageRef.current), 'error')
+        if (options.feedback !== 'quiet') notify(errorMessage, 'error')
+      } else if (options.feedback !== 'quiet') {
+        notify(errorMessage, 'error')
       }
+      return { status: 'error', message: errorMessage }
     }
   }
 
-  async function saveApplication(nextApp: ApplicationRecord, message: string) {
+  function enqueueApplicationWrite<T>(
+    applicationId: string,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    const previous = applicationWriteQueueRef.current.get(applicationId) ?? Promise.resolve()
+    const queued = previous
+      .catch(() => undefined)
+      .then(action)
+    applicationWriteQueueRef.current.set(applicationId, queued)
+    const release = () => {
+      if (applicationWriteQueueRef.current.get(applicationId) === queued) {
+        applicationWriteQueueRef.current.delete(applicationId)
+      }
+    }
+    void queued.then(release, release)
+    return queued
+  }
+
+  async function saveApplication(
+    nextApp: ApplicationRecord,
+    message: string,
+    options: ApplicationSaveOptions = {},
+  ): Promise<ApplicationAutoSaveResult> {
     const queuedSession = activeSession
-    const previous = saveQueueByApplicationRef.current.get(nextApp.id) ?? Promise.resolve()
     pendingSaveCountRef.current += 1
     if (pendingSaveCountRef.current === 1) setSaving(true)
 
-    const queued = previous
-      .catch(() => undefined)
-      .then(() => performSaveApplication(nextApp, message, queuedSession))
-    saveQueueByApplicationRef.current.set(nextApp.id, queued)
+    const queued = enqueueApplicationWrite(
+      nextApp.id,
+      () => performSaveApplication(nextApp, message, queuedSession, options),
+    )
 
     try {
-      await queued
+      return await queued
     } finally {
-      if (saveQueueByApplicationRef.current.get(nextApp.id) === queued) {
-        saveQueueByApplicationRef.current.delete(nextApp.id)
-      }
       pendingSaveCountRef.current = Math.max(0, pendingSaveCountRef.current - 1)
       if (pendingSaveCountRef.current === 0) setSaving(false)
     }
+  }
+
+  async function saveCurrentDraft(): Promise<boolean> {
+    if (!draftRef.current) return true
+    return flushApplicationAutoSave()
+  }
+
+  async function saveApplicationQuietly(
+    nextApp: ApplicationRecord,
+    message: string,
+  ): Promise<ApplicationAutoSaveResult> {
+    const updatesActiveDraft = draftRef.current?.id === nextApp.id
+    if (updatesActiveDraft) {
+      resetApplicationAutoSave()
+      setDraftState(cloneApplication(nextApp))
+    } else if (draftRef.current) {
+      await flushApplicationAutoSave()
+    }
+    const saveToken = beginExternalApplicationSave()
+    const result = await saveApplication(nextApp, message, { feedback: 'quiet' })
+    if (result.status === 'saved' || result.status === 'queued') {
+      finishExternalApplicationSave(saveToken, result)
+    } else if (result.status === 'error') {
+      if (updatesActiveDraft) {
+        retainFailedApplicationDraft(nextApp, result.message)
+      } else {
+        failExternalApplicationSave(saveToken, result.message)
+      }
+    } else {
+      finishExternalApplicationSave(saveToken, result)
+    }
+    return result
+  }
+
+  function currentApplicationDraft(application: ApplicationRecord): ApplicationRecord {
+    return draftRef.current?.id === application.id ? draftRef.current : application
   }
 
   async function toggleApplicationTeamVisibility(applicationId: string, visibleToTeam: boolean, teamId?: string) {
@@ -5304,6 +5741,7 @@ export default function App() {
 
   function discardDraft() {
     if (!selected) return
+    resetApplicationAutoSave()
     setDraftState(cloneApplication(selected), { clean: true })
     notify(i18nValue.tx('toast.changesDiscarded'))
   }
@@ -5345,7 +5783,7 @@ export default function App() {
 
   function openApplicationsInTabs(applicationIds: string[]) {
     const uniqueIds = Array.from(new Set(applicationIds))
-    const ids = uniqueIds.filter((id) => workspaceApplications.some((application) => application.id === id))
+    const ids = uniqueIds.filter((id) => workspaceApplicationById.has(id))
     if (ids.length === 0) return
     ids.forEach((id) => {
       window.open(pathForRoute('workspace', id, 'dossier', teamSection, interfaceMode), '_blank', 'noopener,noreferrer')
@@ -5566,12 +6004,13 @@ export default function App() {
     notify(i18nValue.tx('settings.ai.usageResetDone'))
   }
 
-  async function pollMailSyncJob(jobId: string) {
+  async function pollMailSyncJob(jobId: string, signal: AbortSignal) {
     if (!session) return false
     try {
       const requestToken = getLatestSessionToken(session.token)
       const requestSession = { ...session, token: requestToken }
-      const me = await phdApi.me(requestToken)
+      const me = await phdApi.me(requestToken, { signal })
+      if (signal.aborted) return false
       const committedSession = commitSessionMetadata(requestSession, me, requestToken)
       const currentJob = me.mailFetchStatus?.syncJob
       if (currentJob?.id === jobId && ['queued', 'running'].includes(currentJob.status)) return true
@@ -5580,7 +6019,8 @@ export default function App() {
         && currentJob?.id === jobId
         && ['succeeded', 'failed'].includes(currentJob.status)
       ) {
-        await refreshApplicationsAndSessionMetadata(committedSession)
+        await refreshApplicationsAndSessionMetadata(committedSession, { signal })
+        if (signal.aborted) return false
         refreshUnreadNotificationCount()
         if (notificationCenterOpen) void refreshNotificationList()
         if (currentJob.status === 'failed') {
@@ -5833,9 +6273,9 @@ export default function App() {
           ? 'kanban'
           : 'list'
     }
-    const targetApplication = workspaceApplications.find((application) => application.id === applicationId)
-    const currentIndex = selected ? visibleApplications.findIndex((application) => application.id === selected.id) : -1
-    const nextIndex = visibleApplications.findIndex((application) => application.id === applicationId)
+    const targetApplication = workspaceApplicationById.get(applicationId)
+    const currentIndex = selected ? visibleApplicationIndexById.get(selected.id) ?? -1 : -1
+    const nextIndex = visibleApplicationIndexById.get(applicationId) ?? -1
     const rowDirection = currentIndex >= 0 && nextIndex >= 0 && nextIndex < currentIndex
       ? 'backward'
       : 'forward'
@@ -5862,7 +6302,9 @@ export default function App() {
       setViewModeDirection('to-list')
       setViewMode('list')
       setSelectedId(applicationId)
-      if (jumpTarget) setTab(jumpTarget.tab)
+      // A direct project switch always starts from the dossier overview.
+      // Notification/task deep links retain their explicit destination tab.
+      setTab(jumpTarget?.tab ?? 'dossier')
       setWorkspaceJumpIntent(nextJumpIntent)
       setScreen('workspace')
       setMobileDetailOpen(true)
@@ -5873,6 +6315,13 @@ export default function App() {
       : needsWorkspaceViewTransition
         ? 'workspace-view'
         : 'dossier-record'
+    if (transitionScope === 'dossier-record' && targetApplication) {
+      dossierTransitionSourceRef.current = (
+        draftRef.current?.id === selected?.id ? draftRef.current : selected
+      )
+    } else {
+      dossierTransitionSourceRef.current = null
+    }
     const destinationReady = needsWorkspaceViewTransition || needsScreenTransition
       ? prefetchDossierAssets()
       : undefined
@@ -5880,10 +6329,18 @@ export default function App() {
       scope: transitionScope,
       direction,
       ready: destinationReady,
-      deferDossierContent: compactWorkspaceViewport && !mobileDetailOpen,
+      deferDossierContent: (
+        transitionScope === 'dossier-record'
+        || (compactWorkspaceViewport && !mobileDetailOpen)
+      ),
     })
 
-    beginSelection()
+    if (transitionScope === 'dossier-record') {
+      scheduleApplicationSelectionAfterPaint(beginSelection)
+    } else {
+      cancelPendingApplicationSelection()
+      beginSelection()
+    }
   }
 
   function openDashboardApplication(applicationId: string, jumpTarget?: WorkspaceJumpTarget) {
@@ -6407,15 +6864,8 @@ export default function App() {
     }
 
     if (nextApp === source) return
-    const prevApp = cloneApplication(source)
     setDraftState(cloneApplication(nextApp))
-    void saveApplication(nextApp, i18nValue.tx('toast.appSaved'))
-    // Show undo toast with action to restore the previous value.
-    notify(
-      i18nValue.tx('toast.appSaved'),
-      'success',
-      { label: i18nValue.tx('undo'), onClick: function() { setDraftState(prevApp) } },
-    )
+    scheduleApplicationAutoSave(nextApp, 'immediate')
   }
 
   // Detect when the URL requested a specific application that doesn't exist (or isn't yet loaded).
@@ -6423,7 +6873,7 @@ export default function App() {
   const applicationNotFound = applicationsLoaded
     && screen === 'workspace'
     && selectedId !== null
-    && !workspaceApplications.some((application) => application.id === selectedId)
+    && !workspaceApplicationById.has(selectedId)
 
   const commandPaletteActions: CommandPaletteAction[] = (() => {
     const modLabel = navigator.platform.toUpperCase().includes('MAC') ? '⌘' : 'Ctrl'
@@ -6598,21 +7048,37 @@ export default function App() {
   // target draft is ready, so no stale content can be edited or acted upon.
   const displayedDossierDraft = activeDraft ?? (selected ? draft : null)
   const displayedDossierApplication = displayedDossierDraft
-    ? workspaceApplications.find((application) => application.id === displayedDossierDraft.id)
-      ?? displayedDossierDraft
+    ? workspaceApplicationById.get(displayedDossierDraft.id) ?? displayedDossierDraft
     : null
   const dossierHandoffPending = Boolean(selected && !activeDraft && displayedDossierDraft)
-  // Ordinary rail and tab changes paint their full destination immediately.
-  // On phones, board/dashboard drill-downs paint the dossier shell first and
-  // reveal dense rows concurrently so a large checklist cannot block the tap.
+  // Ordinary rail and desktop tab changes paint their full destination
+  // immediately. Record changes intentionally publish a bounded dossier shell
+  // first; secondary cards and long tab-derived rows join after the handoff.
   const deferScreenProgressiveReveal = false
-  const deferDossierHeavyContent = compactWorkspaceViewport && dossierContentDeferred
+  const deferDossierHeavyContent = dossierContentDeferred
   const isTeamStudentDashboard = (
     screen === 'team'
     && isTeamMode
     && teamViewerRole === 'member'
     && teamSection === 'overview'
   )
+  const openAiKeyConfiguration = () => {
+    setDossierEnrichmentOpen(false)
+    if (isTeamMode && teamViewerRole === 'owner') {
+      runAnimatedScreenUpdate(() => {
+        setTeamSection('settings')
+        setScreen('team')
+        setMobileDetailOpen(false)
+      }, { scope: 'screen', direction: 'forward', readinessGate: screenReadinessGate(teamScreen) })
+      return
+    }
+    setFocusAiKeys(true)
+    runAnimatedScreenUpdate(() => {
+      setInterfaceMode('personal')
+      setScreen('settings')
+      setMobileDetailOpen(false)
+    }, { scope: 'screen', direction: 'forward', readinessGate: screenReadinessGate(settingsScreen) })
+  }
 
   // Main content based on screen
   const mainContent =
@@ -6632,34 +7098,44 @@ export default function App() {
           const beforeToggle = applications.find((application) => application.id === applicationId)
           if (!beforeToggle) return
           if (connectivityUnavailable()) {
-            await saveApplication({
+            await saveApplicationQuietly({
               ...beforeToggle,
               tasks: beforeToggle.tasks.map((task) => task.id === taskId ? { ...task, done } : task),
             }, i18nValue.tx('toast.taskUpdated'))
             return
           }
-          const requestKey = `${applicationId}:${taskId}`
-          const requestId = (taskToggleRequestRef.current.get(requestKey) ?? 0) + 1
-          taskToggleRequestRef.current.set(requestKey, requestId)
-          updateApplicationInState(applicationId, (application) => ({
-            ...application,
-            tasks: application.tasks.map((task) => task.id === taskId ? { ...task, done } : task),
-          }))
-          try {
-            const task = await phdApi.patchTask(activeSession.token, applicationId, taskId, { done })
-            if (taskToggleRequestRef.current.get(requestKey) !== requestId) return
+          await runApplicationMutation(applicationId, async () => {
+            const requestKey = `${applicationId}:${taskId}`
+            const requestId = (taskToggleRequestRef.current.get(requestKey) ?? 0) + 1
+            taskToggleRequestRef.current.set(requestKey, requestId)
             updateApplicationInState(applicationId, (application) => ({
               ...application,
-              tasks: application.tasks.map((item) => item.id === task.id ? task : item),
+              tasks: application.tasks.map((task) => task.id === taskId ? { ...task, done } : task),
             }))
-          } catch (error) {
-            if (taskToggleRequestRef.current.get(requestKey) === requestId) replaceApplication(beforeToggle)
-            throw error
-          } finally {
-            if (taskToggleRequestRef.current.get(requestKey) === requestId) {
-              taskToggleRequestRef.current.delete(requestKey)
+            try {
+              const task = await phdApi.patchTask(activeSession.token, applicationId, taskId, { done })
+              if (taskToggleRequestRef.current.get(requestKey) !== requestId) return
+              updateApplicationInState(applicationId, (application) => ({
+                ...application,
+                tasks: application.tasks.map((item) => item.id === task.id ? task : item),
+              }))
+            } catch (error) {
+              if (taskToggleRequestRef.current.get(requestKey) === requestId) {
+                const previousDone = beforeToggle.tasks.find((task) => task.id === taskId)?.done ?? !done
+                updateApplicationInState(applicationId, (application) => ({
+                  ...application,
+                  tasks: application.tasks.map((task) => (
+                    task.id === taskId ? { ...task, done: previousDone } : task
+                  )),
+                }))
+              }
+              throw error
+            } finally {
+              if (taskToggleRequestRef.current.get(requestKey) === requestId) {
+                taskToggleRequestRef.current.delete(requestKey)
+              }
             }
-          }
+          })
         }}
         onPatchMaterialStatus={isTeamMode ? undefined : async (applicationId, materialId, status) => {
           const before = applications.find((application) => application.id === applicationId)
@@ -6677,17 +7153,19 @@ export default function App() {
             )),
           }
           if (connectivityUnavailable()) {
-            await saveApplication(nextApplication, i18nValue.tx('toast.materialUpdated', i18nValue.tx('toast.appSaved')))
+            await saveApplicationQuietly(nextApplication, i18nValue.tx('toast.materialUpdated', i18nValue.tx('toast.appSaved')))
             return
           }
-          updateApplicationInState(applicationId, () => nextApplication)
-          try {
-            const saved = await phdApi.updateApplication(activeSession.token, nextApplication, before)
-            replaceApplication(saved)
-          } catch (error) {
-            replaceApplication(before)
-            throw error
-          }
+          await runApplicationMutation(applicationId, async () => {
+            updateApplicationInState(applicationId, () => nextApplication)
+            try {
+              const saved = await phdApi.updateApplication(activeSession.token, nextApplication, before)
+              replaceApplication(saved)
+            } catch (error) {
+              replaceApplication(before)
+              throw error
+            }
+          })
         }}
         onToggleScholarshipTask={isTeamMode ? undefined : async (
           applicationId,
@@ -6711,17 +7189,19 @@ export default function App() {
             )),
           }
           if (connectivityUnavailable()) {
-            await saveApplication(nextApplication, i18nValue.tx('toast.taskUpdated'))
+            await saveApplicationQuietly(nextApplication, i18nValue.tx('toast.taskUpdated'))
             return
           }
-          updateApplicationInState(applicationId, () => nextApplication)
-          try {
-            const saved = await phdApi.updateApplication(activeSession.token, nextApplication, before)
-            replaceApplication(saved)
-          } catch (error) {
-            replaceApplication(before)
-            throw error
-          }
+          await runApplicationMutation(applicationId, async () => {
+            updateApplicationInState(applicationId, () => nextApplication)
+            try {
+              const saved = await phdApi.updateApplication(activeSession.token, nextApplication, before)
+              replaceApplication(saved)
+            } catch (error) {
+              replaceApplication(before)
+              throw error
+            }
+          })
         }}
         onPatchScholarshipMaterialStatus={isTeamMode ? undefined : async (
           applicationId,
@@ -6745,17 +7225,19 @@ export default function App() {
             )),
           }
           if (connectivityUnavailable()) {
-            await saveApplication(nextApplication, i18nValue.tx('toast.materialUpdated', i18nValue.tx('toast.appSaved')))
+            await saveApplicationQuietly(nextApplication, i18nValue.tx('toast.materialUpdated', i18nValue.tx('toast.appSaved')))
             return
           }
-          updateApplicationInState(applicationId, () => nextApplication)
-          try {
-            const saved = await phdApi.updateApplication(activeSession.token, nextApplication, before)
-            replaceApplication(saved)
-          } catch (error) {
-            replaceApplication(before)
-            throw error
-          }
+          await runApplicationMutation(applicationId, async () => {
+            updateApplicationInState(applicationId, () => nextApplication)
+            try {
+              const saved = await phdApi.updateApplication(activeSession.token, nextApplication, before)
+              replaceApplication(saved)
+            } catch (error) {
+              replaceApplication(before)
+              throw error
+            }
+          })
         }}
         onNew={canCreateInCurrentTeam ? () => openNewApplicationDialog(null) : undefined}
         guidanceTeam={isTeamStudentDashboard ? studentGuidanceTeam : undefined}
@@ -6805,22 +7287,7 @@ export default function App() {
           startTransition(() => setScreen('team'))
           setMobileDetailOpen(false)
         } : undefined}
-        onConfigureAiKeys={() => {
-          if (teamDiscoverScope && teamViewerRole === 'owner') {
-            runAnimatedScreenUpdate(() => {
-              setTeamSection('settings')
-              setScreen('team')
-              setMobileDetailOpen(false)
-            }, { scope: 'screen', direction: 'forward', readinessGate: screenReadinessGate(teamScreen) })
-          } else {
-            setFocusAiKeys(true)
-            runAnimatedScreenUpdate(() => {
-              setInterfaceMode('personal')
-              setScreen('settings')
-              setMobileDetailOpen(false)
-            }, { scope: 'screen', direction: 'forward', readinessGate: screenReadinessGate(settingsScreen) })
-          }
-        }}
+        onConfigureAiKeys={openAiKeyConfiguration}
         deferProgressiveReveal={deferScreenProgressiveReveal}
         realtimeConnected={realtimeUpdates.connected}
         realtimeRevision={discoverRealtimeRevision}
@@ -7054,12 +7521,17 @@ export default function App() {
         }
         onFetchMailNow={(patch) => syncMailbox('incremental', patch)}
         onSyncMailHistory={(patch) => syncMailbox('history', patch)}
-        onExport={(format) =>
+        exportApplicationCount={applications.length}
+        onExport={(format) => {
+          if (applications.length === 0) {
+            notify(i18nValue.tx('settings.noApplicationsToExport'), 'info')
+            return
+          }
           void run(async () => {
             const blob = await phdApi.downloadExport(activeSession.token, format, undefined, lang)
             downloadBlob(blob, `phd-applications-all.${format === 'excel' ? 'xls' : format}`)
           }, tpl(i18nValue.tx('toast.exported'), { format: format.toUpperCase() }))
-        }
+        }}
         onDeleteAccount={() =>
           setConfirmDialog({
             title: i18nValue.tx('settings.deleteAccount'),
@@ -7227,17 +7699,23 @@ export default function App() {
         onNewForStudent={isTeamMode && canCreateInCurrentTeam ? (studentId) => openNewApplicationDialog(studentId) : undefined}
         onPrefetch={prefetchDossierAssets}
         onStatusChange={(id, status) => {
-          const app = workspaceApplications.find((application) => application.id === id)
+          const app = workspaceApplicationById.get(id)
           if (!app || app.status === status) return
-          void saveApplication({ ...app, status }, i18nValue.tx('toast.statusUpdated', 'Status updated'))
+          void saveApplicationQuietly(
+            { ...currentApplicationDraft(app), status },
+            i18nValue.tx('toast.statusUpdated', 'Status updated'),
+          )
         }}
         onSelect={(id) => {
           selectApplication(id)
         }}
         onOpenInNewPage={(id) => openApplicationsInTabs([id])}
+        onOpenMany={openApplicationsInTabs}
         onExportApplication={isTeamMode ? undefined : (id) => exportSelectedApplications([id])}
+        onExportMany={isTeamMode ? undefined : exportSelectedApplications}
         onCopy={copyValue}
         onDeleteApplication={isTeamMode ? undefined : (id) => confirmDeleteApplications([id])}
+        onDeleteMany={isTeamMode ? undefined : confirmDeleteApplications}
       />
     ) : selected && !displayedDossierDraft ? (
       <DeferredPanel />
@@ -7282,7 +7760,14 @@ export default function App() {
           },
         )}
         onRegisterNavigationGuard={registerNavigationGuard}
-        onDraft={setDraftState}
+        autoSaveEnabled
+        onFlushAutoSave={flushApplicationAutoSave}
+        onDraft={(nextDraft, intent = 'settled') => {
+          setDraftState(nextDraft)
+          if (intent !== 'external') {
+            scheduleApplicationAutoSave(nextDraft, intent)
+          }
+        }}
         onCopy={copyValue}
         onResolveSchoolLogo={(input, options) => (
           resolveAndStoreSchoolLogo(displayedDossierApplication, input, options)
@@ -7302,10 +7787,7 @@ export default function App() {
         onCustomApplicationStatusesChange={(statuses) => updateUserSettings({
           customApplicationStatuses: statuses,
         })}
-        onSave={() => {
-          const latestDraft = draftRef.current
-          return latestDraft ? saveApplication(latestDraft, i18nValue.tx('toast.appSaved')) : undefined
-        }}
+        onSave={saveCurrentDraft}
         onDiscardDraft={discardDraft}
         onDelete={() =>
           setConfirmDialog({
@@ -7339,20 +7821,19 @@ export default function App() {
         }
         onShare={openShareDialog}
         onEnrich={() => {
-          if (isDraftDirty) {
-            notify(i18nValue.tx('dossier.enrichSaveFirst', 'Save or discard draft changes before enriching this application.'), 'warning')
-            return
-          }
-          void Promise.all([
-            preloadLanguage(lang, ['core', 'shared', 'discover']),
-            loadDiscoverApplicationEnrichmentDialog(),
-          ]).catch(() => undefined)
-          setDossierEnrichmentOpen(true)
+          void (async () => {
+            if (isDraftDirty && !await saveCurrentDraft()) return
+            await Promise.all([
+              preloadLanguage(lang, ['core', 'shared', 'discover']),
+              loadDiscoverApplicationEnrichmentDialog(),
+            ]).catch(() => undefined)
+            setDossierEnrichmentOpen(true)
+          })()
         }}
         onOpenUpgrade={openUpgradePage}
         onCloseApplication={() => runWithNavigationGuard(closeApplicationDetail)}
         onUpload={(file) =>
-          run(async () => {
+          runInteractiveApplicationMutation(selected.id, async () => {
             const material = await phdApi.addMaterial(activeSession.token, selected.id, {
               name: file?.name ?? i18nValue.tx('dossier.newMaterial'),
               type: file?.type || i18nValue.tx('dossier.file'),
@@ -7382,7 +7863,7 @@ export default function App() {
         }
         onPreview={(fileId) => phdApi.downloadFile(activeSession.token, fileId)}
         onUploadMaterialFiles={(materialId, files) =>
-          run(async () => {
+          runInteractiveApplicationMutation(selected.id, async () => {
             const material = await phdApi.uploadMaterialFiles(activeSession.token, selected.id, materialId, files)
             updateApplicationInState(selected.id, (application) => ({
               ...application,
@@ -7399,7 +7880,7 @@ export default function App() {
           }, i18nValue.tx('toast.materialUploaded'))
         }
         onRemoveMaterialFile={(materialId, fileId) =>
-          run(async () => {
+          runInteractiveApplicationMutation(selected.id, async () => {
             const material = await phdApi.removeMaterialFile(activeSession.token, selected.id, materialId, fileId)
             updateApplicationInState(selected.id, (application) => ({
               ...application,
@@ -7409,7 +7890,7 @@ export default function App() {
           }, i18nValue.tx('toast.attachmentRemoved'))
         }
         onRenameMaterialFile={(materialId, fileId, fileName) =>
-          run(async () => {
+          runInteractiveApplicationMutation(selected.id, async () => {
             const material = await phdApi.renameMaterialFile(activeSession.token, selected.id, materialId, fileId, fileName)
             updateApplicationInState(selected.id, (application) => ({
               ...application,
@@ -7418,7 +7899,7 @@ export default function App() {
           }, i18nValue.tx('toast.attachmentRenamed', i18nValue.tx('toast.materialUpdated', 'Attachment renamed')))
         }
         onUploadTaskFiles={(taskId, files) =>
-          run(async () => {
+          runInteractiveApplicationMutation(selected.id, async () => {
             const task = await phdApi.uploadTaskFiles(activeSession.token, selected.id, taskId, files)
             updateApplicationInState(selected.id, (application) => ({
               ...application,
@@ -7435,7 +7916,7 @@ export default function App() {
           }, i18nValue.tx('toast.taskUpdated'))
         }
         onRemoveTaskFile={(taskId, fileId) =>
-          run(async () => {
+          runInteractiveApplicationMutation(selected.id, async () => {
             const task = await phdApi.removeTaskFile(activeSession.token, selected.id, taskId, fileId)
             updateApplicationInState(selected.id, (application) => ({
               ...application,
@@ -7445,7 +7926,7 @@ export default function App() {
           }, i18nValue.tx('toast.attachmentRemoved'))
         }
         onRenameTaskFile={(taskId, fileId, fileName) =>
-          run(async () => {
+          runInteractiveApplicationMutation(selected.id, async () => {
             const task = await phdApi.renameTaskFile(activeSession.token, selected.id, taskId, fileId, fileName)
             updateApplicationInState(selected.id, (application) => ({
               ...application,
@@ -7455,46 +7936,46 @@ export default function App() {
         }
         onAddTask={(title, due, options) =>
           connectivityUnavailable()
-            ? void saveApplication({
-                ...selected,
+            ? void saveApplicationQuietly({
+                ...currentApplicationDraft(selected),
                 tasks: [{
                   id: `task-${Date.now()}`,
                   title,
                   due,
                   done: false,
                   ...options,
-                }, ...selected.tasks],
+                }, ...currentApplicationDraft(selected).tasks],
               }, i18nValue.tx('toast.taskAdded'))
-            : void run(async () => {
+            : void runApplicationMutation(selected.id, async () => {
             if (!title.trim()) throw new Error(i18nValue.tx('toast.taskTitleRequired'))
             const task = await phdApi.addTask(activeSession.token, selected.id, { title, due, done: false, ...options })
             updateApplicationInState(selected.id, (application) => ({
               ...application,
               tasks: [task, ...application.tasks],
             }))
-          }, i18nValue.tx('toast.taskAdded'))
+          })
         }
         onUpdateTask={(taskId, patch) =>
           connectivityUnavailable()
-            ? void saveApplication({
-                ...selected,
-                tasks: selected.tasks.map((task) => task.id === taskId ? { ...task, ...patch } : task),
+            ? void saveApplicationQuietly({
+                ...currentApplicationDraft(selected),
+                tasks: currentApplicationDraft(selected).tasks.map((task) => task.id === taskId ? { ...task, ...patch } : task),
               }, i18nValue.tx('toast.taskUpdated'))
-            : void run(async () => {
+            : void runApplicationMutation(selected.id, async () => {
             const task = await phdApi.patchTask(activeSession.token, selected.id, taskId, patch)
             updateApplicationInState(selected.id, (application) => ({
               ...application,
               tasks: application.tasks.map((item) => (item.id === task.id ? task : item)),
             }))
-          }, i18nValue.tx('toast.taskUpdated'))
+          })
         }
         onToggleTask={(taskId, done) =>
           connectivityUnavailable()
-            ? void saveApplication({
-                ...selected,
-                tasks: selected.tasks.map((task) => task.id === taskId ? { ...task, done } : task),
+            ? void saveApplicationQuietly({
+                ...currentApplicationDraft(selected),
+                tasks: currentApplicationDraft(selected).tasks.map((task) => task.id === taskId ? { ...task, done } : task),
               }, i18nValue.tx('toast.taskUpdated'))
-            : void run(async () => {
+            : void runApplicationMutation(selected.id, async () => {
             const beforeToggle = selected
             const requestKey = `${selected.id}:${taskId}`
             const requestId = (taskToggleRequestRef.current.get(requestKey) ?? 0) + 1
@@ -7513,7 +7994,15 @@ export default function App() {
                 tasks: application.tasks.map((item) => (item.id === task.id ? task : item)),
               }))
             } catch (error) {
-              if (taskToggleRequestRef.current.get(requestKey) === requestId) replaceApplication(beforeToggle)
+              if (taskToggleRequestRef.current.get(requestKey) === requestId) {
+                const previousDone = beforeToggle.tasks.find((task) => task.id === taskId)?.done ?? !done
+                updateApplicationInState(selected.id, (application) => ({
+                  ...application,
+                  tasks: application.tasks.map((task) => (
+                    task.id === taskId ? { ...task, done: previousDone } : task
+                  )),
+                }))
+              }
               throw error
             } finally {
               if (taskToggleRequestRef.current.get(requestKey) === requestId) {
@@ -7523,36 +8012,46 @@ export default function App() {
           })
         }
         onRemoveTask={(taskId) =>
-          void saveApplication(
-            { ...selected, tasks: selected.tasks.filter((t) => t.id !== taskId) },
+          void saveApplicationQuietly(
+            {
+              ...currentApplicationDraft(selected),
+              tasks: currentApplicationDraft(selected).tasks.filter((t) => t.id !== taskId),
+            },
             i18nValue.tx('toast.taskRemoved'),
           )
         }
         onRemoveTasks={(taskIds) =>
-          void saveApplication(
-            { ...selected, tasks: selected.tasks.filter((task) => !taskIds.includes(task.id)) },
+          void saveApplicationQuietly(
+            {
+              ...currentApplicationDraft(selected),
+              tasks: currentApplicationDraft(selected).tasks.filter((task) => !taskIds.includes(task.id)),
+            },
             i18nValue.tx('toast.taskRemoved'),
           )
         }
-        onAddCommunication={(input: CommunicationInput) => {
+        onAddCommunication={async (input: CommunicationInput) => {
           const offlineCommunication = createOfflineCommunication(input)
           if (connectivityUnavailable() && offlineCommunication) {
-            return saveApplication({
-              ...selected,
-              communications: [offlineCommunication, ...selected.communications],
+            const source = currentApplicationDraft(selected)
+            const result = await saveApplicationQuietly({
+              ...source,
+              communications: [offlineCommunication, ...source.communications],
             }, i18nValue.tx('toast.commAdded'))
+            return result.status === 'saved' || result.status === 'queued'
           }
-          return run(async () => {
+          const saved = await runApplicationMutation(selected.id, async () => {
             if (!input.subject.trim() || !input.summary.trim()) throw new Error(i18nValue.tx('toast.subjectSummaryRequired'))
             const communication = await phdApi.addCommunication(activeSession.token, selected.id, input)
             updateApplicationInState(selected.id, (application) => ({
               ...application,
               communications: [communication, ...application.communications],
             }))
-          }, i18nValue.tx('toast.commAdded'))
+            return true
+          })
+          return saved === true
         }}
-        onUpdateCommunication={(id, input) =>
-          run(async () => {
+        onUpdateCommunication={async (id, input) => {
+          const saved = await runApplicationMutation(selected.id, async () => {
             if (input.subject !== undefined && !input.subject.trim()) throw new Error(i18nValue.tx('toast.subjectSummaryRequired'))
             if (input.summary !== undefined && !input.summary.trim()) throw new Error(i18nValue.tx('toast.subjectSummaryRequired'))
             const communication = await phdApi.updateCommunication(activeSession.token, selected.id, id, input)
@@ -7560,167 +8059,218 @@ export default function App() {
               ...application,
               communications: application.communications.map((item) => (item.id === communication.id ? communication : item)),
             }))
-          }, i18nValue.tx('toast.commUpdated'))
-        }
+            return true
+          })
+          return saved === true
+        }}
         onSendCommunication={async (input) => {
           setBusy(true)
           try {
-            const result = await phdApi.sendCommunication(activeSession.token, selected.id, input)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              communications: [result.communication, ...application.communications],
-            }))
-            notify(
-              result.delivery.sent
-                ? i18nValue.tx('toast.commSent')
-                : i18nValue.tx('toast.commQueued'),
-              result.delivery.sent ? 'success' : 'info',
-            )
-            return true
-          } catch (error) {
-            if (!isAuthExpired(error)) {
-              notify(normalizeError(error, languageRef.current), 'error')
-            }
-            return false
+            const sent = await runApplicationMutation(selected.id, async () => {
+              const result = await phdApi.sendCommunication(activeSession.token, selected.id, input)
+              updateApplicationInState(selected.id, (application) => ({
+                ...application,
+                professor: {
+                  ...application.professor,
+                  correspondenceEmails: Array.isArray(result.correspondenceEmails)
+                    ? result.correspondenceEmails
+                    : application.professor.correspondenceEmails,
+                },
+                communications: [
+                  result.communication,
+                  ...application.communications.filter((item) => item.id !== result.communication.id),
+                ],
+              }))
+              notify(
+                result.delivery.sent
+                  ? i18nValue.tx('toast.commSent')
+                  : i18nValue.tx('toast.commQueued'),
+                result.delivery.sent ? 'success' : 'info',
+              )
+              return true
+            })
+            return sent === true
           } finally {
             setBusy(false)
           }
         }}
         onRemoveCommunication={(id) =>
-          void saveApplication(
-            { ...selected, communications: selected.communications.filter((c) => c.id !== id) },
+          void saveApplicationQuietly(
+            {
+              ...currentApplicationDraft(selected),
+              communications: currentApplicationDraft(selected).communications.filter((c) => c.id !== id),
+            },
             i18nValue.tx('toast.commRemoved'),
           )
         }
         onRemoveCommunications={(ids) =>
-          void saveApplication(
-            { ...selected, communications: selected.communications.filter((item) => !ids.includes(item.id)) },
+          void saveApplicationQuietly(
+            {
+              ...currentApplicationDraft(selected),
+              communications: currentApplicationDraft(selected).communications.filter((item) => !ids.includes(item.id)),
+            },
             i18nValue.tx('toast.commRemoved'),
           )
         }
-        onAddScholarship={(input) =>
-          connectivityUnavailable()
-            ? void saveApplication({
-                ...selected,
-                scholarships: [...selected.scholarships, { id: `sch-${Date.now()}`, ...input }],
-              }, i18nValue.tx('toast.scholarshipAdded'))
-            : void run(async () => {
+        onAddScholarship={async (input) => {
+          if (connectivityUnavailable()) {
+            const source = currentApplicationDraft(selected)
+            const result = await saveApplicationQuietly({
+              ...source,
+              scholarships: [...source.scholarships, { id: `sch-${Date.now()}`, ...input }],
+            }, i18nValue.tx('toast.scholarshipAdded'))
+            return result.status === 'saved' || result.status === 'queued'
+          }
+          const saved = await runApplicationMutation(selected.id, async () => {
             if (!input.name.trim()) throw new Error(i18nValue.tx('toast.scholarshipRequired'))
             const scholarship = await phdApi.addScholarship(activeSession.token, selected.id, input)
             updateApplicationInState(selected.id, (application) => ({
               ...application,
               scholarships: [...application.scholarships, scholarship],
             }))
-          }, i18nValue.tx('toast.scholarshipAdded'))
-        }
-        onUpdateScholarship={(id, input) =>
-          saveApplication(
+            return true
+          })
+          return saved === true
+        }}
+        onUpdateScholarship={async (id, input) => {
+          const source = currentApplicationDraft(selected)
+          const result = await saveApplicationQuietly(
             {
-              ...selected,
-              scholarships: selected.scholarships.map((scholarship) =>
+              ...source,
+              scholarships: source.scholarships.map((scholarship) =>
                 scholarship.id === id ? { id, ...input } : scholarship,
               ),
             },
             i18nValue.tx('toast.scholarshipUpdated'),
           )
-        }
+          return result.status === 'saved' || result.status === 'queued'
+        }}
         onRemoveScholarship={(id) =>
-          void saveApplication(
-            { ...selected, scholarships: selected.scholarships.filter((s) => s.id !== id) },
+          void saveApplicationQuietly(
+            {
+              ...currentApplicationDraft(selected),
+              scholarships: currentApplicationDraft(selected).scholarships.filter((s) => s.id !== id),
+            },
             i18nValue.tx('toast.scholarshipRemoved'),
           )
         }
         onRemoveScholarships={(ids) =>
-          void saveApplication(
-            { ...selected, scholarships: selected.scholarships.filter((item) => !ids.includes(item.id)) },
+          void saveApplicationQuietly(
+            {
+              ...currentApplicationDraft(selected),
+              scholarships: currentApplicationDraft(selected).scholarships.filter((item) => !ids.includes(item.id)),
+            },
             i18nValue.tx('toast.scholarshipRemoved'),
           )
         }
-        onAddFee={(input) =>
-          connectivityUnavailable()
-            ? void saveApplication({
-                ...selected,
-                fees: [...(selected.fees ?? []), {
+        onAddFee={async (input) => {
+          if (connectivityUnavailable()) {
+            const source = currentApplicationDraft(selected)
+            const result = await saveApplicationQuietly({
+              ...source,
+              fees: [...(source.fees ?? []), {
                   id: `fee-${Date.now()}`,
                   ...input,
                   paidDate: input.paidDate ?? null,
                   createdAt: new Date().toISOString(),
                 }],
-              }, i18nValue.tx('toast.feeAdded'))
-            : void run(async () => {
+            }, i18nValue.tx('toast.feeAdded'))
+            return result.status === 'saved' || result.status === 'queued'
+          }
+          const saved = await runApplicationMutation(selected.id, async () => {
             const fee = await phdApi.addFee(activeSession.token, selected.id, input)
             updateApplicationInState(selected.id, (application) => ({
               ...application,
               fees: [...(application.fees ?? []), fee],
             }))
-          }, i18nValue.tx('toast.feeAdded'))
-        }
-        onUpdateFee={(feeId, patch) =>
-          connectivityUnavailable()
-            ? void saveApplication({
-                ...selected,
-                fees: (selected.fees ?? []).map((fee) => fee.id === feeId ? { ...fee, ...patch } : fee),
-              }, i18nValue.tx('toast.feeUpdated'))
-            : void run(async () => {
+            return true
+          })
+          return saved === true
+        }}
+        onUpdateFee={async (feeId, patch) => {
+          if (connectivityUnavailable()) {
+            const source = currentApplicationDraft(selected)
+            const result = await saveApplicationQuietly({
+              ...source,
+              fees: (source.fees ?? []).map((fee) => fee.id === feeId ? { ...fee, ...patch } : fee),
+            }, i18nValue.tx('toast.feeUpdated'))
+            return result.status === 'saved' || result.status === 'queued'
+          }
+          const saved = await runApplicationMutation(selected.id, async () => {
             await phdApi.updateFee(activeSession.token, selected.id, feeId, patch)
             updateApplicationInState(selected.id, (application) => ({
               ...application,
               fees: (application.fees ?? []).map((f) => f.id === feeId ? { ...f, ...patch } : f),
             }))
-          }, i18nValue.tx('toast.feeUpdated'))
-        }
+            return true
+          })
+          return saved === true
+        }}
         onDeleteFee={(feeId) =>
           connectivityUnavailable()
-            ? saveApplication({
-                ...selected,
-                fees: (selected.fees ?? []).filter((fee) => fee.id !== feeId),
-              }, i18nValue.tx('toast.feeRemoved'))
-            : runInteractive(async () => {
-            await phdApi.deleteFee(activeSession.token, selected.id, feeId)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              fees: (application.fees ?? []).filter((f) => f.id !== feeId),
-            }))
-          }, i18nValue.tx('toast.feeRemoved'))
+            ? saveApplicationQuietly({
+                ...currentApplicationDraft(selected),
+                fees: (currentApplicationDraft(selected).fees ?? []).filter((fee) => fee.id !== feeId),
+              }, i18nValue.tx('toast.feeRemoved')).then(() => undefined)
+            : runApplicationMutation(selected.id, async () => {
+                await phdApi.deleteFee(activeSession.token, selected.id, feeId)
+                updateApplicationInState(selected.id, (application) => ({
+                  ...application,
+                  fees: (application.fees ?? []).filter((f) => f.id !== feeId),
+                }))
+              }).then(() => undefined)
         }
-        onAddTimelineEvent={(title, date, note) =>
-          void run(async () => {
-            if (!title.trim()) throw new Error(i18nValue.tx('toast.eventTitleRequired'))
-            await saveApplication(
-              {
-                ...selected,
-                timeline: [
-                  ...selected.timeline,
-                  { id: `tl-${Date.now()}`, title, date, note },
-                ],
-              },
-              i18nValue.tx('toast.timelineAdded'),
-            )
-          })
-        }
-        onUpdateTimelineEvent={(id, title, date, note) =>
-          void run(async () => {
-            if (!title.trim()) throw new Error(i18nValue.tx('toast.eventTitleRequired'))
-            await saveApplication(
-              {
-                ...selected,
-                timeline: selected.timeline.map((e) =>
-                  e.id === id ? { ...e, title, date, note } : e,
-                ),
-              },
-              i18nValue.tx('toast.timelineUpdated'),
-            )
-          })
-        }
+        onAddTimelineEvent={async (title, date, note) => {
+          if (!title.trim()) {
+            await runApplicationMutation(selected.id, async () => {
+              throw new Error(i18nValue.tx('toast.eventTitleRequired'))
+            })
+            return false
+          }
+          const source = currentApplicationDraft(selected)
+          const result = await saveApplicationQuietly(
+            {
+              ...source,
+              timeline: [...source.timeline, { id: `tl-${Date.now()}`, title, date, note }],
+            },
+            i18nValue.tx('toast.timelineAdded'),
+          )
+          return result.status === 'saved' || result.status === 'queued'
+        }}
+        onUpdateTimelineEvent={async (id, title, date, note) => {
+          if (!title.trim()) {
+            await runApplicationMutation(selected.id, async () => {
+              throw new Error(i18nValue.tx('toast.eventTitleRequired'))
+            })
+            return false
+          }
+          const source = currentApplicationDraft(selected)
+          const result = await saveApplicationQuietly(
+            {
+              ...source,
+              timeline: source.timeline.map((event) => (
+                event.id === id ? { ...event, title, date, note } : event
+              )),
+            },
+            i18nValue.tx('toast.timelineUpdated'),
+          )
+          return result.status === 'saved' || result.status === 'queued'
+        }}
         onRemoveTimelineEvent={(id) =>
-          void saveApplication(
-            { ...selected, timeline: selected.timeline.filter((e) => e.id !== id) },
+          void saveApplicationQuietly(
+            {
+              ...currentApplicationDraft(selected),
+              timeline: currentApplicationDraft(selected).timeline.filter((e) => e.id !== id),
+            },
             i18nValue.tx('toast.timelineRemoved'),
           )
         }
         onRemoveTimelineEvents={(ids) =>
-          void saveApplication(
-            { ...selected, timeline: selected.timeline.filter((event) => !ids.includes(event.id)) },
+          void saveApplicationQuietly(
+            {
+              ...currentApplicationDraft(selected),
+              timeline: currentApplicationDraft(selected).timeline.filter((event) => !ids.includes(event.id)),
+            },
             i18nValue.tx('toast.timelineRemoved'),
           )
         }
@@ -7824,6 +8374,7 @@ export default function App() {
         <GlobalOverflowReveal />
         <LoadingCurtain
           loading={!applicationsLoaded || !shellPaintReady || !i18nValue.ready || Boolean(workspaceHandoff)}
+          preserveMobileRail={applicationsLoaded && Boolean(workspaceHandoff)}
           delayMs={!applicationsLoaded || !shellPaintReady || !i18nValue.ready ? 0 : 90}
           message={(() => {
             // Prefer raw interfaceMode during boot — team role isn't known until data loads.
@@ -7873,8 +8424,7 @@ export default function App() {
         syncing={syncingOffline}
         updateReady={pwaUpdateReady}
         onRetry={() => { void retryOfflineConnection() }}
-        onReviewBlocked={reviewBlockedOfflineChange}
-        onInstallUpdate={requestPwaUpdateInstall}
+        onInstallUpdate={() => { void requestPwaUpdateInstall() }}
         onToggleOffline={toggleManualOffline}
         tx={i18nValue.tx}
       />
@@ -8055,8 +8605,6 @@ export default function App() {
         <WorkspaceLayoutToolbar
           applicationsHidden={workspaceLayout.applicationsHidden}
           inspectorHidden={workspaceLayout.inspectorHidden}
-          isDirty={isDraftDirty}
-          saving={saving}
           tx={i18nValue.tx}
           viewMode={viewMode}
           showViewModeToggle={canUseWorkspaceBoard}
@@ -8066,11 +8614,6 @@ export default function App() {
             setWorkspaceLayout((current) => ({ ...current, sidebarsSwapped: !current.sidebarsSwapped }))
           }
           onReset={() => setWorkspaceLayout(defaultWorkspaceLayout)}
-          onSave={() => {
-            const latestDraft = draftRef.current
-            if (latestDraft) void saveApplication(latestDraft, i18nValue.tx('toast.appSaved'))
-          }}
-          onDiscard={function() { setPendingDiscard(true) }}
           onViewModeChange={(nextMode) => {
             if (nextMode === 'kanban') {
               runWithNavigationGuard(() => changeViewMode(nextMode))
@@ -8080,6 +8623,12 @@ export default function App() {
           }}
         />
       ) : null}
+
+      <ApplicationSaveIndicator
+        status={applicationSaveStatus}
+        tx={i18nValue.tx}
+        onRetry={() => { void retryApplicationAutoSave() }}
+      />
 
       {screen === 'workspace' ? (
         <Suspense fallback={<DeferredAside kind="applications" className="application-pane" style={applicationPaneStyle} />}>
@@ -8111,7 +8660,12 @@ export default function App() {
           onSort={setSort}
           onPrefetch={prefetchDossierAssets}
           onResolveMissingSchoolLogo={(application) => (
-            resolveAndStoreSchoolLogo(application, { website: application.school.website }, { silent: true })
+            resolveAndStoreSchoolLogo(application, {
+              auto: true,
+              ...(application.school.website.trim()
+                ? { website: application.school.website.trim() }
+                : {}),
+            }, { silent: true })
           )}
           onSelect={(id) => {
             if (id === selected?.id) {
@@ -8134,6 +8688,7 @@ export default function App() {
           onNew={canCreateInCurrentTeam ? () => openNewApplicationDialog(null) : undefined}
           onUpgrade={() => openUpgradePage('application-limit', String(applicationLimitUsageCount + 1), String(isProUser ? applicationLimit : applicationCreateLimit))}
           onShowBoard={canUseWorkspaceBoard ? () => runWithNavigationGuard(openWorkspaceBoard) : undefined}
+          boardActive={viewMode === 'kanban'}
           onOpenMany={isTeamMode ? undefined : openApplicationsInTabs}
           onExportMany={isTeamMode ? undefined : exportSelectedApplications}
           onRestoreTrash={restoreTrashItem}
@@ -8209,7 +8764,7 @@ export default function App() {
       {screen === 'workspace' && !compactWorkspaceViewport ? (
         <Suspense fallback={<DeferredAside kind="inspector" className="inspector-pane workspace-deferred-inspector" style={inspectorPaneStyle} />}>
         <Inspector
-          application={viewMode === 'kanban' ? null : activeDraft ?? selected}
+          application={deferredInspectorApplication}
           backups={selectedBackups}
           removingBackupFileNames={removingBackupFileNames}
           busy={busy}
@@ -8465,6 +9020,7 @@ export default function App() {
             token={activeSession.token}
             application={selected}
             aiKeys={aiKeys}
+            onConfigureAiKeys={openAiKeyConfiguration}
             onApplied={replaceApplication}
             onNotify={notify}
             onClose={() => setDossierEnrichmentOpen(false)}
@@ -8501,16 +9057,6 @@ export default function App() {
         variant={confirmDialog?.variant}
         onConfirm={() => confirmDialog?.onConfirm()}
         onCancel={() => setConfirmDialog(null)}
-      />
-
-      <ConfirmDialog
-        open={pendingDiscard}
-        title={i18nValue.tx('dossier.discardChanges')}
-        message={i18nValue.tx('confirmDiscardChanges')}
-        confirmLabel={i18nValue.tx('dossier.discardChanges')}
-        variant="danger"
-        onConfirm={() => { setPendingDiscard(false); discardDraft() }}
-        onCancel={() => setPendingDiscard(false)}
       />
 
       {notificationCenterOpen ? (

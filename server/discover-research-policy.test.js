@@ -3,6 +3,7 @@ import {
   collectFinalFetchedEvidenceUrls,
   collectPhaseEvidenceUrls,
   createAiKeyRoundRobin,
+  compactScholarlyEvidenceForAgent,
   dedupeDiscoverPrograms,
   DISCOVER_AGENT_BATCH_SIZES,
   discoverAdvisorAgentMaxTokens,
@@ -86,15 +87,34 @@ describe('Discover multi-agent research policy', () => {
   })
 
   it('keeps 145-school adapter coverage independent from per-run crawl size', () => {
-    expect(discoverResearchCrawlLimit(145, 5)).toBe(24)
-    expect(discoverResearchCrawlLimit(145, 20)).toBe(60)
-    expect(discoverResearchCrawlLimit(145, 100)).toBe(72)
+    expect(discoverResearchCrawlLimit(145, 5)).toBe(32)
+    expect(discoverResearchCrawlLimit(145, 20)).toBe(80)
+    expect(discoverResearchCrawlLimit(145, 100)).toBe(96)
     expect(discoverResearchCrawlLimit(12, 20)).toBe(12)
   })
 
   it('round-robins multiple saved AI keys across independent agent batches', () => {
     const next = createAiKeyRoundRobin([{ id: 'k1' }, { id: 'k2' }])
     expect([next().id, next().id, next().id, next().id]).toEqual(['k1', 'k2', 'k1', 'k2'])
+  })
+
+  it('keeps the broad scholarly pool while bounding each AI agent payload', () => {
+    const evidence = {
+      provider: 'openalex+ror+crossref',
+      status: 'ok',
+      candidateResearchers: Array.from({ length: 120 }, (_, index) => ({
+        name: `Researcher ${index}`,
+        matchedQueries: Array.from({ length: 12 }, (__, queryIndex) => `query-${queryIndex}`),
+        recentWorks: Array.from({ length: 6 }, (__, workIndex) => ({ title: `Work ${workIndex}` })),
+        internalOnly: 'discard',
+      })),
+    }
+
+    const compact = compactScholarlyEvidenceForAgent(evidence, 6)
+    expect(compact.candidateResearchers).toHaveLength(36)
+    expect(compact.candidateResearchers[0].matchedQueries).toHaveLength(8)
+    expect(compact.candidateResearchers[0].recentWorks).toHaveLength(3)
+    expect(compact.candidateResearchers[0]).not.toHaveProperty('internalOnly')
   })
 
   it('gives each programme its own advisor task and scales the output budget to the requested PI count', () => {

@@ -62,7 +62,13 @@
   --inline-test-form-width: 316px;
   position: relative;
   display: block;
-  width: min(var(--inline-test-idle-width), 100%);
+  /* Keep an explicit intrinsic width for flex parents. A percentage inside
+     min() is cyclic while the action row is measuring its max-content width,
+     so the row can otherwise size itself from the save button alone and let
+     this control paint past the clipped mail-card edge. */
+  flex: 0 0 auto;
+  width: var(--inline-test-idle-width);
+  max-width: 100%;
   min-width: 0;
   min-height: 34px;
   transition: width 320ms var(--ease-out);

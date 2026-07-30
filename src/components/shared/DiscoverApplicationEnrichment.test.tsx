@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { phdApi } from '../../api/phdApi'
+import type { AiKey } from '../../api/phdApi'
 import { applications } from '../../data/applications'
 import type { DiscoverApplicationEnrichmentProposal } from '../../data/discover'
 import { DiscoverApplicationEnrichment } from './DiscoverApplicationEnrichment'
@@ -52,6 +53,22 @@ const proposal: DiscoverApplicationEnrichmentProposal = {
   payload: {},
 }
 
+const aiKey: AiKey = {
+  id: 'key-1',
+  ownerId: 'user-1',
+  teamId: null,
+  scope: 'personal',
+  provider: 'openai',
+  label: 'Research key',
+  model: 'gpt-5',
+  baseUrl: 'https://api.openai.com/v1',
+  createdAt: '2026-07-18T12:00:00.000Z',
+  updatedAt: '2026-07-18T12:00:00.000Z',
+  lastUsedAt: null,
+  usage: { calls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, resetAt: null },
+  secretSet: true,
+}
+
 describe('DiscoverApplicationEnrichment', () => {
   it('keeps replacements collapsed and applies only reviewed defaults', async () => {
     vi.mocked(phdApi.previewDiscoverApplicationEnrichment).mockResolvedValue(proposal)
@@ -62,13 +79,18 @@ describe('DiscoverApplicationEnrichment', () => {
       <DiscoverApplicationEnrichment
         token="token"
         applications={[applications[0]]}
-        aiKeys={[]}
+        aiKeys={[aiKey]}
         onApplied={onApplied}
         onNotify={vi.fn()}
       />,
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Preview changes' }))
+    await waitFor(() => expect(phdApi.previewDiscoverApplicationEnrichment).toHaveBeenCalledWith(
+      'token',
+      applications[0].id,
+      { useAi: true, keyId: 'key-1' },
+    ))
     expect(await screen.findByText('Suggested additions')).toBeTruthy()
     expect(screen.getByText('1 changes selected')).toBeTruthy()
     expect(screen.queryByText('This replaces an existing value and is left unselected.')).toBeNull()
@@ -84,5 +106,23 @@ describe('DiscoverApplicationEnrichment', () => {
       proposal,
       ['discover-dossier'],
     )
+  })
+
+  it('blocks preview and routes to AI key settings when no saved key is available', () => {
+    const onConfigureAiKeys = vi.fn()
+    render(
+      <DiscoverApplicationEnrichment
+        token="token"
+        applications={[applications[0]]}
+        aiKeys={[{ ...aiKey, id: 'unusable-key', secretSet: false }]}
+        onConfigureAiKeys={onConfigureAiKeys}
+        onApplied={vi.fn()}
+        onNotify={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Preview changes' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Configure AI key' }))
+    expect(onConfigureAiKeys).toHaveBeenCalledOnce()
   })
 })

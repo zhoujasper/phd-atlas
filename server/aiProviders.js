@@ -1,3 +1,7 @@
+import { AbortDeadlineError, withAbortDeadline } from './abortDeadline.js'
+import { OutboundNetworkPolicyError } from './outboundNetworkPolicy.js'
+import { pinnedHttpsFetch } from './pinnedHttpsFetch.js'
+
 const PROVIDER_DEFAULTS = {
   openai: {
     baseUrl: 'https://api.openai.com/v1',
@@ -228,65 +232,155 @@ function providerHttpError(status) {
 }
 
 async function fetchProvider(url, options, signal, timeoutMs = 90_000) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  const abort = () => controller.abort()
-  signal?.addEventListener('abort', abort, { once: true })
   try {
-    const response = await fetch(url, { ...options, signal: controller.signal })
+    const response = await withAbortDeadline(
+      (deadlineSignal) => (
+        process.env.NODE_ENV === 'production'
+          ? pinnedHttpsFetch(url, { ...options, signal: deadlineSignal })
+          : fetch(url, { ...options, redirect: 'error', signal: deadlineSignal })
+      ),
+      { signal, timeoutMs },
+    )
     if (!response.ok) {
       throw providerHttpError(response.status)
     }
     return response
   } catch (error) {
     if (error instanceof AiProviderError) throw error
-    if (error?.name === 'AbortError') throw new AiProviderError('PROVIDER_TIMEOUT', 'The AI provider took too long to respond.')
+    if (error instanceof OutboundNetworkPolicyError || error?.code === 'INVALID_OUTBOUND_URL') {
+      throw new AiProviderError(
+        'INVALID_BASE_URL',
+        'The provider URL must resolve only to a public HTTPS endpoint.',
+      )
+    }
+    if (
+      error instanceof AbortDeadlineError
+      || signal?.aborted
+      || error?.name === 'AbortError'
+    ) {
+      throw new AiProviderError('PROVIDER_TIMEOUT', 'The AI provider took too long to respond.')
+    }
     throw new AiProviderError('PROVIDER_UNAVAILABLE', 'The AI provider could not be reached.')
-  } finally {
-    clearTimeout(timer)
-    signal?.removeEventListener('abort', abort)
   }
 }
 
-function openAiTools(attachmentCandidates = []) {
-  const tools = [{
-    type: 'function',
-    function: {
-      name: 'get_granted_application_context',
-      description: 'Read the applicant data the user explicitly allowed for this editable email draft, including eligible files that may be attached. Call this before drafting if more details are needed.',
-      parameters: {
-        type: 'object',
-        properties: { reason: { type: 'string', maxLength: 240 } },
-        required: [],
-        additionalProperties: false,
-      },
+function safeFileExtension(fileName) {
+  const leaf = String(fileName ?? '').split(/[\\/]/).at(-1) ?? ''
+  const dot = leaf.lastIndexOf('.')
+  if (dot <= 0 || dot === leaf.length - 1) return ''
+  const extension = leaf.slice(dot)
+  return /^\.[a-z0-9]{1,16}$/i.test(extension) ? extension : ''
+}
+
+function safeFileNameLeaf(value) {
+  const normalized = String(value ?? '').normalize('NFKC').trim()
+  const leaf = normalized.split(/[\\/]/).filter(Boolean).at(-1) ?? ''
+  const printable = Array.from(leaf, (character) => {
+    const code = character.charCodeAt(0)
+    return code <= 31 || code === 127 || '<>:"|?*'.includes(character) ? ' ' : character
+  }).join('')
+  return printable
+    .replace(/\s+/g, ' ')
+    .replace(/^\.+|\.+$/g, '')
+    .trim()
+}
+
+/** Keep model-proposed display names safe while preserving the file's true extension. */
+export function sanitizeAiAttachmentFileName(proposedName, originalName = 'attachment') {
+  const extension = safeFileExtension(originalName)
+  const cleanOriginal = safeFileNameLeaf(originalName) || 'attachment'
+  const cleanProposed = safeFileNameLeaf(proposedName)
+  let stem = cleanProposed || cleanOriginal
+  if (extension) {
+    const proposedExtension = safeFileExtension(stem)
+    if (proposedExtension) stem = stem.slice(0, -proposedExtension.length)
+    stem = stem.replace(/\.+$/g, '').trim()
+    if (!stem) stem = cleanOriginal.slice(0, -extension.length).replace(/\.+$/g, '').trim() || 'attachment'
+  }
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem)) stem = `attachment-${stem}`
+  const maxStemLength = Math.max(1, 180 - extension.length)
+  stem = stem.slice(0, maxStemLength).trim().replace(/\.+$/g, '') || 'attachment'
+  return `${stem}${extension}`
+}
+
+function aiDraftToolDefinitions(attachmentCandidates = []) {
+  const definitions = [{
+    name: 'get_granted_application_context',
+    description: 'Read the applicant data the user explicitly allowed for this editable email draft, including eligible files that may be attached. Call this before drafting if more details are needed.',
+    parameters: {
+      type: 'object',
+      properties: { reason: { type: 'string', maxLength: 240 } },
+      required: [],
+      additionalProperties: false,
     },
   }]
-  if (attachmentCandidates.length === 0) return tools
+  if (attachmentCandidates.length === 0) return definitions
   const candidateSummary = attachmentCandidates
     .slice(0, 80)
-    .map((candidate) => `${candidate.name} [${candidate.id}]`)
+    .map((candidate) => `${candidate.name} [${candidate.id}; source=${candidate.source ?? 'enabled-source'}]`)
     .join('; ')
-  tools.push({
-    type: 'function',
-    function: {
-      name: 'select_email_attachments',
-      description: `Add one or more suitable saved files to the editable email draft. This never sends an email. Only use candidate ids that were explicitly provided. Available candidates: ${candidateSummary}`,
-      parameters: {
-        type: 'object',
-        properties: {
-          attachmentIds: {
-            type: 'array',
-            items: { type: 'string', enum: attachmentCandidates.map((candidate) => candidate.id) },
-            maxItems: Math.min(20, attachmentCandidates.length),
+  definitions.push({
+    name: 'select_email_attachments',
+    description: `Set the complete saved-file attachment plan for the editable email draft. Choose only genuinely useful files, give each a clear recipient-facing filename, and call once even when the list is empty. This never sends email. Only use ids explicitly provided here. Available candidates: ${candidateSummary}`,
+    parameters: {
+      type: 'object',
+      properties: {
+        attachments: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              attachmentId: { type: 'string', enum: attachmentCandidates.map((candidate) => candidate.id) },
+              fileName: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 180,
+                description: 'Concise recipient-facing filename. Use the real file type; the server enforces the original extension.',
+              },
+            },
+            required: ['attachmentId', 'fileName'],
+            additionalProperties: false,
           },
+          maxItems: Math.min(20, attachmentCandidates.length),
         },
-        required: ['attachmentIds'],
-        additionalProperties: false,
       },
+      required: ['attachments'],
+      additionalProperties: false,
     },
   })
-  return tools
+  return definitions
+}
+
+function attachmentPlanFromToolInput(input, attachmentCandidates) {
+  let requestedAttachments = []
+  if (Array.isArray(input?.attachments)) {
+    requestedAttachments = input.attachments
+  } else if (Array.isArray(input?.attachmentIds)) {
+    // Tolerate an older OpenAI-compatible gateway replaying the previous
+    // schema while every new request advertises the complete plan.
+    requestedAttachments = input.attachmentIds.map((attachmentId) => ({ attachmentId }))
+  }
+  const candidateById = new Map(attachmentCandidates.map((candidate) => [candidate.id, candidate]))
+  const selectedAttachments = []
+  const selectedIds = new Set()
+  for (const requested of requestedAttachments) {
+    const attachmentId = String(requested?.attachmentId ?? '')
+    const candidate = candidateById.get(attachmentId)
+    if (!candidate || selectedIds.has(attachmentId) || selectedAttachments.length >= 20) continue
+    selectedIds.add(attachmentId)
+    selectedAttachments.push({
+      attachmentId,
+      fileName: sanitizeAiAttachmentFileName(requested?.fileName, candidate.name),
+    })
+  }
+  return selectedAttachments
+}
+
+function openAiTools(attachmentCandidates = []) {
+  return aiDraftToolDefinitions(attachmentCandidates).map((definition) => ({
+    type: 'function',
+    function: definition,
+  }))
 }
 
 function openAiCompatibleAttachmentParts(attachments) {
@@ -326,7 +420,6 @@ async function streamOpenAiCompatible({
   const endpoint = openAiChatEndpoint(provider, key.baseUrl)
   const attachmentParts = openAiCompatibleAttachmentParts(attachments)
   const tools = openAiTools(attachmentCandidates)
-  const candidateIds = new Set(attachmentCandidates.map((candidate) => candidate.id))
   const messages = [
     { role: 'system', content: system },
     {
@@ -395,25 +488,22 @@ async function streamOpenAiCompatible({
       }
       if (call.function.name === 'select_email_attachments') {
         handled = true
-        let requestedIds = []
+        let toolInput = {}
         try {
-          const parsed = JSON.parse(call.function.arguments || '{}')
-          if (Array.isArray(parsed?.attachmentIds)) requestedIds = parsed.attachmentIds
+          toolInput = JSON.parse(call.function.arguments || '{}')
         } catch {
           // The provider receives a structured tool error below and can still
           // continue drafting without adding an attachment.
         }
-        const selectedIds = Array.from(new Set(requestedIds.map((id) => String(id))))
-          .filter((id) => candidateIds.has(id))
-          .slice(0, 20)
-        if (selectedIds.length > 0) {
+        const selectedAttachments = attachmentPlanFromToolInput(toolInput, attachmentCandidates)
+        if (selectedAttachments.length > 0) {
           onStatus?.('attaching')
-          onAttachmentSelection?.(selectedIds)
         }
+        onAttachmentSelection?.(selectedAttachments)
         return {
           role: 'tool',
           tool_call_id: call.id,
-          content: JSON.stringify({ selectedAttachmentIds: selectedIds, draftOnly: true }),
+          content: JSON.stringify({ selectedAttachments, draftOnly: true }),
         }
       }
       return {
@@ -430,9 +520,25 @@ async function streamOpenAiCompatible({
   return run(messages, 2)
 }
 
-async function streamAnthropic({ key, system, instruction, grantedContext, attachments, onText, signal }) {
+async function streamAnthropic({
+  key,
+  system,
+  instruction,
+  grantedContext,
+  attachments,
+  attachmentCandidates = [],
+  onText,
+  onStatus,
+  onAttachmentSelection,
+  signal,
+}) {
   const baseUrl = normalizedBaseUrl('anthropic', key.baseUrl)
   const content = [{ type: 'text', text: `${instruction}\n\nGranted context:\n${JSON.stringify(grantedContext)}` }]
+  const tools = aiDraftToolDefinitions(attachmentCandidates).map((definition) => ({
+    name: definition.name,
+    description: definition.description,
+    input_schema: definition.parameters,
+  }))
   const textFallbacks = []
   for (const attachment of attachments) {
     const mime = String(attachment.mimeType || '').toLowerCase()
@@ -447,40 +553,128 @@ async function streamAnthropic({ key, system, instruction, grantedContext, attac
   if (textFallbacks.length > 0) {
     content.push({ type: 'text', text: textFallbacks.join('\n\n') })
   }
-  const response = await fetchProvider(`${baseUrl}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'x-api-key': key.apiKey,
-      'anthropic-version': '2023-06-01',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: key.model || providerDefaults('anthropic').defaultModel,
-      max_tokens: 1400,
-      temperature: 0.35,
-      stream: true,
-      system,
-      messages: [{ role: 'user', content }],
-    }),
-  }, signal, 150_000)
-  let usage = emptyUsage()
-  await parseSseStream(response, (event) => {
-    const reported = event.message?.usage ?? event.usage
-    if (reported) {
-      usage = normalizedUsage(
-        Math.max(usage.inputTokens, Number(reported.input_tokens ?? 0)),
-        Math.max(usage.outputTokens, Number(reported.output_tokens ?? 0)),
-      )
-    }
-    if (event.type === 'content_block_delta' && typeof event.delta?.text === 'string') onText(event.delta.text)
-  })
-  return usage
+
+  const run = async (messages, remainingToolRounds) => {
+    const response = await fetchProvider(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': key.apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: key.model || providerDefaults('anthropic').defaultModel,
+        max_tokens: 1400,
+        temperature: 0.35,
+        stream: true,
+        system,
+        messages,
+        ...(remainingToolRounds > 0 ? { tools } : {}),
+      }),
+    }, signal, 150_000)
+    let usage = emptyUsage()
+    let emittedText = false
+    const pendingToolCalls = new Map()
+    await parseSseStream(response, (event) => {
+      const reported = event.message?.usage ?? event.usage
+      if (reported) {
+        usage = normalizedUsage(
+          Math.max(usage.inputTokens, Number(reported.input_tokens ?? 0)),
+          Math.max(usage.outputTokens, Number(reported.output_tokens ?? 0)),
+        )
+      }
+      if (event.type === 'content_block_delta' && typeof event.delta?.text === 'string') {
+        emittedText = true
+        onText(event.delta.text)
+      }
+      if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
+        pendingToolCalls.set(Number(event.index ?? pendingToolCalls.size), {
+          id: String(event.content_block.id ?? ''),
+          name: String(event.content_block.name ?? ''),
+          input: event.content_block.input ?? {},
+          partialJson: '',
+        })
+      }
+      if (event.type === 'content_block_delta' && event.delta?.type === 'input_json_delta') {
+        const index = Number(event.index ?? 0)
+        const current = pendingToolCalls.get(index)
+        if (current) current.partialJson += String(event.delta.partial_json ?? '')
+      }
+    })
+    if (emittedText || pendingToolCalls.size === 0 || remainingToolRounds <= 0) return usage
+    const calls = Array.from(pendingToolCalls.values()).map((call) => {
+      let input = call.input
+      if (call.partialJson) {
+        try {
+          input = JSON.parse(call.partialJson)
+        } catch {
+          input = {}
+        }
+      }
+      return { ...call, input }
+    })
+    let handled = false
+    const toolResults = calls.map((call) => {
+      let result
+      if (call.name === 'get_granted_application_context') {
+        handled = true
+        onStatus?.('context')
+        result = grantedContext
+      } else if (call.name === 'select_email_attachments') {
+        handled = true
+        const selectedAttachments = attachmentPlanFromToolInput(call.input, attachmentCandidates)
+        if (selectedAttachments.length > 0) onStatus?.('attaching')
+        onAttachmentSelection?.(selectedAttachments)
+        result = { selectedAttachments, draftOnly: true }
+      } else {
+        result = { error: 'This tool is unavailable for the current email draft.' }
+      }
+      return {
+        type: 'tool_result',
+        tool_use_id: call.id,
+        content: JSON.stringify(result),
+      }
+    })
+    if (!handled) return usage
+    const assistantContent = calls.map((call) => ({
+      type: 'tool_use',
+      id: call.id,
+      name: call.name,
+      input: call.input,
+    }))
+    const continuationUsage = await run([
+      ...messages,
+      { role: 'assistant', content: assistantContent },
+      { role: 'user', content: toolResults },
+    ], remainingToolRounds - 1)
+    return addUsage(usage, continuationUsage)
+  }
+
+  return run([{ role: 'user', content }], 2)
 }
 
-async function streamGemini({ key, system, instruction, grantedContext, attachments, onText, signal }) {
+async function streamGemini({
+  key,
+  system,
+  instruction,
+  grantedContext,
+  attachments,
+  attachmentCandidates = [],
+  onText,
+  onStatus,
+  onAttachmentSelection,
+  signal,
+}) {
   const baseUrl = normalizedBaseUrl('gemini', key.baseUrl)
   const model = encodeURIComponent(key.model || providerDefaults('gemini').defaultModel)
   const parts = [{ text: `${instruction}\n\nGranted context:\n${JSON.stringify(grantedContext)}` }]
+  const tools = [{
+    functionDeclarations: aiDraftToolDefinitions(attachmentCandidates).map((definition) => ({
+      name: definition.name,
+      description: definition.description,
+      parameters: definition.parameters,
+    })),
+  }]
   const textFallbacks = []
   for (const attachment of attachments) {
     const mime = String(attachment.mimeType || '').toLowerCase()
@@ -494,29 +688,71 @@ async function streamGemini({ key, system, instruction, grantedContext, attachme
   if (textFallbacks.length > 0) {
     parts.push({ text: textFallbacks.join('\n\n') })
   }
-  const response = await fetchProvider(`${baseUrl}/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(key.apiKey)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: system }] },
-      generationConfig: { temperature: 0.35 },
-      contents: [{ role: 'user', parts }],
-    }),
-  }, signal)
-  let usage = emptyUsage()
-  await parseSseStream(response, (event) => {
-    if (event.usageMetadata) {
-      usage = normalizedUsage(
-        event.usageMetadata.promptTokenCount,
-        event.usageMetadata.candidatesTokenCount,
-        event.usageMetadata.totalTokenCount,
-      )
-    }
-    for (const part of event.candidates?.[0]?.content?.parts ?? []) {
-      if (typeof part.text === 'string') onText(part.text)
-    }
-  })
-  return usage
+
+  const run = async (contents, remainingToolRounds) => {
+    const response = await fetchProvider(`${baseUrl}/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(key.apiKey)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        generationConfig: { temperature: 0.35 },
+        contents,
+        ...(remainingToolRounds > 0 ? { tools } : {}),
+      }),
+    }, signal)
+    let usage = emptyUsage()
+    let emittedText = false
+    const calls = []
+    await parseSseStream(response, (event) => {
+      if (event.usageMetadata) {
+        usage = normalizedUsage(
+          event.usageMetadata.promptTokenCount,
+          event.usageMetadata.candidatesTokenCount,
+          event.usageMetadata.totalTokenCount,
+        )
+      }
+      for (const part of event.candidates?.[0]?.content?.parts ?? []) {
+        if (typeof part.text === 'string') {
+          emittedText = true
+          onText(part.text)
+        }
+        if (part.functionCall?.name) calls.push(part.functionCall)
+      }
+    })
+    if (emittedText || calls.length === 0 || remainingToolRounds <= 0) return usage
+    let handled = false
+    const responseParts = calls.map((call) => {
+      let result
+      if (call.name === 'get_granted_application_context') {
+        handled = true
+        onStatus?.('context')
+        result = grantedContext
+      } else if (call.name === 'select_email_attachments') {
+        handled = true
+        const selectedAttachments = attachmentPlanFromToolInput(call.args ?? {}, attachmentCandidates)
+        if (selectedAttachments.length > 0) onStatus?.('attaching')
+        onAttachmentSelection?.(selectedAttachments)
+        result = { selectedAttachments, draftOnly: true }
+      } else {
+        result = { error: 'This tool is unavailable for the current email draft.' }
+      }
+      return {
+        functionResponse: {
+          name: call.name,
+          response: result,
+        },
+      }
+    })
+    if (!handled) return usage
+    const continuationUsage = await run([
+      ...contents,
+      { role: 'model', parts: calls.map((functionCall) => ({ functionCall })) },
+      { role: 'user', parts: responseParts },
+    ], remainingToolRounds - 1)
+    return addUsage(usage, continuationUsage)
+  }
+
+  return run([{ role: 'user', parts }], 2)
 }
 
 export async function streamEmailDraft({
@@ -533,8 +769,34 @@ export async function streamEmailDraft({
 }) {
   if (!providerDefaults(key.provider)) throw new AiProviderError('UNSUPPORTED_PROVIDER', 'This AI provider is not supported.')
   if (!key.apiKey) throw new AiProviderError('KEY_UNAVAILABLE', 'The saved AI key is unavailable.')
-  if (key.provider === 'anthropic') return streamAnthropic({ key, system, instruction, grantedContext, attachments, onText, signal })
-  if (key.provider === 'gemini') return streamGemini({ key, system, instruction, grantedContext, attachments, onText, signal })
+  if (key.provider === 'anthropic') {
+    return streamAnthropic({
+      key,
+      system,
+      instruction,
+      grantedContext,
+      attachments,
+      attachmentCandidates,
+      onText,
+      onStatus,
+      onAttachmentSelection,
+      signal,
+    })
+  }
+  if (key.provider === 'gemini') {
+    return streamGemini({
+      key,
+      system,
+      instruction,
+      grantedContext,
+      attachments,
+      attachmentCandidates,
+      onText,
+      onStatus,
+      onAttachmentSelection,
+      signal,
+    })
+  }
   return streamOpenAiCompatible({
     provider: key.provider,
     key,
@@ -552,12 +814,15 @@ export async function streamEmailDraft({
 
 /** Short timeout for connectivity probes (not full drafting). */
 async function fetchProviderProbe(url, options, signal, timeoutMs = 20_000) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  const abort = () => controller.abort()
-  signal?.addEventListener('abort', abort, { once: true })
   try {
-    const response = await fetch(url, { ...options, signal: controller.signal })
+    const response = await withAbortDeadline(
+      (deadlineSignal) => (
+        process.env.NODE_ENV === 'production'
+          ? pinnedHttpsFetch(url, { ...options, signal: deadlineSignal })
+          : fetch(url, { ...options, redirect: 'error', signal: deadlineSignal })
+      ),
+      { signal, timeoutMs },
+    )
     if (!response.ok) {
       throw providerHttpError(response.status)
     }
@@ -566,11 +831,20 @@ async function fetchProviderProbe(url, options, signal, timeoutMs = 20_000) {
     return response
   } catch (error) {
     if (error instanceof AiProviderError) throw error
-    if (error?.name === 'AbortError') throw new AiProviderError('PROVIDER_TIMEOUT', 'The AI provider took too long to respond.')
+    if (error instanceof OutboundNetworkPolicyError || error?.code === 'INVALID_OUTBOUND_URL') {
+      throw new AiProviderError(
+        'INVALID_BASE_URL',
+        'The provider URL must resolve only to a public HTTPS endpoint.',
+      )
+    }
+    if (
+      error instanceof AbortDeadlineError
+      || signal?.aborted
+      || error?.name === 'AbortError'
+    ) {
+      throw new AiProviderError('PROVIDER_TIMEOUT', 'The AI provider took too long to respond.')
+    }
     throw new AiProviderError('PROVIDER_UNAVAILABLE', 'The AI provider could not be reached.')
-  } finally {
-    clearTimeout(timer)
-    signal?.removeEventListener('abort', abort)
   }
 }
 

@@ -1372,7 +1372,7 @@ export function Dashboard({
                     </span>
                     <span>
                       <small>{tx('dossier.country')}</small>
-                      <strong>{countryDisplayName(application.school.country, lang) || localize(application.school.country)}</strong>
+                      <strong>{countryDisplayName(application.school.country, lang) || localize(application.school.country) || '—'}</strong>
                     </span>
                     <span>
                       <small>{tx('dossier.priority')}</small>
@@ -2229,7 +2229,7 @@ export function Dashboard({
         <div>
           <span className="eyebrow">{eyebrow ?? tx('dashboard.overview')}</span>
           <h1>{title ?? tx('dashboard.title')}</h1>
-          {subtitle ? <p>{subtitle}</p> : null}
+          <p>{subtitle ?? tx('dashboard.subtitle')}</p>
         </div>
         <div className="dashboard-header-actions">
           {onOpenDiscover ? (

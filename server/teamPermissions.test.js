@@ -6,19 +6,40 @@ import {
   mergeTeamMemberPermissions,
   normalizeStudentPermissions,
   normalizeTeamMemberRelationships,
+  normalizeTeamPermissionDefaults,
 } from './teamPermissions.js'
 
 describe('team member permissions', () => {
-  it('keeps safe role defaults while preserving existing relationship data', () => {
+  it('keeps new members on sparse role overrides while preserving relationship data', () => {
     expect(normalizeTeamMemberRelationships({ teacherIds: ['teacher-a'] }, 'member')).toEqual({
       teacherIds: ['teacher-a'],
-      studentPermissions: DEFAULT_STUDENT_PERMISSIONS,
+      permissionOverridesVersion: 1,
       usage: { applicationsCreated: 0, sharesCreated: 0 },
     })
-    expect(normalizeTeamMemberRelationships({}, 'admin').teacherPermissions).toEqual(DEFAULT_TEACHER_PERMISSIONS)
+    expect(normalizeTeamMemberRelationships({}, 'admin')).toEqual({
+      permissionOverridesVersion: 1,
+      usage: { applicationsCreated: 0, sharesCreated: 0 },
+    })
   })
 
-  it('normalizes optional limits and merges partial permission updates', () => {
+  it('normalizes configurable team defaults with unlimited student usage by default', () => {
+    expect(normalizeTeamPermissionDefaults({
+      student: { useDiscover: true, activeApplicationLimit: 4 },
+      teacher: { inviteStudents: false },
+    })).toEqual({
+      student: {
+        ...DEFAULT_STUDENT_PERMISSIONS,
+        useDiscover: true,
+        activeApplicationLimit: 4,
+      },
+      teacher: {
+        ...DEFAULT_TEACHER_PERMISSIONS,
+        inviteStudents: false,
+      },
+    })
+  })
+
+  it('merges sparse personal overrides over the selected team defaults', () => {
     expect(normalizeStudentPermissions({
       useDiscover: true,
       activeApplicationLimit: 0,
@@ -39,10 +60,52 @@ describe('team member permissions', () => {
     }, 'member', {
       studentPermissions: { useDiscover: true },
     })
-    expect(merged.studentPermissions).toMatchObject({
+    expect(merged.studentPermissions).toEqual({
       editApplications: false,
       useDiscover: true,
       activeApplicationLimit: 8,
+    })
+    expect(normalizeStudentPermissions(
+      merged.studentPermissions,
+      {
+        ...DEFAULT_STUDENT_PERMISSIONS,
+        createApplications: false,
+      },
+    )).toMatchObject({
+      editApplications: false,
+      createApplications: false,
+      useDiscover: true,
+      activeApplicationLimit: 8,
+    })
+  })
+
+  it('compacts legacy full permission snapshots so future team defaults still flow through', () => {
+    expect(normalizeTeamMemberRelationships({
+      accessLevel: 'standard',
+      studentPermissions: {
+        ...DEFAULT_STUDENT_PERMISSIONS,
+        editApplications: false,
+      },
+    }, 'member')).toEqual({
+      studentPermissions: { editApplications: false },
+      permissionOverridesVersion: 1,
+      usage: { applicationsCreated: 0, sharesCreated: 0 },
+    })
+  })
+
+  it('resets a member to team defaults without dropping usage or teacher assignments', () => {
+    const reset = mergeTeamMemberPermissions({
+      teacherIds: ['teacher-a'],
+      permissionOverridesVersion: 1,
+      studentPermissions: { useDiscover: true },
+      usage: { applicationsCreated: 2, sharesCreated: 1 },
+    }, 'member', {
+      studentPermissions: null,
+    })
+    expect(reset).toEqual({
+      teacherIds: ['teacher-a'],
+      permissionOverridesVersion: 1,
+      usage: { applicationsCreated: 2, sharesCreated: 1 },
     })
   })
 

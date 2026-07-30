@@ -78,7 +78,7 @@ export function DiscoverAdvancedInsights({
                     className="discover-pareto-dot hot"
                     onClick={() => onOpenProgram?.(point.id)}
                   />
-                  <title>{`${point.school} · match ${point.matchScore} · ${money(point.realStipendUSD)}`}</title>
+                  <title>{`${point.school} · ${format(tx('discover.matchScore'), { score: point.matchScore })} · ${money(point.realStipendUSD)}`}</title>
                 </g>
               )
             })}

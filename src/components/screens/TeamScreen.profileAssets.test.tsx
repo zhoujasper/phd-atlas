@@ -7,6 +7,7 @@ import {
   type AuthSession,
   type ProfileAsset,
   type TeamMember,
+  type TeamProfilePreset,
   type TeamSummary,
 } from '../../api/phdApi'
 import { registerLanguage, type LangDict } from '../../i18n'
@@ -19,6 +20,7 @@ registerLanguage('en', englishProfile as LangDict, 'profile')
 registerLanguage('en', englishShared as LangDict, 'shared')
 
 const originalMatchMedia = window.matchMedia
+const originalStartViewTransition = Object.getOwnPropertyDescriptor(document, 'startViewTransition')
 
 const owner: TeamMember = {
   id: 'member_owner',
@@ -251,10 +253,16 @@ describe('TeamScreen student profile assets', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    delete document.documentElement.dataset.teamPortraitTransitionToken
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       value: originalMatchMedia,
     })
+    if (originalStartViewTransition) {
+      Object.defineProperty(document, 'startViewTransition', originalStartViewTransition)
+    } else {
+      Reflect.deleteProperty(document, 'startViewTransition')
+    }
   })
 
   it('opens the shared editor from the list and saves through the scoped team API', async () => {
@@ -282,6 +290,196 @@ describe('TeamScreen student profile assets', () => {
       expect.objectContaining({ name: updated.name }),
     ))
     expect(await screen.findByRole('button', { name: `Open material: ${updated.name}` })).toBeInTheDocument()
+  })
+
+  it('places preset creation at the end of the administrator and teacher source lists', async () => {
+    const user = userEvent.setup()
+    const organizationPreset: TeamProfilePreset = {
+      id: 'org-ui-preset',
+      kind: 'ResearchProposal',
+      nameZh: '组织研究计划',
+      nameEn: 'Organization research plan',
+      descriptionZh: '组织统一模板',
+      descriptionEn: 'Organization-managed template',
+      contentZh: '研究问题与方法',
+      contentEn: 'Research question and methods',
+      icon: 'flask-conical',
+      color: 'teal',
+      builtIn: false,
+      createdBy: 'owner_1',
+      createdByRole: 'owner',
+      syncToTeachers: true,
+      syncToStudents: true,
+      manageable: true,
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z',
+    }
+    const ownerView = renderResources(session, {
+      ...summary,
+      team: { ...summary.team, profilePresets: [organizationPreset] },
+    })
+
+    await screen.findByRole('button', { name: 'Open material: Student CV' })
+    const ownerInspector = ownerView.container.querySelector<HTMLElement>(
+      '.team-portrait-template-pane .team-portrait-presets',
+    )
+    expect(ownerInspector).not.toBeNull()
+    expect(within(ownerInspector!).queryByRole('button', { name: 'Add organization preset' })).not.toBeInTheDocument()
+
+    await user.click(within(ownerInspector!).getByRole('tab', { name: /Org admin/i }))
+    const ownerAdd = await within(ownerInspector!).findByRole('button', { name: 'Add organization preset' })
+    const ownerList = ownerInspector!.querySelector<HTMLElement>('.team-portrait-preset-list')
+    expect(ownerList?.lastElementChild).toContainElement(ownerAdd)
+    expect(within(ownerAdd).getByText('Organization')).toBeInTheDocument()
+
+    ownerView.unmount()
+
+    const teacherPreset: TeamProfilePreset = {
+      ...organizationPreset,
+      id: 'teacher-ui-preset',
+      nameZh: '老师研究计划',
+      nameEn: 'Teacher research plan',
+      createdBy: 'teacher_1',
+      createdByRole: 'admin',
+    }
+    const teacherView = renderResources(teacherSession, {
+      ...teacherSummary,
+      team: {
+        ...teacherSummary.team,
+        profilePresets: [
+          { ...organizationPreset, manageable: false },
+          teacherPreset,
+        ],
+      },
+    })
+
+    await screen.findByRole('button', { name: 'Open material: Student CV' })
+    const teacherInspector = teacherView.container.querySelector<HTMLElement>(
+      '.team-portrait-template-pane .team-portrait-presets',
+    )
+    expect(teacherInspector).not.toBeNull()
+    expect(within(teacherInspector!).queryByRole('button', { name: 'Add teacher preset' })).not.toBeInTheDocument()
+
+    await user.click(within(teacherInspector!).getByRole('tab', { name: /Mine/i }))
+    const teacherAdd = await within(teacherInspector!).findByRole('button', { name: 'Add teacher preset' })
+    const teacherList = teacherInspector!.querySelector<HTMLElement>('.team-portrait-preset-list')
+    expect(teacherList?.lastElementChild).toContainElement(teacherAdd)
+    expect(within(teacherAdd).getByText('Teacher presets')).toBeInTheDocument()
+
+    await user.click(teacherAdd)
+    expect(await screen.findByRole('dialog', { name: 'Create preset' })).toBeInTheDocument()
+  })
+
+  it('chooses an explicit preset destination and can switch it again in the editor header', async () => {
+    const user = userEvent.setup()
+    const preset: TeamProfilePreset = {
+      id: 'org-research-plan',
+      kind: 'ResearchProposal',
+      nameZh: '组织研究计划',
+      nameEn: 'Organization research plan',
+      descriptionZh: '组织统一模板',
+      descriptionEn: 'Organization-managed template',
+      contentZh: '研究问题与方法',
+      contentEn: 'Research question and methods',
+      icon: 'flask-conical' as const,
+      color: 'teal' as const,
+      builtIn: false,
+      createdBy: 'owner_1',
+      createdByRole: 'owner' as const,
+      syncToTeachers: true,
+      syncToStudents: true,
+      manageable: true,
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z',
+    }
+    const created = {
+      ...secondStudentAsset,
+      name: preset.nameEn,
+      kind: preset.kind,
+      description: preset.contentEn,
+    }
+    vi.mocked(phdApi.listTeamMemberProfileAssets).mockImplementation(
+      async (_token, _teamId, studentUserId) => studentUserId === 'student_2' ? [] : [asset],
+    )
+    const create = vi.spyOn(phdApi, 'addTeamMemberProfileAsset').mockResolvedValue(created)
+
+    renderResources(session, {
+      ...summary,
+      team: { ...summary.team, profilePresets: [preset] },
+      members: [owner, student, secondStudent],
+      roleCounts: { owner: 1, admin: 0, member: 2 },
+    })
+
+    await screen.findByRole('button', { name: 'Open material: Student CV' })
+    const targetTrigger = screen.getByRole('button', { name: 'Choose a student: Lina Student' })
+    expect(within(targetTrigger).getByText('Student list')).toBeInTheDocument()
+    expect(within(targetTrigger).getByText('Choose a student')).toBeInTheDocument()
+    expect(within(targetTrigger).getByText('Lina Student')).toBeInTheDocument()
+    await user.click(targetTrigger)
+    const picker = await screen.findByRole('dialog', { name: 'Choose a student' })
+    await user.click(within(picker).getByRole('option', { name: /Noah Student/i }))
+
+    const usePreset = await screen.findByRole('button', {
+      name: 'Use preset: Organization research plan · Noah Student',
+    })
+    await user.click(usePreset)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Use preset' }, { timeout: 10_000 })
+    expect(within(dialog).getByText("Noah Student's reusable library")).toBeInTheDocument()
+    const dialogTargetTrigger = within(dialog).getByRole('button', { name: 'Choose a student: Noah Student' })
+    expect(dialogTargetTrigger.closest('.snippet-editor-head-accessory')).toBeInTheDocument()
+    await user.click(dialogTargetTrigger)
+    const dialogPicker = await screen.findByRole('dialog', { name: 'Choose a student' })
+    await user.click(within(dialogPicker).getByRole('option', { name: /Lina Student/i }))
+    expect(within(dialog).getByText("Lina Student's reusable library")).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith(
+      'owner-token',
+      'team_1',
+      'student_1',
+      expect.objectContaining({
+        name: preset.nameEn,
+        kind: 'Custom',
+      }),
+    ))
+  })
+
+  it('offers a direct student invitation when the portrait workspace has no students', async () => {
+    const user = userEvent.setup()
+    renderResources(session, {
+      ...summary,
+      members: [owner, teacher],
+      roleCounts: { owner: 1, admin: 1, member: 0 },
+    })
+
+    expect(screen.getByRole('heading', { name: 'No organization students yet' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Invite student' }))
+
+    const invite = await screen.findByRole('dialog', { name: 'Invite a student into my scope' })
+    expect(within(invite).getByRole('textbox', { name: 'Email' })).toBeInTheDocument()
+  })
+
+  it('keeps the complete student-material description in the clickable row without opting into a reveal', async () => {
+    const user = userEvent.setup()
+    const description = [
+      'A complete reusable description with enough detail to exceed the former one-hundred-and-thirty-two-character rendering limit.',
+      'The final sentence must remain available to the overflow reveal.',
+    ].join(' ')
+    vi.mocked(phdApi.listTeamMemberProfileAssets).mockResolvedValue([{
+      ...asset,
+      description,
+    }])
+    renderResources()
+
+    await screen.findByRole('button', { name: 'Open material: Student CV' })
+    await user.click(screen.getByRole('button', { name: 'List view' }))
+
+    const value = await screen.findByText(description)
+    expect(value).toHaveTextContent(description)
+    expect(value).not.toHaveAttribute('data-overflow-full-text')
+    expect(value).not.toHaveAttribute('data-overflow-reveal')
+    expect(value).not.toHaveTextContent('…')
   })
 
   it('uses the personal Profile layout for a Team student with organization templates only', () => {
@@ -328,7 +526,67 @@ describe('TeamScreen student profile assets', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Open material: Student CV' })).not.toBeInTheDocument())
   })
 
+  it('opens a selected student as a focused mobile portrait and returns to the same list row', async () => {
+    const user = userEvent.setup()
+    const view = renderResources(session, {
+      ...summary,
+      members: [owner, student, secondStudent],
+      roleCounts: { owner: 1, admin: 0, member: 2 },
+    })
+
+    await screen.findByRole('button', { name: 'Open material: Student CV' })
+    const list = screen.getByRole('listbox', { name: 'Choose a student' })
+    const secondOption = within(list).getByRole('option', { name: /Noah Student/i })
+    const workspace = view.container.querySelector<HTMLElement>('.team-portrait-workspace')
+    expect(workspace).not.toBeNull()
+    expect(workspace).not.toHaveClass('is-mobile-detail-open')
+    expect(workspace).not.toHaveClass('has-mobile-navigation')
+
+    await user.click(secondOption)
+
+    await waitFor(() => {
+      expect(secondOption).toHaveAttribute('aria-selected', 'true')
+      expect(workspace).toHaveClass('is-mobile-detail-open')
+      expect(workspace).toHaveClass('has-mobile-navigation')
+    })
+    const backButton = screen.getByLabelText('Back')
+    expect(backButton).toHaveAttribute('aria-controls', 'team-student-portrait-list')
+
+    await user.click(backButton)
+
+    await waitFor(() => {
+      expect(workspace).not.toHaveClass('is-mobile-detail-open')
+      expect(screen.queryByLabelText('Back')).not.toBeInTheDocument()
+      expect(secondOption).toHaveFocus()
+    })
+  })
+
   it('slides the selection immediately and keeps the outgoing portrait mounted until the next one is ready', async () => {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn().mockReturnValue({
+        matches: false,
+        media: '(prefers-reduced-motion: reduce)',
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }),
+    })
+    let finishViewTransition: () => void = () => undefined
+    const viewTransitionFinished = new Promise<void>((resolve) => {
+      finishViewTransition = resolve
+    })
+    const startViewTransition = vi.fn((update: () => void) => {
+      update()
+      return { finished: viewTransitionFinished }
+    })
+    Object.defineProperty(document, 'startViewTransition', {
+      configurable: true,
+      value: startViewTransition,
+    })
     let resolveSecondStudentAssets: (assets: ProfileAsset[]) => void = () => undefined
     const secondStudentAssets = new Promise<ProfileAsset[]>((resolve) => {
       resolveSecondStudentAssets = resolve
@@ -385,10 +643,23 @@ describe('TeamScreen student profile assets', () => {
       expect(within(profilePane!).getByRole('button', { name: 'Open material: Second Student CV' })).toBeInTheDocument()
       expect(profilePane).not.toHaveAttribute('aria-busy')
     })
-    const content = profilePane?.querySelector('.team-portrait-profile-content')
+    const content = profilePane?.querySelector<HTMLElement>('.team-portrait-profile-content')
     expect(content?.className).toMatch(/is-handoff-[ab]/)
     expect(content).toHaveAttribute('data-student-portrait-stable', 'true')
+    expect(startViewTransition).toHaveBeenCalledTimes(1)
+    expect(document.documentElement).toHaveAttribute('data-team-portrait-transition-token')
+    expect(content?.style.getPropertyValue('view-transition-name')).toBe('team-portrait-student-profile')
     expect(listAssets.mock.calls.filter((call) => call[2] === 'student_2')).toHaveLength(1)
+
+    await act(async () => {
+      finishViewTransition()
+      await viewTransitionFinished
+    })
+    await waitFor(() => {
+      expect(document.documentElement).not.toHaveAttribute('data-team-portrait-transition-token')
+      expect(content).not.toHaveClass('is-native-handoff')
+      expect(content?.style.getPropertyValue('view-transition-name')).toBe('')
+    })
   })
 
   it('turns the real Team portrait deck continuously with one bounded follow-up', async () => {

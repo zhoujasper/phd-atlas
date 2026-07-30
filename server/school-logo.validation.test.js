@@ -41,7 +41,17 @@ describe('school logo validation', () => {
     })).toThrow()
   })
 
-  it('requires exactly one remote discovery source', () => {
+  it('accepts catalog-first automatic discovery with an optional official-site fallback', () => {
+    expect(parseOrThrow(SchoolLogoResolveSchema, {
+      auto: true,
+    })).toEqual({ auto: true })
+    expect(parseOrThrow(SchoolLogoResolveSchema, {
+      auto: true,
+      website: 'https://www.example.edu',
+    })).toEqual({ auto: true, website: 'https://www.example.edu' })
+  })
+
+  it('keeps explicit website and direct-image discovery mutually exclusive', () => {
     expect(parseOrThrow(SchoolLogoResolveSchema, {
       website: 'https://www.example.edu',
     })).toEqual({ website: 'https://www.example.edu' })
@@ -52,6 +62,14 @@ describe('school logo validation', () => {
     expect(() => parseOrThrow(SchoolLogoResolveSchema, {
       website: 'https://www.example.edu',
       imageUrl: 'https://www.example.edu/logo.png',
+    })).toThrow()
+    expect(() => parseOrThrow(SchoolLogoResolveSchema, {
+      auto: true,
+      imageUrl: 'https://www.example.edu/logo.png',
+    })).toThrow()
+    expect(() => parseOrThrow(SchoolLogoResolveSchema, {
+      auto: true,
+      refresh: true,
     })).toThrow()
   })
 })

@@ -2,12 +2,13 @@
   "share": {
     "eyebrow": "Aperçu en lecture seule",
     "title": "Partager \"{name}\"",
-    "activeLinks": "Actions actives",
+    "activeLinks": "Liens de partage actifs",
+    "activeCount": "{count}/{limit} liens actifs",
     "noLinks": "Aucun lien de partage pour l'instant.",
     "createNew": "Créer un nouveau lien de partage",
     "create": "Créer un lien de partage",
     "previewHint": "Choisissez un package de projet complet ou sélectionnez uniquement les pages que le destinataire doit voir.",
-    "linkLabel": "partager le lien",
+    "linkLabel": "lien de partage",
     "revoke": "Révoquer le lien de partage",
     "neverExpires": "N'expire jamais",
     "expiresAt": "Expire {date}",
@@ -21,12 +22,12 @@
       "duration": "Durée",
       "permission": "Autorisation",
       "scope": "Portée",
-      "actions": "Actes",
+      "actions": "Actions",
       "subject": "Élément partagé"
     },
     "permission": {
       "view": "Voir",
-      "upload": "Télécharger des fichiers",
+      "upload": "Téléverser des fichiers",
       "edit": "Modifier"
     },
     "expiry": {
@@ -36,16 +37,16 @@
       "30d": "30 jours",
       "never": "Jamais"
     },
-    "packageMode": "Partager le mode package",
+    "packageMode": "Mode de partage",
     "completePackage": "Projet complet",
     "completePackageDesc": "Partagez chaque page publique du projet sous la forme d'un seul dossier soigné.",
     "customPackage": "Choisir des pages",
     "customPackageDesc": "Limitez le lien à des pages et des flux de travail spécifiques.",
-    "completeIncludes": "Le forfait complet comprend",
+    "completeIncludes": "Le projet complet comprend",
     "sectionsTitle": "Pages partagées",
     "scope": {
       "all": "Toutes les pages",
-      "count": "Pages {count}",
+      "count": "{count} pages",
       "upload": "Téléversement de pièces jointes"
     },
     "sections": {
@@ -63,7 +64,7 @@
       "tasks": "Liste de contrôle des tâches, dates d'échéance, détails et pièces jointes demandées.",
       "communications": "E-mails, messages, notes, dates et résumés des professeurs.",
       "funding": "Bourses, suivi des frais, tâches de financement, matériel et jalons.",
-      "timeline": "Chronologie de l'candidature avec jalons manuels et pages partagées.",
+      "timeline": "Chronologie de la candidature avec des jalons manuels et des jalons issus des pages partagées.",
       "versions": "Historique des fichiers téléchargés et versions téléchargeables incluses dans ce projet."
     },
     "revokeConfirmMessage": "Êtes-vous sûr de vouloir révoquer ce lien de partage ? Toute personne disposant du lien perdra immédiatement l’accès."

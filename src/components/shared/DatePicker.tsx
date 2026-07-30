@@ -4,7 +4,11 @@ import { createPortal } from 'react-dom'
 import { localeForLanguage } from '../../i18n'
 import { getMotionDelay } from '../hooks/useAnimatedClose'
 import { useI18n } from '../hooks/useI18n'
-import { addFloatingViewportListeners, getAnchoredOverlayStyle } from './floatingOverlay'
+import {
+  addFloatingViewportListeners,
+  FLOATING_CONTROL_BASE_Z_INDEX,
+  getAnchoredOverlayStyle,
+} from './floatingOverlay'
 
 function localizedMonths(locale: string): string[] {
   return Array.from({ length: 12 }, (_, month) => (
@@ -103,6 +107,7 @@ export function DatePicker({
       maxWidth: 252,
       estimatedHeight: 330,
       actualHeight: dropdownRef.current?.getBoundingClientRect().height,
+      baseZIndex: FLOATING_CONTROL_BASE_Z_INDEX,
     })
   }, [])
 
@@ -296,6 +301,7 @@ export function DatePicker({
           className={`date-picker-dropdown ${exiting ? 'date-picker-exit' : ''}`}
           ref={dropdownRef}
           style={dropdownStyle}
+          data-floating-overlay="true"
           onMouseDown={(event) => {
             // Keep focus/outside handlers from treating in-panel clicks as dismiss.
             event.stopPropagation()

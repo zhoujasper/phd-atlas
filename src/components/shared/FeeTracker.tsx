@@ -1,5 +1,5 @@
-import { AlertTriangle, BadgePercent, CheckCircle2, Pencil, Plus, ReceiptText, Save, Trash2, Undo2, X } from 'lucide-react'
-import { useState, type FormEvent } from 'react'
+import { AlertTriangle, Check, Pencil, Plus, ReceiptText, Save, Trash2, Undo2, X } from 'lucide-react'
+import { useState, type CSSProperties, type FormEvent } from 'react'
 import { formatCount, localeForLanguage } from '../../i18n'
 import { useI18n } from '../hooks/useI18n'
 import { getMotionDelay, useAnimatedClose } from '../hooks/useAnimatedClose'
@@ -22,9 +22,9 @@ interface Fee {
 
 interface FeeTrackerProps {
   fees: Fee[]
-  onAdd: (fee: { amount: number; currency: string; paidDate?: string; waived: boolean; notes: string }) => void
+  onAdd: (fee: { amount: number; currency: string; paidDate?: string; waived: boolean; notes: string }) => boolean | void | Promise<boolean | void>
   onDelete: (feeId: string) => void | Promise<void>
-  onUpdate: (feeId: string, patch: { amount?: number; currency?: string; paidDate?: string | null; waived?: boolean; notes?: string }) => void | Promise<void>
+  onUpdate: (feeId: string, patch: { amount?: number; currency?: string; paidDate?: string | null; waived?: boolean; notes?: string }) => boolean | void | Promise<boolean | void>
 }
 
 interface FeeEditDraft {
@@ -34,6 +34,62 @@ interface FeeEditDraft {
   paidDate: string
   waived: boolean
   notes: string
+}
+
+type FeeStatus = 'outstanding' | 'paid' | 'waived'
+
+interface FeeStatusControlProps {
+  value: FeeStatus
+  ariaLabel: string
+  outstandingLabel: string
+  paidLabel: string
+  waivedLabel: string
+  includePaid?: boolean
+  onChange: (status: FeeStatus) => void
+}
+
+function FeeStatusControl({
+  value,
+  ariaLabel,
+  outstandingLabel,
+  paidLabel,
+  waivedLabel,
+  includePaid = true,
+  onChange,
+}: FeeStatusControlProps) {
+  const options: Array<{ value: FeeStatus; label: string }> = [
+    { value: 'outstanding', label: outstandingLabel },
+    ...(includePaid ? [{ value: 'paid' as const, label: paidLabel }] : []),
+    { value: 'waived', label: waivedLabel },
+  ]
+  const activeIndex = Math.max(0, options.findIndex((option) => option.value === value))
+  const statusStyle = {
+    '--fee-status-count': options.length,
+    '--fee-status-index': activeIndex,
+  } as CSSProperties
+
+  return (
+    <div
+      className="fee-status-control"
+      role="group"
+      aria-label={ariaLabel}
+      style={statusStyle}
+    >
+      <span className="fee-status-indicator" aria-hidden="true" />
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          className={`fee-status-option is-${option.value}${value === option.value ? ' is-active' : ''}`}
+          aria-pressed={value === option.value}
+          onClick={() => onChange(option.value)}
+        >
+          <span className="fee-status-option-dot" aria-hidden="true" />
+          <span>{option.label}</span>
+        </button>
+      ))}
+    </div>
+  )
 }
 
 function draftFromFee(fee: Fee): FeeEditDraft {
@@ -108,10 +164,11 @@ export default function FeeTracker(props: FeeTrackerProps) {
     && !draftEqualsFee(editDraft, editingFee),
   )
 
-  function handleAdd() {
+  async function handleAdd() {
     const amt = parseFloat(amount)
     if (!amt || amt <= 0 || amt > 10000) return
-    props.onAdd({ amount: amt, currency: currency, waived: waived, notes: notes })
+    const saved = await props.onAdd({ amount: amt, currency: currency, waived: waived, notes: notes })
+    if (saved === false) return
     setAmount('')
     setNotes('')
     setWaived(false)
@@ -194,13 +251,14 @@ export default function FeeTracker(props: FeeTrackerProps) {
 
     setSavingFeeId(feeId)
     try {
-      await props.onUpdate(feeId, {
+      const saved = await props.onUpdate(feeId, {
         amount: nextAmount,
         currency: editDraft.currency,
         paidDate: editDraft.paid && !editDraft.waived ? editDraft.paidDate || new Date().toISOString().slice(0, 10) : null,
         waived: editDraft.waived,
         notes: editDraft.notes,
       })
+      if (saved === false) return false
       return true
     } finally {
       setSavingFeeId(null)
@@ -280,6 +338,8 @@ export default function FeeTracker(props: FeeTrackerProps) {
           const isSaving = savingFeeId === fee.id
           const isRemoving = removingFeeIds.has(fee.id)
           const rowDraft = isEditing && editDraft ? editDraft : draftFromFee(fee)
+          const feeStatus: FeeStatus = fee.waived ? 'waived' : fee.paidDate ? 'paid' : 'outstanding'
+          const draftStatus: FeeStatus = rowDraft.waived ? 'waived' : rowDraft.paid ? 'paid' : 'outstanding'
           const editableAmount = Number(editDraft?.amount ?? '')
           const canSave = Number.isFinite(editableAmount) && editableAmount > 0 && editableAmount <= 10000
           return (
@@ -302,40 +362,52 @@ export default function FeeTracker(props: FeeTrackerProps) {
                 aria-expanded={isEditing}
               >
                 <span className="fee-amount">{formatMoney(fee.amount, fee.currency, lang)}</span>
-                <InlinePresence present={fee.waived} parentGap="6px">
-                  <span className="fee-badge waived">{tx('fees.waived', 'Waived')}</span>
-                </InlinePresence>
-                <InlinePresence present={Boolean(fee.paidDate)} parentGap="6px">
-                  <span className="fee-badge paid">{tx('fees.paid', 'Paid')}</span>
-                </InlinePresence>
+                <span className={`fee-status-summary is-${feeStatus}`}>
+                  <span className="fee-status-summary-dot" aria-hidden="true" />
+                  <span>
+                    {feeStatus === 'paid'
+                      ? tx('fees.paid', 'Paid')
+                      : feeStatus === 'waived'
+                        ? tx('fees.waived', 'Waived')
+                        : tx('fees.remaining', 'Remaining')}
+                  </span>
+                </span>
                 <InlinePresence present={Boolean(fee.notes)} parentGap="6px">
                   <span className="fee-notes">{fee.notes}</span>
                 </InlinePresence>
               </button>
               <div className="fee-item-actions">
-                <InlinePresence present={!fee.paidDate && !fee.waived} parentGap="6px">
-                  <button type="button" className="quiet-action" disabled={isRemoving} onClick={function () {
-                    void props.onUpdate(fee.id, { paidDate: new Date().toISOString().slice(0, 10), waived: false })
-                  }}><CheckCircle2 size={13} aria-hidden="true" /> {tx('fees.markPaid', 'Mark Paid')}</button>
+                <InlinePresence present={!fee.paidDate && !fee.waived} parentGap="2px">
+                  <button
+                    type="button"
+                    className="quiet-action fee-row-action fee-mark-paid-action"
+                    disabled={isRemoving}
+                    title={tx('fees.markPaid', 'Mark paid')}
+                    aria-label={tx('fees.markPaid', 'Mark paid')}
+                    onClick={function () {
+                      void props.onUpdate(fee.id, { paidDate: new Date().toISOString().slice(0, 10), waived: false })
+                    }}
+                  >
+                    <Check size={13} aria-hidden="true" />
+                  </button>
                 </InlinePresence>
                 <button
                   type="button"
-                  className="quiet-action"
+                  className={`quiet-action fee-row-action fee-edit-action${isEditing ? ' is-editing' : ''}`}
                   onClick={function () { toggleEditing(fee) }}
                   disabled={isRemoving}
                   title={isEditing ? tx('fees.collapseFee', 'Collapse fee') : tx('fees.editFee', 'Edit fee')}
-                aria-label={isEditing ? tx('fees.collapseFee', 'Collapse fee') : tx('fees.editFee', 'Edit fee')}
-                aria-expanded={isEditing}
-              >
-                  <InlinePresence present={isEditing} parentGap="6px">
-                    <span className="fee-action-label"><X size={13} aria-hidden="true" />{tx('fees.collapseFee', 'Collapse')}</span>
-                  </InlinePresence>
-                  <InlinePresence present={!isEditing} parentGap="6px">
-                    <span className="fee-action-label"><Pencil size={13} aria-hidden="true" />{tx('fees.editFee', 'Edit fee')}</span>
-                  </InlinePresence>
+                  aria-label={isEditing ? tx('fees.collapseFee', 'Collapse fee') : tx('fees.editFee', 'Edit fee')}
+                  aria-expanded={isEditing}
+                >
+                  <span className="fee-action-icon-stage" aria-hidden="true">
+                    <Pencil className="fee-action-pencil" size={13} />
+                    <X className="fee-action-close" size={13} />
+                  </span>
                 </button>
                 <InlineConfirm
                   className="fee-delete-confirm"
+                  idleClassName="fee-row-action fee-delete-action"
                   open={pendingDeleteFeeId === fee.id}
                   busy={isRemoving}
                   disabled={isSaving || isRemoving}
@@ -348,7 +420,7 @@ export default function FeeTracker(props: FeeTrackerProps) {
                   onCancel={() => setPendingDeleteFeeId(null)}
                   onConfirm={() => { void confirmFeeDelete(fee.id) }}
                 >
-                  <Trash2 size={13} aria-hidden="true" /> {tx('fees.remove', 'Remove')}
+                  <Trash2 size={13} aria-hidden="true" />
                 </InlineConfirm>
               </div>
               <CollapsiblePanel
@@ -363,7 +435,7 @@ export default function FeeTracker(props: FeeTrackerProps) {
                   className={`fee-edit-form ${rowDraft.paid && !rowDraft.waived ? 'has-paid-date' : ''}`}
                   onSubmit={function (event) { void saveEdit(event, fee.id) }}
                 >
-                  <label className="fee-edit-field">
+                  <label className="fee-edit-field fee-edit-amount">
                     <span>{tx('fees.amount', 'Amount')}</span>
                     <input
                       type="number"
@@ -375,7 +447,7 @@ export default function FeeTracker(props: FeeTrackerProps) {
                       onChange={function (event) { setEditDraft({ ...rowDraft, amount: event.target.value }) }}
                     />
                   </label>
-                  <label className="fee-edit-field">
+                  <label className="fee-edit-field fee-edit-currency">
                     <span>{tx('fees.currency', 'Currency')}</span>
                     <Select
                       value={rowDraft.currency}
@@ -385,40 +457,25 @@ export default function FeeTracker(props: FeeTrackerProps) {
                       size="small"
                     />
                   </label>
-                  <button
-                    type="button"
-                    className={`fee-state-toggle fee-paid-toggle${rowDraft.paid ? ' is-active' : ''}`}
-                    aria-pressed={rowDraft.paid}
-                    onClick={function () {
-                      const paid = !rowDraft.paid
-                      setEditDraft({
-                        ...rowDraft,
-                        paid,
-                        paidDate: paid ? rowDraft.paidDate || new Date().toISOString().slice(0, 10) : '',
-                        waived: paid ? false : rowDraft.waived,
-                      })
-                    }}
-                  >
-                    <CheckCircle2 size={14} aria-hidden="true" />
-                    <span>{tx('fees.paid', 'Paid')}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`fee-state-toggle fee-waiver-toggle${rowDraft.waived ? ' is-active' : ''}`}
-                    aria-pressed={rowDraft.waived}
-                    onClick={function () {
-                      const nextWaived = !rowDraft.waived
-                      setEditDraft({
-                        ...rowDraft,
-                        waived: nextWaived,
-                        paid: nextWaived ? false : rowDraft.paid,
-                        paidDate: nextWaived ? '' : rowDraft.paidDate,
-                      })
-                    }}
-                  >
-                    <BadgePercent size={14} aria-hidden="true" />
-                    <span>{tx('fees.waivedLabel', 'Waived')}</span>
-                  </button>
+                  <div className="fee-edit-field fee-edit-status">
+                    <span>{tx('dossier.status', 'Status')}</span>
+                    <FeeStatusControl
+                      value={draftStatus}
+                      ariaLabel={tx('dossier.status', 'Status')}
+                      outstandingLabel={tx('fees.remaining', 'Remaining')}
+                      paidLabel={tx('fees.paid', 'Paid')}
+                      waivedLabel={tx('fees.waivedLabel', 'Waived')}
+                      onChange={(status) => {
+                        const paid = status === 'paid'
+                        setEditDraft({
+                          ...rowDraft,
+                          paid,
+                          paidDate: paid ? rowDraft.paidDate || new Date().toISOString().slice(0, 10) : '',
+                          waived: status === 'waived',
+                        })
+                      }}
+                    />
+                  </div>
                   <CollapsiblePanel
                     open={rowDraft.paid && !rowDraft.waived}
                     keepMounted
@@ -465,20 +522,22 @@ export default function FeeTracker(props: FeeTrackerProps) {
           className="fee-add-form"
           onSubmit={function (event) {
             event.preventDefault()
-            handleAdd()
+            void handleAdd()
           }}
         >
           <input type="number" placeholder={tx('fees.amountPlaceholder', 'Amount')} value={amount} onChange={function (e) { setAmount(e.target.value) }} className="settings-input fee-add-amount" min="0.01" max="10000" step="0.01" />
           <Select value={currency} options={currencyOptions} onChange={setCurrency} ariaLabel={tx('fees.currency', 'Currency')} size="small" />
-          <button
-            type="button"
-            className={`fee-state-toggle fee-waiver-toggle${waived ? ' is-active' : ''}`}
-            aria-pressed={waived}
-            onClick={function () { setWaived((current) => !current) }}
-          >
-            <BadgePercent size={14} aria-hidden="true" />
-            <span>{tx('fees.waivedLabel', 'Waived')}</span>
-          </button>
+          <div className="fee-add-status">
+            <FeeStatusControl
+              value={waived ? 'waived' : 'outstanding'}
+              ariaLabel={tx('dossier.status', 'Status')}
+              outstandingLabel={tx('fees.remaining', 'Remaining')}
+              paidLabel={tx('fees.paid', 'Paid')}
+              waivedLabel={tx('fees.waivedLabel', 'Waived')}
+              includePaid={false}
+              onChange={(status) => setWaived(status === 'waived')}
+            />
+          </div>
           <input type="text" placeholder={tx('fees.notesPlaceholder', 'Notes (optional)')} value={notes} onChange={function (e) { setNotes(e.target.value) }} className="settings-input fee-add-notes" maxLength={500} />
           <div className="fee-add-actions">
             <button type="button" className="quiet-action" onClick={function () { setAdding(false) }}>{tx('fees.cancel', 'Cancel')}</button>
@@ -528,7 +587,7 @@ export default function FeeTracker(props: FeeTrackerProps) {
                   disabled={Boolean(savingFeeId)}
                   onClick={() => void handlePromptSave()}
                 >
-                  <Save size={13} aria-hidden="true" />
+                  <Save size={12} aria-hidden="true" />
                   {tx('fees.saveChanges', 'Save changes')}
                 </button>
                 <button
@@ -537,7 +596,7 @@ export default function FeeTracker(props: FeeTrackerProps) {
                   disabled={Boolean(savingFeeId)}
                   onClick={handlePromptDiscard}
                 >
-                  <Undo2 size={13} aria-hidden="true" />
+                  <Undo2 size={12} aria-hidden="true" />
                   {tx('fees.discardChanges', 'Discard')}
                 </button>
                 <button
@@ -546,7 +605,7 @@ export default function FeeTracker(props: FeeTrackerProps) {
                   disabled={Boolean(savingFeeId)}
                   onClick={() => requestClosePrompt()}
                 >
-                  <X size={13} aria-hidden="true" />
+                  <X size={12} aria-hidden="true" />
                   {tx('fees.cancel', 'Cancel')}
                 </button>
               </div>

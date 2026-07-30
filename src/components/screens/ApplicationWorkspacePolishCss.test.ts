@@ -47,4 +47,16 @@ describe('application workspace requested UI polish', () => {
       /\.team-kanban-grid\.is-masonry-ready \.team-kanban-student\s*\{[^}]*grid-row-end:\s*span var\(--team-kanban-masonry-span,\s*1\)/s,
     )
   })
+
+  it('keeps the checklist reminder count secondary while measured presence owns the label motion', () => {
+    expect(workspaceStyles).toMatch(
+      /\.checklist-reminder-filter-count\s*\{[^}]*font-size:\s*10px[^}]*font-variant-numeric:\s*tabular-nums[^}]*line-height:\s*1/s,
+    )
+    expect(workspaceStyles).toMatch(
+      /\.checklist-reminder-filter-label\s*\{[^}]*flex:\s*0 0 auto[^}]*font-size:\s*11px[^}]*line-height:\s*1/s,
+    )
+    expect(workspaceStyles).not.toMatch(
+      /\.checklist-reminder-filter-label\s*\{[^}]*max-width:\s*0[^}]*transition:[^}]*max-width/s,
+    )
+  })
 })

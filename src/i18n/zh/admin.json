@@ -179,6 +179,8 @@
     "editShareQuota": "编辑分享链接上限",
     "editShareCreateQuota": "编辑累计分享链接上限",
     "editStorageQuota": "编辑空间配额",
+    "quotaUsageHelpLabel": "用量配额说明",
+    "quotaUsageHelp": "将鼠标移到用量行的右上角，点击铅笔即可编辑配额；输入 -1 会将该项设为不限（∞）。",
     "recordUsage": "{count}/{limit} 条记录",
     "recordUsageLabel": "申请记录用量",
     "recordCreateUsage": "累计创建 {count}/{limit}",

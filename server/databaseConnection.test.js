@@ -1,10 +1,12 @@
 import os from 'node:os'
+import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   createDatabaseTargetNotEmptyError,
   createExternalDatabaseSqlDump,
   decryptDatabasePassword,
+  defaultSqlitePath,
   encryptDatabasePassword,
   normalizeDatabaseConfiguration,
   verifyDatabaseConnection,
@@ -12,6 +14,11 @@ import {
 import { encryptSecret, setRuntimeCryptoConfig } from './crypto.js'
 
 describe('database connection configuration', () => {
+  it('creates the isolated test database parent in a clean export', async () => {
+    const directory = await stat(path.dirname(defaultSqlitePath))
+    expect(directory.isDirectory()).toBe(true)
+  })
+
   it('keeps bootstrap database credentials readable across workspace crypto profile changes', () => {
     setRuntimeCryptoConfig({ algorithm: 'chacha20-poly1305', passwordBinding: 'workspace-binding-a' })
     const encrypted = encryptDatabasePassword('database-secret')

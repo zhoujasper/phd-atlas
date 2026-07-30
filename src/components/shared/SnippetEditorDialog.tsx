@@ -1,5 +1,5 @@
 import { AlertCircle, CheckCircle2, Download, ExternalLink, Eye, FileText, Pencil, Save, Trash2, UploadCloud, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { ProfileAsset, ProfileAssetAttachment, ProfileAssetInput, ProfilePreset, ProfilePresetColor, ProfilePresetIcon } from '../../api/phdApi'
 import {
   createRenamedFile,
@@ -65,6 +65,7 @@ export function SnippetEditorDialog({
   contentLanguages,
   attachmentsEnabled = true,
   contextLabel,
+  headerAccessory,
   onClose,
   onCreate,
   onUpdate,
@@ -106,6 +107,8 @@ export function SnippetEditorDialog({
   attachmentsEnabled?: boolean
   /** Optional destination context, such as the selected student's library. */
   contextLabel?: string
+  /** Optional compact control rendered beside the title, such as a destination picker. */
+  headerAccessory?: ReactNode
   onClose: () => void
   onCreate: (input: ProfileAssetInput, files: File[]) => void | Promise<void>
   onUpdate: (id: string, input: Partial<ProfileAssetInput>) => void
@@ -181,6 +184,12 @@ export function SnippetEditorDialog({
     () => profilePresets.filter((preset) => !preset.builtIn && !isBuiltInProfilePresetKind(preset.kind)),
     [profilePresets],
   )
+  const assetVersionLabel = asset?.versionLabel
+  const assetFamilyName = asset?.familyName
+  const assetIsPrimary = asset?.isPrimary
+  const assetFamilyId = asset?.familyId
+  const assetVersionNumber = asset?.versionNumber
+  const hasAsset = Boolean(asset)
 
   // Re-seed the local draft whenever the dialog opens or switches to a different asset — but not
   // on every reactive update to the *same* asset (e.g. after an attachment upload), which would
@@ -239,12 +248,12 @@ export function SnippetEditorDialog({
     setIcon(assetIcon ?? initialIcon ?? presentation.icon)
     setColor(assetColor ?? initialColor ?? presentation.color)
     setVersionLabel(
-      (asset?.versionLabel || initialVersionLabel || (assetId ? 'v1' : initialVersionNumber ? `v${initialVersionNumber}` : 'v1')).trim(),
+      (assetVersionLabel || initialVersionLabel || (assetId ? 'v1' : initialVersionNumber ? `v${initialVersionNumber}` : 'v1')).trim(),
     )
-    setFamilyName((asset?.familyName || initialFamilyName || '').trim())
-    setIsPrimary(asset ? Boolean(asset.isPrimary ?? true) : initialIsPrimary !== false)
-    setFamilyIdDraft(asset?.familyId || initialFamilyId)
-    setVersionNumberDraft(asset?.versionNumber || initialVersionNumber)
+    setFamilyName((assetFamilyName || initialFamilyName || '').trim())
+    setIsPrimary(hasAsset ? Boolean(assetIsPrimary ?? true) : initialIsPrimary !== false)
+    setFamilyIdDraft(assetFamilyId || initialFamilyId)
+    setVersionNumberDraft(assetVersionNumber || initialVersionNumber)
     setPendingFiles([])
     setRenamingFileId(null)
     setUploadReservationEnabled(Boolean(assetUploadReserved))
@@ -287,11 +296,14 @@ export function SnippetEditorDialog({
     initialShowShare,
     fromPreset,
     lang,
-    asset?.versionLabel,
-    asset?.familyName,
-    asset?.isPrimary,
-    asset?.familyId,
-    asset?.versionNumber,
+    pair.primary,
+    pair.secondary,
+    assetVersionLabel,
+    assetFamilyName,
+    assetIsPrimary,
+    assetFamilyId,
+    assetVersionNumber,
+    hasAsset,
   ])
 
   const applyPreset = (nextKind: string) => {
@@ -344,7 +356,7 @@ export function SnippetEditorDialog({
   const showContentHint = Boolean(contentHint.trim()) && !content.trim()
 
   const { exiting, requestClose } = useAnimatedClose(open, onClose, 120)
-  const dialogRef = useModalA11y({ open: open && !exiting, onClose: () => requestClose(), initialFocusRef: nameRef })
+  const dialogRef = useModalA11y({ open, onClose: () => requestClose(), initialFocusRef: nameRef })
 
   const uploadAllowedTypes = useMemo(
     () => resolveUploadAllowedTypes(uploadAllowedPresetIds, uploadCustomTypes),
@@ -520,13 +532,18 @@ export function SnippetEditorDialog({
         aria-modal="true"
         aria-label={dialogTitle}
       >
-        <div className="dialog-head">
-          <div>
+        <div className={`dialog-head${headerAccessory ? ' has-accessory' : ''}`}>
+          <div className="snippet-editor-heading">
             <span className="eyebrow">{tx('profile.eyebrow')}</span>
             <h2>{dialogTitle}</h2>
             {contextLabel ? <p className="snippet-editor-context">{contextLabel}</p> : null}
           </div>
-          <button type="button" className="icon-action" onClick={() => requestClose()} aria-label={tx('close')}>
+          {headerAccessory ? (
+            <div className="snippet-editor-head-accessory">
+              {headerAccessory}
+            </div>
+          ) : null}
+          <button type="button" className="icon-action snippet-editor-close-action" onClick={() => requestClose()} aria-label={tx('close')}>
             <X size={16} aria-hidden="true" />
           </button>
         </div>

@@ -1,4 +1,9 @@
-import type { AuthSession, TeamMemberRelationships, TeamRole } from '../../api/phdApi'
+import type {
+  AuthSession,
+  TeamMemberRelationships,
+  TeamPermissionDefaults,
+  TeamRole,
+} from '../../api/phdApi'
 import type { InterfaceMode } from '../../appModel'
 import { isTeacherAssignedToStudent } from '../../teamRelationships'
 import { teamStudentPermissions, teamTeacherPermissions } from '../../teamPermissions'
@@ -21,10 +26,11 @@ export function hasPersonalDiscoverAccess(session: DiscoverSession) {
 export function hasTeamDiscoverAccess(
   role: TeamRole | null | undefined,
   relationships?: TeamMemberRelationships | null,
+  defaults?: TeamPermissionDefaults | null,
 ) {
   if (role === 'owner') return true
-  if (role === 'admin') return teamTeacherPermissions(relationships).useDiscover
-  if (role === 'member') return teamStudentPermissions(relationships).useDiscover
+  if (role === 'admin') return teamTeacherPermissions(relationships, defaults).useDiscover
+  if (role === 'member') return teamStudentPermissions(relationships, defaults).useDiscover
   return false
 }
 
@@ -54,8 +60,9 @@ export function canAccessDiscover(
   session: DiscoverSession,
   teamRole: TeamRole | null | undefined,
   relationships?: TeamMemberRelationships | null,
+  defaults?: TeamPermissionDefaults | null,
 ) {
   return mode === 'team'
-    ? hasTeamDiscoverAccess(teamRole, relationships)
+    ? hasTeamDiscoverAccess(teamRole, relationships, defaults)
     : hasPersonalDiscoverAccess(session)
 }

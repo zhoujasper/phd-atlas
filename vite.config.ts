@@ -1,6 +1,16 @@
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
+const localDevelopmentHosts = Array.from(new Set([
+  'localhost',
+  'phd-atlas.local',
+  'phd-atlas-dev',
+  process.env.COMPUTERNAME,
+  process.env.HOSTNAME,
+]
+  .map((host) => host?.trim().toLocaleLowerCase())
+  .filter((host): host is string => Boolean(host))))
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
@@ -34,8 +44,15 @@ export default defineConfig({
     },
   },
   server: {
+    // Bind the dual-stack wildcard so `localhost` can use ::1 even when
+    // another local tool has mistakenly reserved only 127.0.0.1:5173.
+    host: '::',
     port: 5173,
     strictPort: true,
+    // Vite 8 blocks non-localhost Host headers by default. Keep the allow-list
+    // bounded while supporting this machine's LAN name and the documented
+    // local PhD Atlas aliases used by desktop/browser previews.
+    allowedHosts: localDevelopmentHosts,
     watch: {
       // Local browser profiles, screenshots, and traces are disposable QA
       // artifacts. Their frequent writes must not trigger app rebuilds.

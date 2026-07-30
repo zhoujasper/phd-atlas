@@ -1,6 +1,19 @@
 import type { ProfileAsset } from '../../api/phdApi'
 import type { ApplicationRecord } from '../../data/applications'
-import type { AiAttachmentCandidate } from '../shared/AiDraftPanel'
+
+/**
+ * A server-owned file that the constrained AI attachment tool may propose for
+ * the editable outgoing email. The id mirrors the backend tool id.
+ */
+export type AiAttachmentCandidate = {
+  id: string
+  fileId: string
+  name: string
+  mimeType?: string
+  fileSize?: number
+  source: 'profile' | 'checklist' | 'tasks' | 'correspondence'
+  sourceId: string
+}
 
 function aiAttachmentCandidateId(fileId: string) {
   return `file:${fileId}`
@@ -16,12 +29,19 @@ export function buildDossierAiAttachmentCandidates(
   profileAssets: ProfileAsset[],
 ): AiAttachmentCandidate[] {
   const candidates: AiAttachmentCandidate[] = []
-  const seenFileIds = new Set<string>()
+  const candidateByFileId = new Map<string, AiAttachmentCandidate>()
   const add = (input: Omit<AiAttachmentCandidate, 'id'>) => {
     const fileId = String(input.fileId ?? '').trim()
-    if (!fileId || seenFileIds.has(fileId)) return
-    seenFileIds.add(fileId)
-    candidates.push({ ...input, fileId, id: aiAttachmentCandidateId(fileId) })
+    if (!fileId) return
+    const existing = candidateByFileId.get(fileId)
+    if (existing) {
+      if (!existing.mimeType && input.mimeType) existing.mimeType = input.mimeType
+      if (!existing.fileSize && input.fileSize) existing.fileSize = input.fileSize
+      return
+    }
+    const candidate = { ...input, fileId, id: aiAttachmentCandidateId(fileId) }
+    candidateByFileId.set(fileId, candidate)
+    candidates.push(candidate)
   }
 
   for (const asset of profileAssets) {
@@ -57,6 +77,30 @@ export function buildDossierAiAttachmentCandidates(
         fileSize: version.size ?? material.fileSize,
         source: 'checklist',
         sourceId: material.id,
+      })
+    }
+  }
+
+  for (const task of application.tasks ?? []) {
+    if (task.fileId) {
+      add({
+        fileId: task.fileId,
+        name: task.fileName || task.title,
+        mimeType: task.mimeType,
+        fileSize: task.fileSize,
+        source: 'tasks',
+        sourceId: task.id,
+      })
+    }
+    for (const version of task.versions ?? []) {
+      if (!version.fileId) continue
+      add({
+        fileId: version.fileId,
+        name: version.file || task.fileName || task.title,
+        mimeType: version.mimeType ?? task.mimeType,
+        fileSize: version.size ?? task.fileSize,
+        source: 'tasks',
+        sourceId: task.id,
       })
     }
   }

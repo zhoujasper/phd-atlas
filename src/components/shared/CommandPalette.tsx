@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Search } from 'lucide-react'
 import { useI18n } from '../hooks/useI18n'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
+import { useModalA11y } from '../hooks/useModalA11y'
 import { ModalPortal } from './ModalPortal'
 
 export type CommandPaletteAction = {
@@ -29,6 +30,11 @@ export default function CommandPalette({
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const dialogRef = useModalA11y<HTMLDivElement>({
+    open,
+    onClose: () => requestClose(),
+    initialFocusRef: inputRef,
+  })
 
   const filteredActions = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -48,7 +54,6 @@ export default function CommandPalette({
     if (!open) return
     setQuery('')
     setActiveIndex(0)
-    window.setTimeout(() => inputRef.current?.focus(), 0)
   }, [open])
 
   useEffect(() => {
@@ -67,6 +72,7 @@ export default function CommandPalette({
     <ModalPortal>
       <div className={`dialog-layer command-palette-layer${exiting ? ' exiting' : ''}`} onClick={() => requestClose()}>
       <div
+        ref={dialogRef}
         className="command-palette"
         role="dialog"
         aria-modal="true"
@@ -80,11 +86,6 @@ export default function CommandPalette({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Escape') {
-                event.preventDefault()
-                requestClose()
-                return
-              }
               if (event.key === 'ArrowDown') {
                 event.preventDefault()
                 setActiveIndex((current) => Math.min(current + 1, Math.max(0, filteredActions.length - 1)))

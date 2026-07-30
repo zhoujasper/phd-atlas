@@ -2890,13 +2890,12 @@ html[lang^="ko"] .admin-session-control-label {
 
 /* Fallbacks when colgroup widths are not applied; sum should match content. */
 .admin-user-table th:nth-child(1) { width: 220px; }
-.admin-user-table th:nth-child(2) { width: 176px; }
-.admin-user-table th:nth-child(3) { width: 96px; }
-.admin-user-table th:nth-child(4) { width: 300px; }
-.admin-user-table th:nth-child(5) { width: 160px; }
-.admin-user-table th:nth-child(6) { width: 190px; }
-.admin-user-table th:nth-child(7) { width: 144px; }
-.admin-user-table th:nth-child(8) { width: 164px; }
+.admin-user-table th:nth-child(2) { width: 120px; }
+.admin-user-table th:nth-child(3) { width: 100px; }
+.admin-user-table th:nth-child(4) { width: 190px; }
+.admin-user-table th:nth-child(5) { width: 184px; }
+.admin-user-table th:nth-child(6) { width: 140px; }
+.admin-user-table th:nth-child(7) { width: 176px; }
 
 .admin-user-table td {
   padding: 10px 12px;
@@ -2949,6 +2948,42 @@ html[lang^="ko"] .admin-session-control-label {
 .admin-user-sort-btn:focus-visible {
   outline: none;
   box-shadow: inset 0 0 0 2px var(--accent-ring);
+}
+
+.admin-user-usage-header {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+}
+
+.admin-user-usage-header .admin-user-sort-btn {
+  min-width: 0;
+  padding-right: 4px;
+}
+
+.admin-user-usage-help {
+  justify-self: center;
+}
+
+.admin-user-usage-help .info-tooltip-trigger {
+  width: 22px;
+  height: 22px;
+}
+
+.admin-user-column-label {
+  width: 100%;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: var(--tracking-wide);
+  line-height: 1;
+  text-transform: uppercase;
 }
 
 .admin-role-static,
@@ -3061,7 +3096,7 @@ html[lang^="ko"] .admin-session-control-label {
   border-radius: inherit;
   background: var(--accent);
   transform-origin: left;
-  transition: transform var(--duration) var(--ease-out),
+  transition: width 420ms var(--ease-out),
               background-color var(--duration-fast) var(--ease-out);
 }
 
@@ -3086,18 +3121,6 @@ html[lang^="ko"] .admin-session-control-label {
   font-size: 12px;
   font-weight: 700;
   line-height: 1;
-}
-
-.admin-user-quota-stack {
-  min-width: 0;
-  display: grid;
-  gap: 7px;
-}
-
-.admin-record-quota-line-inline .admin-record-quota-head > span {
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 620;
 }
 
 .admin-team-seat-quota-line {
@@ -3957,13 +3980,16 @@ html[lang^="ko"] .admin-session-control-label {
 }
 
 .admin-user-actions {
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   justify-content: flex-start;
   gap: 6px;
 }
 
 .admin-user-actions .quiet-action {
-  padding: 0 9px;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 0 7px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -4265,11 +4291,8 @@ html[lang^="ko"] .admin-session-control-label {
   gap: 5px;
 }
 
-.admin-storage-line > div {
+.admin-storage-line > .admin-mini-progress {
   height: 6px;
-  overflow: hidden;
-  border-radius: var(--radius-pill);
-  background: var(--surface-secondary);
 }
 
 .admin-storage-line i {
@@ -4281,9 +4304,14 @@ html[lang^="ko"] .admin-session-control-label {
 
 .admin-user-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.admin-user-action-cell {
+  width: 100%;
+  min-width: 0;
 }
 
 .admin-topbar-tabs {
@@ -6327,29 +6355,6 @@ html[lang^="ko"] .admin-session-control-label {
   font-weight: 620;
 }
 
-.admin-team-pro-limit-field input {
-  width: 100%;
-  min-height: 32px;
-  padding: 0 9px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--text);
-  font-size: 12px;
-}
-
-.admin-team-pro-limit-field input:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
-}
-
-.admin-team-pro-limit-field input:disabled {
-  cursor: not-allowed;
-  filter: grayscale(0.2);
-  opacity: 0.4;
-}
-
 .admin-team-member-field.teachers {
   grid-column: 1 / -1;
   padding-top: 10px;
@@ -7067,6 +7072,7 @@ button.destructive:hover {
 
   .admin-update-progress-track > i,
   .admin-update-progress-steps > i,
+  .admin-mini-progress > i,
   .admin-log-retention-trigger > svg:last-child {
     transition-duration: 0.01ms !important;
   }

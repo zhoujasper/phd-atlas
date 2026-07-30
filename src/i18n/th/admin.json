@@ -75,6 +75,8 @@
     "editShareQuota": "แก้ไขขีดจำกัดการแชร์ลิงก์",
     "editShareCreateQuota": "แก้ไขขีดจำกัดลิงก์แชร์ตลอดชีวิต",
     "editStorageQuota": "แก้ไขโควต้าพื้นที่เก็บข้อมูล",
+    "quotaUsageHelpLabel": "วิธีใช้ขีดจำกัดการใช้งาน",
+    "quotaUsageHelp": "วางเมาส์เหนือแถวการใช้งานแล้วเลือกไอคอนดินสอเพื่อแก้ไขขีดจำกัด ป้อน -1 เพื่อตั้งค่ารายการนั้นเป็นไม่จำกัด (∞)",
     "recordUsage": "{count}/{limit} บันทึก",
     "recordUsageLabel": "บันทึกการสมัครเข้าศึกษา บันทึกการใช้",
     "recordCreateUsage": "{count}/{limit} สร้างแล้ว",

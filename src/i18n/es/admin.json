@@ -75,6 +75,8 @@
     "editShareQuota": "Editar límite de enlaces compartidos",
     "editShareCreateQuota": "Editar límite de enlaces compartidos de por vida",
     "editStorageQuota": "Editar cuota de almacenamiento",
+    "quotaUsageHelpLabel": "Cómo funcionan los límites de uso",
+    "quotaUsageHelp": "Pasa el cursor sobre una fila de uso y selecciona el lápiz para editar su límite. Introduce -1 para que el límite sea ilimitado (∞).",
     "recordUsage": "Registros {count}/{limit}",
     "recordUsageLabel": "Uso del registro de candidaturas",
     "recordCreateUsage": "{count}/{limit} creado",

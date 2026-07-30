@@ -11,11 +11,44 @@ function sha256(value) {
   return createHash('sha256').update(String(value)).digest('hex')
 }
 
+export const MAX_APPLICATION_CORRESPONDENCE_EMAILS = 10
+
+export function applicationProfessorAddresses(application) {
+  return normalizeMailAddressList([
+    application?.professor?.email,
+    ...(application?.professor?.correspondenceEmails ?? []),
+  ]).slice(0, MAX_APPLICATION_CORRESPONDENCE_EMAILS)
+}
+
+export function trackedProfessorAddressUpdate(application, address) {
+  const normalizedAddress = normalizeMailAddress(address)
+  const primaryAddress = normalizeMailAddress(application?.professor?.email)
+  const currentAddresses = applicationProfessorAddresses(application)
+  const correspondenceEmails = currentAddresses.filter((email) => email !== primaryAddress)
+  if (!normalizedAddress) {
+    return { status: 'invalid', address: '', correspondenceEmails }
+  }
+  if (currentAddresses.includes(normalizedAddress)) {
+    return { status: 'already-tracked', address: normalizedAddress, correspondenceEmails }
+  }
+  if (currentAddresses.length >= MAX_APPLICATION_CORRESPONDENCE_EMAILS) {
+    return { status: 'limit', address: normalizedAddress, correspondenceEmails }
+  }
+  return {
+    status: 'added',
+    address: normalizedAddress,
+    correspondenceEmails: normalizeMailAddressList([
+      ...correspondenceEmails,
+      normalizedAddress,
+    ]).filter((email) => email !== primaryAddress),
+  }
+}
+
 export function trackedProfessorAddresses(applications, userId) {
   return Array.from(new Set(
     (applications ?? [])
       .filter((application) => application?.ownerId === userId)
-      .map((application) => normalizeMailAddress(application?.professor?.email))
+      .flatMap((application) => applicationProfessorAddresses(application))
       .filter(Boolean),
   )).sort()
 }
@@ -33,9 +66,70 @@ export function ownerMailboxAddresses(user) {
 export function mailWhitelistDigest(applications, userId) {
   const rows = (applications ?? [])
     .filter((application) => application?.ownerId === userId)
-    .map((application) => `${application.id}:${normalizeMailAddress(application?.professor?.email)}`)
+    .map((application) => `${application.id}:${applicationProfessorAddresses(application).sort().join(',')}`)
     .sort()
   return sha256(rows.join('|'))
+}
+
+const SERVER_OWNED_COMMUNICATION_FIELDS = [
+  'bodyFormat',
+  'bodyHtml',
+  'bodyText',
+  'deliveryStatus',
+  'scheduledAt',
+  'sentAt',
+  'deliveryId',
+  'deliveryUserId',
+  'deliveryStartedAt',
+  'nextDeliveryAttemptAt',
+  'deliveryAttemptCount',
+  'deliveryLastErrorCode',
+  'deliveryLastErrorAt',
+  'sourceMessageKey',
+  'sourceMailbox',
+  'importedAt',
+  'mailSecurity',
+]
+
+function isFetchedCommunication(communication) {
+  return communication?.messageType === 'fetched-email'
+    || Boolean(communication?.sourceMessageKey && communication?.importedAt)
+}
+
+export function preserveCommunicationAuthority(existing, candidate) {
+  const next = { ...candidate }
+  for (const field of SERVER_OWNED_COMMUNICATION_FIELDS) {
+    if (existing?.[field] !== undefined) next[field] = existing[field]
+    else delete next[field]
+  }
+  if (isFetchedCommunication(existing)) {
+    next.messageType = 'fetched-email'
+    next.channel = 'Email'
+    next.direction = existing?.direction ?? 'incoming'
+    next.from = existing?.from ?? ''
+    next.to = existing?.to ?? ''
+    next.attachments = existing?.attachments ?? []
+  } else if (next.messageType === 'fetched-email') {
+    next.messageType = next.direction === 'outgoing'
+      ? 'outgoing-email'
+      : next.direction === 'incoming'
+        ? 'incoming-email'
+        : 'note'
+  }
+  if (existing?.mailSecurity?.level === 'danger') next.attachments = []
+  return next
+}
+
+export function preserveApplicationCommunicationAuthority(existingApplication, candidateApplication) {
+  const existingById = new Map(
+    (existingApplication?.communications ?? []).map((communication) => [communication.id, communication]),
+  )
+  return {
+    ...candidateApplication,
+    communications: (candidateApplication?.communications ?? []).map((communication) => (
+      preserveCommunicationAuthority(existingById.get(communication.id), communication)
+    )),
+  }
 }
 
 export function communicationIdForMail(applicationId, messageKey) {
@@ -112,15 +206,26 @@ function mergeFetchedAttachmentReferences(communication, input) {
   return changed
 }
 
+function mergeFetchedMailSecurity(communication, input) {
+  if (!input.mailSecurity) return false
+  let changed = JSON.stringify(communication.mailSecurity ?? null) !== JSON.stringify(input.mailSecurity)
+  communication.mailSecurity = input.mailSecurity
+  if (input.mailSecurity.level === 'danger' && (communication.attachments ?? []).length > 0) {
+    communication.attachments = []
+    changed = true
+  }
+  return changed
+}
+
 function professorIndex(applications, userId) {
   const result = new Map()
   for (const application of applications ?? []) {
     if (application?.ownerId !== userId) continue
-    const email = normalizeMailAddress(application?.professor?.email)
-    if (!email) continue
-    const matches = result.get(email) ?? []
-    matches.push(application)
-    result.set(email, matches)
+    for (const email of applicationProfessorAddresses(application)) {
+      const matches = result.get(email) ?? []
+      matches.push(application)
+      result.set(email, matches)
+    }
   }
   return result
 }
@@ -129,17 +234,27 @@ function notificationForImportedMail(application, communication, message, messag
   const professorName = application?.professor?.english || application?.professor?.email || 'professor'
   const schoolName = application?.school?.name || 'your'
   const incoming = communication.direction === 'incoming'
+  const dangerous = incoming && communication.mailSecurity?.level === 'danger'
+  const quarantinedAttachmentCount = Number(communication.mailSecurity?.quarantinedAttachmentCount ?? 0)
   return {
-    type: 'new_email_imported',
+    type: dangerous ? 'dangerous_email_imported' : 'new_email_imported',
     applicationId: application.id,
     dedupeKey: `mail-import:${application.id}:${messageKey}`,
     triggerDate: communication.date,
-    title: incoming ? `New email from ${professorName}` : `Sent email to ${professorName} imported`,
-    body: incoming
+    title: dangerous
+      ? `Suspicious email from ${professorName} quarantined`
+      : incoming ? `New email from ${professorName}` : `Sent email to ${professorName} imported`,
+    body: dangerous
+      ? `"${communication.subject}" was imported as plain text with links disabled${quarantinedAttachmentCount > 0 ? ` and ${quarantinedAttachmentCount} attachment(s) quarantined` : ''}. Verify the sender through a trusted channel.`
+      : incoming
       ? `"${communication.subject}" was imported into ${schoolName} correspondence.`
       : `"${communication.subject}" sent from your mailbox was imported into ${schoolName} correspondence.`,
-    titleZh: incoming ? `收到 ${professorName} 的新邮件` : `已导入发送给 ${professorName} 的邮件`,
-    bodyZh: incoming
+    titleZh: dangerous
+      ? `已隔离来自 ${professorName} 的可疑邮件`
+      : incoming ? `收到 ${professorName} 的新邮件` : `已导入发送给 ${professorName} 的邮件`,
+    bodyZh: dangerous
+      ? `“${communication.subject}”已按纯文本导入并禁用链接${quarantinedAttachmentCount > 0 ? `，同时隔离 ${quarantinedAttachmentCount} 个附件` : ''}。请通过可信渠道核实发件人。`
+      : incoming
       ? `“${communication.subject}”已导入${application?.school?.name ?? '对应申请'}的往来消息。`
       : `从你的邮箱发送的“${communication.subject}”已导入${application?.school?.name ?? '对应申请'}的往来消息。`,
     targetPath: `/applications/${encodeURIComponent(application.id)}/mail`,
@@ -157,6 +272,9 @@ function notificationForImportedMail(application, communication, message, messag
       subject: communication.subject,
       emailSubject: communication.subject,
       applicationName: application?.school?.name,
+      mailSecurityLevel: communication.mailSecurity?.level ?? '',
+      mailSecuritySignals: communication.mailSecurity?.signals ?? [],
+      quarantinedAttachmentCount,
     },
   }
 }
@@ -183,6 +301,8 @@ export function applyFetchedMailMessages(store, user, fetchedMessages, options =
   let filed = 0
   let incoming = 0
   let outgoing = 0
+  let caution = 0
+  let danger = 0
   let duplicates = 0
   let ignored = 0
   let changed = false
@@ -210,7 +330,7 @@ export function applyFetchedMailMessages(store, user, fetchedMessages, options =
       continue
     }
     handledKeys.add(messageKey)
-    const input = messageToCommunicationInput({ ...message, direction: classification.direction }, user.settings?.language)
+    const input = messageToCommunicationInput({ ...message, direction: classification.direction })
 
     for (const application of matchingApplications) {
       application.communications = application.communications ?? []
@@ -257,11 +377,19 @@ export function applyFetchedMailMessages(store, user, fetchedMessages, options =
         filed += 1
         if (communication.direction === 'incoming') incoming += 1
         else outgoing += 1
+        if (communication.mailSecurity?.level === 'caution') caution += 1
+        if (communication.mailSecurity?.level === 'danger') danger += 1
         changed = true
         newlyImported = true
-      } else if (mergeFetchedAttachmentReferences(communication, input)) {
-        application.updatedAt = now
-        changed = true
+      } else {
+        const securityChanged = mergeFetchedMailSecurity(communication, input)
+        const attachmentsChanged = input.mailSecurity?.level === 'danger'
+          ? false
+          : mergeFetchedAttachmentReferences(communication, input)
+        if (securityChanged || attachmentsChanged) {
+          application.updatedAt = now
+          changed = true
+        }
       }
 
       if (mode === 'incremental' && (newlyImported || communication.importedAt)) {
@@ -275,6 +403,8 @@ export function applyFetchedMailMessages(store, user, fetchedMessages, options =
     filed,
     incoming,
     outgoing,
+    caution,
+    danger,
     duplicates,
     ignored,
     notifications,

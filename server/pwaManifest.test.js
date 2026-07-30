@@ -71,6 +71,7 @@ describe('installable PWA contract', () => {
     const indexHtml = readFileSync(path.join(projectRoot, 'index.html'), 'utf8')
     const serviceWorker = readFileSync(path.join(publicRoot, 'sw.js'), 'utf8')
     const registration = readFileSync(path.join(projectRoot, 'src', 'serviceWorker.ts'), 'utf8')
+    const updateChecks = readFileSync(path.join(projectRoot, 'src', 'serviceWorkerUpdateChecks.ts'), 'utf8')
     const viteConfig = readFileSync(path.join(projectRoot, 'vite.config.ts'), 'utf8')
     const installAssets = [
       '/manifest.webmanifest',
@@ -102,8 +103,12 @@ describe('installable PWA contract', () => {
     expect(serviceWorker).toContain("notification.type !== 'push_test'")
     expect(viteConfig).toContain("manifest: 'asset-manifest.json'")
     expect(registration).toContain("updateViaCache: 'none'")
-    expect(registration).toContain("window.addEventListener('focus', checkForUpdate)")
-    expect(registration).toContain("window.addEventListener('pageshow', checkForUpdate)")
+    expect(registration).toContain("import { startServiceWorkerUpdateChecks }")
+    expect(registration).toContain('startServiceWorkerUpdateChecks(registration)')
+    expect(updateChecks).toContain("window.addEventListener('focus', checkForUpdate)")
+    expect(updateChecks).toContain("window.addEventListener('pageshow', checkForUpdate)")
+    expect(updateChecks).toContain('updateInFlight')
+    expect(updateChecks).toContain('SERVICE_WORKER_UPDATE_MIN_GAP_MS')
     expect(registration).toContain("window.dispatchEvent(new CustomEvent('phd-atlas:pwa-update-ready'))")
     expect(registration).toContain('export function activatePwaUpdate()')
   })

@@ -88,8 +88,8 @@ export function Rail({
           { section: 'applications', label: tx('nav.applications'), shortLabel: tx('navShort.applications', tx('nav.applications')), icon: LayoutList },
           ...(canUseDiscover ? [{
             section: 'discover' as const,
-            label: tx('nav.discover', tx('discover.nav', 'Discover')),
-            shortLabel: tx('navShort.discover', tx('discover.navShort', 'Find')),
+            label: tx('nav.discover'),
+            shortLabel: tx('navShort.discover'),
             icon: Compass,
           }] : []),
           { section: 'resources', label: tx('nav.profile'), shortLabel: tx('navShort.profile', tx('nav.profile')), icon: UserRound },
@@ -121,7 +121,6 @@ export function Rail({
             'members',
             'resources',
             ...(canUseDiscover ? ['discover' as const] : []),
-            'audit',
           ]
       const shortLabelFor = (section: TeamSection) => {
         if (section === 'overview') return tx('navShort.teamOverview', tx('navShort.dashboard', labelFor(section)))
@@ -132,7 +131,7 @@ export function Rail({
             : tx('navShort.teamMembers', labelFor(section))
         }
         if (section === 'resources') return tx('navShort.profile', labelFor(section))
-        if (section === 'discover') return tx('navShort.discover', tx('discover.navShort', 'Find'))
+        if (section === 'discover') return tx('navShort.discover')
         if (section === 'settings') return tx('navShort.settings', labelFor(section))
         return labelFor(section)
       }
@@ -159,7 +158,7 @@ export function Rail({
     return [
       { screen: 'dashboard', label: tx('nav.dashboard'), shortLabel: tx('navShort.dashboard', tx('nav.dashboard')), icon: ClipboardList },
       { screen: 'workspace', label: tx('nav.applications'), shortLabel: tx('navShort.applications', tx('nav.applications')), icon: LayoutList },
-      ...(canUseDiscover ? [{ screen: 'discover' as const, label: tx('nav.discover', tx('discover.nav', 'Discover')), shortLabel: tx('navShort.discover', tx('discover.navShort', 'Find')), icon: Compass }] : []),
+      ...(canUseDiscover ? [{ screen: 'discover' as const, label: tx('nav.discover'), shortLabel: tx('navShort.discover'), icon: Compass }] : []),
       { screen: 'profile', label: tx('nav.profile'), shortLabel: tx('navShort.profile', tx('nav.profile')), icon: UserRound },
       { screen: 'settings', label: tx('nav.settings'), shortLabel: tx('navShort.settings', tx('nav.settings')), icon: Settings },
     ]

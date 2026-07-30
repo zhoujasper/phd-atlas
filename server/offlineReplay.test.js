@@ -107,7 +107,13 @@ describe('offline replay validation', () => {
       communications: [{
         id: 'message-1',
         subject: 'Current subject',
+        bodyFormat: 'markdown',
+        bodyHtml: '<p><strong>Current</strong> body</p>',
+        bodyText: 'Current body',
         attachments: [{ id: 'attachment-1', fileId: 'server-attachment-file' }],
+        deliveryStatus: 'queued',
+        scheduledAt: '2026-07-29T12:00:00.000Z',
+        deliveryId: 'delivery-server-owned',
         sourceMessageKey: 'server-message-key',
       }],
     }
@@ -125,7 +131,13 @@ describe('offline replay validation', () => {
       communications: [{
         ...current.communications[0],
         subject: 'Updated subject',
+        bodyFormat: 'html',
+        bodyHtml: '<script>forged</script>',
+        bodyText: 'Forged body',
         attachments: [{ id: 'forged-attachment' }],
+        deliveryStatus: 'sent',
+        scheduledAt: '2026-07-30T12:00:00.000Z',
+        deliveryId: 'forged-delivery',
         sourceMessageKey: 'forged-message-key',
       }],
       materials: [
@@ -166,7 +178,13 @@ describe('offline replay validation', () => {
     })
     expect(bounded.communications[0]).toMatchObject({
       subject: 'Updated subject',
+      bodyFormat: 'markdown',
+      bodyHtml: '<p><strong>Current</strong> body</p>',
+      bodyText: 'Current body',
       attachments: current.communications[0].attachments,
+      deliveryStatus: 'queued',
+      scheduledAt: '2026-07-29T12:00:00.000Z',
+      deliveryId: 'delivery-server-owned',
       sourceMessageKey: 'server-message-key',
     })
   })

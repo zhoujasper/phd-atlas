@@ -1,8 +1,16 @@
 import { useMemo } from 'react'
-import { richTextToSafeHtml } from './richText'
+import { richTextToSafeHtml, type RichTextFormat } from './richText'
 
-export function MarkdownContent({ value, className = '' }: { value: string; className?: string }) {
-  const html = useMemo(() => richTextToSafeHtml(value), [value])
+export function MarkdownContent({
+  value,
+  className = '',
+  format,
+}: {
+  value: string
+  className?: string
+  format?: RichTextFormat
+}) {
+  const html = useMemo(() => richTextToSafeHtml(value, format), [format, value])
   if (!value.trim()) return null
 
   return (

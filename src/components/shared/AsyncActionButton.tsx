@@ -1,5 +1,6 @@
-import { Check, CircleAlert, LoaderCircle, type LucideIcon } from 'lucide-react'
+import { Check, CircleAlert, type LucideIcon } from 'lucide-react'
 import { useEffect, useRef, useState, type ButtonHTMLAttributes } from 'react'
+import { PendingLabel } from './PendingLabel'
 
 export type AsyncActionState = 'idle' | 'pending' | 'success' | 'error'
 
@@ -99,8 +100,7 @@ export function AsyncActionButton({
         <span>{idleLabel}</span>
       </span>
       <span className="async-action-layer async-action-pending" aria-hidden={state !== 'pending'}>
-        <LoaderCircle size={iconSize} className="spin-icon" aria-hidden="true" />
-        <span>{pendingLabel}</span>
+        <PendingLabel label={pendingLabel} iconSize={iconSize} />
       </span>
       <span className="async-action-layer async-action-success" aria-hidden={state !== 'success'}>
         <Check size={iconSize} aria-hidden="true" />

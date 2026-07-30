@@ -70,7 +70,7 @@ export async function runServerWorker() {
   })
   const pendingBoot = await claimPendingUpdateBoot(storageRoot, process.pid)
 
-  const { startServer } = await import('../server/index.js')
+  const { startServer, stopServer } = await import('../server/index.js')
   const { shutdownStorage } = await import('../server/storage.js')
 
   const server = await startServer()
@@ -107,23 +107,23 @@ export async function runServerWorker() {
     : null
   bootConfirmationTimer?.unref?.()
   let shuttingDown = false
-  const shutdown = () => {
+  const shutdown = async () => {
     if (shuttingDown) return
     shuttingDown = true
     if (bootConfirmationTimer) clearTimeout(bootConfirmationTimer)
-    void releasePendingUpdateBootClaim(storageRoot, process.pid)
-      .catch((error) => console.error('[system-update] Failed to release the pending boot claim:', error))
-      .finally(() => {
-        server.close(() => {
-          void shutdownStorage()
-            .catch((error) => console.error('[storage] Graceful shutdown flush failed:', error))
-            .finally(() => process.exit(0))
-        })
-      })
+    await Promise.all([
+      releasePendingUpdateBootClaim(storageRoot, process.pid)
+        .catch((error) => console.error('[system-update] Failed to release the pending boot claim:', error)),
+      stopServer(server)
+        .catch((error) => console.error('[server] Graceful listener shutdown failed:', error)),
+    ])
+    await shutdownStorage()
+      .catch((error) => console.error('[storage] Graceful shutdown flush failed:', error))
+    process.exit(0)
   }
 
-  process.once('SIGINT', shutdown)
-  process.once('SIGTERM', shutdown)
+  process.once('SIGINT', () => { void shutdown() })
+  process.once('SIGTERM', () => { void shutdown() })
   return server
 }
 

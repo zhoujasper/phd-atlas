@@ -109,11 +109,17 @@ describe('AvatarCropDialog', () => {
 })
 
 describe('UserAvatar', () => {
-  it('uses the cropped image when present and falls back to an initial otherwise', () => {
+  it('uses the cropped image when present and derives compact initials from names', () => {
     const { rerender } = render(<UserAvatar avatarUrl="data:image/png;base64,AAAA" name="Lina" />)
     expect(document.querySelector('.user-avatar-image')).toHaveAttribute('src', 'data:image/png;base64,AAAA')
 
     rerender(<UserAvatar name="Lina" />)
-    expect(screen.getByText('L')).toBeInTheDocument()
+    expect(screen.getByText('LI')).toBeInTheDocument()
+
+    rerender(<UserAvatar name="Prof. Olivia Wang" />)
+    expect(screen.getByText('OW')).toBeInTheDocument()
+
+    rerender(<UserAvatar name="测试教授15" />)
+    expect(screen.getByText('测试')).toBeInTheDocument()
   })
 })

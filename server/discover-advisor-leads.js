@@ -4,7 +4,8 @@ const DIRECTORY_ROOT = /\/(?:people|faculty|staff|directory|profiles?|experts?|r
 
 function words(value) {
   return String(value || '')
-    .normalize('NFKC')
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim()
@@ -14,20 +15,45 @@ function words(value) {
 
 function pageSignal(page) {
   let pathname = ''
-  try { pathname = new URL(page?.url).pathname } catch { /* rejected later */ }
+  try {
+    pathname = decodeURIComponent(new URL(page?.url).pathname)
+  } catch {
+    try { pathname = new URL(page?.url).pathname } catch { /* rejected later */ }
+  }
   return words(`${page?.title || ''} ${page?.label || ''} ${pathname}`).join(' ')
 }
 
 function matchScore(name, page) {
-  const nameWords = words(name).filter((word) => word.length > 1)
-  if (nameWords.length < 2) return 0
-  const signal = ` ${pageSignal(page)} `
-  const first = nameWords[0]
+  const nameWords = words(name)
+  if (!nameWords.length) return 0
+  const signalWords = words(pageSignal(page))
+  const signal = ` ${signalWords.join(' ')} `
+  const signalSet = new Set(signalWords)
+  const compactName = nameWords.join('')
+  const exactWindow = signalWords.some((_, index) => (
+    signalWords.slice(index, index + nameWords.length).join('') === compactName
+  ))
+  if (compactName.length >= 2 && exactWindow) return 1
+  if (nameWords.length === 1) {
+    const [only] = nameWords
+    if (only.length < 2 || !signalSet.has(only)) return 0
+    return [...only].some((character) => character.codePointAt(0) > 127) || only.length >= 4 ? 0.94 : 0
+  }
   const last = nameWords.at(-1)
   if (!signal.includes(` ${last} `)) return 0
-  const matched = nameWords.filter((word) => signal.includes(` ${word} `)).length
-  if (!signal.includes(` ${first} `) && matched < Math.min(2, nameWords.length)) return 0
-  return matched / nameWords.length
+  let matchedWeight = 0.45
+  const remainingWeight = 0.55 / Math.max(1, nameWords.length - 1)
+  for (const word of nameWords.slice(0, -1)) {
+    if (signalSet.has(word)) {
+      matchedWeight += remainingWeight
+      continue
+    }
+    const initialMatch = word.length === 1
+      ? signalWords.some((candidate) => candidate.startsWith(word))
+      : signalSet.has(word[0])
+    if (initialMatch) matchedWeight += remainingWeight * 0.82
+  }
+  return matchedWeight
 }
 
 function isIndividualProfile(page, schoolEntry) {
@@ -62,7 +88,7 @@ export function deriveOfficialAdvisorProfileLeads(programs, sourceIndex, {
     for (const researcher of researchers) {
       const match = pages
         .map((page) => ({ page, score: matchScore(researcher?.name, page) }))
-        .filter((entry) => entry.score >= 0.66)
+        .filter((entry) => entry.score >= 0.72)
         .sort((left, right) => right.score - left.score || Number(right.page.fetched) - Number(left.page.fetched))[0]
       if (!match || seenUrls.has(match.page.url)) continue
       seenUrls.add(match.page.url)
@@ -70,10 +96,13 @@ export function deriveOfficialAdvisorProfileLeads(programs, sourceIndex, {
         name: String(researcher.name || '').slice(0, 180),
         url: match.page.url,
         openAlexId: researcher.openAlexId || null,
-        matchedQueries: (researcher.matchedQueries || []).slice(0, 4),
+        orcid: researcher.orcid || null,
+        scholarlyProfileUrl: researcher.profileUrl || null,
+        scholarlyProviders: (researcher.providers || []).slice(0, 4),
+        matchedQueries: (researcher.matchedQueries || []).slice(0, 8),
         leadOnly: true,
       })
-      if (pis.length >= Math.min(20, Math.max(1, Number(maxProfilesPerSchool) || 10))) break
+      if (pis.length >= Math.min(40, Math.max(1, Number(maxProfilesPerSchool) || 10))) break
     }
     if (pis.length) output.push({
       ...program,

@@ -1,6 +1,8 @@
 import { Buffer } from 'node:buffer'
 import { lookup as nodeDnsLookup } from 'node:dns/promises'
+import { withAbortDeadline } from './abortDeadline.js'
 import { isDiscoverPublicHostname, isDiscoverPublicNetworkTarget } from './discover-source-crawler.js'
+import { pinnedHttpsFetch } from './pinnedHttpsFetch.js'
 import { schoolLogoWebsiteCacheKey } from './schoolLogoCacheKey.js'
 
 const MAX_URL_LENGTH = 2_048
@@ -221,44 +223,42 @@ async function fetchBoundedRemote(url, {
 }) {
   let current = normalizeSchoolLogoRemoteUrl(url)
   if (!current) return null
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect += 1) {
-      if (!(await isDiscoverPublicNetworkTarget(current, dnsLookup))) return null
-      const response = await fetchImpl(current.toString(), {
-        headers: {
-          'User-Agent': LOGO_USER_AGENT,
-          Accept: accept,
-        },
-        redirect: 'manual',
-        signal: controller.signal,
-      })
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers?.get?.('location')
-        const next = location
-          ? normalizeSchoolLogoRemoteUrl(new URL(location, current).toString())
-          : null
-        if (!next) return null
-        current = next
-        continue
+    return await withAbortDeadline(async (signal) => {
+      for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect += 1) {
+        if (!(await isDiscoverPublicNetworkTarget(current, dnsLookup))) return null
+        const response = await fetchImpl(current.toString(), {
+          headers: {
+            'User-Agent': LOGO_USER_AGENT,
+            Accept: accept,
+          },
+          redirect: 'manual',
+          signal,
+        })
+        if (response.status >= 300 && response.status < 400) {
+          const location = response.headers?.get?.('location')
+          const next = location
+            ? normalizeSchoolLogoRemoteUrl(new URL(location, current).toString())
+            : null
+          if (!next) return null
+          current = next
+          continue
+        }
+        if (!response.ok) return null
+        const finalUrl = normalizeSchoolLogoRemoteUrl(response.url || current.toString())
+        if (!finalUrl || !(await isDiscoverPublicNetworkTarget(finalUrl, dnsLookup))) return null
+        const bytes = await readBoundedBuffer(response, maxBytes)
+        if (!bytes) return null
+        return {
+          bytes,
+          contentType: String(response.headers?.get?.('content-type') || '').split(';')[0].trim().toLowerCase(),
+          url: finalUrl.toString(),
+        }
       }
-      if (!response.ok) return null
-      const finalUrl = normalizeSchoolLogoRemoteUrl(response.url || current.toString())
-      if (!finalUrl || !(await isDiscoverPublicNetworkTarget(finalUrl, dnsLookup))) return null
-      const bytes = await readBoundedBuffer(response, maxBytes)
-      if (!bytes) return null
-      return {
-        bytes,
-        contentType: String(response.headers?.get?.('content-type') || '').split(';')[0].trim().toLowerCase(),
-        url: finalUrl.toString(),
-      }
-    }
-    return null
+      return null
+    }, { timeoutMs })
   } catch {
     return null
-  } finally {
-    clearTimeout(timer)
   }
 }
 
@@ -388,11 +388,14 @@ export async function resolveSchoolLogoAsset({
   dnsLookup = nodeDnsLookup,
 } = {}) {
   if (typeof fetchImpl !== 'function') return { found: false, reason: 'unavailable' }
+  const outboundFetch = process.env.NODE_ENV === 'production' && fetchImpl === globalThis.fetch
+    ? pinnedHttpsFetch
+    : fetchImpl
   const directImage = normalizeSchoolLogoRemoteUrl(imageUrl)
   if (directImage) {
     const resolved = await fetchLogoCandidate(
       { url: directImage.toString(), kind: 'manual-link' },
-      { fetchImpl, dnsLookup },
+      { fetchImpl: outboundFetch, dnsLookup },
     )
     if (!resolved) return { found: false, reason: 'not-found' }
     const { selectionScore: _selectionScore, ...result } = resolved
@@ -402,7 +405,7 @@ export async function resolveSchoolLogoAsset({
   const page = normalizeSchoolLogoRemoteUrl(website)
   if (!page) return { found: false, reason: 'invalid-url' }
   const pageResult = await fetchBoundedRemote(page, {
-    fetchImpl,
+    fetchImpl: outboundFetch,
     dnsLookup,
     timeoutMs: PAGE_TIMEOUT_MS,
     maxBytes: MAX_HTML_BYTES,
@@ -423,7 +426,7 @@ export async function resolveSchoolLogoAsset({
   for (let index = 0; index < candidates.length; index += 3) {
     const batch = candidates.slice(index, index + 3)
     const results = await Promise.all(batch.map((candidate) => (
-      fetchLogoCandidate(candidate, { fetchImpl, dnsLookup })
+      fetchLogoCandidate(candidate, { fetchImpl: outboundFetch, dnsLookup })
     )))
     usableCandidates.push(...results.filter(Boolean))
   }
@@ -446,7 +449,7 @@ export async function resolveSchoolLogoAsset({
   if (providerUrl) {
     const providerMatch = await fetchLogoCandidate(
       { url: providerUrl, kind: 'site-icon-provider', score: 0 },
-      { fetchImpl, dnsLookup },
+      { fetchImpl: outboundFetch, dnsLookup },
     )
     if (providerMatch) {
       const { selectionScore: _selectionScore, ...result } = providerMatch

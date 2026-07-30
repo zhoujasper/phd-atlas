@@ -66,6 +66,45 @@ describe('SchoolLogo', () => {
     expect(previewMark).toContain('max-width: 64px')
   })
 
+  it('tries the bundled multilingual catalog even when no website was entered', async () => {
+    const onResolve = vi.fn(async () => false)
+    render(
+      <I18nContext.Provider value={i18nValue}>
+        <SchoolLogoManager
+          schoolName="多伦多大学"
+          website=""
+          autoDetectEnabled
+          onResolve={onResolve}
+          onUpload={vi.fn(async () => true)}
+          onRemove={vi.fn(async () => true)}
+        />
+      </I18nContext.Provider>,
+    )
+
+    await waitFor(() => {
+      expect(onResolve).toHaveBeenCalledWith({ auto: true }, { silent: true })
+    })
+  })
+
+  it('never replaces a logo the user already selected', async () => {
+    const onResolve = vi.fn(async () => true)
+    render(
+      <I18nContext.Provider value={i18nValue}>
+        <SchoolLogoManager
+          schoolName="Example University"
+          website="https://www.example.edu"
+          logo={validLogo}
+          autoDetectEnabled
+          onResolve={onResolve}
+          onUpload={vi.fn(async () => true)}
+          onRemove={vi.fn(async () => true)}
+        />
+      </I18nContext.Provider>,
+    )
+
+    await waitFor(() => expect(onResolve).not.toHaveBeenCalled())
+  })
+
   it('accepts either another school website or a direct image link in one focused popover', async () => {
     const onResolve = vi.fn(async () => true)
     const onUpload = vi.fn(async () => true)

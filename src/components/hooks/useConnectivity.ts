@@ -1,7 +1,6 @@
-import { useEffect, useSyncExternalStore } from 'react'
+import { useSyncExternalStore } from 'react'
 import {
   getConnectivitySnapshot,
-  startConnectivityMonitoring,
   subscribeConnectivity,
 } from '../../connectivity'
 
@@ -12,7 +11,5 @@ export function useConnectivity() {
     getConnectivitySnapshot,
   )
 
-  useEffect(() => startConnectivityMonitoring(), [])
   return snapshot
 }
-

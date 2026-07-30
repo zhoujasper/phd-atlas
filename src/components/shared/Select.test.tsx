@@ -55,6 +55,35 @@ describe('Select', () => {
     rectSpy.mockRestore()
   })
 
+  it('can mount directly into an open, focused editing state', async () => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+    const onOpenChange = vi.fn()
+    const onChange = vi.fn()
+    const user = userEvent.setup()
+
+    render(
+      <Select
+        value="one"
+        options={[
+          { value: 'one', label: 'One' },
+          { value: 'two', label: 'Two' },
+        ]}
+        onChange={onChange}
+        ariaLabel="Inline status"
+        openOnMount
+        onOpenChange={onOpenChange}
+      />,
+    )
+
+    expect(await screen.findByRole('listbox', { name: 'Inline status' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Inline status' })).toHaveFocus()
+    expect(onOpenChange).toHaveBeenCalledWith(true)
+
+    await user.click(screen.getByRole('option', { name: 'Two' }))
+    expect(onChange).toHaveBeenCalledWith('two')
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
+  })
+
   it('creates a searchable custom option from the trailing action', async () => {
     const user = userEvent.setup()
     const onCreate = vi.fn()
@@ -122,6 +151,50 @@ describe('Select', () => {
     await user.type(input, 'y option{enter}')
 
     expect(onCreate).toHaveBeenCalledWith('My option')
+  })
+
+  it('morphs the resident create action into a compact editor and restores focus on cancel', async () => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+    const user = userEvent.setup()
+
+    render(
+      <Select
+        value="one"
+        options={[{ value: 'one', label: 'One' }]}
+        onChange={vi.fn()}
+        create={{
+          label: 'Add custom option',
+          placeholder: 'Option name',
+          createAriaLabel: 'Create option',
+          renameAriaLabel: 'Rename option',
+          deleteAriaLabel: 'Delete option',
+          onCreate: vi.fn(),
+        }}
+      />,
+    )
+
+    await user.click(screen.getByRole('button'))
+    const createButton = screen.getByRole('button', { name: 'Add custom option' })
+    const stage = createButton.closest('.custom-select-create-stage')
+    const panel = stage?.querySelector('.custom-select-create-panel')
+
+    expect(stage).toHaveAttribute('data-edit-mode', 'idle')
+    expect(panel).toHaveAttribute('aria-hidden', 'true')
+
+    await user.click(createButton)
+
+    expect(stage).toHaveClass('is-editing')
+    expect(stage).toHaveAttribute('data-edit-mode', 'create')
+    expect(createButton).toHaveAttribute('aria-hidden', 'true')
+    expect(panel).toHaveAttribute('aria-hidden', 'false')
+    expect(screen.getByRole('textbox', { name: 'Create option' })).toHaveFocus()
+
+    await user.click(screen.getByRole('button', { name: /close/i }))
+
+    expect(stage).not.toHaveClass('is-editing')
+    expect(stage).toHaveAttribute('data-edit-mode', 'idle')
+    expect(panel).toHaveAttribute('aria-hidden', 'true')
+    await waitFor(() => expect(createButton).toHaveFocus())
   })
 
   it('exposes rename and delete controls only for custom options', async () => {

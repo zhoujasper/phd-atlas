@@ -10,6 +10,20 @@ import {
 } from './i18n'
 
 const expectedLanguages = ['en', 'zh', 'ja', 'ko', 'es', 'fr', 'de', 'pt', 'it', 'ru', 'vi', 'th']
+const localizedMarketingSeedPhrases = [
+  'Computer Science PhD',
+  'human-AI collaboration, learning interfaces, and evaluation',
+  'Interactive Intelligence Lab',
+  'Mentor review',
+  'EECS PhD',
+  'robot learning, embodied planning, and safe autonomy',
+  'Robot Learning Group',
+  'Data Science PhD',
+  'Advanced Computer Science PhD',
+  'multilingual NLP and evaluation for scientific discovery',
+  'Language and Knowledge Lab',
+  'Robotics PhD',
+]
 
 describe('i18n language packs', () => {
   it('exposes every complete language pack in the intended picker order', () => {
@@ -46,6 +60,29 @@ describe('i18n language packs', () => {
       expect(t(language, 'nav.applications')).not.toBe('Applications')
       expect(t(language, 'settings.title')).not.toBe('Personal settings')
       expect(localizeStaticText('Academic CV', language)).not.toBe('Academic CV')
+    }
+  })
+
+  it('lets every translation own the two semantic hero lines', async () => {
+    await Promise.all(expectedLanguages.map((language) => loadLanguage(language, ['core'])))
+
+    for (const language of expectedLanguages) {
+      const lines = t(language, 'authMarketingHeroTitle')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+      expect(lines, language).toHaveLength(2)
+      expect(lines.every((line) => line.length > 0), language).toBe(true)
+    }
+  })
+
+  it('localizes every translatable seed value exposed by the public workspace demo', async () => {
+    await Promise.all(expectedLanguages.map((language) => loadLanguage(language, ['core'])))
+
+    for (const language of expectedLanguages.filter((value) => value !== 'en')) {
+      for (const phrase of localizedMarketingSeedPhrases) {
+        expect(localizeStaticText(phrase, language), `${language}: ${phrase}`).not.toBe(phrase)
+      }
     }
   })
 })

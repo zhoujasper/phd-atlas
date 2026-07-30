@@ -79,6 +79,7 @@ describe('admin screen model', () => {
     expect(formatUptime(125, tx)).toBe('2m 5s')
     expect(formatBytes(1024 * 1024)).toBe('1.0 MB')
     expect(formatQuotaLimit(Number.MAX_SAFE_INTEGER)).toBe('∞')
+    expect(formatQuotaLimit(-1)).toBe('∞')
     expect(quotaProgressClass(80)).toBe('admin-mini-progress-fill-warning')
   })
 

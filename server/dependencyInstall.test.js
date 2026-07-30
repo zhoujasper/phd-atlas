@@ -119,6 +119,7 @@ describe('production dependency installer', () => {
       const result = runProductionDependencyInstall('C:\\runtime', {
         vendored: true,
         spawnProcess,
+        processPlatform: 'win32',
         idleTimeoutMs: 1_000,
         attemptTimeoutMs: 10_000,
         totalTimeoutMs: 10_000,
@@ -128,12 +129,204 @@ describe('production dependency installer', () => {
         code: 'UPDATE_DEPENDENCY_INSTALL_TIMEOUT',
       })
       await vi.advanceTimersByTimeAsync(1_100)
+      child.emit('exit', null, 'SIGKILL')
+      killer.emit('exit', 0, null)
       await rejection
-      if (process.platform === 'win32') {
-        expect(spawnProcess.mock.calls[1][0]).toBe('taskkill.exe')
-      } else {
-        expect(child.kills).toContain('SIGTERM')
-      }
+      expect(spawnProcess.mock.calls[1][0]).toBe('taskkill.exe')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not start a mirror attempt until the timed-out process tree has exited', async () => {
+    vi.useFakeTimers()
+    try {
+      const first = new FakeProcess(42_301)
+      const killer = new FakeProcess(42_302)
+      const second = new FakeProcess(42_303)
+      const spawnProcess = vi.fn()
+        .mockReturnValueOnce(first)
+        .mockReturnValueOnce(killer)
+        .mockReturnValueOnce(second)
+      const attempts = []
+      const result = runProductionDependencyInstall('C:\\runtime', {
+        vendored: false,
+        spawnProcess,
+        processPlatform: 'win32',
+        registries: [
+          'https://registry.npmjs.org/',
+          'https://registry.npmmirror.com/',
+        ],
+        idleTimeoutMs: 1_000,
+        attemptTimeoutMs: 10_000,
+        totalTimeoutMs: 10_000,
+        heartbeatMs: 1_000,
+        onAttempt: ({ source }) => attempts.push(source.label),
+      })
+
+      await vi.advanceTimersByTimeAsync(1_100)
+      expect(attempts).toEqual(['npmjs'])
+      expect(spawnProcess).toHaveBeenCalledTimes(2)
+
+      first.emit('exit', null, 'SIGKILL')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(attempts).toEqual(['npmjs'])
+      killer.emit('exit', 0, null)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(attempts).toEqual(['npmjs', 'npmmirror'])
+      second.emit('exit', 0, null)
+
+      await expect(result).resolves.toMatchObject({
+        source: { label: 'npmmirror' },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('fails closed instead of retrying while a timed-out process tree may still be alive', async () => {
+    vi.useFakeTimers()
+    try {
+      const child = new FakeProcess(42_401)
+      const killer = new FakeProcess(42_402)
+      const spawnProcess = vi.fn()
+        .mockReturnValueOnce(child)
+        .mockReturnValueOnce(killer)
+      const attempts = []
+      const result = runProductionDependencyInstall('C:\\runtime', {
+        vendored: false,
+        spawnProcess,
+        registries: [
+          'https://registry.npmjs.org/',
+          'https://registry.npmmirror.com/',
+        ],
+        idleTimeoutMs: 1_000,
+        attemptTimeoutMs: 10_000,
+        totalTimeoutMs: 10_000,
+        heartbeatMs: 1_000,
+        terminationTimeoutMs: 1_000,
+        processPlatform: 'win32',
+        onAttempt: ({ source }) => attempts.push(source.label),
+      })
+      const rejection = expect(result).rejects.toMatchObject({
+        code: 'UPDATE_DEPENDENCY_INSTALL_FAILED',
+      })
+
+      await vi.advanceTimersByTimeAsync(2_100)
+      await rejection
+
+      expect(attempts).toEqual(['npmjs'])
+      expect(spawnProcess).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('waits for the full POSIX process group after the npm root exits', async () => {
+    vi.useFakeTimers()
+    try {
+      const first = new FakeProcess(42_501)
+      const second = new FakeProcess(42_502)
+      const spawnProcess = vi.fn()
+        .mockReturnValueOnce(first)
+        .mockReturnValueOnce(second)
+      let groupAlive = true
+      const deliveredSignals = []
+      const killProcess = vi.fn((pid, signal) => {
+        expect(pid).toBe(-first.pid)
+        if (signal === 0) {
+          if (groupAlive) return true
+          throw Object.assign(new Error('process group no longer exists'), { code: 'ESRCH' })
+        }
+        deliveredSignals.push(signal)
+        if (signal === 'SIGKILL') groupAlive = false
+        return true
+      })
+      const attempts = []
+      const result = runProductionDependencyInstall('C:\\runtime', {
+        vendored: false,
+        spawnProcess,
+        processPlatform: 'linux',
+        killProcess,
+        registries: [
+          'https://registry.npmjs.org/',
+          'https://registry.npmmirror.com/',
+        ],
+        idleTimeoutMs: 1_000,
+        attemptTimeoutMs: 10_000,
+        totalTimeoutMs: 10_000,
+        heartbeatMs: 1_000,
+        terminationTimeoutMs: 2_000,
+        onAttempt: ({ source }) => attempts.push(source.label),
+      })
+
+      await vi.advanceTimersByTimeAsync(1_100)
+      first.emit('exit', null, 'SIGTERM')
+      await vi.advanceTimersByTimeAsync(800)
+      expect(attempts).toEqual(['npmjs'])
+
+      await vi.advanceTimersByTimeAsync(200)
+      expect(deliveredSignals).toEqual(['SIGTERM', 'SIGKILL'])
+      expect(attempts).toEqual(['npmjs', 'npmmirror'])
+      second.emit('exit', 0, null)
+
+      await expect(result).resolves.toMatchObject({
+        source: { label: 'npmmirror' },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels the delayed POSIX force signal after the whole group exits', async () => {
+    vi.useFakeTimers()
+    try {
+      const first = new FakeProcess(42_601)
+      const second = new FakeProcess(42_602)
+      const spawnProcess = vi.fn()
+        .mockReturnValueOnce(first)
+        .mockReturnValueOnce(second)
+      let groupAlive = true
+      const deliveredSignals = []
+      const killProcess = vi.fn((pid, signal) => {
+        expect(pid).toBe(-first.pid)
+        if (signal === 0) {
+          if (groupAlive) return true
+          throw Object.assign(new Error('process group no longer exists'), { code: 'ESRCH' })
+        }
+        deliveredSignals.push(signal)
+        return true
+      })
+      const attempts = []
+      const result = runProductionDependencyInstall('C:\\runtime', {
+        vendored: false,
+        spawnProcess,
+        processPlatform: 'linux',
+        killProcess,
+        registries: [
+          'https://registry.npmjs.org/',
+          'https://registry.npmmirror.com/',
+        ],
+        idleTimeoutMs: 1_000,
+        attemptTimeoutMs: 10_000,
+        totalTimeoutMs: 10_000,
+        heartbeatMs: 1_000,
+        terminationTimeoutMs: 3_000,
+        onAttempt: ({ source }) => attempts.push(source.label),
+      })
+
+      await vi.advanceTimersByTimeAsync(1_100)
+      first.emit('exit', null, 'SIGTERM')
+      groupAlive = false
+      await vi.advanceTimersByTimeAsync(100)
+      expect(attempts).toEqual(['npmjs', 'npmmirror'])
+      second.emit('exit', 0, null)
+      await expect(result).resolves.toMatchObject({
+        source: { label: 'npmmirror' },
+      })
+
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(deliveredSignals).toEqual(['SIGTERM'])
     } finally {
       vi.useRealTimers()
     }

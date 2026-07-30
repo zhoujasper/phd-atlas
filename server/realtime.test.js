@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createRealtimeHub, scopesForMutation } from './realtime.js'
 
 class FakeResponse extends EventEmitter {
@@ -80,4 +80,45 @@ describe('realtime invalidation hub', () => {
     outsider.end()
     expect(hub.subscriberCount()).toBe(0)
   })
+
+  it('retires a backpressured stream instead of growing heartbeat buffers', () => {
+    vi.useFakeTimers()
+    try {
+      const hub = createRealtimeHub()
+      const response = subscribe(hub, {
+        userId: 'user_slow',
+        clientId: 'client_slow',
+      })
+      response.writableLength = 65 * 1024
+
+      vi.advanceTimersByTime(25_000)
+
+      expect(response.writableEnded).toBe(true)
+      expect(hub.subscriberCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drains every live stream during shutdown and refuses late subscribers', () => {
+    const hub = createRealtimeHub()
+    const first = subscribe(hub, { userId: 'user_1', clientId: 'client_1' })
+    const second = subscribe(hub, { userId: 'user_2', clientId: 'client_2' })
+
+    hub.close()
+
+    expect(first.writableEnded).toBe(true)
+    expect(second.writableEnded).toBe(true)
+    expect(hub.subscriberCount()).toBe(0)
+    expect(hub.publish({
+      scopes: ['applications'],
+      userIds: ['user_1'],
+    })).toBe(0)
+
+    const late = subscribe(hub, { userId: 'user_3', clientId: 'client_3' })
+    expect(late.statusCode).toBe(503)
+    expect(late.writableEnded).toBe(true)
+    expect(hub.subscriberCount()).toBe(0)
+  })
+
 })

@@ -64,10 +64,21 @@ function writeEvent(response, event, payload) {
   return true
 }
 
+function writeHeartbeat(response, stamp) {
+  if (response.destroyed || response.writableEnded) return false
+  if (Number(response.writableLength ?? 0) > MAX_BUFFERED_BYTES) {
+    response.end()
+    return false
+  }
+  response.write(`: keepalive ${stamp}\n\n`)
+  return true
+}
+
 export function createRealtimeHub() {
   const subscribers = new Set()
   let heartbeatTimer = null
   let revision = 0
+  let closed = false
 
   const stopHeartbeatWhenIdle = () => {
     if (subscribers.size > 0 || heartbeatTimer === null) return
@@ -81,21 +92,25 @@ export function createRealtimeHub() {
   }
 
   const ensureHeartbeat = () => {
-    if (heartbeatTimer !== null) return
+    if (heartbeatTimer !== null || closed) return
     heartbeatTimer = setInterval(() => {
       const stamp = Date.now()
       for (const subscriber of [...subscribers]) {
-        if (subscriber.response.destroyed || subscriber.response.writableEnded) {
+        if (!writeHeartbeat(subscriber.response, stamp)) {
           remove(subscriber)
-          continue
         }
-        subscriber.response.write(`: keepalive ${stamp}\n\n`)
       }
     }, HEARTBEAT_MS)
     heartbeatTimer.unref?.()
   }
 
   const subscribe = (request, response) => {
+    if (closed) {
+      response.status(503)
+      response.setHeader('Connection', 'close')
+      response.end()
+      return
+    }
     const userId = String(request.user?.id ?? '')
     const clientId = String(request.get('x-phd-client-id') ?? '')
     const teamIds = new Set((request.teamMemberships ?? []).map((membership) => membership.teamId).filter(Boolean))
@@ -137,6 +152,7 @@ export function createRealtimeHub() {
     broadcast = false,
     originClientId = '',
   }) => {
+    if (closed) return 0
     const validScopes = [...new Set(scopes)].filter((scope) => REALTIME_SCOPES.includes(scope))
     if (validScopes.length === 0 || subscribers.size === 0) return 0
     revision += 1
@@ -160,7 +176,19 @@ export function createRealtimeHub() {
     return delivered
   }
 
+  const close = () => {
+    if (closed) return
+    closed = true
+    if (heartbeatTimer !== null) clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+    for (const subscriber of [...subscribers]) {
+      subscriber.response.end()
+    }
+    subscribers.clear()
+  }
+
   return {
+    close,
     publish,
     subscribe,
     subscriberCount: () => subscribers.size,

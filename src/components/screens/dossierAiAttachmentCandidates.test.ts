@@ -32,6 +32,16 @@ describe('buildDossierAiAttachmentCandidates', () => {
         { id: 'duplicate-message-attachment', fileName: 'duplicate.pdf', fileId: 'shared-file' },
       ],
     }]
+    application.tasks = [{
+      id: 'task-1',
+      title: 'Writing sample',
+      due: '2026-07-24',
+      done: false,
+      fileId: 'task-file',
+      fileName: 'writing-sample.pdf',
+      fileSize: 250,
+      mimeType: 'application/pdf',
+    }]
     const profileAssets: ProfileAsset[] = [{
       id: 'asset-1',
       name: 'Academic CV',
@@ -45,8 +55,9 @@ describe('buildDossierAiAttachmentCandidates', () => {
 
     expect(buildDossierAiAttachmentCandidates(application, profileAssets)).toEqual([
       { id: 'file:profile-file', fileId: 'profile-file', name: 'cv.pdf', mimeType: 'application/pdf', fileSize: 400, source: 'profile', sourceId: 'asset-1' },
-      { id: 'file:shared-file', fileId: 'shared-file', name: 'shared.pdf', mimeType: undefined, fileSize: undefined, source: 'profile', sourceId: 'asset-1' },
+      { id: 'file:shared-file', fileId: 'shared-file', name: 'shared.pdf', mimeType: 'application/pdf', fileSize: 100, source: 'profile', sourceId: 'asset-1' },
       { id: 'file:checklist-current', fileId: 'checklist-current', name: 'proposal.pdf', mimeType: 'application/pdf', fileSize: 200, source: 'checklist', sourceId: 'material-1' },
+      { id: 'file:task-file', fileId: 'task-file', name: 'writing-sample.pdf', mimeType: 'application/pdf', fileSize: 250, source: 'tasks', sourceId: 'task-1' },
       { id: 'file:message-file', fileId: 'message-file', name: 'reply.pdf', mimeType: 'application/pdf', fileSize: 300, source: 'correspondence', sourceId: 'message-1' },
     ])
   })

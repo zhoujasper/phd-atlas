@@ -5,6 +5,7 @@ import { phdApi, type AuthSession, type TeamJoinCodePreview } from '../../api/ph
 import { normalizeErrorMessage } from '../../errorMessages'
 import { useI18n } from '../hooks/useI18n'
 import { LaunchScreen } from '../shared/LaunchScreen'
+import { PendingLabel } from '../shared/PendingLabel'
 
 const SESSION_KEY = 'phd-atlas-session'
 
@@ -102,8 +103,8 @@ export function TeamJoinScreen({ code }: { code: string }) {
                 </div>
               </>
             ) : (
-              <button type="button" className="primary-action" disabled={busy} onClick={handleJoin}>
-                {busy ? tx('working') : tx('team.joinCodeSubmit')}
+              <button type="button" className="primary-action" disabled={busy} aria-busy={busy || undefined} onClick={handleJoin}>
+                {busy ? <PendingLabel label={tx('working')} /> : tx('team.joinCodeSubmit')}
               </button>
             )}
           </>

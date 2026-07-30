@@ -38,7 +38,7 @@
 
 /* Focus frame: rounded hole + soft ring, morphs between targets */
 .atlas-guide-spotlight {
-  --atlas-guide-radius: 12px;
+  --atlas-guide-radius: var(--radius-xl);
   --atlas-guide-dim: rgba(0, 0, 0, 0.36);
   --atlas-guide-ring: color-mix(in srgb, var(--accent) 55%, transparent);
   --atlas-guide-glow: color-mix(in srgb, var(--accent) 18%, transparent);

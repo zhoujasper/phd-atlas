@@ -23,6 +23,14 @@ export type ScholarshipFormDraft = {
   timeline: ScholarshipTimelineItem[]
 }
 
+export function sortScholarshipTimelineNewestFirst<T extends { date?: string }>(
+  events: readonly T[],
+): T[] {
+  return [...events].sort((left, right) =>
+    (right.date || '').localeCompare(left.date || ''),
+  )
+}
+
 export function createScholarshipDraft(school = ''): ScholarshipFormDraft {
   return {
     name: '',

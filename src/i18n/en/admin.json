@@ -179,6 +179,8 @@
     "editShareQuota": "Edit share link limit",
     "editShareCreateQuota": "Edit lifetime share link limit",
     "editStorageQuota": "Edit storage quota",
+    "quotaUsageHelpLabel": "How usage limits work",
+    "quotaUsageHelp": "Hover over a usage row and select the pencil to edit its limit. Enter -1 to make that limit unlimited (∞).",
     "recordUsage": "{count}/{limit} records",
     "recordUsageLabel": "Application record usage",
     "recordCreateUsage": "{count}/{limit} created",

@@ -352,7 +352,7 @@ test('waits for a cold rail screen before starting its snapshot handoff', async 
 
     releaseProfileModule?.()
     await expect.poll(() => new URL(page.url()).pathname).toBe('/profile')
-    await expect(page.getByRole('heading', { name: /Snippets library|片段库/i })).toBeVisible()
+    await expect(page.getByRole('heading', { name: /My Profile|我的画像/i })).toBeVisible()
     await expectSmoothHandoff(page, 'screen')
   } finally {
     releaseProfileModule?.()

@@ -2,12 +2,13 @@
   "share": {
     "eyebrow": "Vista previa de solo lectura",
     "title": "Compartir \"{name}\"",
-    "activeLinks": "Acciones activas",
+    "activeLinks": "Enlaces compartidos activos",
+    "activeCount": "{count}/{limit} enlaces activos",
     "noLinks": "Aún no hay enlaces para compartir.",
     "createNew": "Crear nuevo enlace para compartir",
     "create": "Crear enlace para compartir",
     "previewHint": "Elija un paquete de proyecto completo o seleccione solo las páginas que el destinatario debería ver.",
-    "linkLabel": "compartir enlace",
+    "linkLabel": "enlace para compartir",
     "revoke": "Revocar enlace para compartir",
     "neverExpires": "Nunca caduca",
     "expiresAt": "Caduca {date}",
@@ -21,7 +22,7 @@
       "duration": "Duración",
       "permission": "Permiso",
       "scope": "Alcance",
-      "actions": "Comportamiento",
+      "actions": "Acciones",
       "subject": "Elemento compartido"
     },
     "permission": {
@@ -31,18 +32,18 @@
     },
     "expiry": {
       "1h": "1 hora",
-      "1d": "1 dia",
-      "7d": "7 dias",
-      "30d": "30 dias",
+      "1d": "1 día",
+      "7d": "7 días",
+      "30d": "30 días",
       "never": "Nunca"
     },
-    "packageMode": "Modo compartir paquete",
+    "packageMode": "Modo de uso compartido",
     "completePackage": "Proyecto completo",
     "completePackageDesc": "Comparta cada página pública del proyecto como un dossier pulido.",
     "customPackage": "Elige páginas",
     "customPackageDesc": "Limite el enlace a páginas y flujos de trabajo específicos.",
     "completeIncludes": "El paquete completo incluye",
-    "sectionsTitle": "Paginas compartidas",
+    "sectionsTitle": "Páginas compartidas",
     "scope": {
       "all": "Todas las páginas",
       "count": "{count} páginas",

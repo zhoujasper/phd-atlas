@@ -28,7 +28,7 @@ export function TeamWorkspaceChooser({
   const { tx, format } = useI18n()
   const { exiting, requestClose } = useAnimatedClose(open, onClose)
   const dialogRef = useModalA11y<HTMLDivElement>({
-    open: open && !exiting,
+    open,
     onClose: () => requestClose(onClose),
   })
 

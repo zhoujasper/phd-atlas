@@ -30,10 +30,31 @@ function restoreCommunicationAuthority(incomingItems = [], currentItems = []) {
   const currentById = new Map(currentItems.map((item) => [item.id, item]))
   return incomingItems.map((item) => {
     const current = currentById.get(item.id)
-    if (!current) return { ...item, attachments: [] }
+    if (!current) {
+      const {
+        bodyFormat: _bodyFormat,
+        bodyHtml: _bodyHtml,
+        bodyText: _bodyText,
+        ...safe
+      } = item
+      return { ...safe, attachments: [] }
+    }
     return {
       ...item,
       attachments: current.attachments,
+      bodyFormat: current.bodyFormat,
+      bodyHtml: current.bodyHtml,
+      bodyText: current.bodyText,
+      deliveryStatus: current.deliveryStatus,
+      scheduledAt: current.scheduledAt,
+      sentAt: current.sentAt,
+      deliveryId: current.deliveryId,
+      deliveryUserId: current.deliveryUserId,
+      deliveryStartedAt: current.deliveryStartedAt,
+      nextDeliveryAttemptAt: current.nextDeliveryAttemptAt,
+      deliveryAttemptCount: current.deliveryAttemptCount,
+      deliveryLastErrorCode: current.deliveryLastErrorCode,
+      deliveryLastErrorAt: current.deliveryLastErrorAt,
       sourceMessageKey: current.sourceMessageKey,
       sourceMailbox: current.sourceMailbox,
       importedAt: current.importedAt,

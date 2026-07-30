@@ -1,10 +1,15 @@
 import webPush from 'web-push'
+import https from 'node:https'
 import {
   deletePushSubscriptionByEndpoint,
   getPushVapidKeys,
   listPushSubscriptions,
   savePushVapidKeys,
 } from './storage.js'
+import {
+  OutboundNetworkPolicyError,
+  resolvePinnedNetworkTarget,
+} from './outboundNetworkPolicy.js'
 
 const WEB_PUSH_REQUEST_TIMEOUT_MS = 10_000
 let configurationPromise = null
@@ -71,11 +76,59 @@ function notificationPayload(notification) {
 }
 
 function isInvalidSubscription(error) {
+  if (error instanceof OutboundNetworkPolicyError || error?.code === 'INVALID_PUSH_ENDPOINT') {
+    return true
+  }
   const status = Number(error?.statusCode ?? error?.status ?? 0)
   // Provider 4xx responses are permanent for this endpoint/key envelope.
   // Retaining them makes every later reminder fail and prevents the explicit
   // enable/test flow from creating a clean subscription.
   return [400, 401, 403, 404, 410].includes(status)
+}
+
+async function pinnedPushAgent(endpoint) {
+  let url
+  try {
+    url = new URL(String(endpoint ?? ''))
+  } catch {
+    url = null
+  }
+  if (
+    !url
+    || url.protocol !== 'https:'
+    || url.username
+    || url.password
+    || url.hash
+    || (url.port && url.port !== '443')
+  ) {
+    const error = new Error('Push endpoint must be a credential-free HTTPS URL on port 443.')
+    error.code = 'INVALID_PUSH_ENDPOINT'
+    throw error
+  }
+  const target = await resolvePinnedNetworkTarget(url.hostname)
+  if (!target.pinned || !target.family) return null
+  return new https.Agent({
+    keepAlive: false,
+    lookup(_hostname, lookupOptions, callback) {
+      if (lookupOptions?.all) {
+        callback(null, [{ address: target.address, family: target.family }])
+        return
+      }
+      callback(null, target.address, target.family)
+    },
+  })
+}
+
+async function sendPinnedPush(subscription, payload, options) {
+  const agent = await pinnedPushAgent(subscription.endpoint)
+  try {
+    return await webPush.sendNotification(subscription, payload, {
+      ...options,
+      ...(agent ? { agent } : {}),
+    })
+  } finally {
+    agent?.destroy()
+  }
 }
 
 export async function initializeWebPush() {
@@ -97,7 +150,7 @@ export async function deliverWebPush(userId, notification) {
 
   const payload = notificationPayload(notification)
   const results = await Promise.allSettled(
-    subscriptions.map((subscription) => webPush.sendNotification(subscription, payload, {
+    subscriptions.map((subscription) => sendPinnedPush(subscription, payload, {
       TTL: 60 * 60 * 24,
       urgency: notificationUrgency(notification.type),
       timeout: WEB_PUSH_REQUEST_TIMEOUT_MS,

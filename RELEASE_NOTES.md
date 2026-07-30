@@ -5,6 +5,99 @@ section per version using the exact heading `## v<package.json version>`.
 Automation extracts only the matching section, so older notes remain immutable
 history while the next version can be prepared in the same file.
 
+## v0.1.0-beta.7
+
+**Prerelease — Beta / 预发布版本。** Back up the complete workspace before
+upgrading.
+
+> **Upgrade path:** Beta.6 installations can use the automatic update flow in
+> Admin. Beta.5 and earlier installations must first complete the documented
+> manual transition to Beta.6, then update to Beta.7.
+>
+> **升级路径：** Beta.6 可直接在管理后台使用自动更新。Beta.5 及更早版本必须先按
+> Beta.6 Release 中的说明手动过渡到 Beta.6，再升级到 Beta.7。
+
+### Highlights
+
+- **Durable correspondence from draft to delivery.** Immediate and scheduled
+  email now share one persisted outbox, stable delivery identity, crash
+  recovery, attachment-vault references, startup retry, and exact sent-time
+  ownership. System mail, mailbox sync, notifications, digests, and browser
+  push use the same durable, non-overlapping background-work discipline.
+- **Rich email that arrives as composed.** The shared editor supports safe
+  Markdown and HTML, GFM structures, syntax highlighting, formatting, and
+  context-aware source completion. Authored mail is sanitized once, stored as
+  immutable HTML plus plain text, and reused unchanged for immediate,
+  scheduled, and retried SMTP delivery.
+- **AI drafting with bounded file authority.** Draft source switches authorize
+  encrypted-vault context without exposing file handles to the browser. The
+  model can return only server-issued readable attachment ids and safe
+  recipient-facing filenames; its exact plan remains editable before sending.
+- **Evidence-gated application research.** Existing-application enrichment is
+  now AI-key-required and verifies every proposed fact against a URL fetched
+  locally in the same run. Discover adds a six-domain professional taxonomy,
+  OpenAlex Topic validation, affiliation-checked Crossref and discipline-routed
+  Europe PMC leads while preserving official university pages as the saved-fact
+  boundary.
+- **Stronger application and Team workflows.** Automatic application saving,
+  conflict-aware offline recovery, role-default Team permissions with sparse
+  overrides, bulk invitation validation, smart tables, board/table state
+  retention, mobile student drill-down, and one-step checklist sorting reduce
+  manual recovery and repeated work.
+- **A more complete self-hosted product surface.** The signed-out product demo,
+  Dossier tabs, Correspondence, Funding, Timeline, Profile, Settings, Team, and
+  mobile navigation now share the same responsive information hierarchy,
+  compact controls, keyboard behavior, dark tokens, and reduced-motion paths.
+- **225 curated school marks.** The built-in catalog contains distinct,
+  provenance-backed PNG identities and directly covers 119 of the 145 bundled
+  Discover school adapters before any bounded website fallback is needed.
+
+### Security and reliability
+
+- Added DNS-pinned outbound HTTPS policy, exact production Host validation,
+  bounded upload/container parsing, imported-mail threat analysis, safe request
+  logging, password-verifier limits, and a documented cross-surface threat
+  model.
+- Replaced component-local outage handling with one application-wide API
+  circuit and coordinated server drain for health WebSockets, realtime SSE,
+  push work, and recurring jobs. Stale responses can no longer reopen a
+  recovered or retiring connection generation.
+- Expanded release and source audits while retaining zero high-severity npm
+  vulnerabilities, immutable version tags, deterministic update assets, public
+  CI, MSSQL verification, and amd64/arm64 container gates.
+
+### 中文摘要
+
+- **邮件从草稿到投递全程持久化。** 立即发送与定时发送共用一个服务端 outbox，
+  保留稳定投递标识、附件保险库引用、崩溃恢复、启动重试和权威发送时间；系统邮件、
+  邮箱同步、通知、摘要和浏览器推送也使用不重叠的持久后台任务。
+- **富文本邮件按编辑结果送达。** 共享编辑器支持安全 Markdown/HTML、GFM 结构、
+  语法高亮、格式化和上下文源码补全。邮件在入队前只清理一次，随后以不可变 HTML
+  和纯文本快照用于立即、定时及重试投递。
+- **AI 附件权限有明确边界。** 来源开关只授权读取已保存的加密材料；模型只能选择
+  服务端签发且当前可读的文件 ID，并返回经过扩展名和路径清理的收件人文件名。
+  用户发送前仍可重命名或删除附件。
+- **申请调研必须有本地核验的证据。** 现有申请增强改为必须配置 AI 密钥，任何建议
+  只有在同一次运行中由服务端实际抓取并验证其精确 URL 后才能进入审核。Discover
+  新增六大领域专业分类、OpenAlex Topic 校验、带机构核验的 Crossref 和按学科启用
+  的 Europe PMC 线索，同时继续只把学校官方页面作为可保存事实边界。
+- **申请与 Team 流程更可靠。** 新增自动保存、冲突感知离线恢复、角色默认权限与
+  稀疏个人覆盖、批量邀请校验、智能表格、保留状态的看板/表格切换、移动端学生
+  钻取和清单拖拽排序，减少手动恢复和重复操作。
+- **公开自托管体验更完整。** 未登录产品演示、Dossier 各页、通信、Funding、
+  Timeline、Profile、Settings、Team 与移动导航统一为同一套响应式信息层级、
+  紧凑控件、键盘路径、暗色令牌和减少动态效果路径。
+- **内置 225 个学校标识。** 目录中的 PNG 内容互不重复且保留来源与许可信息，
+  在网站回退前可直接覆盖 145 个 Discover 学校适配器中的 119 个。
+- **安全与可恢复性增强。** 新增 DNS 固定的出站 HTTPS、严格 Host 校验、上传格式
+  边界、来信威胁分析、安全请求日志、密码校验资源上限和完整威胁模型；全局 API
+  熔断与协调停机也避免旧响应或长连接干扰恢复。
+
+Full details / 完整记录:
+[English changelog](https://github.com/zhoujasper/phd-atlas/blob/v0.1.0-beta.7/CHANGELOG.md)
+·
+[简体中文更新日志](https://github.com/zhoujasper/phd-atlas/blob/v0.1.0-beta.7/CHANGELOG.zh-CN.md)
+
 ## v0.1.0-beta.6
 
 **Prerelease — Beta / 预发布版本。** Back up the complete workspace before

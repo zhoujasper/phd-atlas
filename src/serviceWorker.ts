@@ -1,3 +1,5 @@
+import { startServiceWorkerUpdateChecks } from './serviceWorkerUpdateChecks'
+
 let reloadingForServiceWorker = false
 let waitingRegistration: ServiceWorkerRegistration | null = null
 let updateActivationRequested = false
@@ -28,19 +30,9 @@ function watchRegistration(registration: ServiceWorkerRegistration) {
     })
   })
 
-  const checkForUpdate = () => {
-    if (document.visibilityState === 'visible' && navigator.onLine) {
-      void registration.update().catch(() => {})
-    }
-  }
-
-  const interval = window.setInterval(checkForUpdate, 15 * 60 * 1000)
+  const stopUpdateChecks = startServiceWorkerUpdateChecks(registration)
   const cleanup = () => {
-    window.clearInterval(interval)
-    document.removeEventListener('visibilitychange', checkForUpdate)
-    window.removeEventListener('online', checkForUpdate)
-    window.removeEventListener('focus', checkForUpdate)
-    window.removeEventListener('pageshow', checkForUpdate)
+    stopUpdateChecks()
     window.removeEventListener('pagehide', handlePageHide)
   }
   const handlePageHide = (event: PageTransitionEvent) => {
@@ -48,12 +40,7 @@ function watchRegistration(registration: ServiceWorkerRegistration) {
     // listeners alive there so it checks again when the installed app resumes.
     if (!event.persisted) cleanup()
   }
-  document.addEventListener('visibilitychange', checkForUpdate)
-  window.addEventListener('online', checkForUpdate)
-  window.addEventListener('focus', checkForUpdate)
-  window.addEventListener('pageshow', checkForUpdate)
   window.addEventListener('pagehide', handlePageHide)
-  checkForUpdate()
 }
 
 export function activatePwaUpdate() {

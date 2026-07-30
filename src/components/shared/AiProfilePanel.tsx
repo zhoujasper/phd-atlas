@@ -87,7 +87,7 @@ export function AiProfilePanel({
   }
   const { exiting, requestClose } = useAnimatedClose(open, closeDialog)
   const dialogRef = useModalA11y<HTMLElement>({
-    open: open && !exiting,
+    open,
     onClose: () => requestClose(),
     initialFocusRef: preferredNameRef,
   })

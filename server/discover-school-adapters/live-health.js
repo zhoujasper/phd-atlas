@@ -5,6 +5,7 @@ import {
   isDiscoverPublicNetworkTarget,
   readDiscoverResponseText,
 } from '../discover-source-crawler.js'
+import { pinnedHttpsFetch } from '../pinnedHttpsFetch.js'
 
 const USER_AGENT = 'PhDAtlasAdapterHealth/1.0 (+https://phd-atlas.local/research)'
 const MAX_REDIRECTS = 5
@@ -391,11 +392,14 @@ export async function checkSchoolAdaptersLive(adapters, {
   const requestTimeoutMs = Math.max(250, Math.min(MAX_HEALTH_TIMEOUT_MS, Math.floor(Number(timeoutMs)) || 15_000))
   const requestDelayMs = boundedInteger(perHostDelayMs, 1_000, 0, MAX_PER_HOST_DELAY_MS)
   const retryCount = boundedInteger(retries, 1, 0, MAX_RETRIES)
+  const outboundFetch = process.env.NODE_ENV === 'production' && fetchImpl === globalThis.fetch
+    ? pinnedHttpsFetch
+    : fetchImpl
   const networkLookup = dnsLookup === undefined
     ? (fetchImpl === globalThis.fetch ? nodeDnsLookup : null)
     : dnsLookup
   const context = {
-    fetchImpl,
+    fetchImpl: outboundFetch,
     timeoutMs: requestTimeoutMs,
     dnsLookup: networkLookup,
     retries: retryCount,

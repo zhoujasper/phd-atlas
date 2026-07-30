@@ -2,6 +2,19 @@ import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
+import {
+  OutboundNetworkPolicyError,
+  resolveMailNetworkTarget,
+} from './outboundNetworkPolicy.js'
+import {
+  analyzeInboundMailThreat,
+  detectDeceptiveMailLinks,
+} from './mailThreatAnalysis.js'
+import {
+  hasDangerousInboundAttachmentName,
+  hasInboundVirusTestMarker,
+  validateInboundAttachmentContent,
+} from './uploadSecurity.js'
 
 export class MailFetchError extends Error {
   constructor(code, message, cause) {
@@ -25,11 +38,58 @@ function htmlToPlainText(html) {
   return String(html).replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
-const BLOCKED_ATTACHMENT_EXTENSIONS = new Set([
-  '.bat', '.cmd', '.com', '.dll', '.exe', '.msi', '.ps1', '.scr', '.sh',
-])
-const VIRUS_TEST_MARKER = 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE'
-const EXCLUDED_SPECIAL_USE = new Set(['\\Trash', '\\Junk', '\\Drafts'])
+const EXCLUDED_SPECIAL_USE = new Set(['\\trash', '\\junk', '\\drafts'])
+
+function normalizedMailboxName(value) {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+}
+
+const SENT_MAILBOX_NAMES = new Set([
+  'sent',
+  'sent mail',
+  'sent items',
+  'sent messages',
+  'gesendet',
+  'gesendete elemente',
+  'gesendete nachrichten',
+  'enviados',
+  'elementos enviados',
+  'correo enviado',
+  'envoyes',
+  'elements envoyes',
+  'messages envoyes',
+  'inviati',
+  'posta inviata',
+  'itens enviados',
+  'mensagens enviadas',
+  'verzonden',
+  'wyslane',
+  'gonderilmis ogeler',
+  '已发送',
+  '已发邮件',
+  '已发送邮件',
+  '发件箱',
+  '已發送',
+  '寄件備份',
+  '已寄出',
+  '送信済み',
+  '送信済みメール',
+  '보낸편지함',
+  '보낸 메일',
+  'отправленные',
+  'отправленные элементы',
+  'ส่งแล้ว',
+  'จดหมายที่ส่งแล้ว',
+  'da gui',
+  'thu da gui',
+].map(normalizedMailboxName))
+
 const EXCLUDED_MAILBOX_NAMES = new Set([
   'trash',
   'deleted items',
@@ -45,19 +105,78 @@ const EXCLUDED_MAILBOX_NAMES = new Set([
   '垃圾邮件',
   '草稿',
   '草稿箱',
-])
+  'papierkorb',
+  'geloschte elemente',
+  'junk e mail',
+  'entwurfe',
+  'papelera',
+  'elementos eliminados',
+  'correo no deseado',
+  'borradores',
+  'corbeille',
+  'elements supprimes',
+  'courrier indesirable',
+  'brouillons',
+  'cestino',
+  'posta indesiderata',
+  'bozze',
+  'lixeira',
+  'itens excluidos',
+  'spam',
+  'rascunhos',
+  'ゴミ箱',
+  '迷惑メール',
+  '下書き',
+  '휴지통',
+  '스팸',
+  '임시보관함',
+  'корзина',
+  'удаленные',
+  'спам',
+  'черновики',
+  'ถังขยะ',
+  'จดหมายขยะ',
+  'แบบร่าง',
+  'thung rac',
+  'thu rac',
+  'ban nhap',
+].map(normalizedMailboxName))
 const SEARCH_ADDRESS_CHUNK_SIZE = 12
 const FETCH_UID_CHUNK_SIZE = 40
+const MAX_INBOUND_MESSAGE_SOURCE_BYTES = 80 * 1024 * 1024
 const searchFallbackClients = new WeakSet()
 
-function createImapClient(settings) {
+async function createImapClient(settings) {
+  let target
+  try {
+    target = await resolveMailNetworkTarget(settings?.incomingHost)
+  } catch (error) {
+    if (!(error instanceof OutboundNetworkPolicyError)) throw error
+    if (['INVALID_OUTBOUND_HOST', 'OUTBOUND_HOST_NOT_PUBLIC'].includes(error.code)) {
+      throw new MailFetchError(
+        'UNSAFE_HOST',
+        'The IMAP host is invalid or is not permitted by the server network policy.',
+        error,
+      )
+    }
+    throw new MailFetchError('CONNECTION_FAILED', 'Could not resolve the IMAP server host.', error)
+  }
+  const secure = Boolean(settings?.incomingTls ?? true)
+  const requireEncryptedTransport = process.env.NODE_ENV === 'production'
+    && process.env.MAIL_ALLOW_PLAINTEXT !== '1'
   return new ImapFlow({
-    host: String(settings?.incomingHost ?? '').trim(),
+    host: target.address,
+    ...(target.servername ? { servername: target.servername } : {}),
     port: Number(settings?.incomingPort ?? 993),
-    secure: Boolean(settings?.incomingTls ?? true),
+    secure,
+    ...(!secure && requireEncryptedTransport ? { doSTARTTLS: true } : {}),
     auth: {
       user: String(settings?.incomingUser ?? '').trim(),
       pass: settings?.incomingPass ?? '',
+    },
+    tls: {
+      rejectUnauthorized: true,
+      ...(target.servername ? { servername: target.servername } : {}),
     },
     logger: false,
     connectionTimeout: 10_000,
@@ -80,7 +199,7 @@ export async function verifyImapConnection(settings) {
     throw new MailFetchError('UNSUPPORTED_PROTOCOL', 'This connection check requires IMAP.')
   }
 
-  const client = createImapClient(settings)
+  const client = await createImapClient(settings)
   try {
     await client.connect()
     await client.list()
@@ -91,64 +210,9 @@ export async function verifyImapConnection(settings) {
   }
 }
 
-function localizedSecurityWarning(kind, language = 'en') {
-  const zh = String(language).toLowerCase().startsWith('zh')
-  if (kind === 'phishing-link') {
-    return zh
-      ? '安全提醒：这封邮件包含显示文字与目标地址不一致的链接。'
-      : 'Security warning: this email contains a link whose displayed text does not match its destination.'
-  }
-  if (kind === 'unsafe-attachment') {
-    return zh
-      ? '安全提醒：一个或多个附件因文件类型或安全测试病毒标记被拦截，未作为普通附件导入。'
-      : 'Security warning: one or more attachments were blocked because the file type or antivirus test marker is risky.'
-  }
-  return zh ? '安全提醒：这封邮件包含可疑内容。' : 'Security warning: this email contains suspicious content.'
-}
-
-function normalizeHostname(value) {
-  try {
-    const host = new URL(value).hostname.toLowerCase()
-    return host.startsWith('www.') ? host.slice(4) : host
-  } catch {
-    return ''
-  }
-}
-
-function textUrlHost(value) {
-  const match = String(value ?? '').match(/https?:\/\/[^\s<>"')]+/i)
-  return match ? normalizeHostname(match[0]) : ''
-}
-
-function detectPhishingHtml(html) {
-  if (!html) return false
-  const anchorPattern = /<a\b[^>]*\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi
-  for (const match of String(html).matchAll(anchorPattern)) {
-    const hrefHost = normalizeHostname(match[2])
-    const textHost = textUrlHost(htmlToPlainText(match[3]))
-    if (hrefHost && textHost && hrefHost !== textHost) return true
-  }
-  return false
-}
-
 function sanitizeAttachmentName(value, fallback) {
   const name = String(value ?? '').trim().replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ')
   return name.slice(0, 255) || fallback
-}
-
-function hasBlockedAttachmentExtension(filename) {
-  const parts = sanitizeAttachmentName(filename, '').toLowerCase().split('.')
-  for (let index = 1; index < parts.length; index += 1) {
-    if (BLOCKED_ATTACHMENT_EXTENSIONS.has(`.${parts.slice(index).join('.')}`)) return true
-  }
-  return false
-}
-
-function hasVirusTestMarker(content) {
-  if (!content) return false
-  return Buffer.isBuffer(content)
-    ? content.toString('latin1').includes(VIRUS_TEST_MARKER)
-    : String(content).includes(VIRUS_TEST_MARKER)
 }
 
 function attachmentMetadata(parsedAttachments = [], sourceId) {
@@ -156,7 +220,16 @@ function attachmentMetadata(parsedAttachments = [], sourceId) {
   let blocked = 0
   for (const [index, attachment] of parsedAttachments.entries()) {
     const fileName = sanitizeAttachmentName(attachment.filename, `attachment-${index + 1}`)
-    if (hasBlockedAttachmentExtension(fileName) || hasVirusTestMarker(attachment.content)) {
+    const content = Buffer.isBuffer(attachment.content)
+      ? Buffer.from(attachment.content)
+      : Buffer.from(attachment.content ?? '')
+    if (
+      !validateInboundAttachmentContent({
+        buffer: content,
+        filename: fileName,
+        mimeType: attachment.contentType,
+      }).ok
+    ) {
       blocked += 1
       continue
     }
@@ -169,9 +242,7 @@ function attachmentMetadata(parsedAttachments = [], sourceId) {
       // Kept only until the mail-sync layer places it in the encrypted upload
       // vault. `messageToCommunicationInput` deliberately strips this field
       // so raw mail bytes never enter application JSON.
-      content: Buffer.isBuffer(attachment.content)
-        ? Buffer.from(attachment.content)
-        : Buffer.from(attachment.content ?? ''),
+      content,
     })
   }
   return { attachments, blocked }
@@ -292,29 +363,34 @@ export function classifyTrackedMailMessage(message, trackedAddresses, ownerAddre
 }
 
 function mailboxLeaf(entry) {
-  const path = String(entry?.path ?? '').trim().toLowerCase().replaceAll('\\', '/')
-  return path.split('/').filter(Boolean).at(-1) ?? ''
+  if (entry?.name) return normalizedMailboxName(entry.name)
+  const path = String(entry?.path ?? '').trim()
+  const delimiter = String(entry?.delimiter ?? '')
+  const separators = [...new Set([delimiter, '/', '\\'].filter(Boolean))]
+  let leaf = path
+  for (const separator of separators) {
+    leaf = leaf.split(separator).filter(Boolean).at(-1) ?? leaf
+  }
+  return normalizedMailboxName(leaf)
+}
+
+function mailboxSpecialUses(entry) {
+  const values = [
+    ...(Array.isArray(entry?.specialUse) ? entry.specialUse : [entry?.specialUse]),
+    ...(entry?.flags instanceof Set ? [...entry.flags] : Array.isArray(entry?.flags) ? entry.flags : []),
+  ]
+  return new Set(values.map((value) => String(value ?? '').trim().toLowerCase()).filter(Boolean))
 }
 
 function mailboxRole(entry) {
-  if (entry?.specialUse === '\\Sent') return 'sent'
-  const leaf = mailboxLeaf(entry)
-  return [
-    'sent',
-    'sent mail',
-    'sent items',
-    'sent messages',
-    '已发送',
-    '已发邮件',
-    '已发送邮件',
-    '寄件备份',
-  ].includes(leaf) ? 'sent' : 'mail'
+  if (mailboxSpecialUses(entry).has('\\sent')) return 'sent'
+  return SENT_MAILBOX_NAMES.has(mailboxLeaf(entry)) ? 'sent' : 'mail'
 }
 
 function isSelectableMailbox(entry) {
-  const flags = entry?.flags instanceof Set ? entry.flags : new Set(entry?.flags ?? [])
-  if (flags.has('\\Noselect')) return false
-  if (EXCLUDED_SPECIAL_USE.has(entry?.specialUse)) return false
+  const specialUses = mailboxSpecialUses(entry)
+  if (specialUses.has('\\noselect')) return false
+  if ([...EXCLUDED_SPECIAL_USE].some((specialUse) => specialUses.has(specialUse))) return false
   if (EXCLUDED_MAILBOX_NAMES.has(mailboxLeaf(entry))) return false
   return Boolean(entry?.path)
 }
@@ -335,6 +411,17 @@ function relevantMailboxes(entries) {
     if (right.role === 'sent' && left.role !== 'sent') return 1
     return left.path.localeCompare(right.path)
   })
+}
+
+function isSkippableMailboxError(error) {
+  const value = [
+    error?.code,
+    error?.responseCode,
+    error?.responseStatus,
+    error?.responseText,
+    error?.message,
+  ].filter(Boolean).join(' ')
+  return /\b(?:NONEXISTENT|NOPERM|CANNOT|NOT[\s_-]?FOUND|DOES NOT EXIST|PERMISSION DENIED)\b/i.test(value)
 }
 
 function chunks(values, size) {
@@ -438,7 +525,10 @@ async function headerMatchesTrackedMail(rawMessage, mailbox, trackedAddresses, o
 }
 
 async function parseFetchedMessage(rawMessage, mailbox, settings, trackedAddresses, ownerAddresses) {
-  if (!rawMessage?.source) return null
+  if (
+    !rawMessage?.source
+    || rawMessage.source.length > MAX_INBOUND_MESSAGE_SOURCE_BYTES
+  ) return null
   const parsed = await simpleParser(rawMessage.source)
   const fromAddresses = mergeAddressSources(
     addressObjectValues(parsed.from),
@@ -451,9 +541,6 @@ async function parseFetchedMessage(rawMessage, mailbox, settings, trackedAddress
   const replyToAddresses = mergeAddressSources(addressObjectValues(parsed.replyTo), envelopeAddressValues(rawMessage.envelope?.replyTo))
   const attachmentSourceId = sha256(`${mailbox.path}|${rawMessage.uid}`).slice(0, 16)
   const attachmentResult = attachmentMetadata(parsed.attachments, attachmentSourceId)
-  const securityWarnings = []
-  if (detectPhishingHtml(parsed.html)) securityWarnings.push('phishing-link')
-  if (attachmentResult.blocked > 0) securityWarnings.push('unsafe-attachment')
   const message = {
     uid: Number(rawMessage.uid),
     mailboxPath: mailbox.path,
@@ -470,10 +557,33 @@ async function parseFetchedMessage(rawMessage, mailbox, settings, trackedAddress
     internalDate: rawMessage.internalDate ?? null,
     text: parsed.text || htmlToPlainText(parsed.html) || '',
     attachments: attachmentResult.attachments,
-    securityWarnings,
   }
   const classification = classifyTrackedMailMessage(message, trackedAddresses, ownerAddresses)
   if (!classification) return null
+  const threat = analyzeInboundMailThreat(classification.direction === 'incoming'
+    ? {
+        subject: message.subject,
+        text: message.text,
+        html: parsed.html,
+        headerLines: parsed.headerLines,
+        fromAddresses,
+        replyToAddresses,
+        blockedAttachmentCount: attachmentResult.blocked,
+        acceptedAttachmentCount: attachmentResult.attachments.length,
+      }
+    : {
+        blockedAttachmentCount: attachmentResult.blocked,
+        acceptedAttachmentCount: attachmentResult.attachments.length,
+      })
+  if (threat.quarantineAcceptedAttachments) message.attachments = []
+  if (threat.level !== 'none') {
+    message.mailSecurity = {
+      level: threat.level,
+      signals: threat.signals,
+      linksDisabled: true,
+      quarantinedAttachmentCount: threat.quarantinedAttachmentCount,
+    }
+  }
   return {
     ...message,
     ...classification,
@@ -520,7 +630,7 @@ export async function fetchImapMessages(settings, fetchState, options = {}) {
   const initialSinceDate = options.initialSince ? new Date(options.initialSince) : null
   const initialSince = initialSinceDate && !Number.isNaN(initialSinceDate.getTime()) ? initialSinceDate : null
 
-  const client = createImapClient(settings)
+  const client = await createImapClient(settings)
 
   try {
     await client.connect()
@@ -533,8 +643,9 @@ export async function fetchImapMessages(settings, fetchState, options = {}) {
   try {
     const mailboxes = relevantMailboxes(await client.list({ statusQuery: { messages: true, uidNext: true, uidValidity: true } }))
     for (const mailbox of mailboxes) {
-      const lock = await client.getMailboxLock(mailbox.path)
+      let lock = null
       try {
+        lock = await client.getMailboxLock(mailbox.path)
         const uidValidity = String(client.mailbox.uidValidity)
         const previous = previousFolderStates[mailbox.path]
         const uidValidityChanged = Boolean(previous?.uidValidity) && previous.uidValidity !== uidValidity
@@ -575,33 +686,50 @@ export async function fetchImapMessages(settings, fetchState, options = {}) {
                 uid: true,
                 envelope: true,
                 internalDate: true,
+                size: true,
                 headers: ['from', 'sender', 'to', 'cc', 'bcc', 'reply-to', 'message-id', 'subject', 'date'],
               },
               { uid: true },
             )) {
-              if (await headerMatchesTrackedMail(
-                envelopeMessage,
-                mailbox,
-                trackedAddresses,
-                ownerAddresses,
-                firstRunWindow,
-              )) {
+              const declaredSize = Number(envelopeMessage.size ?? 0)
+              if (
+                (!Number.isFinite(declaredSize) || declaredSize <= MAX_INBOUND_MESSAGE_SOURCE_BYTES)
+                && await headerMatchesTrackedMail(
+                  envelopeMessage,
+                  mailbox,
+                  trackedAddresses,
+                  ownerAddresses,
+                  firstRunWindow,
+                )
+              ) {
                 exactUids.push(envelopeMessage.uid)
               }
             }
             for (const exactUidChunk of chunks(exactUids, FETCH_UID_CHUNK_SIZE)) {
               for await (const rawMessage of client.fetch(
                 exactUidChunk,
-                { uid: true, envelope: true, internalDate: true, source: true },
+                {
+                  uid: true,
+                  envelope: true,
+                  internalDate: true,
+                  source: { maxLength: MAX_INBOUND_MESSAGE_SOURCE_BYTES + 1 },
+                },
                 { uid: true },
               )) {
-                const message = await parseFetchedMessage(
-                  rawMessage,
-                  mailbox,
-                  settings,
-                  trackedAddresses,
-                  ownerAddresses,
-                )
+                let message = null
+                try {
+                  message = await parseFetchedMessage(
+                    rawMessage,
+                    mailbox,
+                    settings,
+                    trackedAddresses,
+                    ownerAddresses,
+                  )
+                } catch {
+                  // One malformed or parser-hostile message must not stop the
+                  // remaining folders or create an automatic retry loop.
+                  message = null
+                }
                 if (message) messages.push(message)
               }
             }
@@ -609,8 +737,10 @@ export async function fetchImapMessages(settings, fetchState, options = {}) {
         }
 
         folderStates[mailbox.path] = { uidValidity, lastUid: safeMaxUid }
+      } catch (error) {
+        if (!isSkippableMailboxError(error)) throw error
       } finally {
-        lock.release()
+        lock?.release()
       }
     }
   } catch (error) {
@@ -648,11 +778,9 @@ function displayAddressList(value) {
 }
 
 /** Converts a fetched message into the shape CommunicationCreateSchema expects. */
-export function messageToCommunicationInput(message, language = 'en') {
+export function messageToCommunicationInput(message) {
   const parsedDate = message.date instanceof Date ? message.date : new Date(message.date)
   const safeDate = Number.isNaN(parsedDate.getTime()) ? new Date() : parsedDate
-  const warnings = Array.from(new Set(message.securityWarnings ?? []))
-    .map((kind) => localizedSecurityWarning(kind, language))
   const text = String(message.text ?? '').slice(0, 20_000) || '(no content)'
   return {
     subject: message.subject || '(no subject)',
@@ -660,7 +788,7 @@ export function messageToCommunicationInput(message, language = 'en') {
     date: safeDate.toISOString().slice(0, 10),
     time: safeDate.toISOString().slice(11, 16),
     // Guards against a pathologically large message ballooning storage; downstream summary fields are plain text everywhere.
-    summary: [...warnings, text].join('\n\n'),
+    summary: text,
     direction: message.direction === 'outgoing' ? 'outgoing' : 'incoming',
     messageType: 'fetched-email',
     from: displayAddressList(message.fromAddresses ?? message.from),
@@ -670,12 +798,14 @@ export function messageToCommunicationInput(message, language = 'en') {
       ...normalizeMailAddressList(message.bccAddresses ?? message.bcc),
     ]),
     attachments: (message.attachments ?? []).map(({ content: _content, ...attachment }) => attachment),
+    ...(message.mailSecurity ? { mailSecurity: message.mailSecurity } : {}),
   }
 }
 
 export const mailFetchSecurity = {
-  detectPhishingHtml,
-  hasBlockedAttachmentExtension,
-  hasVirusTestMarker,
+  detectPhishingHtml: detectDeceptiveMailLinks,
+  hasBlockedAttachmentExtension: hasDangerousInboundAttachmentName,
+  hasVirusTestMarker: hasInboundVirusTestMarker,
   attachmentMetadata,
+  isSkippableMailboxError,
 }

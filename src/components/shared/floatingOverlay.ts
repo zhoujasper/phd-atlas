@@ -8,7 +8,12 @@ type FloatingOverlayOptions = {
   gap?: number
   viewportPadding?: number
   align?: 'start' | 'end'
+  baseZIndex?: number
 }
+
+export const FLOATING_POPOVER_BASE_Z_INDEX = 420
+export const FLOATING_CONTROL_BASE_Z_INDEX = 440
+export const FLOATING_OVERLAY_LAYER_STEP = 20
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
@@ -23,6 +28,31 @@ function getViewportBounds() {
   return { left, top, right: left + width, bottom: top + height, width }
 }
 
+/**
+ * Portal overlays leave their trigger's stacking context, so a fixed global
+ * z-index can put a child menu behind the popover/dialog that opened it.
+ * Promote the portal one layer above the highest ancestor while retaining a
+ * calm global baseline for ordinary page controls.
+ */
+export function getFloatingOverlayZIndex(
+  trigger: HTMLElement | null,
+  baseZIndex: number,
+) {
+  if (!trigger || typeof window === 'undefined') return baseZIndex
+
+  let highestAncestorZIndex = baseZIndex - FLOATING_OVERLAY_LAYER_STEP
+  let current = trigger.parentElement
+  while (current) {
+    const parsedZIndex = Number.parseInt(window.getComputedStyle(current).zIndex, 10)
+    if (Number.isFinite(parsedZIndex)) {
+      highestAncestorZIndex = Math.max(highestAncestorZIndex, parsedZIndex)
+    }
+    current = current.parentElement
+  }
+
+  return Math.max(baseZIndex, highestAncestorZIndex + FLOATING_OVERLAY_LAYER_STEP)
+}
+
 /** Keep a portal overlay spatially attached to the control that opened it. */
 export function getAnchoredOverlayStyle(
   trigger: HTMLElement | null,
@@ -34,6 +64,7 @@ export function getAnchoredOverlayStyle(
     gap = 4,
     viewportPadding = 8,
     align = 'start',
+    baseZIndex,
   }: FloatingOverlayOptions,
 ): CSSProperties {
   if (!trigger || typeof window === 'undefined') return { visibility: 'hidden' }
@@ -64,6 +95,9 @@ export function getAnchoredOverlayStyle(
     right: 'auto',
     top,
     bottom: 'auto',
+    ...(baseZIndex === undefined
+      ? {}
+      : { zIndex: getFloatingOverlayZIndex(trigger, baseZIndex) }),
     width,
     maxWidth: availableWidth,
     maxHeight: availableHeight,

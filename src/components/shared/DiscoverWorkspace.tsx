@@ -2,7 +2,6 @@ import {
   ArrowDown,
   ArrowUp,
   Bookmark,
-  BookmarkCheck,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -52,8 +51,10 @@ import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { hasExplorerSelectionModifier, useExplorerSelection } from '../hooks/useExplorerSelection'
 import { Select } from './Select'
 import { DiscoverMultiSelectOption } from './DiscoverMultiSelect'
+import { DiscoverQuickGuide } from './DiscoverQuickGuide'
 import { ExplorerContextMenu, type ExplorerContextMenuState } from './ExplorerContextMenu'
 import { ExplorerSelectionBar } from './ExplorerSelectionBar'
+import { FavoriteBookmarkButton } from './FavoriteBookmarkButton'
 import { InlinePresence } from './InlinePresence'
 import { InfoTooltip } from './InfoTooltip'
 import { ModalPortal } from './ModalPortal'
@@ -63,6 +64,7 @@ import { UserAvatar } from './UserAvatar'
 import { useTableColumnMenu } from './useTableColumnMenu'
 import type { TableColumnDef, TableColumnsApi } from './useTableColumns'
 import { DiscreteLevelPicker } from './DiscreteLevelPicker'
+import { uniqueDiscoverSourceLinks } from './discoverSourceLinks'
 
 export type DiscoverWorkspaceMode = 'programs' | 'pis' | 'compare'
 export type DiscoverProgramSort = 'program' | 'location' | 'match' | 'funding' | 'deadline' | 'advisors' | 'collectedAt'
@@ -177,6 +179,7 @@ const DISCOVER_BATCH_SIZE = 12
 const DISCOVER_HIDE_MOTION_MS = 320
 const DISCOVER_FILTER_WIDTH_MIN = 196
 const DISCOVER_FILTER_WIDTH_MAX = 360
+
 const DISCOVER_INSPECTOR_WIDTH_MIN = 280
 const DISCOVER_INSPECTOR_WIDTH_MAX = 480
 const DISCOVER_PANE_COLLAPSE_DISTANCE = 52
@@ -796,10 +799,7 @@ function ProgramList({
   actions: WorkspaceActions
 }) {
   const { tx, lang } = useI18n()
-  const [watchOverrides, setWatchOverrides] = useState<Record<string, boolean>>({})
-  const [watchAnimatingIds, setWatchAnimatingIds] = useState<string[]>([])
   const [selectionContextMenu, setSelectionContextMenu] = useState<ExplorerContextMenuState | null>(null)
-  const watchTimersRef = useRef<number[]>([])
   const selectAllRef = useRef<HTMLInputElement>(null)
   const columns = useMemo<TableColumnDef[]>(() => [
     { id: 'select', label: tx('discover.selectAllPrograms', 'Select all visible programs'), defaultWidth: 38, minWidth: 38, maxWidth: 38, hideable: false, resizable: false },
@@ -823,30 +823,9 @@ function ProgramList({
   const tableWidth = api.visibleColumns.reduce((sum, column) => sum + api.widthOf(column.id), 0)
   const allProgramsSelected = programs.length > 0 && selection.selectedCount === programs.length
   const someProgramsSelected = selection.selectedCount > 0 && !allProgramsSelected
-  useEffect(() => () => watchTimersRef.current.forEach((timer) => window.clearTimeout(timer)), [])
   useEffect(() => {
     if (selectAllRef.current) selectAllRef.current.indeterminate = someProgramsSelected
   }, [someProgramsSelected])
-  useEffect(() => {
-    setWatchOverrides((current) => Object.fromEntries(Object.entries(current).filter(([id, value]) => {
-      const program = programs.find((item) => item.id === id)
-      return program ? program.watched !== value : false
-    })))
-  }, [programs])
-  const toggleWatch = (program: ScoredDiscoverProgram) => {
-    const watched = watchOverrides[program.id] ?? program.watched
-    setWatchOverrides((current) => ({ ...current, [program.id]: !watched }))
-    setWatchAnimatingIds((current) => current.includes(program.id) ? current : [...current, program.id])
-    actions.toggleWatch(program.id)
-    watchTimersRef.current.push(window.setTimeout(() => {
-      setWatchAnimatingIds((current) => current.filter((id) => id !== program.id))
-      setWatchOverrides((current) => {
-        const next = { ...current }
-        delete next[program.id]
-        return next
-      })
-    }, 1600))
-  }
   const sortBy = useCallback((next: DiscoverProgramSort) => {
     if (programSort === next) {
       actions.toggleSortDirection()
@@ -1043,7 +1022,6 @@ function ProgramList({
               const selected = selectedProgram?.id === program.id
               const bulkSelected = selection.selectedIds.has(program.id)
               const compared = compareIds.includes(program.id)
-              const visuallyWatched = Boolean(watchOverrides[program.id] ?? program.watched)
               const score = scoreByProgramId[program.id] ?? program.matchScore
               const deadline = programDeadline(program)
               const collectedAt = program.collectedAt || program.verification?.checkedAt
@@ -1058,21 +1036,14 @@ function ProgramList({
                   onContextMenu={(event) => openSelectionMenu(program, event)}
                 >
                   <div className="discover-mobile-card-actions" onClick={(event) => event.stopPropagation()}>
-                    <label className="discover-selection-check" title={tx('discover.selectProgramResult', 'Select {school}').replace('{school}', program.school)}>
-                      <input
-                        className="discover-checkbox-input"
-                        type="checkbox"
-                        checked={bulkSelected}
-                        readOnly
-                        disabled={deleting}
-                        onClick={(event) => toggleProgramSelection(program.id, event)}
-                        aria-label={tx('discover.selectProgramResult', 'Select {school}').replace('{school}', program.school)}
-                      />
-                      <span className="discover-checkbox-visual" aria-hidden="true"><Check size={11} /></span>
-                    </label>
-                    <button type="button" className={clsx('discover-mobile-card-action', visuallyWatched && 'is-active', watchAnimatingIds.includes(program.id) && 'is-animating')} disabled={deleting} onClick={() => toggleWatch(program)} aria-label={visuallyWatched ? tx('discover.unwatch') : tx('discover.watch')} aria-pressed={visuallyWatched}>
-                      {visuallyWatched ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}
-                    </button>
+                    <FavoriteBookmarkButton
+                      className="discover-mobile-card-action"
+                      active={Boolean(program.watched)}
+                      disabled={deleting}
+                      label={program.watched ? tx('discover.unwatch') : tx('discover.watch')}
+                      iconSize={16}
+                      onToggle={() => actions.toggleWatch(program.id)}
+                    />
                     <button type="button" className="discover-mobile-card-action" disabled={deleting || hiddenMotion.hidingIds.includes(program.id)} onClick={() => hiddenMotion.requestToggle(program.id, Boolean(program.hidden))} aria-label={program.hidden ? tx('discover.restore') : tx('discover.hide')}>
                       {program.hidden ? <Eye size={16} /> : <EyeOff size={16} />}
                     </button>
@@ -1093,6 +1064,18 @@ function ProgramList({
                     <div><dt>{tx('discover.advisors', 'Advisors')}</dt><dd>{program.fittingPiCount ?? program.pis.length}</dd></div>
                   </dl>
                   <div className="discover-mobile-result-utilities" onClick={(event) => event.stopPropagation()}>
+                    <label className="discover-selection-check" title={tx('discover.selectProgramResult', 'Select {school}').replace('{school}', program.school)}>
+                      <input
+                        className="discover-checkbox-input"
+                        type="checkbox"
+                        checked={bulkSelected}
+                        readOnly
+                        disabled={deleting}
+                        onClick={(event) => toggleProgramSelection(program.id, event)}
+                        aria-label={tx('discover.selectProgramResult', 'Select {school}').replace('{school}', program.school)}
+                      />
+                      <span className="discover-checkbox-visual" aria-hidden="true"><Check size={11} /></span>
+                    </label>
                     <button type="button" className={clsx('discover-compare-action', compared && 'is-active')} disabled={deleting} onClick={() => actions.toggleCompare(program.id)} aria-pressed={compared} title={compared ? tx('discover.removeFromCompare', 'Remove from compare') : tx('discover.addToCompare', 'Add to compare')}>
                       {compared ? <X size={13} /> : <Plus size={13} />}
                       <span>{compared ? tx('discover.removeFromCompare', 'Remove from compare') : tx('discover.addToCompare', 'Add to compare')}</span>
@@ -1141,7 +1124,6 @@ function ProgramList({
                 const selected = selectedProgram?.id === program.id
                 const bulkSelected = selection.selectedIds.has(program.id)
                 const compared = compareIds.includes(program.id)
-                const visuallyWatched = Boolean(watchOverrides[program.id] ?? program.watched)
                 const score = scoreByProgramId[program.id] ?? program.matchScore
                 const deadline = programDeadline(program)
                 const collectedAt = program.collectedAt || program.verification?.checkedAt
@@ -1191,7 +1173,14 @@ function ProgramList({
                           {compared ? <X size={13} /> : <Plus size={13} />}
                           <span>{compared ? tx('discover.removeFromCompare', 'Remove from compare') : tx('discover.addToCompare', 'Add to compare')}</span>
                         </button>
-                        <button type="button" className={clsx('discover-icon-btn', visuallyWatched && 'active', watchAnimatingIds.includes(program.id) && 'is-watch-animating')} disabled={deleting} onClick={() => toggleWatch(program)} aria-label={visuallyWatched ? tx('discover.unwatch') : tx('discover.watch')} aria-pressed={visuallyWatched}>{visuallyWatched ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}</button>
+                        <FavoriteBookmarkButton
+                          className="discover-icon-btn"
+                          active={Boolean(program.watched)}
+                          disabled={deleting}
+                          label={program.watched ? tx('discover.unwatch') : tx('discover.watch')}
+                          iconSize={16}
+                          onToggle={() => actions.toggleWatch(program.id)}
+                        />
                         <button type="button" className="discover-icon-btn hover-reveal" disabled={deleting || hiddenMotion.hidingIds.includes(program.id)} onClick={() => hiddenMotion.requestToggle(program.id, Boolean(program.hidden))} aria-label={program.hidden ? tx('discover.restore') : tx('discover.hide')}>{program.hidden ? <Eye size={16} /> : <EyeOff size={16} />}</button>
                         <button type="button" className="discover-icon-btn discover-delete-program-action hover-reveal" disabled={deleting} onClick={() => actions.requestDeletePrograms([program.id])} aria-label={tx('discover.deleteProgram', 'Delete program')}><Trash2 size={15} /></button>
                         {importingId === program.id ? <span className="discover-table-loading-dot" aria-label={tx('discover.importing')} /> : null}
@@ -1456,7 +1445,7 @@ function ProgramInspector({
             <div><dt>{tx('discover.theSubjectRank', 'THE subject rank')}</dt><dd>{program.theSubjectRank ? `#${program.theSubjectRank} · ${program.theSubjectName || '—'}` : '—'}</dd></div>
           </dl>
           {program.tuitionNotes ? <p>{program.tuitionNotes}</p> : null}
-          {(program.rankingSources || []).length ? <div className="discover-source-list">{program.rankingSources?.map((source) => <a key={source} href={source} target="_blank" rel="noreferrer"><span>{compactUrl(source)}</span><ExternalLink size={13} /></a>)}</div> : null}
+          {(program.rankingSources || []).length ? <div className="discover-source-list">{uniqueDiscoverSourceLinks(program.rankingSources || []).map((source) => <a key={source} href={source} target="_blank" rel="noreferrer"><span>{compactUrl(source)}</span><ExternalLink size={13} /></a>)}</div> : null}
         </InspectorSection>
 
         <InspectorSection title={tx('discover.scholarshipOptions', 'Scholarship options')} summary={tx('discover.scholarshipCount', '{count} verified').replace('{count}', String(program.scholarships?.length || 0))} open>
@@ -1487,7 +1476,7 @@ function ProgramInspector({
 
         <InspectorSection title={tx('discover.officialSources', 'Official sources')} summary={tx('discover.sourceCount', '{count} sources').replace('{count}', String(program.sources.length))} open>
           <div className="discover-source-list">
-            {[program.website, ...program.sources].filter(Boolean).filter((value, index, values) => values.indexOf(value) === index).map((source) => (
+            {uniqueDiscoverSourceLinks([program.website, ...program.sources]).map((source) => (
               <a key={source} href={source} target="_blank" rel="noreferrer"><span>{compactUrl(source)}</span><ExternalLink size={13} /></a>
             ))}
           </div>
@@ -1495,9 +1484,15 @@ function ProgramInspector({
       </div>
 
       <footer className="discover-inspector-actions">
-        <button type="button" className="secondary-action" onClick={() => actions.toggleWatch(program.id)}>
-          {program.watched ? <BookmarkCheck size={15} /> : <Bookmark size={15} />}{program.watched ? tx('discover.watched') : tx('discover.watch')}
-        </button>
+        <FavoriteBookmarkButton
+          className="secondary-action"
+          active={Boolean(program.watched)}
+          label={program.watched ? tx('discover.unwatch') : tx('discover.watch')}
+          iconSize={15}
+          onToggle={() => actions.toggleWatch(program.id)}
+        >
+          <span>{program.watched ? tx('discover.watched') : tx('discover.watch')}</span>
+        </FavoriteBookmarkButton>
         <button type="button" className="primary-action" disabled={importingId === program.id} onClick={() => actions.importProgram(program.id)}>
           <Plus size={15} />{importingId === program.id ? tx('discover.importing') : tx('discover.addToApplications', 'Add to applications')}
         </button>
@@ -1563,7 +1558,7 @@ function PiInspector({
         </InspectorSection>
         <InspectorSection title={tx('discover.links', 'Links')} summary={tx('discover.officialSources', 'Official sources')} open>
           <div className="discover-source-list">
-            {[pi.url, pi.scholarUrl].filter(Boolean).map((source) => <a key={source} href={source} target="_blank" rel="noreferrer"><span>{compactUrl(source)}</span><ExternalLink size={13} /></a>)}
+            {uniqueDiscoverSourceLinks([pi.url, pi.scholarUrl]).map((source) => <a key={source} href={source} target="_blank" rel="noreferrer"><span>{compactUrl(source)}</span><ExternalLink size={13} /></a>)}
           </div>
         </InspectorSection>
       </div>
@@ -1830,7 +1825,10 @@ export function DiscoverWorkspace(props: DiscoverWorkspaceProps) {
   return (
     <div className={clsx('discover-v2', `mode-${mode}`, `mode-${modeDirection}`, mode === 'compare' && 'is-compare', teamContext && 'has-team-context', filterRailCollapsed && 'filters-collapsed', !inspectorOpen && 'inspector-closed', resizingPane && 'is-resizing')}>
       <header className="discover-toolbar">
-        <div className="discover-toolbar-title"><h2>{tx('discover.title')}</h2></div>
+        <div className="discover-toolbar-title">
+          <h2>{tx('discover.title')}</h2>
+          <DiscoverQuickGuide onOpenResearch={actions.openResearch} />
+        </div>
         <nav className="discover-mode-tabs" aria-label={tx('discover.title')} style={modeTabsStyle}>
           {(['programs', 'pis', 'compare'] as DiscoverWorkspaceMode[]).map((item) => (
             <button key={item} type="button" className={clsx(item === 'compare' && 'discover-compare-tab', mode === item && 'active')} onClick={() => actions.setMode(item)}>

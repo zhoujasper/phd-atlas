@@ -1,5 +1,6 @@
-import { LoaderCircle, Mail, Send, X } from 'lucide-react'
+import { Mail, Send, X } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
+import { PendingLabel } from './PendingLabel'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -117,11 +118,15 @@ export function InlineTestEmailAction({
           type="submit"
           className="quiet-action compact-action inline-test-email-send"
           disabled={!editing || sending}
+          aria-busy={sending || undefined}
           tabIndex={editing ? 0 : -1}
           title={sendLabel}
         >
-          {sending ? <LoaderCircle size={12} className="spin-icon" aria-hidden="true" /> : <Send size={12} aria-hidden="true" />}
-          <span>{sending ? sendingLabel : sendLabel}</span>
+          {sending ? (
+            <PendingLabel label={sendingLabel} iconSize={12} />
+          ) : (
+            <><Send size={12} aria-hidden="true" /><span>{sendLabel}</span></>
+          )}
         </button>
         <button
           type="button"

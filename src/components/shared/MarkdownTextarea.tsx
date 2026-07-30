@@ -32,6 +32,11 @@ import { ListPlugin } from '@lexical/react/LexicalListPlugin'
 import { MarkdownShortcutPlugin } from '@lexical/react/LexicalMarkdownShortcutPlugin'
 import { OnChangePlugin } from '@lexical/react/LexicalOnChangePlugin'
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin'
+import Editor from 'react-simple-code-editor'
+import { highlight, languages } from 'prismjs'
+import 'prismjs/components/prism-markup'
+import 'prismjs/components/prism-markdown'
+import getCaretCoordinates from 'textarea-caret'
 import {
   $applyNodeReplacement,
   $createParagraphNode,
@@ -56,6 +61,7 @@ import {
   type TextFormatType,
 } from 'lexical'
 import {
+  AlignLeft,
   Bold,
   Braces,
   Code2,
@@ -64,6 +70,7 @@ import {
   Italic,
   List as ListIcon,
   ListOrdered,
+  LoaderCircle,
   Quote,
   Strikethrough,
   Underline,
@@ -74,6 +81,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -91,9 +99,19 @@ import { safeMarkdownHref } from '../../safeLinks'
 import { useI18n } from '../hooks/useI18n'
 import {
   detectRichTextFormat,
+  escapeRichTextHtml,
+  richTextNeedsFidelityPreview,
   sanitizeRichHtml,
   type RichTextFormat,
 } from './richText'
+import { formatRichTextSource } from './formatRichTextSource'
+import { MarkdownContent } from './MarkdownContent'
+import {
+  getHtmlAutoCloseEdit,
+  getSourceCompletions,
+  type SourceCompletion,
+  type SourceCompletionKind,
+} from './sourceCompletions'
 
 type EditorMode = 'visual' | 'source'
 type FormatAction = 'bold' | 'italic' | 'underline' | 'strike' | 'bulletList' | 'numberedList' | 'quote' | 'code' | 'clear'
@@ -109,6 +127,14 @@ export type MarkdownTextareaProps = Omit<TextareaHTMLAttributes<HTMLTextAreaElem
 type ContextMenuState = {
   x: number
   y: number
+}
+
+type SourceCompletionMenuState = {
+  activeIndex: number
+  items: SourceCompletion[]
+  left: number
+  top: number
+  width: number
 }
 
 type FormatMenuItem = {
@@ -131,6 +157,35 @@ type EditorSyncProps = {
 
 const EXTERNAL_SYNC_TAG = 'phd-atlas-external-rich-text-sync'
 const MAX_LENGTH_RESTORE_TAG = 'phd-atlas-rich-text-length-restore'
+const SOURCE_COMPLETION_LIMIT_HEIGHT = 286
+
+if (languages.markdown && !Object.prototype.hasOwnProperty.call(languages.markdown, 'atlas-task')) {
+  languages.insertBefore('markdown', 'blockquote', {
+    'atlas-task': {
+      pattern: /(^\s*[-*+]\s+)\[[ xX]\]/m,
+      lookbehind: true,
+      alias: 'important',
+    },
+    'atlas-footnote': {
+      pattern: /\[\^[^\]\n]+\]/,
+      alias: 'variable',
+    },
+    'atlas-table': {
+      pattern: /(^|\n)\s{0,3}\|[^\n]*\|[^\n]*(?=\n|$)/,
+      lookbehind: true,
+      inside: {
+        'table-punctuation': {
+          pattern: /\|/,
+          alias: 'punctuation',
+        },
+        'table-alignment': {
+          pattern: /:?-{3,}:?/,
+          alias: 'operator',
+        },
+      },
+    },
+  })
+}
 class MarkdownHardBreakNode extends DecoratorNode<null> {
   static getType() {
     return 'markdown-hard-break'
@@ -241,6 +296,14 @@ function isMacPlatform() {
 
 function formatForValue(value: string): SourceFormat {
   return detectRichTextFormat(value) === 'html' ? 'html' : 'markdown'
+}
+
+function sourceFormatForValue(value: string): SourceFormat {
+  if (formatForValue(value) === 'html') return 'html'
+  return /(?:^|\n)\s*<\/?[a-z][\w:-]*(?:\s[^<>]*)?$/i.test(value)
+    || /(?:^|\n)\s*<$/.test(value)
+    ? 'html'
+    : 'markdown'
 }
 
 function appendImportedNodes(root: ReturnType<typeof $getRoot>, nodes: LexicalNode[]) {
@@ -512,15 +575,27 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
 ) {
   const { tx } = useI18n()
   const editorId = useId().replace(/:/g, '')
+  const sourceStatusId = `${editorId}-source-status`
+  const sourceSuggestionListId = `${editorId}-source-suggestions`
+  const sourceAriaLabel = textareaProps['aria-label'] ?? placeholder
+  const sourceAriaLabelledBy = textareaProps['aria-labelledby']
+  const sourceAriaDescribedBy = [textareaProps['aria-describedby'], sourceStatusId].filter(Boolean).join(' ')
+  const sourceAriaInvalid = textareaProps['aria-invalid']
+  const sourceRequired = textareaProps.required
   const initialValueRef = useRef(value)
   const initialFormatRef = useRef<SourceFormat>(formatForValue(value))
   const [mode, setMode] = useState<EditorMode>(defaultMode)
-  const [sourceFormat, setSourceFormat] = useState<SourceFormat>(initialFormatRef.current)
   const [syncToken, setSyncToken] = useState(0)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [displayedContextMenu, setDisplayedContextMenu] = useState<ContextMenuState | null>(null)
   const [contextMenuExiting, setContextMenuExiting] = useState(false)
+  const [sourceFormatting, setSourceFormatting] = useState(false)
+  const [sourceFormatError, setSourceFormatError] = useState(false)
+  const [sourceCompletionMenu, setSourceCompletionMenu] = useState<SourceCompletionMenuState | null>(null)
+  const sourceHostRef = useRef<HTMLDivElement | null>(null)
   const sourceRef = useRef<HTMLTextAreaElement | null>(null)
+  const sourceEditorRef = useRef<React.ElementRef<typeof Editor> | null>(null)
+  const mirroredSourceAttributeNamesRef = useRef<string[]>([])
   const editorRef = useRef<LexicalEditor | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const contextMenuExitTimerRef = useRef<number | null>(null)
@@ -529,9 +604,12 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
   const recentVisualValuesRef = useRef<string[]>([])
   const visualDirtyRef = useRef(false)
   const visualSyncValueRef = useRef(value)
+  const formatterRequestRef = useRef(0)
+  const lastFormattedSourceRef = useRef('')
   const valueRef = useRef(value)
   valueRef.current = value
   const shortcutPrefix = isMacPlatform() ? '⌘' : 'Ctrl+'
+  const sourceCompletionOpen = sourceCompletionMenu !== null
 
   const initialConfig = useMemo(() => ({
     namespace: `phd-atlas-rich-text-${editorId}`,
@@ -549,6 +627,89 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     if (typeof forwardedRef === 'function') forwardedRef(node)
     else if (forwardedRef) forwardedRef.current = node
   }, [forwardedRef])
+
+  useLayoutEffect(() => {
+    const source = sourceHostRef.current?.querySelector<HTMLTextAreaElement>('textarea.markdown-source-input') ?? null
+    setSourceRef(source)
+    return () => setSourceRef(null)
+  }, [setSourceRef])
+
+  useLayoutEffect(() => {
+    const source = sourceRef.current
+    if (!source) return undefined
+
+    const setOptionalAttribute = (name: string, attributeValue: unknown) => {
+      if (attributeValue === undefined || attributeValue === null || attributeValue === false) {
+        source.removeAttribute(name)
+      } else {
+        source.setAttribute(name, String(attributeValue))
+      }
+    }
+    mirroredSourceAttributeNamesRef.current.forEach((name) => source.removeAttribute(name))
+    setOptionalAttribute('aria-label', sourceAriaLabel)
+    setOptionalAttribute('aria-labelledby', sourceAriaLabelledBy)
+    setOptionalAttribute('aria-describedby', sourceAriaDescribedBy)
+    setOptionalAttribute('aria-invalid', sourceAriaInvalid)
+    setOptionalAttribute('aria-required', sourceRequired)
+    setOptionalAttribute('aria-hidden', mode !== 'source')
+    setOptionalAttribute('aria-autocomplete', mode === 'source' && !readOnly && !disabled ? 'list' : undefined)
+    setOptionalAttribute('aria-controls', sourceCompletionMenu ? sourceSuggestionListId : undefined)
+    setOptionalAttribute(
+      'aria-expanded',
+      mode === 'source' && !readOnly && !disabled ? String(Boolean(sourceCompletionMenu)) : undefined,
+    )
+    setOptionalAttribute(
+      'aria-activedescendant',
+      sourceCompletionMenu
+        ? `${sourceSuggestionListId}-${sourceCompletionMenu.items[sourceCompletionMenu.activeIndex]?.id}`
+        : undefined,
+    )
+    source.tabIndex = mode === 'source' ? tabIndex ?? 0 : -1
+
+    const mirroredAttributeNames: string[] = []
+    const explicitlyOwnedAriaAttributes = new Set([
+      'aria-activedescendant',
+      'aria-autocomplete',
+      'aria-controls',
+      'aria-expanded',
+      'aria-label',
+      'aria-labelledby',
+      'aria-describedby',
+      'aria-invalid',
+      'aria-required',
+      'aria-hidden',
+    ])
+    Object.entries(textareaProps).forEach(([name, attributeValue]) => {
+      const lowerName = name.toLowerCase()
+      const attributeName = (name.startsWith('aria-') && !explicitlyOwnedAriaAttributes.has(name))
+        || name.startsWith('data-')
+        ? name
+        : lowerName === 'inputmode' || lowerName === 'enterkeyhint'
+          ? lowerName
+          : ['dir', 'lang', 'title', 'wrap'].includes(lowerName)
+            ? lowerName
+            : ''
+      if (!attributeName || attributeValue === undefined || attributeValue === null || attributeValue === false) return
+      source.setAttribute(attributeName, attributeValue === true ? '' : String(attributeValue))
+      mirroredAttributeNames.push(attributeName)
+    })
+    mirroredSourceAttributeNamesRef.current = mirroredAttributeNames
+    return undefined
+  }, [
+    disabled,
+    mode,
+    readOnly,
+    setSourceRef,
+    sourceAriaDescribedBy,
+    sourceAriaInvalid,
+    sourceAriaLabel,
+    sourceAriaLabelledBy,
+    sourceRequired,
+    sourceCompletionMenu,
+    sourceSuggestionListId,
+    tabIndex,
+    textareaProps,
+  ])
 
   const emitChange = useCallback((nextValue: string) => {
     const source = sourceRef.current
@@ -568,7 +729,216 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
 
   const updateSourceFormat = useCallback((format: SourceFormat) => {
     formatRef.current = format
-    setSourceFormat(format)
+  }, [])
+
+  const positionSourceCompletionMenu = useCallback((
+    items: SourceCompletion[],
+    caret: number,
+    preferredId?: string,
+  ) => {
+    const source = sourceRef.current
+    if (!source || items.length === 0 || typeof window === 'undefined') {
+      setSourceCompletionMenu(null)
+      return
+    }
+
+    let coordinates = { top: 10, left: 12, height: 20 }
+    try {
+      const measured = getCaretCoordinates(source, caret)
+      coordinates = {
+        top: Number.isFinite(measured.top) ? measured.top : coordinates.top,
+        left: Number.isFinite(measured.left) ? measured.left : coordinates.left,
+        height: Number.isFinite(measured.height) ? measured.height : coordinates.height,
+      }
+    } catch {
+      // The suggestion menu still gets a stable fallback in non-layout test environments.
+    }
+
+    const rect = source.getBoundingClientRect()
+    const viewportGutter = 8
+    const width = Math.min(304, Math.max(176, window.innerWidth - viewportGutter * 2))
+    const estimatedHeight = Math.min(SOURCE_COMPLETION_LIMIT_HEIGHT, items.length * 38 + 34)
+    const caretTop = rect.top + coordinates.top - source.scrollTop
+    const below = caretTop + coordinates.height + 5
+    const top = below + estimatedHeight <= window.innerHeight - viewportGutter
+      ? below
+      : Math.max(viewportGutter, caretTop - estimatedHeight - 5)
+    const left = Math.max(
+      viewportGutter,
+      Math.min(
+        rect.left + coordinates.left - source.scrollLeft,
+        window.innerWidth - width - viewportGutter,
+      ),
+    )
+
+    setSourceCompletionMenu((current) => {
+      const currentId = preferredId ?? current?.items[current.activeIndex]?.id
+      const activeIndex = Math.max(0, items.findIndex((item) => item.id === currentId))
+      return { activeIndex, items, left, top, width }
+    })
+  }, [])
+
+  const refreshSourceCompletions = useCallback((
+    nextValue = valueRef.current,
+    force = false,
+  ) => {
+    const source = sourceRef.current
+    if (
+      !source
+      || mode !== 'source'
+      || disabled
+      || readOnly
+      || source.selectionStart !== source.selectionEnd
+    ) {
+      setSourceCompletionMenu(null)
+      return
+    }
+    const caret = source.selectionStart ?? nextValue.length
+    const completionFormat = sourceFormatForValue(nextValue)
+    const items = getSourceCompletions(nextValue, caret, completionFormat, force)
+    if (items.length === 0) {
+      setSourceCompletionMenu(null)
+      return
+    }
+    positionSourceCompletionMenu(items, caret)
+  }, [disabled, mode, positionSourceCompletionMenu, readOnly])
+
+  const recordSourceHistory = useCallback((
+    currentValue: string,
+    nextValue: string,
+    currentSelectionStart: number,
+    currentSelectionEnd: number,
+    nextSelectionStart: number,
+    nextSelectionEnd: number,
+  ) => {
+    const sourceEditor = sourceEditorRef.current
+    if (!sourceEditor) return
+    const currentHistory = sourceEditor.session.history
+    const stack = currentHistory.stack.slice(0, currentHistory.offset + 1)
+    const timestamp = Date.now()
+    if (stack.at(-1)?.value !== currentValue) {
+      stack.push({
+        value: currentValue,
+        selectionStart: currentSelectionStart,
+        selectionEnd: currentSelectionEnd,
+        timestamp,
+      })
+    }
+    stack.push({
+      value: nextValue,
+      selectionStart: nextSelectionStart,
+      selectionEnd: nextSelectionEnd,
+      timestamp,
+    })
+    const boundedStack = stack.slice(-100)
+    sourceEditor.session = {
+      history: {
+        stack: boundedStack,
+        offset: boundedStack.length - 1,
+      },
+    }
+  }, [])
+
+  const applySourceEdit = useCallback((
+    from: number,
+    to: number,
+    insertText: string,
+    selectFrom: number,
+    selectTo = selectFrom,
+  ) => {
+    const source = sourceRef.current
+    if (!source || disabled || readOnly) return false
+    const currentValue = valueRef.current
+    if (from < 0 || to < from || to > currentValue.length) return false
+    const nextValue = currentValue.slice(0, from) + insertText + currentValue.slice(to)
+    if (typeof maxLength === 'number' && nextValue.length > maxLength) {
+      setSourceCompletionMenu(null)
+      return false
+    }
+
+    const nextSelectionStart = from + selectFrom
+    const nextSelectionEnd = from + selectTo
+    recordSourceHistory(
+      currentValue,
+      nextValue,
+      source.selectionStart ?? from,
+      source.selectionEnd ?? to,
+      nextSelectionStart,
+      nextSelectionEnd,
+    )
+    lastFormattedSourceRef.current = ''
+    visualSyncValueRef.current = nextValue
+    updateSourceFormat(sourceFormatForValue(nextValue))
+    emitChange(nextValue)
+    setSourceCompletionMenu(null)
+    window.requestAnimationFrame(() => {
+      const activeSource = sourceRef.current
+      if (!activeSource) return
+      activeSource.focus()
+      activeSource.setSelectionRange(nextSelectionStart, nextSelectionEnd)
+    })
+    return true
+  }, [disabled, emitChange, maxLength, readOnly, recordSourceHistory, updateSourceFormat])
+
+  const acceptSourceCompletion = useCallback((index = sourceCompletionMenu?.activeIndex ?? 0) => {
+    const source = sourceRef.current
+    const item = sourceCompletionMenu?.items[index]
+    if (!source || !item || source.selectionStart !== item.to || source.selectionEnd !== item.to) {
+      setSourceCompletionMenu(null)
+      return false
+    }
+    return applySourceEdit(
+      item.from,
+      item.to,
+      item.insertText,
+      item.selectFrom,
+      item.selectTo,
+    )
+  }, [applySourceEdit, sourceCompletionMenu])
+
+  const runSourceFormatter = useCallback(async (snapshot = valueRef.current, focusAfter = false) => {
+    if (disabled || readOnly || !snapshot.trim() || lastFormattedSourceRef.current === snapshot) return
+    setSourceCompletionMenu(null)
+    const request = formatterRequestRef.current + 1
+    formatterRequestRef.current = request
+    const source = sourceRef.current
+    const selectionStart = source?.selectionStart ?? snapshot.length
+    const selectionEnd = source?.selectionEnd ?? selectionStart
+    const detectedFormat = sourceFormatForValue(snapshot)
+    setSourceFormatting(true)
+    setSourceFormatError(false)
+    try {
+      const formatted = await formatRichTextSource(snapshot, detectedFormat)
+      if (formatterRequestRef.current !== request || valueRef.current !== snapshot) return
+      if (typeof maxLength === 'number' && formatted.length > maxLength) {
+        setSourceFormatError(true)
+        return
+      }
+      lastFormattedSourceRef.current = formatted
+      updateSourceFormat(detectedFormat)
+      if (formatted !== snapshot) emitChange(formatted)
+      if (focusAfter) {
+        window.requestAnimationFrame(() => {
+          const activeSource = sourceRef.current
+          if (!activeSource) return
+          activeSource.focus()
+          activeSource.setSelectionRange(
+            Math.min(selectionStart, formatted.length),
+            Math.min(selectionEnd, formatted.length),
+          )
+        })
+      }
+    } catch {
+      if (formatterRequestRef.current === request) setSourceFormatError(true)
+    } finally {
+      if (formatterRequestRef.current === request) setSourceFormatting(false)
+    }
+  }, [disabled, emitChange, maxLength, readOnly, updateSourceFormat])
+
+  const highlightSource = useCallback((source: string) => {
+    const language = sourceFormatForValue(source) === 'html' ? 'markup' : 'markdown'
+    const grammar = languages[language]
+    return grammar ? highlight(source, grammar, language) : escapeRichTextHtml(source)
   }, [])
 
   const flushVisualValue = useCallback(() => {
@@ -627,6 +997,29 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
   }, [contextMenu])
 
   useEffect(() => {
+    if (!sourceCompletionMenu || typeof document === 'undefined') return
+    document
+      .getElementById(`${sourceSuggestionListId}-${sourceCompletionMenu.items[sourceCompletionMenu.activeIndex]?.id}`)
+      ?.scrollIntoView?.({ block: 'nearest' })
+  }, [sourceCompletionMenu, sourceSuggestionListId])
+
+  useEffect(() => {
+    if (!sourceCompletionOpen || typeof document === 'undefined') return undefined
+    const closeOnResize = () => setSourceCompletionMenu(null)
+    const closeOnScroll = (event: Event) => {
+      const list = document.getElementById(sourceSuggestionListId)
+      if (event.target instanceof Node && list?.contains(event.target)) return
+      setSourceCompletionMenu(null)
+    }
+    window.addEventListener('resize', closeOnResize)
+    window.addEventListener('scroll', closeOnScroll, true)
+    return () => {
+      window.removeEventListener('resize', closeOnResize)
+      window.removeEventListener('scroll', closeOnScroll, true)
+    }
+  }, [sourceCompletionOpen, sourceSuggestionListId])
+
+  useEffect(() => {
     if (!autoFocus) return
     window.requestAnimationFrame(() => {
       if (mode === 'visual') editorRef.current?.focus(undefined, { defaultSelection: 'rootEnd' })
@@ -637,6 +1030,7 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
   const switchMode = (nextMode: EditorMode) => {
     if (nextMode === mode) return
     setContextMenu(null)
+    setSourceCompletionMenu(null)
     if (nextMode === 'source') flushVisualValue()
     else {
       visualSyncValueRef.current = valueRef.current
@@ -698,39 +1092,6 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     })
   }
 
-  const applySourceTab = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    const source = sourceRef.current
-    if (!source) return
-    event.preventDefault()
-    const currentValue = valueRef.current
-    const start = source.selectionStart ?? currentValue.length
-    const end = source.selectionEnd ?? start
-    const lineStart = currentValue.lastIndexOf('\n', Math.max(0, start - 1)) + 1
-    const nextLine = currentValue.indexOf('\n', end)
-    const lineEnd = nextLine === -1 ? currentValue.length : nextLine
-    const selectedBlock = currentValue.slice(lineStart, lineEnd)
-
-    if (!event.shiftKey && start === end && !selectedBlock.includes('\n')) {
-      const nextValue = currentValue.slice(0, start) + '  ' + currentValue.slice(end)
-      emitChange(nextValue)
-      window.requestAnimationFrame(() => source.setSelectionRange(start + 2, start + 2))
-      return
-    }
-
-    const lines = selectedBlock.split('\n')
-    const formatted = lines.map((line) => event.shiftKey ? line.replace(/^ {1,2}/, '') : `  ${line}`).join('\n')
-    const removed = selectedBlock.length - formatted.length
-    const nextValue = currentValue.slice(0, lineStart) + formatted + currentValue.slice(lineEnd)
-    emitChange(nextValue)
-    window.requestAnimationFrame(() => {
-      source.focus()
-      source.setSelectionRange(
-        event.shiftKey ? Math.max(lineStart, start - Math.min(2, start - lineStart)) : start + 2,
-        event.shiftKey ? Math.max(lineStart, end - removed) : end + (2 * lines.length),
-      )
-    })
-  }
-
   const runVisualCommand = useCallback((action: FormatAction) => {
     const editor = editorRef.current
     if (!editor || disabled || readOnly) return
@@ -784,10 +1145,56 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
   const handleSourceKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     onKeyDown?.(event)
     if (event.defaultPrevented) return
-    if (event.key === 'Tab') {
-      applySourceTab(event)
+    if (event.nativeEvent.isComposing) return
+    if (
+      (event.ctrlKey || event.metaKey)
+      && !event.altKey
+      && (event.key === ' ' || event.code === 'Space')
+    ) {
+      event.preventDefault()
+      refreshSourceCompletions(valueRef.current, true)
       return
     }
+
+    if (sourceCompletionMenu) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        const direction = event.key === 'ArrowDown' ? 1 : -1
+        setSourceCompletionMenu((current) => {
+          if (!current) return null
+          const nextIndex = (current.activeIndex + direction + current.items.length) % current.items.length
+          return { ...current, activeIndex: nextIndex }
+        })
+        return
+      }
+      if ((event.key === 'Tab' && !event.shiftKey) || (event.key === 'Enter' && !event.shiftKey)) {
+        event.preventDefault()
+        acceptSourceCompletion()
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setSourceCompletionMenu(null)
+        return
+      }
+    }
+
+    if (
+      event.key === '>'
+      && !event.altKey
+      && !event.ctrlKey
+      && !event.metaKey
+      && event.currentTarget.selectionStart === event.currentTarget.selectionEnd
+    ) {
+      const caret = event.currentTarget.selectionStart ?? valueRef.current.length
+      const edit = getHtmlAutoCloseEdit(valueRef.current, caret)
+      if (edit) {
+        event.preventDefault()
+        applySourceEdit(caret, caret, edit.insertText, edit.caretOffset)
+        return
+      }
+    }
+
     handleShortcut(event)
   }
 
@@ -814,13 +1221,29 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     })
   }
 
-  const handleSourceChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
-    const detected = formatForValue(event.target.value)
-    updateSourceFormat(detected)
-    lastEmittedValueRef.current = mode === 'source' ? event.target.value : null
-    visualSyncValueRef.current = event.target.value
-    valueRef.current = event.target.value
-    onChange(event)
+  const handleSourceChange = (nextValue: string) => {
+    const source = sourceRef.current
+    if (!source) return
+    const nextFormat = sourceFormatForValue(nextValue)
+    updateSourceFormat(nextFormat)
+    setSourceFormatError(false)
+    lastFormattedSourceRef.current = ''
+    lastEmittedValueRef.current = mode === 'source' ? nextValue : null
+    visualSyncValueRef.current = nextValue
+    valueRef.current = nextValue
+    onChange({ target: source, currentTarget: source } as ChangeEvent<HTMLTextAreaElement>)
+    window.requestAnimationFrame(() => refreshSourceCompletions(nextValue))
+  }
+
+  const handleSourceFocus = (event: ReactFocusEvent<HTMLTextAreaElement>) => {
+    onFocus?.(event)
+    if (!event.defaultPrevented) void runSourceFormatter(valueRef.current)
+  }
+
+  const handleSourceBlur = (event: ReactFocusEvent<HTMLTextAreaElement>) => {
+    onBlur?.(event)
+    setSourceCompletionMenu(null)
+    void runSourceFormatter(valueRef.current)
   }
 
   const contentMinHeight = Math.max(56, Number(rows) * 21 + 18)
@@ -829,12 +1252,24 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     '--markdown-editor-content-min-height': `${contentMinHeight}px`,
     '--markdown-editor-min-height': `${contentMinHeight}px`,
   } as CSSProperties
-  const formatLabel = sourceFormat === 'html' ? tx('markdown.html') : tx('markdown.markdown')
+  const sourceDisplayFormat = sourceFormatForValue(value)
+  const formatLabel = sourceDisplayFormat === 'html' ? tx('markdown.html') : tx('markdown.markdown')
   const sourceLabel = mode === 'visual' ? tx('markdown.showSource') : tx('markdown.showRendered')
   const SourceIcon = mode === 'visual' ? Braces : Eye
   const sourceId = mode === 'source' ? id : id ? `${id}-source` : undefined
   const visualId = mode === 'visual' ? id : id ? `${id}-visual` : undefined
-  const editable = mode === 'visual' && !disabled && !readOnly
+  const needsFidelityPreview = richTextNeedsFidelityPreview(value, sourceDisplayFormat)
+  const editable = mode === 'visual' && !disabled && !readOnly && !needsFidelityPreview
+  const sourceStatusMessage = sourceFormatting
+    ? tx('markdown.formattingSource')
+    : sourceFormatError
+      ? tx('markdown.formatSourceFailed')
+      : ''
+  const sourceFormatActionLabel = [
+    tx('markdown.formatSource'),
+    formatLabel,
+    sourceFormatError ? tx('markdown.formatSourceFailed') : '',
+  ].filter(Boolean).join(' · ')
 
   const contextMenuPortal = displayedContextMenu && typeof document !== 'undefined'
     ? createPortal(
@@ -869,13 +1304,95 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     )
     : null
 
+  const completionKindLabel = (kind: SourceCompletionKind) => {
+    if (kind === 'element') return tx('markdown.sourceSuggestionElement')
+    if (kind === 'attribute') return tx('markdown.sourceSuggestionAttribute')
+    return tx('markdown.sourceSuggestionSnippet')
+  }
+
+  const sourceCompletionPortal = sourceCompletionMenu && mode === 'source' && typeof document !== 'undefined'
+    ? createPortal(
+      <div
+        id={sourceSuggestionListId}
+        className="markdown-source-suggestions"
+        role="listbox"
+        aria-label={tx('markdown.sourceSuggestions')}
+        style={{
+          left: sourceCompletionMenu.left,
+          top: sourceCompletionMenu.top,
+          width: sourceCompletionMenu.width,
+        }}
+      >
+        <div className="markdown-source-suggestion-scroll">
+          {sourceCompletionMenu.items.map((item, index) => {
+            const selected = sourceCompletionMenu.activeIndex === index
+            const kindMark = item.kind === 'element' ? '<>' : item.kind === 'attribute' ? '@' : 'MD'
+            return (
+              <button
+                key={item.id}
+                id={`${sourceSuggestionListId}-${item.id}`}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                className={`markdown-source-suggestion ${selected ? 'is-active' : ''}`}
+                tabIndex={-1}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseMove={() => {
+                  if (!selected) {
+                    setSourceCompletionMenu((current) => current ? { ...current, activeIndex: index } : null)
+                  }
+                }}
+                onClick={() => acceptSourceCompletion(index)}
+              >
+                <span className={`markdown-source-suggestion-kind is-${item.kind}`} aria-hidden="true">
+                  {kindMark}
+                </span>
+                <span className="markdown-source-suggestion-copy">
+                  <code>{item.label}</code>
+                  <small>{item.detail}</small>
+                </span>
+                <span className="sr-only">{completionKindLabel(item.kind)}</span>
+              </button>
+            )
+          })}
+        </div>
+        <div className="markdown-source-suggestion-hint" aria-hidden="true">
+          {tx('markdown.sourceSuggestionHint')}
+        </div>
+      </div>,
+      document.body,
+    )
+    : null
+
   return (
     <div
-      className={`markdown-textarea ${mode}-mode ${disabled ? 'is-disabled' : ''} ${readOnly ? 'is-readonly' : ''} ${className}`.trim()}
-      data-format={sourceFormat}
+      className={`markdown-textarea ${mode}-mode ${disabled ? 'is-disabled' : ''} ${readOnly ? 'is-readonly' : ''} ${sourceFormatError ? 'has-source-format-error' : ''} ${className}`.trim()}
+      data-format={sourceDisplayFormat}
       style={editorStyle}
     >
       <div className="markdown-mode-toolbar" role="toolbar" aria-label={tx('markdown.viewMode')}>
+        {mode === 'source' ? (
+          <>
+            <span className="markdown-source-language" title={formatLabel} aria-hidden="true">
+              <span />
+              {sourceDisplayFormat === 'html' ? 'HTML' : 'MD'}
+            </span>
+            <button
+              type="button"
+              className="markdown-format-source"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => { void runSourceFormatter(valueRef.current, true) }}
+              aria-label={sourceFormatActionLabel}
+              title={sourceFormatActionLabel}
+              disabled={disabled || readOnly || sourceFormatting || !value.trim()}
+            >
+              {sourceFormatting
+                ? <LoaderCircle className="markdown-format-spinner" size={14} aria-hidden="true" />
+                : <AlignLeft size={14} aria-hidden="true" />}
+              <span className="sr-only">{tx('markdown.formatSource')}</span>
+            </button>
+          </>
+        ) : null}
         <button
           type="button"
           className="markdown-mode-toggle"
@@ -891,30 +1408,70 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
       </div>
 
       <div className="markdown-editor-stage">
-        <textarea
-          {...textareaProps}
-          ref={setSourceRef}
-          id={sourceId}
-          className="markdown-source-input"
-          value={value}
-          rows={rows}
-          maxLength={maxLength}
-          disabled={disabled}
-          readOnly={readOnly}
-          placeholder={placeholder}
-          autoFocus={autoFocus && mode === 'source'}
-          tabIndex={mode === 'source' ? tabIndex : -1}
+        <div
+          ref={sourceHostRef}
+          className="markdown-source-layer"
           aria-hidden={mode !== 'source'}
-          onChange={handleSourceChange}
-          onKeyDown={handleSourceKeyDown}
-          onFocus={onFocus}
-          onBlur={onBlur}
-          onPaste={onPaste}
-          onContextMenu={onContextMenu}
-          onInput={onInput}
-        />
+          onPaste={(event) => {
+            if (event.target instanceof HTMLTextAreaElement) {
+              onPaste?.(event as unknown as ReactClipboardEvent<HTMLTextAreaElement>)
+            }
+          }}
+          onContextMenu={(event) => {
+            if (event.target instanceof HTMLTextAreaElement) {
+              onContextMenu?.(event as unknown as ReactMouseEvent<HTMLTextAreaElement>)
+            }
+          }}
+          onInput={(event) => {
+            if (event.target instanceof HTMLTextAreaElement) {
+              onInput?.(event as unknown as Parameters<NonNullable<typeof onInput>>[0])
+            }
+          }}
+        >
+          <Editor
+            ref={sourceEditorRef}
+            className="markdown-source-editor"
+            textareaId={sourceId}
+            textareaClassName="markdown-source-input"
+            preClassName="markdown-source-highlight"
+            value={value}
+            highlight={highlightSource}
+            onValueChange={handleSourceChange}
+            padding={{ top: 10, right: 116, bottom: 10, left: 12 }}
+            tabSize={2}
+            insertSpaces
+            maxLength={maxLength}
+            minLength={textareaProps.minLength}
+            name={textareaProps.name}
+            form={textareaProps.form}
+            required={textareaProps.required}
+            disabled={disabled}
+            readOnly={readOnly}
+            placeholder={placeholder}
+            autoFocus={autoFocus && mode === 'source'}
+            onKeyDown={(event) => {
+              handleSourceKeyDown(event as unknown as ReactKeyboardEvent<HTMLTextAreaElement>)
+            }}
+            onKeyUp={() => {
+              window.requestAnimationFrame(() => refreshSourceCompletions(valueRef.current))
+            }}
+            onClick={() => {
+              window.requestAnimationFrame(() => refreshSourceCompletions(valueRef.current))
+            }}
+            onScroll={() => setSourceCompletionMenu(null)}
+            onFocus={(event) => {
+              handleSourceFocus(event as unknown as ReactFocusEvent<HTMLTextAreaElement>)
+            }}
+            onBlur={(event) => {
+              handleSourceBlur(event as unknown as ReactFocusEvent<HTMLTextAreaElement>)
+            }}
+          />
+        </div>
 
-        <div className={`markdown-lexical-layer ${previewClassName}`.trim()} aria-hidden={mode !== 'visual'}>
+        <div
+          className={`markdown-lexical-layer ${needsFidelityPreview ? 'is-fidelity-hidden' : ''} ${previewClassName}`.trim()}
+          aria-hidden={mode !== 'visual' || needsFidelityPreview}
+        >
           <LexicalComposer initialConfig={initialConfig}>
             <RichTextPlugin
               contentEditable={(
@@ -930,7 +1487,7 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
                   aria-placeholder={placeholder ?? ''}
                   placeholder={<span className="markdown-editor-placeholder">{placeholder ?? ''}</span>}
                   spellCheck={textareaProps.spellCheck}
-                  tabIndex={mode === 'visual' ? tabIndex ?? 0 : -1}
+                  tabIndex={mode === 'visual' && !needsFidelityPreview ? tabIndex ?? 0 : -1}
                   onInput={(event) => onInput?.(event as unknown as Parameters<NonNullable<typeof onInput>>[0])}
                   onClick={(event) => {
                     event.preventDefault()
@@ -977,8 +1534,20 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
             <LexicalBridgePlugin onReady={(editor) => { editorRef.current = editor }} />
           </LexicalComposer>
         </div>
+        {needsFidelityPreview ? (
+          <div
+            className={`markdown-fidelity-layer ${previewClassName}`.trim()}
+            aria-hidden={mode !== 'visual'}
+          >
+            <MarkdownContent value={value} format={sourceDisplayFormat} />
+          </div>
+        ) : null}
       </div>
+      <span id={sourceStatusId} className="sr-only" role="status" aria-live="polite">
+        {sourceStatusMessage}
+      </span>
       {contextMenuPortal}
+      {sourceCompletionPortal}
     </div>
   )
 })

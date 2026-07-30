@@ -2,7 +2,8 @@
   "share": {
     "eyebrow": "只读预览",
     "title": "分享“{name}”",
-    "activeLinks": "活跃分享",
+    "activeLinks": "活跃分享链接",
+    "activeCount": "{count}/{limit} 条活跃链接",
     "noLinks": "暂无分享链接。",
     "createNew": "创建新的分享链接",
     "create": "创建分享链接",
@@ -36,7 +37,7 @@
       "30d": "30 天",
       "never": "永不过期"
     },
-    "packageMode": "分享包模式",
+    "packageMode": "分享范围",
     "completePackage": "完整项目",
     "completePackageDesc": "把所有公开项目页面作为一份完整档案共享出去。",
     "customPackage": "选择页面",

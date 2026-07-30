@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { phdApi } from '../../api/phdApi'
 import { normalizeErrorMessage } from '../../errorMessages'
 import { useI18n } from '../hooks/useI18n'
+import { PendingLabel } from '../shared/PendingLabel'
 
 export function ResetPassword({ token }: { token: string }) {
   const { tx, lang } = useI18n()
@@ -72,8 +73,8 @@ export function ResetPassword({ token }: { token: string }) {
                 required
               />
             </label>
-            <button className="primary-action" type="submit" disabled={busy}>
-              {busy ? tx('working') : tx('resetPassword.submit')}
+            <button className="primary-action" type="submit" disabled={busy} aria-busy={busy || undefined}>
+              {busy ? <PendingLabel label={tx('working')} /> : tx('resetPassword.submit')}
             </button>
           </form>
         )}

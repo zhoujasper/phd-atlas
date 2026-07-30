@@ -65,7 +65,7 @@ export function NewApplicationDialog({
     professorEmail: '',
     professorHomepage: '',
     university: '',
-    country: 'United States',
+    country: '',
     website: '',
     program: '',
     deadline: today,
@@ -148,7 +148,7 @@ export function NewApplicationDialog({
   })
   const resetAndClose = () => requestClose()
 
-  const dialogRef = useModalA11y({ open: open && !exiting, onClose: resetAndClose, initialFocusRef: professorInputRef })
+  const dialogRef = useModalA11y({ open, onClose: resetAndClose, initialFocusRef: professorInputRef })
 
   if (!open) return null
 
@@ -180,7 +180,7 @@ export function NewApplicationDialog({
         >
           {teamAssignmentPanel}
           <label>
-            <span>{tx('dialog.professor')} *</span>
+            <span>{tx('dialog.professor')} <span className="field-required-mark">*</span></span>
             <input
               ref={professorInputRef}
               required
@@ -190,7 +190,7 @@ export function NewApplicationDialog({
             />
           </label>
           <label>
-            <span>{tx('dialog.email')} *</span>
+            <span>{tx('dialog.email')} <span className="field-required-mark">*</span></span>
             <input
               required
               type="email"
@@ -208,7 +208,7 @@ export function NewApplicationDialog({
             />
           </label>
           <label>
-            <span>{tx('dialog.university')} *</span>
+            <span>{tx('dialog.university')} <span className="field-required-mark">*</span></span>
             <input
               required
               value={form.university}
@@ -234,7 +234,7 @@ export function NewApplicationDialog({
             />
           </label>
           <label>
-            <span>{tx('dialog.program')} *</span>
+            <span>{tx('dialog.program')} <span className="field-required-mark">*</span></span>
             <input
               required
               value={form.program}

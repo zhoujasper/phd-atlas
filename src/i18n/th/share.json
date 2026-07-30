@@ -2,7 +2,8 @@
   "share": {
     "eyebrow": "ดูตัวอย่างแบบอ่านอย่างเดียว",
     "title": "แบ่งปัน \"{name}\"",
-    "activeLinks": "การแบ่งปันที่ใช้งานอยู่",
+    "activeLinks": "ลิงก์แชร์ที่ใช้งานอยู่",
+    "activeCount": "{count}/{limit} ลิงก์ที่ใช้งานอยู่",
     "noLinks": "ยังไม่มีลิงก์แชร์",
     "createNew": "สร้างลิงก์แชร์ใหม่",
     "create": "สร้างลิงก์แชร์",
@@ -36,8 +37,8 @@
       "30d": "30 วัน",
       "never": "ไม่เคย"
     },
-    "packageMode": "แบ่งปันโหมดแพ็คเกจ",
-    "completePackage": "เสร็จสิ้นโครงการ",
+    "packageMode": "โหมดการแชร์",
+    "completePackage": "ทั้งโครงการ",
     "completePackageDesc": "แบ่งปันทุกหน้าโครงการสาธารณะเป็นเอกสารที่สวยงามเพียงฉบับเดียว",
     "customPackage": "เลือกหน้า",
     "customPackageDesc": "จำกัดลิงก์ไปยังหน้าและขั้นตอนการทำงานเฉพาะ",
@@ -52,7 +53,7 @@
       "overview": "ภาพรวม",
       "materials": "รายการตรวจสอบ",
       "tasks": "งาน",
-      "communications": "การตอบกลับ",
+      "communications": "การติดต่อสื่อสาร",
       "funding": "เงินทุน",
       "timeline": "ไทม์ไลน์",
       "versions": "เวอร์ชัน"

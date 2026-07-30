@@ -23,6 +23,7 @@ import { useI18n } from '../hooks/useI18n'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { useModalA11y } from '../hooks/useModalA11y'
 import { ModalPortal } from './ModalPortal'
+import { PendingLabel } from './PendingLabel'
 
 type TransferDirection = 'join' | 'leave'
 
@@ -98,7 +99,7 @@ export function ApplicationTransferDialog({
         : 'result'
   const canSubmit = Boolean(selectedTeamId && selectedPreflight?.eligible && !selectedLoading && !submitting)
   const dialogRef = useModalA11y<HTMLDivElement>({
-    open: open && !exiting,
+    open,
     onClose: () => {
       if (!submitting) requestClose()
     },
@@ -344,10 +345,11 @@ export function ApplicationTransferDialog({
               type="button"
               className="primary-action"
               disabled={!canSubmit}
+              aria-busy={submitting || undefined}
               onClick={() => void submit()}
             >
               {submitting
-                ? tx('working')
+                ? <PendingLabel label={tx('working')} />
                 : actionLabel}
             </button>
           </footer>

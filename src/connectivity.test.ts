@@ -1,13 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  apiRequestBlockReason,
   connectivityUnavailable,
+  getConnectivityGeneration,
   getConnectivitySnapshot,
   probeServerConnectivity,
   reportApiReachable,
   reportApiUnavailable,
+  resolveHealthHttpUrl,
   resolveHealthSocketUrl,
   resetConnectivityForTests,
   setManualOfflineMode,
+  subscribeConnectivity,
 } from './connectivity'
 
 class TestHealthSocket {
@@ -89,6 +93,8 @@ describe('connectivity state', () => {
       serverReachable: false,
     })
     expect(connectivityUnavailable()).toBe(true)
+    expect(apiRequestBlockReason('GET')).toBe('server-unreachable')
+    expect(apiRequestBlockReason('POST')).toBeNull()
   })
 
   it('lets a user choose immediate offline work while the server remains reachable', () => {
@@ -128,6 +134,10 @@ describe('connectivity state', () => {
     })).toBe('ws://localhost:5317/api/health/ws')
     expect(resolveHealthSocketUrl('https://atlas.example/applications', { development: false }))
       .toBe('wss://atlas.example/api/health/ws')
+    expect(resolveHealthHttpUrl('http://localhost:5173/applications'))
+      .toBe('http://localhost:5173/api/health')
+    expect(resolveHealthHttpUrl('https://atlas.example/applications'))
+      .toBe('https://atlas.example/api/health')
   })
 
   it('coalesces concurrent health checks behind one socket connection', async () => {
@@ -177,6 +187,7 @@ describe('connectivity state', () => {
   })
 
   it('marks the server unavailable when the health socket closes before readiness', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 502 })))
     const pending = probeServerConnectivity({ force: true })
     latestSocket().fail()
 
@@ -185,6 +196,79 @@ describe('connectivity state', () => {
       browserOnline: true,
       serverReachable: false,
     })
+  })
+
+  it('uses one HTTP recovery probe after an outage and restores reachability before reopening sockets', async () => {
+    reportApiUnavailable()
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      data: { status: 'ok' },
+      requestId: 'health-test',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const first = probeServerConnectivity({ force: true })
+    const second = probeServerConnectivity({ force: true })
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ serverReachable: true, mode: 'online' }),
+      expect.objectContaining({ serverReachable: true, mode: 'online' }),
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(TestHealthSocket.instances).toHaveLength(0)
+  })
+
+  it('coalesces an outage failure wave and ignores a failure from an older connectivity generation', () => {
+    const listener = vi.fn()
+    const unsubscribe = subscribeConnectivity(listener)
+    const observedGeneration = getConnectivityGeneration()
+
+    reportApiUnavailable({ observedGeneration })
+    reportApiUnavailable({ observedGeneration })
+
+    expect(listener).toHaveBeenCalledTimes(1)
+    expect(getConnectivitySnapshot().consecutiveFailures).toBe(1)
+
+    reportApiReachable(80)
+    const restoredSnapshot = getConnectivitySnapshot()
+    reportApiUnavailable({ observedGeneration })
+    expect(getConnectivitySnapshot()).toBe(restoredSnapshot)
+    unsubscribe()
+  })
+
+  it('does not let a late pre-outage response reopen the server circuit', () => {
+    const staleGeneration = getConnectivityGeneration()
+
+    reportApiUnavailable({ observedGeneration: staleGeneration })
+    const unavailableSnapshot = getConnectivitySnapshot()
+    reportApiReachable(80, { observedGeneration: staleGeneration })
+
+    expect(getConnectivitySnapshot()).toBe(unavailableSnapshot)
+    expect(getConnectivitySnapshot()).toMatchObject({
+      mode: 'server-unreachable',
+      serverReachable: false,
+    })
+
+    const recoveryGeneration = getConnectivityGeneration()
+    reportApiReachable(80, { observedGeneration: recoveryGeneration })
+    expect(getConnectivitySnapshot()).toMatchObject({
+      mode: 'online',
+      serverReachable: true,
+    })
+  })
+
+  it('does not publish a global render update for every successful API response', () => {
+    const listener = vi.fn()
+    const unsubscribe = subscribeConnectivity(listener)
+
+    reportApiReachable()
+    reportApiReachable()
+
+    expect(listener).not.toHaveBeenCalled()
+    unsubscribe()
   })
 
   it('does not describe localhost as a slow network from outward connection hints', () => {
@@ -200,6 +284,7 @@ describe('connectivity state', () => {
   })
 
   it('rejects malformed health socket events instead of treating a proxy response as Atlas', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 502 })))
     const pending = probeServerConnectivity({ force: true })
     latestSocket().open()
     latestSocket().message({ ok: true, type: 'unexpected' })

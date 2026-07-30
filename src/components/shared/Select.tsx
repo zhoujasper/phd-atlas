@@ -3,7 +3,11 @@ import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, typ
 import { createPortal } from 'react-dom'
 import { getMotionDelay } from '../hooks/useAnimatedClose'
 import { useI18n } from '../hooks/useI18n'
-import { addFloatingViewportListeners, getAnchoredOverlayStyle } from './floatingOverlay'
+import {
+  addFloatingViewportListeners,
+  FLOATING_CONTROL_BASE_Z_INDEX,
+  getAnchoredOverlayStyle,
+} from './floatingOverlay'
 
 export type SelectOption<T extends string = string> = {
   value: T
@@ -37,6 +41,8 @@ export function Select<T extends string = string>({
   size = 'default',
   disabled = false,
   searchable = false,
+  openOnMount = false,
+  onOpenChange,
   onLockedOptionClick,
   create,
 }: {
@@ -48,6 +54,8 @@ export function Select<T extends string = string>({
   size?: 'default' | 'small'
   disabled?: boolean
   searchable?: boolean
+  openOnMount?: boolean
+  onOpenChange?: (open: boolean) => void
   onLockedOptionClick?: (option: SelectOption<T>) => void
   create?: SelectCreateConfig<T>
 }) {
@@ -63,11 +71,14 @@ export function Select<T extends string = string>({
   const containerRef = useRef<HTMLDivElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const editRef = useRef<HTMLInputElement>(null)
+  const createButtonRef = useRef<HTMLButtonElement>(null)
   const positionFrameRef = useRef<number | null>(null)
   const closeTimerRef = useRef<number | null>(null)
   const ignoreOutsideUntilRef = useRef(0)
+  const openedOnMountRef = useRef(false)
   const openVisible = open && !exiting
 
   const selectedOption = options.find((o) => o.value === value)
@@ -106,6 +117,7 @@ export function Select<T extends string = string>({
       maxWidth: 340,
       estimatedHeight: searchable ? 326 : 286,
       actualHeight: dropdownRef.current?.getBoundingClientRect().height,
+      baseZIndex: FLOATING_CONTROL_BASE_Z_INDEX,
     })
   }, [searchable])
 
@@ -141,8 +153,9 @@ export function Select<T extends string = string>({
       setEditMode(null)
       setEditingOption(null)
       setEditValue('')
+      onOpenChange?.(false)
     }, getMotionDelay(150))
-  }, [clearCloseTimer, exiting, open])
+  }, [clearCloseTimer, exiting, onOpenChange, open])
 
   const openMenu = useCallback(() => {
     if (disabled) return
@@ -155,10 +168,27 @@ export function Select<T extends string = string>({
     setEditMode(null)
     setEditingOption(null)
     setEditValue('')
+    onOpenChange?.(true)
     const idx = filteredOptions.findIndex((o) => o.value === value)
     setHighlightIndex(idx >= 0 && isOptionNavigable(filteredOptions[idx]) ? idx : firstNavigableIndex)
     window.requestAnimationFrame(() => setDropdownStyle(getDropdownPosition()))
-  }, [clearCloseTimer, disabled, filteredOptions, firstNavigableIndex, getDropdownPosition, isOptionNavigable, value])
+  }, [
+    clearCloseTimer,
+    disabled,
+    filteredOptions,
+    firstNavigableIndex,
+    getDropdownPosition,
+    isOptionNavigable,
+    onOpenChange,
+    value,
+  ])
+
+  useLayoutEffect(() => {
+    if (!openOnMount || openedOnMountRef.current) return
+    openedOnMountRef.current = true
+    triggerRef.current?.focus({ preventScroll: true })
+    openMenu()
+  }, [openMenu, openOnMount])
 
   const toggle = () => {
     if (disabled) return
@@ -298,7 +328,7 @@ export function Select<T extends string = string>({
     setEditMode(null)
     setEditingOption(null)
     setEditValue('')
-    window.requestAnimationFrame(() => searchRef.current?.focus())
+    window.requestAnimationFrame(() => createButtonRef.current?.focus())
   }
 
   const commitEdit = () => {
@@ -320,6 +350,7 @@ export function Select<T extends string = string>({
       style={{ position: 'relative', width: '100%' }}
     >
       <button
+        ref={triggerRef}
         type="button"
         className={`custom-select-trigger ${openVisible ? 'open' : ''}`}
         onMouseDown={(event) => {
@@ -361,6 +392,7 @@ export function Select<T extends string = string>({
           aria-label={ariaLabel ?? displayPlaceholder}
           ref={dropdownRef}
           style={dropdownStyle}
+          data-floating-overlay="true"
           onMouseDown={(event) => event.stopPropagation()}
         >
           {searchable ? (
@@ -453,40 +485,55 @@ export function Select<T extends string = string>({
                 </div>
               )
             })}
-            {create ? (
-              <button type="button" className="custom-select-create-option" onClick={beginCreate}>
+          </div>
+          {create ? (
+            <div
+              className={`custom-select-create-stage ${editMode ? 'is-editing' : ''}`}
+              data-edit-mode={editMode ?? 'idle'}
+            >
+              <button
+                ref={createButtonRef}
+                type="button"
+                className="custom-select-create-option"
+                onClick={beginCreate}
+                aria-hidden={Boolean(editMode)}
+                inert={editMode ? true : undefined}
+                tabIndex={editMode ? -1 : 0}
+              >
                 <Plus size={14} aria-hidden="true" />
                 <span>{create.label}</span>
               </button>
-            ) : null}
-          </div>
-          {create && editMode ? (
-            <div className="custom-select-create-panel">
-              <input
-                ref={editRef}
-                value={editValue}
-                placeholder={create.placeholder}
-                maxLength={create.maxLength}
-                aria-label={editMode === 'rename' ? create.renameAriaLabel : create.createAriaLabel}
-                onChange={(event) => setEditValue(event.target.value)}
-                onKeyDown={(event) => {
-                  event.stopPropagation()
-                  if (event.key === 'Enter') {
-                    event.preventDefault()
-                    commitEdit()
-                  }
-                  if (event.key === 'Escape') {
-                    event.preventDefault()
-                    cancelEdit()
-                  }
-                }}
-              />
-              <button type="button" onClick={cancelEdit} aria-label={tx('close')} title={tx('close')}>
-                <X size={14} aria-hidden="true" />
-              </button>
-              <button type="button" className="confirm" disabled={!editValue.trim()} onClick={commitEdit} aria-label={tx('save')} title={tx('save')}>
-                <Check size={14} aria-hidden="true" />
-              </button>
+              <div
+                className="custom-select-create-panel"
+                aria-hidden={!editMode}
+                inert={!editMode ? true : undefined}
+              >
+                <input
+                  ref={editRef}
+                  value={editValue}
+                  placeholder={create.placeholder}
+                  maxLength={create.maxLength}
+                  aria-label={editMode === 'rename' ? create.renameAriaLabel : create.createAriaLabel}
+                  onChange={(event) => setEditValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    event.stopPropagation()
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      commitEdit()
+                    }
+                    if (event.key === 'Escape') {
+                      event.preventDefault()
+                      cancelEdit()
+                    }
+                  }}
+                />
+                <button type="button" onClick={cancelEdit} aria-label={tx('close')} title={tx('close')}>
+                  <X size={14} aria-hidden="true" />
+                </button>
+                <button type="button" className="confirm" disabled={!editValue.trim()} onClick={commitEdit} aria-label={tx('save')} title={tx('save')}>
+                  <Check size={14} aria-hidden="true" />
+                </button>
+              </div>
             </div>
           ) : null}
         </div>,

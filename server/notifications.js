@@ -97,6 +97,20 @@ export function evaluateNotificationsForUser(applications, todayStr) {
           targetTab: 'dossier',
           targetId: 'dossier-config-card',
         })
+      } else if (remaining < 0) {
+        candidates.push({
+          type: 'deadline_passed',
+          applicationId: application.id,
+          dedupeKey: dedupeKey('deadline_passed', application.id, application.deadline),
+          triggerDate: application.deadline,
+          title: `Deadline passed: ${schoolName}`,
+          body: `${application.program} deadline was ${application.deadline}. Review this application now.`,
+          titleZh: `截止日期已过：${schoolName}`,
+          bodyZh: `${application.program} 的截止日期是 ${application.deadline}，请立即检查此申请。`,
+          targetPath: `/applications/${encodeURIComponent(application.id)}/dossier`,
+          targetTab: 'dossier',
+          targetId: 'dossier-config-card',
+        })
       }
     }
   }

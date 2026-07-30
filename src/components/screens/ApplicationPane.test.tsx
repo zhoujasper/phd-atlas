@@ -15,6 +15,42 @@ const i18nContext: I18nContextValue = {
 describe('ApplicationPane owner picker', () => {
   afterEach(() => vi.useRealTimers())
 
+  it('keeps the board action mounted while it smoothly collapses in board mode', () => {
+    const onShowBoard = vi.fn()
+    const renderPane = (boardActive: boolean) => (
+      <I18nContext.Provider value={i18nContext}>
+        <ApplicationPane
+          applications={[]}
+          totalApplicationCount={0}
+          applicationLimit={10}
+          isPro
+          selectedId={null}
+          query=""
+          statusFilters={[]}
+          sort="deadline:asc"
+          onQuery={vi.fn()}
+          onStatusFilters={vi.fn()}
+          onSort={vi.fn()}
+          onSelect={vi.fn()}
+          onUpgrade={vi.fn()}
+          onShowBoard={onShowBoard}
+          boardActive={boardActive}
+        />
+      </I18nContext.Provider>
+    )
+    const view = render(renderPane(false))
+
+    expect(view.container.querySelector('.application-board-action-presence')).toHaveAttribute('data-present', 'true')
+    expect(view.container.querySelector('.application-board-button')).toBeInTheDocument()
+
+    view.rerender(renderPane(true))
+
+    const presence = view.container.querySelector('.application-board-action-presence')
+    expect(presence).toHaveAttribute('data-present', 'false')
+    expect(presence).toHaveAttribute('inert')
+    expect(view.container.querySelector('.application-board-button')).toBeInTheDocument()
+  })
+
   it('keeps the trash dock after a flexible empty application region', () => {
     const view = render(
       <I18nContext.Provider value={i18nContext}>
@@ -113,6 +149,52 @@ describe('ApplicationPane owner picker', () => {
     expect(view.container.querySelector('.application-line')).toHaveClass('is-removing')
   })
 
+  it('shows every responsible teacher and the student as two compact Team rows', () => {
+    const application = sampleApplications[0]
+    const teacherNames = 'Dr. Mei Lin · Prof. Ada Lovelace'
+    const studentName = 'Omar Hassan'
+    const view = render(
+      <I18nContext.Provider value={i18nContext}>
+        <ApplicationPane
+          applications={[application]}
+          totalApplicationCount={1}
+          applicationLimit={10}
+          isPro
+          selectedId={application.id}
+          query=""
+          statusFilters={[]}
+          sort="deadline:asc"
+          onQuery={vi.fn()}
+          onStatusFilters={vi.fn()}
+          onSort={vi.fn()}
+          onSelect={vi.fn()}
+          onUpgrade={vi.fn()}
+          teamRelations={{
+            [application.id]: {
+              advisorName: teacherNames,
+              studentName,
+            },
+          }}
+        />
+      </I18nContext.Provider>,
+    )
+
+    const row = view.container.querySelector('.application-line')
+    const context = view.container.querySelector('.team-line-context')
+    expect(row).toHaveClass('has-team-context')
+    expect(Array.from(context?.children ?? []).map((child) => child.tagName)).toEqual([
+      'SMALL',
+      'B',
+      'SMALL',
+      'B',
+    ])
+    expect(context).toHaveTextContent(`workspace.advisorLabel:${teacherNames}`)
+    expect(context).toHaveTextContent(`workspace.studentLabel:${studentName}`)
+    expect(context?.querySelectorAll('svg')).toHaveLength(0)
+    expect(context?.querySelectorAll('b')[0]).toHaveAttribute('title', teacherNames)
+    expect(context?.querySelectorAll('b')[1]).toHaveAttribute('title', studentName)
+  })
+
   it('moves the shared selection surface on pointer down before opening the next record', () => {
     vi.useFakeTimers()
     const onSelect = vi.fn()
@@ -153,10 +235,18 @@ describe('ApplicationPane owner picker', () => {
     expect(slider).toHaveClass('is-visible', 'is-moving')
     expect(onSelect).not.toHaveBeenCalled()
 
+    act(() => vi.advanceTimersByTime(280))
+    expect(slider).toHaveClass('is-moving')
+
+    act(() => vi.advanceTimersByTime(40))
+    expect(slider).not.toHaveClass('is-moving')
+
     fireEvent.click(targetRow!)
     expect(onSelect).toHaveBeenCalledWith(sampleApplications[1].id)
 
-    act(() => vi.advanceTimersByTime(700))
+    act(() => vi.advanceTimersByTime(380))
     expect(slider?.style.getPropertyValue('--application-selection-y')).toBe('0px')
+    view.unmount()
+    vi.useRealTimers()
   })
 })

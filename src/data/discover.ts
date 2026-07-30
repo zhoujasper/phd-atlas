@@ -544,6 +544,7 @@ export type DiscoverEnrichmentChange = {
 
 export type DiscoverApplicationEnrichmentProposal = {
   applicationId: string
+  applicationUpdatedAt?: string
   generatedAt: string
   usedAi: boolean
   matchedProgram: {
@@ -554,6 +555,23 @@ export type DiscoverApplicationEnrichmentProposal = {
   } | null
   changes: DiscoverEnrichmentChange[]
   caveats: string[]
+  research?: {
+    protocolVersion: string
+    stages: string[]
+    suppliedLinkCount: number
+    fetchedPageCount: number
+    quarantinedPageCount: number
+    plannedQueryCount: number
+    candidateUrlCount: number
+    sourceCount: number
+    webSearchUsed: boolean
+    durationMs: {
+      contextAndPlan: number
+      candidateCrawl: number
+      verification: number
+      total: number
+    }
+  }
   payload: Record<string, unknown>
 }
 

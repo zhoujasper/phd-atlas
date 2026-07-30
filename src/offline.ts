@@ -82,6 +82,7 @@ export type OfflineApplicationUpdate = {
   baseApplication?: ApplicationRecord
   createdAt: string
   updatedAt: string
+  localEditedAt?: string
   application: ApplicationRecord
   status?: 'pending' | 'blocked'
   blockedReason?: string
@@ -572,6 +573,16 @@ export function sanitizePersonalApplicationForOffline(
   })
   const communications = application.communications.map((communication) => {
     const {
+      deliveryStatus: _deliveryStatus,
+      scheduledAt: _scheduledAt,
+      sentAt: _sentAt,
+      deliveryId: _deliveryId,
+      deliveryUserId: _deliveryUserId,
+      deliveryStartedAt: _deliveryStartedAt,
+      nextDeliveryAttemptAt: _nextDeliveryAttemptAt,
+      deliveryAttemptCount: _deliveryAttemptCount,
+      deliveryLastErrorCode: _deliveryLastErrorCode,
+      deliveryLastErrorAt: _deliveryLastErrorAt,
       sourceMessageKey: _sourceMessageKey,
       sourceMailbox: _sourceMailbox,
       attachments,
@@ -681,10 +692,31 @@ function restoreCommunicationAuthority(
   const serverById = new Map(serverCommunications.map((item) => [item.id, item]))
   return offlineCommunications.map((item) => {
     const server = serverById.get(item.id)
-    if (!server) return { ...item, attachments: [] }
+    if (!server) {
+      const {
+        bodyFormat: _bodyFormat,
+        bodyHtml: _bodyHtml,
+        bodyText: _bodyText,
+        ...safe
+      } = item
+      return { ...safe, attachments: [] }
+    }
     return {
       ...item,
       attachments: server.attachments,
+      bodyFormat: server.bodyFormat,
+      bodyHtml: server.bodyHtml,
+      bodyText: server.bodyText,
+      deliveryStatus: server.deliveryStatus,
+      scheduledAt: server.scheduledAt,
+      sentAt: server.sentAt,
+      deliveryId: server.deliveryId,
+      deliveryUserId: server.deliveryUserId,
+      deliveryStartedAt: server.deliveryStartedAt,
+      nextDeliveryAttemptAt: server.nextDeliveryAttemptAt,
+      deliveryAttemptCount: server.deliveryAttemptCount,
+      deliveryLastErrorCode: server.deliveryLastErrorCode,
+      deliveryLastErrorAt: server.deliveryLastErrorAt,
       sourceMessageKey: server.sourceMessageKey,
       sourceMailbox: server.sourceMailbox,
       importedAt: server.importedAt,
@@ -693,9 +725,9 @@ function restoreCommunicationAuthority(
 }
 
 /**
- * Rehydrate fields that can only come from the current server record before a
- * replay or a conflict-review draft is saved. Offline content is never allowed
- * to mint share tokens, Team state, backup policy or encrypted-vault handles.
+ * Rehydrate fields that can only come from the current server record before
+ * replay. Offline content is never allowed to mint share tokens, Team state,
+ * backup policy or encrypted-vault handles.
  */
 export function restoreOfflineApplicationAuthority(
   offlineApplication: ApplicationRecord,
@@ -776,7 +808,17 @@ function hasNoOfflineCapabilityFields(application: ApplicationRecord) {
     && (task.versions ?? []).every((version) => !version.fileId && !version.storageName)
   ))
   const communicationsSafe = application.communications.every((communication) => (
-    !communication.sourceMessageKey
+    !communication.deliveryStatus
+    && !communication.scheduledAt
+    && !communication.sentAt
+    && !communication.deliveryId
+    && !communication.deliveryUserId
+    && !communication.deliveryStartedAt
+    && !communication.nextDeliveryAttemptAt
+    && communication.deliveryAttemptCount === undefined
+    && !communication.deliveryLastErrorCode
+    && !communication.deliveryLastErrorAt
+    && !communication.sourceMessageKey
     && !communication.sourceMailbox
     && (communication.attachments ?? []).every((attachment) => (
       !attachment.id
@@ -827,6 +869,7 @@ function isOfflineApplicationUpdate(value: unknown, userId: string): value is Of
     )
   ) return false
   if (typeof value.createdAt !== 'string' || typeof value.updatedAt !== 'string') return false
+  if (value.localEditedAt !== undefined && typeof value.localEditedAt !== 'string') return false
   if (value.status !== undefined && value.status !== 'pending' && value.status !== 'blocked') return false
   if (value.blockedReason !== undefined && typeof value.blockedReason !== 'string') return false
   if (!isApplicationLike(value.application)) return false
@@ -1155,8 +1198,7 @@ export function enqueueApplicationUpdate(
   const queue = readOfflineQueue(userId)
   const existingIndex = queue.findIndex((item) =>
     item.type === 'updateApplication' &&
-    item.applicationId === application.id &&
-    item.status !== 'blocked'
+    item.applicationId === application.id
   )
 
   if (existingIndex >= 0) {
@@ -1165,6 +1207,7 @@ export function enqueueApplicationUpdate(
       ...existing,
       application: safeApplication,
       updatedAt: now,
+      localEditedAt: now,
       status: 'pending',
       blockedReason: undefined,
     }
@@ -1178,6 +1221,7 @@ export function enqueueApplicationUpdate(
       baseApplication: safeBaseApplication,
       createdAt: now,
       updatedAt: now,
+      localEditedAt: now,
       application: safeApplication,
       status: 'pending',
     })
@@ -1196,20 +1240,39 @@ function valuesEqual(left: unknown, right: unknown) {
   }
 }
 
+function timestampValue(value: string | null | undefined) {
+  if (!value) return null
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) ? timestamp : null
+}
+
+function localEditTimestamp(operation: OfflineApplicationUpdate) {
+  // Older blocked entries used `updatedAt` for the block-status write itself.
+  // Their original creation time is therefore a safer comparison point than
+  // treating the later blocked-status marker as a user edit.
+  return timestampValue(
+    operation.localEditedAt
+      ?? (operation.status === 'blocked' ? operation.createdAt : operation.updatedAt),
+  )
+}
+
 /**
- * Conservatively merges an offline edit when the server changed a different
- * top-level application field. Nested collections remain atomic so simultaneous
- * edits to tasks/materials never get silently interleaved or overwritten.
+ * Reconciles a personal offline edit without creating a manual review draft.
+ * Non-overlapping edits are retained from both copies. If both copies changed
+ * the same user-editable field, the later local-edit/server timestamp wins;
+ * ties and unverifiable timestamps prefer the server. Capability/vault fields
+ * always come from the current server record.
  */
 export function mergeOfflineApplicationUpdate(
   operation: OfflineApplicationUpdate,
   serverApplication: ApplicationRecord,
-): { application: ApplicationRecord; merged: boolean } | null {
+): { application: ApplicationRecord; merged: boolean; replayRequired: boolean } | null {
   const base = operation.baseApplication
   const serverUnchanged = serverApplication.updatedAt === operation.baseUpdatedAt
   if (
-    !serverUnchanged
-    && (!base || base.id !== serverApplication.id || base.id !== operation.application.id)
+    operation.applicationId !== serverApplication.id
+    || operation.application.id !== serverApplication.id
+    || (base && base.id !== serverApplication.id)
   ) return null
 
   const keys = new Set([
@@ -1219,24 +1282,43 @@ export function mergeOfflineApplicationUpdate(
   ] as Array<keyof ApplicationRecord>)
   for (const key of OFFLINE_SERVER_AUTHORITY_KEYS) keys.delete(key)
 
-  const localChanges = new Set<keyof ApplicationRecord>()
-  const serverChanges = new Set<keyof ApplicationRecord>()
+  const merged = { ...serverApplication }
+  const offlineTimestamp = localEditTimestamp(operation)
+  const serverTimestamp = timestampValue(serverApplication.updatedAt)
+  const offlineIsNewer = (
+    offlineTimestamp !== null
+    && serverTimestamp !== null
+    && offlineTimestamp > serverTimestamp
+  )
+
   for (const key of keys) {
-    const baselineValue = (base ?? serverApplication)[key]
-    if (!valuesEqual(operation.application[key], baselineValue)) localChanges.add(key)
-    if (!serverUnchanged && !valuesEqual(serverApplication[key], baselineValue)) serverChanges.add(key)
-  }
-  for (const key of localChanges) {
-    if (serverChanges.has(key) && !valuesEqual(operation.application[key], serverApplication[key])) return null
+    const localValue = operation.application[key]
+    const serverValue = serverApplication[key]
+    if (valuesEqual(localValue, serverValue)) continue
+
+    if (!base) {
+      if (serverUnchanged || offlineIsNewer) {
+        ;(merged as unknown as Record<string, unknown>)[key] = localValue
+      }
+      continue
+    }
+
+    const baselineValue = base[key]
+    const localChanged = !valuesEqual(localValue, baselineValue)
+    if (!localChanged) continue
+    const serverChanged = !serverUnchanged && !valuesEqual(serverValue, baselineValue)
+    if (!serverChanged || offlineIsNewer) {
+      ;(merged as unknown as Record<string, unknown>)[key] = localValue
+    }
   }
 
-  const merged = { ...serverApplication }
-  for (const key of localChanges) {
-    ;(merged as unknown as Record<string, unknown>)[key] = operation.application[key]
-  }
+  const replayRequired = Array.from(keys).some((key) => (
+    !valuesEqual(merged[key], serverApplication[key])
+  ))
   return {
     application: restoreOfflineApplicationAuthority(merged, serverApplication),
     merged: !serverUnchanged,
+    replayRequired,
   }
 }
 

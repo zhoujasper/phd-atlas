@@ -1,9 +1,19 @@
 const bareDomainPattern = /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d{1,5})?(?:[/?#].*)?$/i
 const emailPattern = /^[a-z0-9._%+-]+@(?:[a-z0-9-]+\.)+[a-z]{2,}$/i
 
+function hasUnsafeUrlCharacter(value: string) {
+  return Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0
+    return character === '\\'
+      || /\s/u.test(character)
+      || codePoint <= 0x1f
+      || codePoint === 0x7f
+  })
+}
+
 export function safeExternalHttpUrl(value: string) {
   const trimmed = value.trim()
-  if (!trimmed || /[\s\\\u0000-\u001F\u007F]/.test(trimmed)) return ''
+  if (!trimmed || hasUnsafeUrlCharacter(trimmed)) return ''
 
   const candidate = /^https?:\/\//i.test(trimmed)
     ? trimmed

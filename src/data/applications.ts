@@ -50,6 +50,17 @@ export type ShareSection =
   | 'timeline'
   | 'versions'
 
+export type MailSecuritySignal =
+  | 'authentication-failed'
+  | 'reply-to-mismatch'
+  | 'deceptive-link'
+  | 'unsafe-link'
+  | 'credential-request'
+  | 'financial-request'
+  | 'prompt-injection'
+  | 'active-content'
+  | 'unsafe-attachment'
+
 const sharePermissions: readonly SharePermission[] = ['view', 'upload', 'edit']
 export const shareSections: readonly ShareSection[] = [
   'overview',
@@ -147,6 +158,8 @@ export type ApplicationRecord = {
     english: string
     chinese: string
     email: string
+    /** Additional exact-match addresses filed into this application's correspondence timeline. */
+    correspondenceEmails?: string[]
     phone: string
     social: string
     homepage: string
@@ -218,9 +231,12 @@ export type ApplicationRecord = {
     id: string
     subject: string
     channel: string
-    date: string
-    summary: string
-    direction?: 'incoming' | 'outgoing' | 'note'
+      date: string
+      summary: string
+      bodyFormat?: 'plain' | 'markdown' | 'html'
+      bodyHtml?: string
+      bodyText?: string
+      direction?: 'incoming' | 'outgoing' | 'note'
     messageType?: string
     from?: string
     to?: string
@@ -235,10 +251,25 @@ export type ApplicationRecord = {
       storageName?: string
       source?: string
     }>
-    deliveryStatus?: 'sent' | 'log-only'
+    deliveryStatus?: 'queued' | 'sending' | 'sent' | 'log-only'
+    scheduledAt?: string
+    sentAt?: string
+    deliveryId?: string
+    deliveryUserId?: string
+    deliveryStartedAt?: string
+    nextDeliveryAttemptAt?: string
+    deliveryAttemptCount?: number
+    deliveryLastErrorCode?: string
+    deliveryLastErrorAt?: string
     sourceMessageKey?: string
     sourceMailbox?: string
     importedAt?: string
+    mailSecurity?: {
+      level: 'caution' | 'danger'
+      signals: MailSecuritySignal[]
+      linksDisabled: true
+      quarantinedAttachmentCount: number
+    }
   }>
   scholarships: Array<{
     id: string

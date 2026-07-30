@@ -69,6 +69,7 @@ import { AnchoredPopover } from '../shared/AnchoredPopover'
 import { Select } from '../shared/Select'
 import { SwitchControl } from '../shared/SwitchControl'
 import { VerificationResendAction } from '../shared/VerificationResendAction'
+import { PendingLabel } from '../shared/PendingLabel'
 import { AiKeyManager } from '../shared/AiKeyManager'
 import { AvatarCropDialog } from '../shared/AvatarCropDialog'
 import { UserAvatar } from '../shared/UserAvatar'
@@ -164,6 +165,14 @@ const SETTINGS_SECTION_IDS: SettingsSectionId[] = [
   'settings-usage-section',
   'settings-data-section',
 ]
+const SETTINGS_SECTION_REVEAL_STEP: Record<SettingsSectionId, number> = {
+  'settings-appearance-section': 0,
+  'settings-ai-section': 1,
+  'settings-mail-section': 1,
+  'settings-security-section': 2,
+  'settings-usage-section': 2,
+  'settings-data-section': 3,
+}
 const backupFrequencyOptions: Array<{ value: BackupFrequency; labelKey: string; fallback: string }> = [
   { value: '1m', labelKey: 'settings.backupEvery1m', fallback: 'Every minute' },
   { value: '5m', labelKey: 'settings.backupEvery5m', fallback: 'Every 5 minutes' },
@@ -440,6 +449,7 @@ export function SettingsScreen({
   onFetchMailNow,
   onSyncMailHistory,
   onExport,
+  exportApplicationCount,
   onDeleteAccount,
   allShares = [],
   onRevokeShare,
@@ -488,6 +498,7 @@ export function SettingsScreen({
   onFetchMailNow?: (patch?: Partial<UserSettings>) => Promise<void> | void
   onSyncMailHistory?: (patch?: Partial<UserSettings>) => Promise<void> | void
   onExport?: (format: 'json' | 'csv' | 'excel' | 'pdf') => void
+  exportApplicationCount?: number
   onDeleteAccount: () => void
   allShares?: SharedLinkInfo[]
   onRevokeShare?: (applicationId: string, shareId: string) => void
@@ -575,6 +586,7 @@ export function SettingsScreen({
   })
   const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSectionId>('settings-appearance-section')
   const settingsIndexNavRef = useRef<HTMLElement | null>(null)
+  const settingsProgressiveSentinelRef = useRef<HTMLDivElement | null>(null)
   const pendingSettingsScrollRef = useRef<SettingsSectionId | null>(null)
   const settingsScrollSequenceRef = useRef(0)
   const settingsScrollReleaseTimerRef = useRef<number | null>(null)
@@ -595,6 +607,13 @@ export function SettingsScreen({
     }
     onNotify?.(tx('copyFailed'), 'error')
   }, [format, onNotify, tx])
+  const handleExport = (format: 'json' | 'csv' | 'excel' | 'pdf') => {
+    if (exportApplicationCount === 0) {
+      onNotify?.(tx('workspace.noApps'), 'info')
+      return
+    }
+    onExport?.(format)
+  }
   // Settings is the personal account surface. Team membership is a separate
   // workspace identity and must never replace the user's personal plan badge.
   const accountPlan = isAdmin
@@ -632,9 +651,12 @@ export function SettingsScreen({
     menuNode: shareTableMenuNode,
   } = useTableColumnMenu('settings-share-links', shareTableColumns)
   const storageUsedBytes = Number(session.usage?.storageUsedBytes ?? 0)
-  const storageQuotaBytes = session.usage?.storageQuotaBytes ?? (isAdmin
-    ? null
-    : Number(session.user.settings.storageQuotaMb ?? (isPro ? 100 : 5)) * 1024 * 1024)
+  const configuredStorageQuotaMb = Number(session.user.settings.storageQuotaMb ?? (isPro ? 100 : 5))
+  const storageQuotaBytes = session.usage
+    ? session.usage.storageQuotaBytes
+    : (isAdmin || configuredStorageQuotaMb === -1
+        ? null
+        : configuredStorageQuotaMb * 1024 * 1024)
   const storagePercent = storageQuotaBytes ? Math.min(100, Math.round((storageUsedBytes / storageQuotaBytes) * 100)) : 0
   const trashRetentionValue = session.user.settings.trashRetentionDays === null ? 'never' : String(session.user.settings.trashRetentionDays ?? 30)
   const activeShares = useMemo(
@@ -887,14 +909,76 @@ export function SettingsScreen({
   useEffect(() => {
     if (deferProgressiveReveal || settingsRevealStep >= 3) return undefined
 
-    const timers = [70, 170, 280].map((delay, index) => window.setTimeout(() => {
-      startTransition(() => setSettingsRevealStep((current) => Math.max(current, index + 1)))
-    }, delay))
-    return () => timers.forEach((timer) => window.clearTimeout(timer))
-    // This staged mount is intentionally scheduled once for each SettingsScreen mount.
-    // It starts only after a native screen snapshot has finished when deferred.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deferProgressiveReveal])
+    const sentinel = settingsProgressiveSentinelRef.current
+    const scrollRoot = sentinel?.closest<HTMLElement>('.settings-screen')
+    if (!sentinel || !scrollRoot) return undefined
+
+    const elementScrolls = scrollRoot.scrollHeight > scrollRoot.clientHeight + 1
+    const compactViewport = typeof window.matchMedia === 'function'
+      && window.matchMedia('(max-width: 820px)').matches
+    const preheatPx = compactViewport ? 360 : 520
+    const nextStep = Math.min(3, settingsRevealStep + 1)
+    let observer: IntersectionObserver | null = null
+    let revealFrame: number | null = null
+    let fallbackFrame: number | null = null
+    let revealScheduled = false
+
+    const revealNextGroup = () => {
+      if (revealScheduled) return
+      revealScheduled = true
+      observer?.disconnect()
+      // Yield the current scroll frame before mounting the next group. The
+      // transition keeps this lower-priority work from interrupting scrolling.
+      revealFrame = window.requestAnimationFrame(() => {
+        revealFrame = null
+        startTransition(() => {
+          setSettingsRevealStep((current) => Math.max(current, nextStep))
+        })
+      })
+    }
+
+    if (typeof window.IntersectionObserver === 'function') {
+      observer = new window.IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) revealNextGroup()
+      }, {
+        root: elementScrolls ? scrollRoot : null,
+        rootMargin: `0px 0px ${preheatPx}px`,
+        threshold: 0.01,
+      })
+      observer.observe(sentinel)
+    } else {
+      const scrollTarget: HTMLElement | Window = elementScrolls ? scrollRoot : window
+      const checkProximity = () => {
+        fallbackFrame = null
+        const viewportBottom = elementScrolls
+          ? scrollRoot.getBoundingClientRect().bottom
+          : window.innerHeight
+        if (sentinel.getBoundingClientRect().top <= viewportBottom + preheatPx) {
+          revealNextGroup()
+        }
+      }
+      const scheduleProximityCheck = () => {
+        if (fallbackFrame !== null || revealScheduled) return
+        fallbackFrame = window.requestAnimationFrame(checkProximity)
+      }
+
+      scrollTarget.addEventListener('scroll', scheduleProximityCheck, { passive: true })
+      window.addEventListener('resize', scheduleProximityCheck, { passive: true })
+      scheduleProximityCheck()
+
+      return () => {
+        scrollTarget.removeEventListener('scroll', scheduleProximityCheck)
+        window.removeEventListener('resize', scheduleProximityCheck)
+        if (fallbackFrame !== null) window.cancelAnimationFrame(fallbackFrame)
+        if (revealFrame !== null) window.cancelAnimationFrame(revealFrame)
+      }
+    }
+
+    return () => {
+      observer?.disconnect()
+      if (revealFrame !== null) window.cancelAnimationFrame(revealFrame)
+    }
+  }, [deferProgressiveReveal, settingsRevealStep])
 
   useEffect(() => {
     const scrollRoot = document.querySelector<HTMLElement>('.settings-screen')
@@ -1381,7 +1465,7 @@ export function SettingsScreen({
     // Navigation is immediately interactive while lower settings groups mount
     // progressively. Reveal the requested target now; the effect below scrolls
     // once React has committed it.
-    setSettingsRevealStep(3)
+    setSettingsRevealStep((current) => Math.max(current, SETTINGS_SECTION_REVEAL_STEP[id]))
   }, [startSettingsSectionScroll])
 
   useEffect(() => {
@@ -1439,6 +1523,19 @@ export function SettingsScreen({
           <span className={`settings-status-chip ${mailReady ? 'is-ready' : 'needs-attention'}`}>
             <Mail size={13} aria-hidden="true" />
             {mailReady ? tx('settings.mailConfigured') : tx('settings.mailNeedsSetup')}
+          </span>
+          <span className="settings-account-id">
+            <Fingerprint size={13} aria-hidden="true" />
+            <span>
+              <small>{tx('settings.userIdLabel')}</small>
+              <code title={session.user.id}>{session.user.id}</code>
+            </span>
+            <CopyButton
+              value={session.user.id}
+              label={tx('settings.userIdLabel')}
+              size={12}
+              className="settings-account-id-copy"
+            />
           </span>
         </div>
         {onOpenNotifications ? (
@@ -1839,7 +1936,7 @@ export function SettingsScreen({
           </div>
         ) : null}
 
-        {settingsRevealStep >= 1 ? <div id="settings-ai-section" className="settings-block settings-ai-block"><AiKeyManager
+        {settingsRevealStep >= 1 ? <div id="settings-ai-section" className="settings-progressive-group settings-lazy-reveal settings-block settings-ai-block"><AiKeyManager
           keys={aiKeys}
           scope="personal"
           autoOpenAdd={focusAiKeys}
@@ -1852,7 +1949,7 @@ export function SettingsScreen({
           onNotify={onNotify}
         /></div> : null}
 
-        {settingsRevealStep >= 1 ? <div id="settings-mail-section" className="settings-progressive-group settings-block settings-block-mail">
+        {settingsRevealStep >= 1 ? <div id="settings-mail-section" className="settings-progressive-group settings-lazy-reveal settings-block settings-block-mail">
         <div className="section-title settings-section-title">
           <h4>
             <Mail size={13} aria-hidden="true" />
@@ -2297,9 +2394,12 @@ export function SettingsScreen({
                       placeholder={tx('settings.addEmailPlaceholder')}
                       aria-invalid={newEmailTouched && !canAddEmail}
                     />
-                    <button type="submit" className="quiet-action compact-action mail-save-btn" disabled={!canAddEmail || addEmailBusy || !onSendReceiveEmailVerification}>
-                      {addEmailBusy ? <LoaderCircle size={12} className="spin-icon" aria-hidden="true" /> : <Send size={12} aria-hidden="true" />}
-                      <span className="mail-action-label">{addEmailBusy ? tx('settings.sendingVerification') : tx('settings.sendVerification')}</span>
+                    <button type="submit" className="quiet-action compact-action mail-save-btn" disabled={!canAddEmail || addEmailBusy || !onSendReceiveEmailVerification} aria-busy={addEmailBusy || undefined}>
+                      {addEmailBusy ? (
+                        <PendingLabel label={tx('settings.sendingVerification')} iconSize={12} className="mail-action-label" />
+                      ) : (
+                        <><Send size={12} aria-hidden="true" /><span className="mail-action-label">{tx('settings.sendVerification')}</span></>
+                      )}
                     </button>
                     {newEmailTouched && !canAddEmail ? (
                       <em className="settings-inline-error">
@@ -2318,7 +2418,7 @@ export function SettingsScreen({
         </div>
         </div> : null}
 
-        {settingsRevealStep >= 2 ? <div id="settings-security-section" className="settings-progressive-group security-settings-group settings-block settings-block-security">
+        {settingsRevealStep >= 2 ? <div id="settings-security-section" className="settings-progressive-group settings-lazy-reveal security-settings-group settings-block settings-block-security">
         <div className="section-title settings-section-title">
           <h4>
             <Shield size={13} aria-hidden="true" />
@@ -2702,7 +2802,7 @@ export function SettingsScreen({
                   key={id}
                   type="button"
                   className="settings-export-format"
-                  onClick={() => onExport(id)}
+                  onClick={() => handleExport(id)}
                   aria-label={`${tx(labelKey)} (${ext})`}
                 >
                   <span className="settings-export-format-top">
@@ -2723,7 +2823,7 @@ export function SettingsScreen({
 
         </div> : null}
 
-        {settingsRevealStep >= 3 ? <div id="settings-data-section" className="settings-progressive-group settings-data-group settings-block settings-block-data">
+        {settingsRevealStep >= 3 ? <div id="settings-data-section" className="settings-progressive-group settings-lazy-reveal settings-data-group settings-block settings-block-data">
         <section className="settings-share-panel" aria-label={tx('settings.sharedLinks')}>
           <header className="settings-share-panel-head">
             <div className="settings-share-panel-copy">
@@ -3155,6 +3255,13 @@ export function SettingsScreen({
           </section>
         ) : null}
         </div> : null}
+        {settingsRevealStep < 3 ? (
+          <div
+            ref={settingsProgressiveSentinelRef}
+            className="settings-progressive-sentinel"
+            aria-hidden="true"
+          />
+        ) : null}
         </div>
       </div>
       <ProjectFooter />

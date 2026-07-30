@@ -81,7 +81,11 @@ function fixture(role: 'owner' | 'admin' | 'member') {
   return { current, session, summary }
 }
 
-function renderMembers(role: 'owner' | 'admin' | 'member', onChanged = vi.fn()) {
+function renderMembers(
+  role: 'owner' | 'admin' | 'member',
+  onChanged = vi.fn(),
+  onNotify = vi.fn(),
+) {
   const { session, summary } = fixture(role)
   const result = render(
     <I18nContext.Provider value={{
@@ -97,10 +101,11 @@ function renderMembers(role: 'owner' | 'admin' | 'member', onChanged = vi.fn()) 
         activeSection="members"
         hideTabs
         onChanged={onChanged}
+        onNotify={onNotify}
       />
     </I18nContext.Provider>,
   )
-  return { ...result, onChanged }
+  return { ...result, onChanged, onNotify }
 }
 
 afterEach(() => {
@@ -124,7 +129,7 @@ describe('TeamScreen student-visible contact profile', () => {
       },
     }
     const updateProfile = vi.spyOn(phdApi, 'updateMyTeamContactProfile').mockResolvedValue(saved)
-    const { onChanged } = renderMembers('admin')
+    const { container, onChanged, onNotify } = renderMembers('admin')
 
     fireEvent.click(screen.getByRole('button', { name: /Visible to your students/i }))
     fireEvent.change(await screen.findByLabelText('Role / title'), { target: { value: 'Senior Advisor' } })
@@ -151,6 +156,8 @@ describe('TeamScreen student-visible contact profile', () => {
       })
     })
     expect(onChanged).toHaveBeenCalled()
+    expect(onNotify).toHaveBeenCalledWith(t('en', 'team.contactProfileSaved'), 'success')
+    expect(container.querySelector('.team-message')).not.toBeInTheDocument()
   })
 
   it('shows the editor to the institution administrator but not to students', () => {

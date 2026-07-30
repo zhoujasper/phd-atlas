@@ -75,6 +75,8 @@
     "editShareQuota": "Modifica il limite del collegamento di condivisione",
     "editShareCreateQuota": "Modifica il limite del collegamento di condivisione a vita",
     "editStorageQuota": "Modifica quota di archiviazione",
+    "quotaUsageHelpLabel": "Come funzionano i limiti di utilizzo",
+    "quotaUsageHelp": "Passa il puntatore su una riga di utilizzo e seleziona la matita per modificarne il limite. Inserisci -1 per rendere il limite illimitato (∞).",
     "recordUsage": "{count}/{limit} record",
     "recordUsageLabel": "utilizzo del registro delle candidature universitarie",
     "recordCreateUsage": "{count}/{limit} creato",

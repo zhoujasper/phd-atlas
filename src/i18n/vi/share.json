@@ -2,12 +2,13 @@
   "share": {
     "eyebrow": "Bản xem trước chỉ đọc",
     "title": "Chia sẻ \"{name}\"",
-    "activeLinks": "Lượt chia sẻ tích cực",
+    "activeLinks": "Liên kết chia sẻ đang hoạt động",
+    "activeCount": "{count}/{limit} liên kết hoạt động",
     "noLinks": "Chưa có link chia sẻ.",
     "createNew": "Tạo link chia sẻ mới",
     "create": "Tạo link chia sẻ",
     "previewHint": "Chọn gói dự án hoàn chỉnh hoặc chỉ chọn những trang mà người nhận sẽ xem.",
-    "linkLabel": "chia sẻ liên kết",
+    "linkLabel": "liên kết chia sẻ",
     "revoke": "Thu hồi link chia sẻ",
     "neverExpires": "Không bao giờ hết hạn",
     "expiresAt": "Hết Hạn {date}",
@@ -17,9 +18,9 @@
       "application": "Hồ sơ",
       "link": "Liên kết",
       "created": "Đã tạo",
-      "expires": "Hết Hạn",
+      "expires": "Hết hạn",
       "duration": "Thời lượng",
-      "permission": "Giấy phép",
+      "permission": "Quyền truy cập",
       "scope": "Phạm vi",
       "actions": "Hành động",
       "subject": "Mục được chia sẻ"
@@ -36,8 +37,8 @@
       "30d": "30 ngày",
       "never": "Không bao giờ"
     },
-    "packageMode": "Chế độ chia sẻ gói",
-    "completePackage": "Hoàn thành dự án",
+    "packageMode": "Chế độ chia sẻ",
+    "completePackage": "Toàn bộ dự án",
     "completePackageDesc": "Chia sẻ mọi trang dự án công cộng dưới dạng một hồ sơ bóng bẩy.",
     "customPackage": "Chọn trang",
     "customPackageDesc": "Giới hạn liên kết đến các trang và quy trình làm việc cụ thể.",
@@ -63,7 +64,7 @@
       "tasks": "Danh sách kiểm tra nhiệm vụ, ngày đến hạn, chi tiết và tệp đính kèm được yêu cầu.",
       "communications": "Email, tin nhắn, ghi chú, ngày tháng và tóm tắt của giáo sư.",
       "funding": "Học bổng, theo dõi học phí, nhiệm vụ tài trợ, tài liệu và các cột mốc quan trọng.",
-      "timeline": "dòng thời gian hồ sơ đăng ký tuyển sinh với các mốc quan trọng trên trang thủ công và trang chia sẻ.",
+      "timeline": "Dòng thời gian hồ sơ với các mốc thủ công và các mốc trên trang được chia sẻ.",
       "versions": "Lịch sử tệp đã tải lên và các phiên bản có thể tải xuống có trong dự án này."
     },
     "revokeConfirmMessage": "Bạn có chắc chắn muốn thu hồi liên kết chia sẻ này không? Bất cứ ai có liên kết sẽ mất quyền truy cập ngay lập tức."

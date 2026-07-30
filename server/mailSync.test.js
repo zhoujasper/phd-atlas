@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyFetchedMailMessages,
+  applicationProfessorAddresses,
   communicationIdForMail,
   mailWhitelistDigest,
   ownerMailboxAddresses,
+  preserveApplicationCommunicationAuthority,
+  preserveCommunicationAuthority,
   trackedProfessorAddresses,
+  trackedProfessorAddressUpdate,
 } from './mailSync.js'
 
 function application(id, professorEmail, overrides = {}) {
@@ -45,7 +49,6 @@ function message(overrides = {}) {
     date: new Date('2026-07-09T09:15:00.000Z'),
     text: 'Thanks for reaching out.',
     attachments: [],
-    securityWarnings: [],
     mailboxPath: 'INBOX',
     folderRole: 'mail',
     ...overrides,
@@ -53,6 +56,155 @@ function message(overrides = {}) {
 }
 
 describe('mail sync application matching', () => {
+  it('keeps imported-mail provenance and threat status server-authoritative across edits', () => {
+    const existing = {
+      id: 'comm-imported',
+      subject: 'Flagged mail',
+      channel: 'Email',
+      direction: 'incoming',
+      from: 'professor@example.edu',
+      to: 'student@example.com',
+      messageType: 'fetched-email',
+      bodyFormat: 'markdown',
+      bodyHtml: '<p><strong>Server</strong> snapshot</p>',
+      bodyText: 'Server snapshot',
+      sourceMessageKey: 'mail-key',
+      sourceMailbox: 'INBOX',
+      importedAt: '2026-07-29T08:39:00.000Z',
+      deliveryStatus: 'queued',
+      scheduledAt: '2026-07-29T12:00:00.000Z',
+      deliveryId: 'delivery-server-owned',
+      deliveryUserId: 'user-server-owned',
+      attachments: [],
+      mailSecurity: {
+        level: 'danger',
+        signals: ['deceptive-link'],
+        linksDisabled: true,
+        quarantinedAttachmentCount: 1,
+      },
+    }
+    const edited = preserveCommunicationAuthority(existing, {
+      ...existing,
+      subject: 'Edited locally',
+      messageType: 'note',
+      direction: 'outgoing',
+      from: 'attacker@example.com',
+      attachments: [{ fileName: 'restored.exe' }],
+      mailSecurity: undefined,
+      deliveryStatus: 'sent',
+      scheduledAt: undefined,
+      deliveryId: 'forged-delivery',
+      bodyFormat: 'html',
+      bodyHtml: '<script>forged</script>',
+      bodyText: 'Forged snapshot',
+    })
+
+    expect(edited).toMatchObject({
+      subject: 'Edited locally',
+      channel: 'Email',
+      direction: 'incoming',
+      from: 'professor@example.edu',
+      to: 'student@example.com',
+      messageType: 'fetched-email',
+      sourceMessageKey: 'mail-key',
+      sourceMailbox: 'INBOX',
+      importedAt: '2026-07-29T08:39:00.000Z',
+      deliveryStatus: 'queued',
+      scheduledAt: '2026-07-29T12:00:00.000Z',
+      deliveryId: 'delivery-server-owned',
+      deliveryUserId: 'user-server-owned',
+      bodyFormat: 'markdown',
+      bodyHtml: '<p><strong>Server</strong> snapshot</p>',
+      bodyText: 'Server snapshot',
+      attachments: [],
+      mailSecurity: existing.mailSecurity,
+    })
+
+    const applicationEdit = preserveApplicationCommunicationAuthority(
+      { communications: [existing] },
+      {
+        communications: [
+          edited,
+          {
+            id: 'client-created',
+            subject: 'Client record',
+            messageType: 'fetched-email',
+            sourceMessageKey: 'spoofed-key',
+            deliveryStatus: 'queued',
+            deliveryId: 'spoofed-delivery',
+            bodyFormat: 'html',
+            bodyHtml: '<h1>Spoofed</h1>',
+            bodyText: 'Spoofed',
+            importedAt: '2026-07-29T08:39:00.000Z',
+            mailSecurity: existing.mailSecurity,
+          },
+        ],
+      },
+    )
+    expect(applicationEdit.communications[1]).not.toHaveProperty('sourceMessageKey')
+    expect(applicationEdit.communications[1]).not.toHaveProperty('deliveryStatus')
+    expect(applicationEdit.communications[1]).not.toHaveProperty('deliveryId')
+    expect(applicationEdit.communications[1]).not.toHaveProperty('importedAt')
+    expect(applicationEdit.communications[1]).not.toHaveProperty('mailSecurity')
+    expect(applicationEdit.communications[1]).not.toHaveProperty('bodyFormat')
+    expect(applicationEdit.communications[1]).not.toHaveProperty('bodyHtml')
+    expect(applicationEdit.communications[1]).not.toHaveProperty('bodyText')
+    expect(applicationEdit.communications[1].messageType).toBe('note')
+  })
+
+  it('tracks every configured recipient address and files exact alias matches', () => {
+    const tracked = application('app_1', 'professor@example.edu', {
+      professor: {
+        english: 'Professor Lee',
+        email: 'professor@example.edu',
+        correspondenceEmails: ['lab@example.edu', 'PROFESSOR@example.edu'],
+      },
+    })
+    const store = { applications: [tracked] }
+
+    expect(applicationProfessorAddresses(tracked)).toEqual([
+      'professor@example.edu',
+      'lab@example.edu',
+    ])
+    expect(trackedProfessorAddresses(store.applications, 'user_1')).toEqual([
+      'lab@example.edu',
+      'professor@example.edu',
+    ])
+
+    const result = applyFetchedMailMessages(store, user(), [message({
+      key: 'mail-alias',
+      messageId: '<mail-alias@example.com>',
+      fromAddresses: ['lab@example.edu'],
+    })], { now: '2026-07-10T10:00:00.000Z' })
+
+    expect(result).toMatchObject({ filed: 1, incoming: 1 })
+    expect(tracked.communications[0]).toMatchObject({
+      sourceMessageKey: 'mail-alias',
+      from: 'lab@example.edu',
+    })
+  })
+
+  it('adds a normalized recipient once and fails closed at the application limit', () => {
+    const tracked = application('app_1', 'professor@example.edu')
+    expect(trackedProfessorAddressUpdate(tracked, 'Lab@Example.edu')).toEqual({
+      status: 'added',
+      address: 'lab@example.edu',
+      correspondenceEmails: ['lab@example.edu'],
+    })
+
+    const full = application('app_2', 'primary@example.edu', {
+      professor: {
+        english: 'Professor Lee',
+        email: 'primary@example.edu',
+        correspondenceEmails: Array.from({ length: 9 }, (_, index) => `alias-${index}@example.edu`),
+      },
+    })
+    expect(trackedProfessorAddressUpdate(full, 'overflow@example.edu')).toMatchObject({
+      status: 'limit',
+      address: 'overflow@example.edu',
+    })
+  })
+
   it('imports only messages from professor emails currently recorded in the application list', () => {
     const tracked = application('app_1', 'professor@example.edu')
     const store = { applications: [tracked] }
@@ -164,6 +316,50 @@ describe('mail sync application matching', () => {
       fileId: 'file_mail_cv',
       storageName: 'mail-cv.pdf',
     })])
+  })
+
+  it('persists dangerous-mail status, quarantines legacy attachments, and raises a warning notification', () => {
+    const existing = {
+      id: communicationIdForMail('app_1', 'mail-key-1'),
+      subject: 'Research fit',
+      channel: 'Email',
+      date: '2026-07-09',
+      summary: 'Thanks for reaching out.',
+      direction: 'incoming',
+      messageType: 'fetched-email',
+      from: 'professor@example.edu',
+      to: 'student@example.com',
+      time: '09:15',
+      sourceMessageKey: 'mail-key-1',
+      importedAt: '2026-07-09T09:16:00.000Z',
+      attachments: [{ id: 'mail-old-1', fileName: 'invoice.pdf', source: 'mail' }],
+    }
+    const tracked = application('app_1', 'professor@example.edu', { communications: [existing] })
+    const store = { applications: [tracked] }
+
+    const result = applyFetchedMailMessages(store, user(), [message({
+      mailSecurity: {
+        level: 'danger',
+        signals: ['authentication-failed', 'deceptive-link'],
+        linksDisabled: true,
+        quarantinedAttachmentCount: 1,
+      },
+    })], { now: '2026-07-10T11:00:00.000Z' })
+
+    expect(result).toMatchObject({ filed: 0, changed: true })
+    expect(existing.attachments).toEqual([])
+    expect(existing.mailSecurity).toMatchObject({
+      level: 'danger',
+      linksDisabled: true,
+      quarantinedAttachmentCount: 1,
+    })
+    expect(result.notifications[0]).toMatchObject({
+      type: 'dangerous_email_imported',
+      metadata: expect.objectContaining({
+        mailSecurityLevel: 'danger',
+        quarantinedAttachmentCount: 1,
+      }),
+    })
   })
 
   it('files one professor message into each matching application without duplicating either application', () => {

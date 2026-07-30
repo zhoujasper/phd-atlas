@@ -4,6 +4,11 @@ import {
   type RealtimeInvalidationEvent,
   type RealtimeInvalidationScope,
 } from '../../api/phdApi'
+import {
+  connectivityUnavailable,
+  getConnectivitySnapshot,
+  subscribeConnectivity,
+} from '../../connectivity'
 
 type UseRealtimeUpdatesOptions = {
   token: string | null
@@ -22,11 +27,8 @@ const INVALIDATION_BATCH_MS = 120
  */
 export function useRealtimeUpdates({ token, enabled, onInvalidate }: UseRealtimeUpdatesOptions) {
   const callbackRef = useRef(onInvalidate)
+  callbackRef.current = onInvalidate
   const [connected, setConnected] = useState(false)
-
-  useEffect(() => {
-    callbackRef.current = onInvalidate
-  }, [onInvalidate])
 
   useEffect(() => {
     if (!token || !enabled) {
@@ -35,38 +37,32 @@ export function useRealtimeUpdates({ token, enabled, onInvalidate }: UseRealtime
     }
 
     let disposed = false
-    let connecting = false
     let retryAttempt = 0
-    let controller: AbortController | null = null
+    let activeAttempt: { controller: AbortController } | null = null
     let retryTimer: number | null = null
     let batchTimer: number | null = null
     const pendingScopes = new Set<RealtimeInvalidationScope>()
-
-    const flushInvalidations = () => {
-      batchTimer = null
-      if (disposed || pendingScopes.size === 0) return
-      const scopes = new Set(pendingScopes)
-      pendingScopes.clear()
-      callbackRef.current(scopes)
-    }
-
-    const handleEvent = (event: RealtimeInvalidationEvent) => {
-      if (event.type === 'connected') {
-        retryAttempt = 0
-        setConnected(true)
-        return
-      }
-      for (const scope of event.scopes) pendingScopes.add(scope)
-      if (batchTimer === null) {
-        batchTimer = window.setTimeout(flushInvalidations, INVALIDATION_BATCH_MS)
-      }
-    }
 
     const canConnect = () => (
       !disposed
       && document.visibilityState !== 'hidden'
       && navigator.onLine !== false
+      && !connectivityUnavailable(getConnectivitySnapshot())
     )
+
+    const flushInvalidations = () => {
+      batchTimer = null
+      if (!canConnect() || pendingScopes.size === 0) return
+      const scopes = new Set(pendingScopes)
+      pendingScopes.clear()
+      callbackRef.current(scopes)
+    }
+
+    const scheduleInvalidationFlush = () => {
+      if (canConnect() && pendingScopes.size > 0 && batchTimer === null) {
+        batchTimer = window.setTimeout(flushInvalidations, INVALIDATION_BATCH_MS)
+      }
+    }
 
     const scheduleReconnect = (connect: () => void) => {
       if (!canConnect() || retryTimer !== null) return
@@ -80,19 +76,30 @@ export function useRealtimeUpdates({ token, enabled, onInvalidate }: UseRealtime
     }
 
     const connect = () => {
-      if (!canConnect() || connecting) return
-      connecting = true
-      controller = new AbortController()
-      void phdApi.streamRealtimeUpdates(token, handleEvent, controller.signal)
+      if (!canConnect() || activeAttempt !== null) return
+      const attempt = { controller: new AbortController() }
+      activeAttempt = attempt
+      const handleEvent = (event: RealtimeInvalidationEvent) => {
+        if (activeAttempt !== attempt || attempt.controller.signal.aborted) return
+        if (event.type === 'connected') {
+          if (!canConnect()) return
+          retryAttempt = 0
+          setConnected(true)
+          return
+        }
+        for (const scope of event.scopes) pendingScopes.add(scope)
+        scheduleInvalidationFlush()
+      }
+      void phdApi.streamRealtimeUpdates(token, handleEvent, attempt.controller.signal)
         .catch((error) => {
-          if (controller?.signal.aborted || disposed) return
+          if (attempt.controller.signal.aborted || disposed) return
           // Realtime is an optimization layer. Normal API error handling remains
           // authoritative, so a blocked stream never creates a user-facing toast.
           if (error instanceof DOMException && error.name === 'AbortError') return
         })
         .finally(() => {
-          connecting = false
-          controller = null
+          if (activeAttempt !== attempt) return
+          activeAttempt = null
           if (disposed) return
           setConnected(false)
           scheduleReconnect(connect)
@@ -100,30 +107,38 @@ export function useRealtimeUpdates({ token, enabled, onInvalidate }: UseRealtime
     }
 
     const suspend = () => {
-      if (document.visibilityState === 'hidden' || navigator.onLine === false) {
-        controller?.abort()
-        controller = null
+      if (!canConnect()) {
+        const attempt = activeAttempt
+        activeAttempt = null
+        attempt?.controller.abort()
         setConnected(false)
         if (retryTimer !== null) window.clearTimeout(retryTimer)
         retryTimer = null
+        if (batchTimer !== null) window.clearTimeout(batchTimer)
+        batchTimer = null
         return
       }
+      scheduleInvalidationFlush()
       connect()
     }
 
     document.addEventListener('visibilitychange', suspend)
     window.addEventListener('online', suspend)
     window.addEventListener('offline', suspend)
+    const unsubscribeConnectivity = subscribeConnectivity(suspend)
     connect()
 
     return () => {
       disposed = true
-      controller?.abort()
+      const attempt = activeAttempt
+      activeAttempt = null
+      attempt?.controller.abort()
       if (retryTimer !== null) window.clearTimeout(retryTimer)
       if (batchTimer !== null) window.clearTimeout(batchTimer)
       document.removeEventListener('visibilitychange', suspend)
       window.removeEventListener('online', suspend)
       window.removeEventListener('offline', suspend)
+      unsubscribeConnectivity()
     }
   }, [enabled, token])
 

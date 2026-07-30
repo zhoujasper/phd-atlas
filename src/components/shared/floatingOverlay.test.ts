@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { getAnchoredOverlayStyle } from './floatingOverlay'
+import {
+  FLOATING_CONTROL_BASE_Z_INDEX,
+  getAnchoredOverlayStyle,
+  getFloatingOverlayZIndex,
+} from './floatingOverlay'
 
 const originalInnerWidth = window.innerWidth
 const originalInnerHeight = window.innerHeight
@@ -66,5 +70,26 @@ describe('getAnchoredOverlayStyle', () => {
     expect(style.left).toBe(12)
     expect(style.width).toBe(300)
     expect(style.maxWidth).toBe(304)
+  })
+
+  it('promotes a portal menu above the overlay layer containing its trigger', () => {
+    const overlay = document.createElement('div')
+    overlay.style.position = 'fixed'
+    overlay.style.zIndex = '470'
+    const trigger = triggerAt(24, 80, 180, 36)
+    overlay.append(trigger)
+    document.body.append(overlay)
+
+    expect(getFloatingOverlayZIndex(trigger, FLOATING_CONTROL_BASE_Z_INDEX)).toBe(490)
+
+    const style = getAnchoredOverlayStyle(trigger, {
+      minWidth: 180,
+      maxWidth: 340,
+      estimatedHeight: 286,
+      baseZIndex: FLOATING_CONTROL_BASE_Z_INDEX,
+    })
+    expect(style.zIndex).toBe(490)
+
+    overlay.remove()
   })
 })

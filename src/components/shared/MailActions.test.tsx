@@ -113,7 +113,7 @@ describe('mail actions', () => {
 
     expect(screen.getByRole('button', { name: 'Resend in 45s' })).toBeDisabled()
     await act(async () => {
-      vi.advanceTimersByTime(45_000)
+      await vi.advanceTimersByTimeAsync(45_000)
     })
     const resendButton = screen.getByRole('button', { name: 'Resend' })
     expect(resendButton).toBeEnabled()

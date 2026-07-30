@@ -12,7 +12,7 @@
     "success": "Загрузил — спасибо!",
     "existingCountOne": "1 файл уже получен.",
     "existingCountMany": "{count} файлов уже получено.",
-    "successCountOne": "Загружен 1 файл — спасибо!\nЗагружено",
+    "successCountOne": "Загружен 1 файл — спасибо!",
     "successCountMany": "{count} файлов — спасибо!",
     "existingCount": "{count} файлов уже получено.",
     "title": "Загрузить файлы",

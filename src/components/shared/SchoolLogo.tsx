@@ -14,10 +14,14 @@ import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { ApplicationRecord } from '../../data/applications'
 import { useI18n } from '../hooks/useI18n'
 import { AnchoredPopover } from './AnchoredPopover'
-import { SCHOOL_LOGO_ACCEPT, schoolLogoInitials } from './schoolLogoModel'
+import {
+  SCHOOL_LOGO_ACCEPT,
+  normalizeSchoolLogoLinkInput,
+  schoolLogoInitials,
+} from './schoolLogoModel'
 
 type SchoolLogo = ApplicationRecord['school']['logo']
-type ResolveInput = { website?: string; imageUrl?: string; refresh?: boolean }
+type ResolveInput = { website?: string; imageUrl?: string; auto?: true; refresh?: boolean }
 type LogoActionStatus = 'idle' | 'working' | 'saved' | 'not-found' | 'error'
 type LogoLinkMode = 'website' | 'image'
 
@@ -29,13 +33,6 @@ function compactSource(value?: string) {
   } catch {
     return value
   }
-}
-
-export function normalizeSchoolLogoLinkInput(value: string) {
-  const trimmed = value.trim()
-  if (!trimmed || /^[a-z][a-z\d+.-]*:/iu.test(trimmed)) return trimmed
-  if (trimmed.startsWith('//')) return `https:${trimmed}`
-  return `https://${trimmed}`
 }
 
 export function SchoolLogoMark({
@@ -113,17 +110,19 @@ export function SchoolLogoManager({
   }
 
   useEffect(() => {
-    const key = `${website.trim()}::${autoDetectEnabled ? 'auto' : 'off'}`
+    const key = `${schoolName.trim()}::${website.trim()}::${autoDetectEnabled ? 'auto' : 'off'}`
     if (
       logo
       || !autoDetectEnabled
-      || !website.trim()
       || autoAttemptRef.current === key
       || typeof navigator !== 'undefined' && !navigator.onLine
     ) return
     autoAttemptRef.current = key
-    void run(() => onResolve({ website: website.trim() }, { silent: true }), true)
-  }, [autoDetectEnabled, logo, onResolve, website])
+    void run(() => onResolve({
+      auto: true,
+      ...(website.trim() ? { website: website.trim() } : {}),
+    }, { silent: true }), true)
+  }, [autoDetectEnabled, logo, onResolve, schoolName, website])
 
   const uploadFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0]

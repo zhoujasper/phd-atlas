@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer'
-import { promises as fs } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -19,7 +20,15 @@ function defaultTestSqlitePath() {
   const worker = String(process.env.VITEST_POOL_ID || process.env.VITEST_WORKER_ID || process.pid)
     .replace(/[^a-z0-9_-]/gi, '_')
     .slice(0, 48)
-  return path.join(projectRoot, 'logs', 'tmp', `phd-atlas-vitest-${process.pid}-${worker}.sqlite`)
+  // Windows may recycle a worker PID during one large Vitest run. A
+  // per-module nonce prevents a later worker from reopening the earlier
+  // process's SQLite/WAL files when that happens.
+  const nonce = randomUUID().replaceAll('-', '').slice(0, 12)
+  const testRoot = path.join(projectRoot, 'logs', 'tmp')
+  // Clean public exports intentionally omit ignored runtime directories.
+  // Create this test-only parent before better-sqlite3 opens the database.
+  mkdirSync(testRoot, { recursive: true })
+  return path.join(testRoot, `phd-atlas-vitest-${process.pid}-${worker}-${nonce}.sqlite`)
 }
 
 // Allows an isolated local verification server to use a copied workspace

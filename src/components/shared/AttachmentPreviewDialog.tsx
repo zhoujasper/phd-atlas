@@ -1,9 +1,10 @@
-import { Download, FileText, FileType2, LoaderCircle, Presentation, X } from 'lucide-react'
+import { Download, FileText, FileType2, Presentation, X } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { useI18n } from '../hooks/useI18n'
 import { useModalA11y } from '../hooks/useModalA11y'
 import { ModalPortal } from './ModalPortal'
+import { PendingLabel } from './PendingLabel'
 import { StandalonePreferences } from './StandalonePreferences'
 
 export type AttachmentPreviewFile = {
@@ -185,7 +186,7 @@ export function AttachmentPreviewDialog({
   const open = Boolean(file)
   const { exiting, requestClose } = useAnimatedClose(open, onClose, 150, file?.fileId)
   const dialogRef = useModalA11y<HTMLDivElement>({
-    open: open && !exiting,
+    open,
     onClose: () => requestClose(),
     initialFocusRef: closeRef,
   })
@@ -234,7 +235,10 @@ export function AttachmentPreviewDialog({
         renderFooters: true,
         renderFootnotes: true,
         renderEndnotes: true,
-        renderAltChunks: true,
+        // altChunk parts can contain embedded HTML. The document still renders
+        // its native Word content, but untrusted uploaded HTML is never mounted
+        // into the application preview DOM.
+        renderAltChunks: false,
         useBase64URL: true,
       }))
       .then(() => { if (current) setOfficeRendererLoading(false) })
@@ -331,7 +335,7 @@ export function AttachmentPreviewDialog({
 
           <div className="attachment-preview-stage" aria-busy={preview.status === 'loading' || undefined}>
             {preview.status === 'loading' ? (
-              <div className="attachment-preview-loading"><LoaderCircle className="spin-icon" size={22} aria-hidden="true" /><span>{tx('working')}</span></div>
+              <div className="attachment-preview-loading"><PendingLabel label={tx('working')} iconSize={22} /></div>
             ) : null}
             {preview.status === 'error' || (preview.status === 'ready' && preview.kind === 'unsupported') ? (
               <div className="attachment-preview-unavailable">
@@ -352,7 +356,7 @@ export function AttachmentPreviewDialog({
             {preview.status === 'ready' && preview.kind === 'docx' ? (
               <div className="attachment-preview-office-scroll">
                 <div ref={wordContainerRef} className="attachment-preview-document" />
-                {officeRendererLoading ? <div className="attachment-preview-rendering"><LoaderCircle className="spin-icon" size={18} /><span>{tx('working')}</span></div> : null}
+                {officeRendererLoading ? <div className="attachment-preview-rendering"><PendingLabel label={tx('working')} iconSize={18} /></div> : null}
                 {officeRendererError ? <div className="attachment-preview-render-error">{tx('filePreview.renderError')}</div> : null}
               </div>
             ) : null}
@@ -404,7 +408,7 @@ export function AttachmentPreviewDialog({
             {preview.status === 'ready' && preview.kind === 'slides' ? (
               <div className="attachment-preview-office-scroll attachment-preview-slides">
                 <div ref={slidesContainerRef} className="attachment-preview-pptx-canvas" />
-                {officeRendererLoading ? <div className="attachment-preview-rendering"><LoaderCircle className="spin-icon" size={18} /><span>{tx('working')}</span></div> : null}
+                {officeRendererLoading ? <div className="attachment-preview-rendering"><PendingLabel label={tx('working')} iconSize={18} /></div> : null}
                 {officeRendererError ? (
                   <div className="attachment-preview-unavailable compact">
                     <Presentation size={24} aria-hidden="true" />

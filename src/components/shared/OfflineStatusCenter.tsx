@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  AlertTriangle,
   ChevronDown,
   CloudOff,
   CloudUpload,
@@ -25,13 +24,14 @@ type Props = {
   syncing: boolean
   updateReady: boolean
   onRetry: () => void
-  onReviewBlocked: () => void
   onInstallUpdate: () => void
   onToggleOffline: () => void
   tx: (path: string, fallback?: string) => string
   authSurface?: boolean
   allowManualOffline?: boolean
 }
+
+const STATUS_MESSAGE_DWELL_MS = 2800
 
 function connectivityUnavailableForBadge(mode: ConnectivitySnapshot['mode']) {
   return mode === 'offline' || mode === 'server-unreachable' || mode === 'slow'
@@ -48,7 +48,6 @@ export function OfflineStatusCenter({
   syncing,
   updateReady,
   onRetry,
-  onReviewBlocked,
   onInstallUpdate,
   onToggleOffline,
   tx,
@@ -64,6 +63,41 @@ export function OfflineStatusCenter({
     || blockedCount > 0
     || syncing
     || updateReady
+  const queuedCount = pendingCount + blockedCount
+  const mode = syncing ? 'syncing' : connectivity.mode
+  const Icon = mode === 'syncing'
+    ? CloudUpload
+    : mode === 'offline'
+      ? CloudOff
+      : mode === 'server-unreachable'
+        ? ServerOff
+        : mode === 'slow'
+          ? WifiLow
+          : mode === 'checking'
+            ? RefreshCw
+            : updateReady
+              ? RefreshCw
+              : queuedCount > 0
+                ? CloudUpload
+                : Wifi
+  const label = syncing
+    ? tx('offlineStatus.syncing')
+    : connectivity.manualOffline
+      ? tx('offlineStatus.workingOffline')
+      : connectivity.mode === 'server-unreachable'
+          ? tx('offlineStatus.serverUnavailable')
+          : connectivity.mode === 'slow'
+            ? tx('offlineStatus.slow')
+            : connectivity.mode === 'checking'
+              ? tx('offlineStatus.checking')
+              : connectivity.mode === 'offline'
+                ? tx('offlineStatus.offline')
+                : queuedCount > 0
+                  ? tpl(tx('offlineStatus.pending'), { count: queuedCount })
+                  : updateReady
+                    ? tx('offlineStatus.updateReady')
+                    : tx('offlineStatus.snapshot')
+  const statusPresentationKey = JSON.stringify([mode, label, queuedCount])
 
   useEffect(() => {
     if (!open) return undefined
@@ -81,43 +115,22 @@ export function OfflineStatusCenter({
     }
   }, [open, requestClose])
 
+  useEffect(() => {
+    if (!visible) return undefined
+    const center = rootRef.current
+    if (!center) return undefined
+    center.classList.add('is-status-announcing')
+    const timeoutId = window.setTimeout(() => {
+      center.classList.remove('is-status-announcing')
+    }, STATUS_MESSAGE_DWELL_MS)
+    return () => {
+      window.clearTimeout(timeoutId)
+      center.classList.remove('is-status-announcing')
+    }
+  }, [statusPresentationKey, visible])
+
   if (!visible) return null
 
-  const mode = syncing ? 'syncing' : connectivity.mode
-  const Icon = mode === 'syncing'
-    ? CloudUpload
-    : mode === 'offline'
-      ? CloudOff
-      : mode === 'server-unreachable'
-        ? ServerOff
-        : mode === 'slow'
-          ? WifiLow
-          : mode === 'checking'
-            ? RefreshCw
-            : updateReady
-              ? RefreshCw
-              : pendingCount > 0
-                ? CloudUpload
-                : Wifi
-  const label = syncing
-    ? tx('offlineStatus.syncing')
-    : connectivity.manualOffline
-      ? tx('offlineStatus.workingOffline')
-      : connectivity.mode === 'server-unreachable'
-          ? tx('offlineStatus.serverUnavailable')
-          : connectivity.mode === 'slow'
-            ? tx('offlineStatus.slow')
-            : connectivity.mode === 'checking'
-              ? tx('offlineStatus.checking')
-              : connectivity.mode === 'offline'
-              ? tx('offlineStatus.offline')
-                : blockedCount > 0
-                  ? tpl(tx('offlineStatus.blocked'), { count: blockedCount })
-                  : pendingCount > 0
-                    ? tpl(tx('offlineStatus.pending'), { count: pendingCount })
-                    : updateReady
-                      ? tx('offlineStatus.updateReady')
-                      : tx('offlineStatus.snapshot')
   const detail = connectivity.manualOffline
     ? tx('offlineStatus.manualDetail')
     : connectivity.mode === 'offline'
@@ -143,7 +156,11 @@ export function OfflineStatusCenter({
     : tx('offlineStatus.notAvailable')
 
   return (
-    <div className={`offline-status-center mode-${mode}${open ? ' open' : ''}${authSurface ? ' auth-surface' : ''}`} ref={rootRef}>
+    <div
+      className={`offline-status-center mode-${mode}${open ? ' open' : ''}${authSurface ? ' auth-surface' : ''}`}
+      data-overflow-reveal="off"
+      ref={rootRef}
+    >
       <button
         type="button"
         className="offline-status-pill"
@@ -154,14 +171,16 @@ export function OfflineStatusCenter({
           else setOpen(true)
         }}
       >
-        <Icon className={mode === 'checking' || mode === 'syncing' ? 'spin' : ''} size={13} aria-hidden="true" />
-        <span>{label}</span>
-        {connectivityUnavailableForBadge(connectivity.mode) && pendingCount + blockedCount > 0 ? (
-          <span className="offline-status-count" aria-label={tpl(tx('offlineStatus.queueBadge'), { count: pendingCount + blockedCount })}>
-            {pendingCount + blockedCount}
-          </span>
-        ) : null}
-        <ChevronDown className="offline-status-chevron" size={12} aria-hidden="true" />
+        <Icon className={mode === 'checking' || mode === 'syncing' ? 'spin' : ''} size={14} aria-hidden="true" />
+        <span className="offline-status-pill-content">
+          <span className="offline-status-label" key={statusPresentationKey}>{label}</span>
+          {connectivityUnavailableForBadge(connectivity.mode) && queuedCount > 0 ? (
+            <span className="offline-status-count" aria-label={tpl(tx('offlineStatus.queueBadge'), { count: queuedCount })}>
+              {queuedCount}
+            </span>
+          ) : null}
+          <ChevronDown className="offline-status-chevron" size={12} aria-hidden="true" />
+        </span>
       </button>
 
       {open ? (
@@ -193,7 +212,11 @@ export function OfflineStatusCenter({
             </div>
             <div>
               <span>{tx('offlineStatus.syncQueue')}</span>
-              <strong>{tpl(tx('offlineStatus.queueSummary'), { pending: pendingCount, blocked: blockedCount })}</strong>
+              <strong>
+                {blockedCount > 0
+                  ? tpl(tx('offlineStatus.pending'), { count: queuedCount })
+                  : tpl(tx('offlineStatus.queueSummary'), { pending: pendingCount, blocked: 0 })}
+              </strong>
             </div>
           </div>
 
@@ -205,13 +228,6 @@ export function OfflineStatusCenter({
                 <small>{tx('offlineStatus.permissionProtected')}</small>
               </span>
             </div>
-          ) : null}
-
-          {blockedCount > 0 ? (
-            <button type="button" className="offline-status-review" onClick={onReviewBlocked}>
-              <AlertTriangle size={14} aria-hidden="true" />
-              <span>{tpl(tx('offlineStatus.reviewBlocked'), { count: blockedCount })}</span>
-            </button>
           ) : null}
 
           <div className="offline-status-actions">

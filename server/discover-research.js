@@ -12,6 +12,18 @@ import { discoverGlobalInstitutionSources } from './discover-global-sources.js'
 import { deriveOfficialProgramLeads } from './discover-program-leads.js'
 import { deriveOfficialAdvisorProfileLeads } from './discover-advisor-leads.js'
 import { expandDiscoverResearchTerms } from './discover-query-terms.js'
+import {
+  buildDiscoverDisciplinePlan,
+  buildDiscoverDisciplineQuerySeeds,
+} from './discover-discipline-taxonomy.js'
+import {
+  buildProfessionalQueryPlannerPayload,
+  normalizeProfessionalQueryPlan,
+  PROFESSIONAL_QUERY_PLAN_OUTPUT_SCHEMA,
+  professionalQueryPlannerAllowedDomains,
+  professionalQueryPlannerSystemPrompt,
+} from './discover-professional-query-plan.js'
+import { resolveDiscoverOpenAlexTopics } from './discover-openalex-topics.js'
 import { findSchoolSourceEntry, groundDiscoverPrograms } from './discover-source-grounding.js'
 import { attachScholarlyEvidence, collectScholarlyEvidence } from './discover-scholarly-data.js'
 import { assessDiscoverResearchQuality } from './discover-quality.js'
@@ -295,7 +307,43 @@ export function dedupeDiscoverPrograms(programs = []) {
 export function discoverResearchCrawlLimit(scopedSourceCount, requestedPrograms) {
   const available = Math.max(0, Number(scopedSourceCount) || 0)
   const requested = Math.max(1, Number(requestedPrograms) || 1)
-  return Math.min(available, Math.min(72, Math.max(24, Math.ceil(requested) * 3)))
+  return Math.min(available, Math.min(96, Math.max(32, Math.ceil(requested) * 4)))
+}
+
+export function compactScholarlyEvidenceForAgent(evidence, targetAdvisors = 6) {
+  if (!evidence || typeof evidence !== 'object') return null
+  const researcherLimit = Math.max(24, Math.min(48, (Number(targetAdvisors) || 6) * 6))
+  return {
+    provider: evidence.provider,
+    status: evidence.status,
+    query: evidence.query,
+    institution: evidence.institution,
+    sourceStatus: evidence.sourceStatus,
+    sourceCounts: evidence.sourceCounts,
+    topicResolution: evidence.topicResolution ? {
+      status: evidence.topicResolution.status,
+      topics: (evidence.topicResolution.topics || []).slice(0, 8),
+    } : null,
+    disciplinePlan: evidence.disciplinePlan ? {
+      taxonomyVersion: evidence.disciplinePlan.taxonomyVersion,
+      broadDomains: (evidence.disciplinePlan.broadDomains || []).slice(0, 6),
+      disciplines: (evidence.disciplinePlan.disciplines || []).slice(0, 20),
+      vocabularies: (evidence.disciplinePlan.vocabularies || []).slice(0, 12),
+    } : null,
+    candidateResearchers: (evidence.candidateResearchers || [])
+      .slice(0, researcherLimit)
+      .map((researcher) => ({
+        name: researcher.name,
+        openAlexId: researcher.openAlexId || null,
+        orcid: researcher.orcid || null,
+        profileUrl: researcher.profileUrl || null,
+        providers: (researcher.providers || []).slice(0, 4),
+        score: researcher.score,
+        matchedQueries: (researcher.matchedQueries || []).slice(0, 8),
+        matchedTopics: (researcher.matchedTopics || []).slice(0, 4),
+        recentWorks: (researcher.recentWorks || []).slice(0, 3),
+      })),
+  }
 }
 
 function adapterCoverageSummary() {
@@ -593,16 +641,128 @@ export async function buildDiscoverResearchRun({
 
   if (input.useAi) {
     if (!selectedAiKeys.length) throw new AiProviderError('AI_KEY_NOT_FOUND', 'The selected AI key is no longer available.')
-    const expandedResearchTerms = expandDiscoverResearchTerms([
+    const intakeResearchTerms = [
       working.intake.field,
       ...(working.intake.subfields || []),
-    ])
+    ]
+    const deterministicDisciplinePlan = buildDiscoverDisciplinePlan(intakeResearchTerms)
+    const deterministicResearchTerms = expandDiscoverResearchTerms(intakeResearchTerms, { limit: 64 })
+    let professionalQueryPlan = {
+      summary: '',
+      canonicalFields: [],
+      specialistQueries: [],
+      excludedMeanings: [],
+      providerHints: [],
+    }
+    let plannerCompletion = null
+    const plannerKey = nextAgentKey()
+    await onProgress?.({
+      stage: 'planning',
+      message: 'Mapping the research description to professional cross-discipline vocabularies…',
+      sourceCount: 0,
+    })
+    try {
+      plannerCompletion = await completeChat({
+        key: plannerKey,
+        system: professionalQueryPlannerSystemPrompt(),
+        user: JSON.stringify(buildProfessionalQueryPlannerPayload({
+          field: working.intake.field,
+          subfields: working.intake.subfields,
+          notes: working.intake.notes,
+          methods: applicantProfile?.researchMethods,
+          interestTags: working.intake.interestTags,
+          deterministicPlan: deterministicDisciplinePlan,
+        })),
+        temperature: 0.1,
+        maxTokens: 1_400,
+        webSearch: supportsNativeOpenAiWebSearch(plannerKey),
+        allowedDomains: professionalQueryPlannerAllowedDomains(),
+        outputSchema: PROFESSIONAL_QUERY_PLAN_OUTPUT_SCHEMA,
+      })
+      professionalQueryPlan = normalizeProfessionalQueryPlan(plannerCompletion.text)
+      addUsage(plannerKey, plannerCompletion, 'professional-discipline-planning')
+      agentTrace.push({
+        id: 'professional_discipline_planning',
+        name: 'Professional Discipline Query Planner',
+        status: 'done',
+        detail: `Mapped the intake to ${professionalQueryPlan.canonicalFields.length} canonical fields and ${professionalQueryPlan.specialistQueries.length} specialist query variants before independent topic validation.`,
+        keyId: plannerKey.id,
+        provider: plannerKey.provider,
+        model: plannerKey.model || null,
+        taxonomyCitationCount: plannerCompletion.sources?.length || 0,
+      })
+    } catch (error) {
+      if (plannerCompletion) addUsage(plannerKey, plannerCompletion, 'professional-discipline-planning-invalid')
+      agentTrace.push({
+        id: 'professional_discipline_planning',
+        name: 'Professional Discipline Query Planner',
+        status: 'error',
+        detail: `AI terminology expansion was unavailable (${String(error?.code || error?.name || 'invalid-output').slice(0, 80)}); the deterministic professional taxonomy remained active.`,
+        keyId: plannerKey.id,
+        provider: plannerKey.provider,
+        model: plannerKey.model || null,
+      })
+    }
+    const aiPlannedTerms = [
+      ...professionalQueryPlan.canonicalFields,
+      ...professionalQueryPlan.specialistQueries,
+    ]
+    const topicCandidateTerms = [...new Set([
+      ...buildDiscoverDisciplineQuerySeeds(intakeResearchTerms, { limit: 12 }),
+      ...professionalQueryPlan.canonicalFields,
+      ...professionalQueryPlan.specialistQueries,
+      ...deterministicResearchTerms,
+    ])]
+    const topicResolution = await resolveDiscoverOpenAlexTopics({
+      terms: topicCandidateTerms,
+      excludedMeanings: professionalQueryPlan.excludedMeanings,
+      limit: 8,
+      maxSearchTerms: 12,
+    }).catch(() => ({
+      status: 'unavailable',
+      searchedTerms: topicCandidateTerms.slice(0, 12),
+      topics: [],
+      failures: Math.min(12, topicCandidateTerms.length),
+    }))
+    const validatedTopicQueries = new Set((topicResolution.topics || [])
+      .map((topic) => String(topic.query || '').normalize('NFKC').toLocaleLowerCase()))
+    const validatedAiTerms = aiPlannedTerms.filter((term) => (
+      validatedTopicQueries.has(String(term).normalize('NFKC').toLocaleLowerCase())
+    ))
+    const expandedResearchTerms = [...new Set([
+      ...deterministicResearchTerms.slice(0, 8),
+      ...validatedAiTerms,
+      ...deterministicResearchTerms.slice(8),
+    ])].slice(0, 64)
+    const disciplinePlan = {
+      ...deterministicDisciplinePlan,
+      canonicalTerms: [...new Set([
+        ...(deterministicDisciplinePlan.canonicalTerms || []),
+        ...validatedAiTerms,
+      ])].slice(0, 64),
+      aiExpansion: {
+        status: professionalQueryPlan.summary ? 'ok' : 'unavailable',
+        summary: professionalQueryPlan.summary,
+        proposedTermCount: aiPlannedTerms.length,
+        topicValidatedTermCount: validatedAiTerms.length,
+        excludedMeanings: professionalQueryPlan.excludedMeanings,
+        providerHints: professionalQueryPlan.providerHints,
+      },
+    }
+    agentTrace.push({
+      id: 'openalex_topic_resolution',
+      name: 'OpenAlex Dynamic Topic Resolution',
+      status: topicResolution.status === 'ok' ? 'done' : (topicResolution.topics.length ? 'done' : 'error'),
+      detail: `Resolved ${topicResolution.topics.length} stable topics from ${topicResolution.searchedTerms.length} bounded specialist searches; ${validatedAiTerms.length}/${aiPlannedTerms.length} AI-proposed terms passed the topic boundary.`,
+    })
     const researchQuery = {
       field: working.intake.field,
       subfields: working.intake.subfields,
       notes: working.intake.notes,
       seedPrograms: working.intake.seedPrograms,
       terms: expandedResearchTerms,
+      disciplinePlan,
+      topicResolution,
     }
     const curatedSources = listDiscoverResearchSources(working.intake.regions)
     let dynamicSources = []
@@ -620,9 +780,10 @@ export async function buildDiscoverResearchRun({
     try {
       dynamicSources = await discoverGlobalInstitutionSources({
         terms: expandedResearchTerms,
+        topics: topicResolution.topics,
         regions: working.intake.regions,
         existingSources: DISCOVER_SOURCE_REGISTRY,
-        limit: Math.min(36, Math.max(12, working.intake.nPrograms * 2)),
+        limit: Math.min(48, Math.max(16, working.intake.nPrograms * 3)),
       })
       dynamicSourceDiscovery = {
         provider: 'openalex',
@@ -630,6 +791,7 @@ export async function buildDiscoverResearchRun({
         sourceCount: dynamicSources.length,
         countryCount: new Set(dynamicSources.map((source) => source.countryCode).filter(Boolean)).size,
         countries: [...new Set(dynamicSources.map((source) => source.country).filter(Boolean))].slice(0, 40),
+        topicCount: topicResolution.topics.length,
       }
     } catch (error) {
       dynamicSourceDiscovery = {
@@ -706,6 +868,8 @@ export async function buildDiscoverResearchRun({
         ...rebuilt,
         adapterCoverage: adapterCoverageSummary(),
         dynamicSourceDiscovery,
+        disciplinePlan,
+        topicResolution,
         schools: rebuilt.schools.map((school) => ({
           ...school,
           scholarlyEvidence: scholarlyBySchool.get(school.school) || null,
@@ -1165,17 +1329,19 @@ export async function buildDiscoverResearchRun({
     })
     const scholarlyEntries = await collectScholarlyEvidence({
       schools: candidateSchoolEntries,
-      query: expandedResearchTerms.slice(0, 4),
+      query: expandedResearchTerms,
+      disciplinePlan,
+      topicResolution,
       concurrency: 3,
       maxResearchersPerSchool: Math.max(
-        24,
-        Math.min(60, working.intake.nPisPerProgram * 4),
+        48,
+        Math.min(120, working.intake.nPisPerProgram * 8),
       ),
       onProgress: async ({ completed, total }) => {
         if (completed === 1 || completed % 5 === 0 || completed === total) {
           await onProgress?.({
             stage: 'scholarly',
-            message: `Cross-checked OpenAlex/ROR institutions ${completed}/${total}…`,
+            message: `Cross-checked multidisciplinary research graphs ${completed}/${total}…`,
             sourceCount,
           })
         }
@@ -1184,21 +1350,22 @@ export async function buildDiscoverResearchRun({
     sourceIndex = attachScholarlyEvidence(sourceIndex, scholarlyEntries)
     const advisorProfileLeads = deriveOfficialAdvisorProfileLeads(candidates, sourceIndex, {
       maxProfilesPerSchool: Math.max(
-        10,
-        Math.min(20, working.intake.nPisPerProgram * 3),
+        20,
+        Math.min(40, working.intake.nPisPerProgram * 5),
       ),
     })
     const advisorLeadHydration = await hydratePrograms(
       advisorProfileLeads,
       'advisors',
       'Fetching publication-matched official advisor profiles',
+      { maxSchools: Math.min(64, Math.max(1, candidateSchoolEntries.length)) },
     )
     const scholarlyBySchool = new Map(sourceIndex.schools.map((school) => [school.school, school.scholarlyEvidence]))
     agentTrace.push({
       id: 'scholarly_graph_discovery',
-      name: 'OpenAlex + ROR Researcher Discovery',
+      name: 'OpenAlex Topics + ROR + Europe PMC + Crossref Researcher Discovery',
       status: 'done',
-      detail: `${scholarlyEntries.filter((entry) => entry.evidence?.status === 'ok').length}/${candidateSchoolEntries.length} institutions resolved to stable scholarly IDs; candidates still require an official faculty-page check.`,
+      detail: `${scholarlyEntries.filter((entry) => entry.evidence?.status === 'ok').length}/${candidateSchoolEntries.length} institutions resolved to stable scholarly IDs across general and discipline-routed indexes; candidates still require an official faculty-page check.`,
     })
     agentTrace.push({
       id: 'official_advisor_profile_hydration',
@@ -1245,7 +1412,10 @@ export async function buildDiscoverResearchRun({
             .map((program) => ({ school: program.school, pis: program.pis })),
           scholarlyEvidence: batch.map((program) => ({
             school: program.school,
-            evidence: scholarlyBySchool.get(program.school) || null,
+            evidence: compactScholarlyEvidenceForAgent(
+              scholarlyBySchool.get(program.school),
+              working.intake.nPisPerProgram,
+            ),
           })),
         }),
         liveWeb: supportsNativeOpenAiWebSearch(agentKey),
@@ -1351,7 +1521,10 @@ export async function buildDiscoverResearchRun({
           crawlerEvidence: schoolEvidence,
           scholarlyEvidence: batch.map((program) => ({
             school: program.school,
-            evidence: scholarlyBySchool.get(program.school) || null,
+            evidence: compactScholarlyEvidenceForAgent(
+              scholarlyBySchool.get(program.school),
+              working.intake.nPisPerProgram,
+            ),
           })),
         }),
         liveWeb: supportsNativeOpenAiWebSearch(agentKey),

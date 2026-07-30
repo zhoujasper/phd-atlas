@@ -3,7 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { createPortal } from 'react-dom'
 import { getMotionDelay } from '../hooks/useAnimatedClose'
 import { useI18n } from '../hooks/useI18n'
-import { addFloatingViewportListeners, getAnchoredOverlayStyle } from './floatingOverlay'
+import {
+  addFloatingViewportListeners,
+  FLOATING_CONTROL_BASE_Z_INDEX,
+  getAnchoredOverlayStyle,
+} from './floatingOverlay'
 
 function parseTime(value: string) {
   const match = /^(\d{2}):(\d{2})$/.exec(value)
@@ -61,6 +65,7 @@ export function TimePicker({
       maxWidth: 196,
       estimatedHeight: 290,
       actualHeight: dropdownRef.current?.getBoundingClientRect().height,
+      baseZIndex: FLOATING_CONTROL_BASE_Z_INDEX,
     })
   }, [])
 
@@ -230,6 +235,7 @@ export function TimePicker({
           className={`time-picker-dropdown ${exiting ? 'time-picker-exit' : ''}`}
           ref={dropdownRef}
           style={dropdownStyle}
+          data-floating-overlay="true"
           onMouseDown={(event) => event.stopPropagation()}
         >
           <div className="time-picker-columns">

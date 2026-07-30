@@ -7,21 +7,17 @@ import {
   type CSSProperties,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { useI18n } from '../hooks/useI18n'
-import { copyToClipboard } from './clipboard'
 import {
   isElementVisuallyTruncated,
-  overflowRevealCopyValue,
   overflowRevealText,
   OVERFLOW_REVEAL_EXCLUDED_SELECTOR,
   OVERFLOW_REVEAL_HOVER_DELAY_MS,
+  OVERFLOW_REVEAL_POINTER_FOCUS_SUPPRESSION_MS,
 } from './overflowRevealModel'
 
 const EXIT_DURATION_MS = 170
-const INTERACTIVE_CLICK_DELAY_MS = 240
 const MAX_TOOLTIP_WIDTH = 440
 const VIEWPORT_GUTTER = 8
-const INTERACTIVE_SELECTOR = 'a[href], button, [role="button"], [role="link"], summary'
 
 type RevealRect = {
   top: number
@@ -47,7 +43,6 @@ type RevealTypography = {
 type RevealSnapshot = {
   target: HTMLElement
   text: string
-  copyValue: string
   rect: RevealRect
   typography: RevealTypography
   version: number
@@ -105,13 +100,11 @@ function revealRect(element: HTMLElement): RevealRect {
 function snapshotForTarget(target: HTMLElement, version: number): RevealSnapshot | null {
   if (!isElementVisuallyTruncated(target)) return null
   const text = overflowRevealText(target)
-  const copyValue = overflowRevealCopyValue(target, text)
-  if (!text || !copyValue) return null
+  if (!text) return null
   const style = window.getComputedStyle(target)
   return {
     target,
     text,
-    copyValue,
     rect: revealRect(target),
     typography: {
       color: style.color,
@@ -144,40 +137,29 @@ function targetStillInteractedWith(target: HTMLElement) {
 }
 
 /**
- * One delegated interaction layer for every genuinely truncated text node in
- * the current document. It avoids layout shifts by rendering the full value in
- * a fixed portal, keeps the source controls clickable, and copies on dblclick.
+ * One delegated hover/focus layer for explicitly opted-in, genuinely truncated
+ * data text. Ordinary controls and incidental overflow remain entirely passive.
  */
 export function GlobalOverflowReveal() {
-  const { tx } = useI18n()
   const [snapshot, setSnapshot] = useState<RevealSnapshot | null>(null)
   const [position, setPosition] = useState<RevealPosition | null>(null)
   const [open, setOpen] = useState(false)
-  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
   const tooltipRef = useRef<HTMLSpanElement | null>(null)
   const activeTargetRef = useRef<HTMLElement | null>(null)
   const snapshotRef = useRef<RevealSnapshot | null>(null)
   const versionRef = useRef(0)
   const exitTimerRef = useRef<number | null>(null)
-  const statusTimerRef = useRef<number | null>(null)
   const hoverOpenTimerRef = useRef<number | null>(null)
   const pendingHoverTargetRef = useRef<HTMLElement | null>(null)
+  const pointerBlockedTargetRef = useRef<HTMLElement | null>(null)
   const suppressedTitleRef = useRef<SuppressedTitle | null>(null)
-  const pendingInteractiveClicksRef = useRef<Map<HTMLElement, number>>(new Map())
-  const replayingInteractiveClicksRef = useRef<Set<HTMLElement>>(new Set())
   const lastTouchPointerAtRef = useRef(0)
+  const lastPointerDownAtRef = useRef(0)
 
   const clearExitTimer = useCallback(() => {
     if (exitTimerRef.current !== null) {
       window.clearTimeout(exitTimerRef.current)
       exitTimerRef.current = null
-    }
-  }, [])
-
-  const clearStatusTimer = useCallback(() => {
-    if (statusTimerRef.current !== null) {
-      window.clearTimeout(statusTimerRef.current)
-      statusTimerRef.current = null
     }
   }, [])
 
@@ -198,7 +180,6 @@ export function GlobalOverflowReveal() {
 
   const restoreTarget = useCallback((target: HTMLElement | null) => {
     if (!target) return
-    target.removeAttribute('data-overflow-reveal-active')
     const suppressed = suppressedTitleRef.current
     if (suppressed?.target === target) {
       if (!target.hasAttribute('title')) target.setAttribute('title', suppressed.value)
@@ -213,8 +194,6 @@ export function GlobalOverflowReveal() {
     restoreTarget(activeTarget)
     activeTargetRef.current = null
     setOpen(false)
-    setCopyStatus('idle')
-    clearStatusTimer()
     clearExitTimer()
     exitTimerRef.current = window.setTimeout(() => {
       exitTimerRef.current = null
@@ -223,7 +202,7 @@ export function GlobalOverflowReveal() {
       setSnapshot(null)
       setPosition(null)
     }, EXIT_DURATION_MS)
-  }, [clearExitTimer, clearHoverOpenTimer, clearStatusTimer, restoreTarget])
+  }, [clearExitTimer, clearHoverOpenTimer, restoreTarget])
 
   const activate = useCallback((target: HTMLElement) => {
     clearHoverOpenTimer()
@@ -235,10 +214,8 @@ export function GlobalOverflowReveal() {
 
     restoreTarget(currentTarget)
     clearExitTimer()
-    clearStatusTimer()
     activeTargetRef.current = target
     snapshotRef.current = next
-    target.setAttribute('data-overflow-reveal-active', 'true')
 
     const nativeTitle = target.getAttribute('title')
     if (nativeTitle && nativeTitle.trim() === next.text) {
@@ -247,16 +224,16 @@ export function GlobalOverflowReveal() {
     }
 
     setOpen(false)
-    setCopyStatus('idle')
     setPosition(null)
     setSnapshot(next)
     return next
-  }, [clearExitTimer, clearHoverOpenTimer, clearStatusTimer, restoreTarget])
+  }, [clearExitTimer, clearHoverOpenTimer, restoreTarget])
 
   const scheduleHoverActivate = useCallback((target: HTMLElement) => {
     if (
       activeTargetRef.current === target
       || pendingHoverTargetRef.current === target
+      || pointerBlockedTargetRef.current === target
     ) {
       return
     }
@@ -284,21 +261,6 @@ export function GlobalOverflowReveal() {
     snapshotRef.current = next
     setSnapshot(next)
   }, [hide])
-
-  const copyTarget = useCallback(async (target: HTMLElement) => {
-    const active = activate(target) ?? snapshotForTarget(target, ++versionRef.current)
-    if (!active) return
-    const ok = await copyToClipboard(active.copyValue)
-    if (activeTargetRef.current !== target) return
-    setCopyStatus(ok ? 'copied' : 'failed')
-    setOpen(true)
-    clearStatusTimer()
-    statusTimerRef.current = window.setTimeout(() => {
-      statusTimerRef.current = null
-      setCopyStatus('idle')
-      if (!targetStillInteractedWith(target)) hide(target)
-    }, 1500)
-  }, [activate, clearStatusTimer, hide])
 
   useLayoutEffect(() => {
     const tooltip = tooltipRef.current
@@ -342,49 +304,6 @@ export function GlobalOverflowReveal() {
   }, [position, snapshot])
 
   useEffect(() => {
-    const onClick = (event: MouseEvent) => {
-      if (Date.now() - lastTouchPointerAtRef.current < 900) return
-      const eventElement = event.target instanceof Element ? event.target : null
-      const eventInteractive = eventElement?.closest<HTMLElement>(INTERACTIVE_SELECTOR) ?? null
-      if (eventInteractive && replayingInteractiveClicksRef.current.has(eventInteractive)) return
-      if (
-        event.button !== 0
-        || event.detail < 1
-        || event.metaKey
-        || event.ctrlKey
-        || event.shiftKey
-        || event.altKey
-      ) {
-        return
-      }
-
-      const target = closestOverflowTarget(event.target)
-      const interactive = target?.closest<HTMLElement>(INTERACTIVE_SELECTOR) ?? null
-      if (!target || !interactive || interactive.hasAttribute('disabled')) return
-
-      event.preventDefault()
-      event.stopPropagation()
-      const pending = pendingInteractiveClicksRef.current.get(interactive)
-      if (pending !== undefined) {
-        window.clearTimeout(pending)
-        pendingInteractiveClicksRef.current.delete(interactive)
-      }
-      // A second click is followed immediately by dblclick, which owns the copy.
-      if (event.detail > 1) return
-
-      const timer = window.setTimeout(() => {
-        pendingInteractiveClicksRef.current.delete(interactive)
-        if (!interactive.isConnected) return
-        replayingInteractiveClicksRef.current.add(interactive)
-        try {
-          interactive.click()
-        } finally {
-          replayingInteractiveClicksRef.current.delete(interactive)
-        }
-      }, INTERACTIVE_CLICK_DELAY_MS)
-      pendingInteractiveClicksRef.current.set(interactive, timer)
-    }
-
     const onPointerOver = (event: PointerEvent) => {
       if (event.pointerType === 'touch') return
       const target = closestOverflowTarget(event.target)
@@ -392,15 +311,27 @@ export function GlobalOverflowReveal() {
     }
 
     const onPointerDown = (event: PointerEvent) => {
-      if (event.pointerType !== 'touch') return
-      lastTouchPointerAtRef.current = Date.now()
+      const now = Date.now()
+      lastPointerDownAtRef.current = now
+      const target = closestOverflowTarget(event.target)
+      pointerBlockedTargetRef.current = target
       clearHoverOpenTimer()
       if (activeTargetRef.current) hide(activeTargetRef.current)
+      if (event.pointerType === 'touch') {
+        lastTouchPointerAtRef.current = now
+      }
     }
 
     const onPointerOut = (event: PointerEvent) => {
       const pending = pendingHoverTargetRef.current
       const related = event.relatedTarget
+      const blocked = pointerBlockedTargetRef.current
+      if (
+        blocked
+        && !(related instanceof Node && blocked.contains(related))
+      ) {
+        pointerBlockedTargetRef.current = null
+      }
       if (
         pending
         && !(related instanceof Node && pending.contains(related))
@@ -413,18 +344,14 @@ export function GlobalOverflowReveal() {
       hide(active)
     }
 
-    const onDoubleClick = (event: MouseEvent) => {
-      if (Date.now() - lastTouchPointerAtRef.current < 900) return
-      const target = closestOverflowTarget(event.target)
-      if (!target) return
-      event.preventDefault()
-      event.stopPropagation()
-      window.getSelection()?.removeAllRanges()
-      void copyTarget(target)
-    }
-
     const onFocusIn = (event: FocusEvent) => {
-      if (Date.now() - lastTouchPointerAtRef.current < 900) return
+      const now = Date.now()
+      if (
+        now - lastTouchPointerAtRef.current < 900
+        || now - lastPointerDownAtRef.current < OVERFLOW_REVEAL_POINTER_FOCUS_SUPPRESSION_MS
+      ) {
+        return
+      }
       const eventElement = event.target instanceof HTMLElement ? event.target : null
       const target = closestOverflowTarget(event.target)
         ?? (eventElement ? firstOverflowDescendant(eventElement) : null)
@@ -442,28 +369,28 @@ export function GlobalOverflowReveal() {
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+        lastPointerDownAtRef.current = 0
+        pointerBlockedTargetRef.current = null
+      }
       if (event.key === 'Escape' && activeTargetRef.current) hide(activeTargetRef.current)
     }
 
-    document.addEventListener('click', onClick, true)
     document.addEventListener('pointerdown', onPointerDown, true)
     document.addEventListener('pointerover', onPointerOver, true)
     document.addEventListener('pointerout', onPointerOut, true)
-    document.addEventListener('dblclick', onDoubleClick, true)
     document.addEventListener('focusin', onFocusIn, true)
     document.addEventListener('focusout', onFocusOut, true)
     document.addEventListener('keydown', onKeyDown, true)
     return () => {
-      document.removeEventListener('click', onClick, true)
       document.removeEventListener('pointerdown', onPointerDown, true)
       document.removeEventListener('pointerover', onPointerOver, true)
       document.removeEventListener('pointerout', onPointerOut, true)
-      document.removeEventListener('dblclick', onDoubleClick, true)
       document.removeEventListener('focusin', onFocusIn, true)
       document.removeEventListener('focusout', onFocusOut, true)
       document.removeEventListener('keydown', onKeyDown, true)
     }
-  }, [activate, clearHoverOpenTimer, copyTarget, hide, scheduleHoverActivate])
+  }, [activate, clearHoverOpenTimer, hide, scheduleHoverActivate])
 
   useEffect(() => {
     const target = snapshot?.target
@@ -503,11 +430,8 @@ export function GlobalOverflowReveal() {
     restoreTarget(activeTargetRef.current)
     clearExitTimer()
     clearHoverOpenTimer()
-    clearStatusTimer()
-    pendingInteractiveClicksRef.current.forEach((timer) => window.clearTimeout(timer))
-    pendingInteractiveClicksRef.current.clear()
-    replayingInteractiveClicksRef.current.clear()
-  }, [clearExitTimer, clearHoverOpenTimer, clearStatusTimer, restoreTarget])
+    pointerBlockedTargetRef.current = null
+  }, [clearExitTimer, clearHoverOpenTimer, restoreTarget])
 
   if (!snapshot || typeof document === 'undefined') return null
 
@@ -533,21 +457,10 @@ export function GlobalOverflowReveal() {
       role="tooltip"
       aria-hidden={!open}
       data-global-overflow-reveal=""
-      className={`global-overflow-reveal${open && position ? ' is-open' : ''}${copyStatus !== 'idle' ? ` is-${copyStatus}` : ''}`}
+      className={`global-overflow-reveal${open && position ? ' is-open' : ''}`}
       style={style}
     >
       <span className="global-overflow-reveal-text">{snapshot.text}</span>
-      <span
-        className="global-overflow-reveal-copy-status"
-        role="status"
-        aria-live="polite"
-      >
-        {copyStatus === 'copied'
-          ? tx('copiedBang', 'Copied!')
-          : copyStatus === 'failed'
-            ? tx('copyFailed', "Couldn't copy — select and copy manually")
-            : ''}
-      </span>
     </span>,
     document.body,
   )

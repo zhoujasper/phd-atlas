@@ -1,31 +1,35 @@
 import {
   ArrowDown,
   ArrowRight,
-  CalendarClock,
   Check,
+  Compass,
   Copy,
   Eye,
   EyeOff,
   Fingerprint,
-  FolderCheck,
   GraduationCap,
   Languages,
-  ListChecks,
+  LayoutList,
   Mail,
   Moon,
   RefreshCw,
   ShieldCheck,
   Sun,
+  UserRound,
   Users,
 } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { normalizeErrorMessage } from '../../errorMessages'
 import { PUBLIC_DISTRIBUTION } from '../../edition'
 import type { Language } from '../../i18n'
-import { useI18n } from '../hooks/useI18n'
+import { useDeadlineCountdown } from '../hooks/useDeadlineCountdown'
+import { useI18n, useI18nValue } from '../hooks/useI18n'
 import { useMarketingReveal, usePointerTilt } from '../hooks/useMarketingMotion'
 import { useTheme } from '../hooks/useTheme'
+import { PendingLabel } from '../shared/PendingLabel'
+import { ProjectFooter } from '../shared/ProjectFooter'
 import { Select } from '../shared/Select'
+import { MarketingProductDemo } from './MarketingProductDemo'
 import { MarketingWorkspaceDemo, type MarketingWorkspaceTab } from './MarketingWorkspaceDemo'
 import { TurnstileChallenge } from '../shared/TurnstileChallenge'
 
@@ -34,7 +38,7 @@ const EMAIL_CODE_COOLDOWN_SECONDS = 45
 
 type AuthMode = 'login' | 'register' | 'forgot'
 type AuthModeDirection = 'forward' | 'back'
-type AuthStory = 'track' | 'deadline' | 'organize'
+type AuthStory = 'applications' | 'discover' | 'profile'
 type HumanChallenge =
   | { provider?: 'math'; question: string; token: string }
   | { provider: 'turnstile'; siteKey: string; action: string }
@@ -44,6 +48,14 @@ function authModeRank(mode: AuthMode) {
   if (mode === 'login') return 0
   if (mode === 'forgot') return 1
   return 2
+}
+
+function marketingHeroTitleLines(title: string) {
+  const lines = title
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  return lines.length > 0 ? lines : [title]
 }
 
 export function AuthScreen({
@@ -73,12 +85,18 @@ export function AuthScreen({
   languages: Array<{ value: Language; label: string }>
   onLanguageChange: (language: Language) => void
 }) {
-  const { tx, format, lang } = useI18n()
+  const parentI18n = useI18n()
+  const { tx, format, lang } = useI18nValue(
+    parentI18n.lang,
+    ['core', 'shared', 'settings', 'workspace', 'discover', 'profile'],
+  )
   const { theme, toggleTheme } = useTheme()
+  const heroTitleLines = marketingHeroTitleLines(tx('authMarketingHeroTitle'))
   const pageRef = useRef<HTMLElement | null>(null)
   const productStageRef = useRef<HTMLDivElement | null>(null)
   const [mode, setMode] = useState<AuthMode>('login')
-  const [activeStory, setActiveStory] = useState<AuthStory>('track')
+  const [activeStory, setActiveStory] = useState<AuthStory>('applications')
+  const [activeStoryTab, setActiveStoryTab] = useState<MarketingWorkspaceTab>('materials')
   const [modeDirection, setModeDirection] = useState<AuthModeDirection>('forward')
   const [modeAnimKey, setModeAnimKey] = useState(0)
   const modeStageRef = useRef<HTMLDivElement | null>(null)
@@ -99,11 +117,13 @@ export function AuthScreen({
   const [captchaSiteKey, setCaptchaSiteKey] = useState('')
   const [captchaAction, setCaptchaAction] = useState('signup')
   const [captchaError, setCaptchaError] = useState('')
+  const [captchaLoading, setCaptchaLoading] = useState(false)
   const [emailCodeToken, setEmailCodeToken] = useState('')
   const [emailCodeValue, setEmailCodeValue] = useState('')
   const [emailCodeSending, setEmailCodeSending] = useState(false)
   const [emailCodeError, setEmailCodeError] = useState('')
-  const [emailCodeCooldown, setEmailCodeCooldown] = useState(0)
+  const [emailCodeCooldownUntil, setEmailCodeCooldownUntil] = useState<number | null>(null)
+  const emailCodeCooldown = useDeadlineCountdown(emailCodeCooldownUntil)
 
   useMarketingReveal(pageRef)
   usePointerTilt(productStageRef)
@@ -122,6 +142,7 @@ export function AuthScreen({
 
   const refreshCaptcha = useCallback(async () => {
     setCaptchaError('')
+    setCaptchaLoading(true)
     try {
       const challenge = await onCaptcha()
       const provider = challenge.provider === 'turnstile' ? 'turnstile' : 'math'
@@ -136,6 +157,8 @@ export function AuthScreen({
       setCaptchaToken('')
       setCaptchaSiteKey('')
       setCaptchaError(tx('captchaLoadFailed'))
+    } finally {
+      setCaptchaLoading(false)
     }
   }, [onCaptcha, tx])
 
@@ -151,16 +174,8 @@ export function AuthScreen({
     setEmailCodeValue('')
     setEmailCodeError('')
     setEmailCodeSending(false)
-    setEmailCodeCooldown(0)
+    setEmailCodeCooldownUntil(null)
   }, [mode])
-
-  useEffect(() => {
-    if (emailCodeCooldown <= 0) return
-    const timer = setInterval(() => {
-      setEmailCodeCooldown((value) => Math.max(0, value - 1))
-    }, 1000)
-    return () => clearInterval(timer)
-  }, [emailCodeCooldown])
 
   // Morph the form column height on every auth mode change (login ↔ register ↔
   // forgot-password) so demo accounts / password / recovery blocks don't hard-cut.
@@ -221,7 +236,7 @@ export function AuthScreen({
       })
       setEmailCodeToken(result.token)
       setEmailCodeValue('')
-      setEmailCodeCooldown(EMAIL_CODE_COOLDOWN_SECONDS)
+      setEmailCodeCooldownUntil(Date.now() + EMAIL_CODE_COOLDOWN_SECONDS * 1_000)
       void refreshCaptcha()
     } catch (error) {
       setEmailCodeToken('')
@@ -284,37 +299,27 @@ export function AuthScreen({
     key: AuthStory
     title: string
     body: string
-    Icon: typeof ListChecks
+    Icon: typeof LayoutList
   }> = [
     {
-      key: 'track',
-      title: tx('authHighlightTrack'),
+      key: 'applications',
+      title: tx('nav.applications'),
       body: tx('authMarketingTrackBody'),
-      Icon: ListChecks,
+      Icon: LayoutList,
     },
     {
-      key: 'deadline',
-      title: tx('authHighlightDeadline'),
-      body: tx('authMarketingDeadlineBody'),
-      Icon: CalendarClock,
+      key: 'discover',
+      title: tx('discover.title'),
+      body: tx('discover.subtitle'),
+      Icon: Compass,
     },
     {
-      key: 'organize',
-      title: tx('authHighlightOrganize'),
-      body: tx('authMarketingOrganizeBody'),
-      Icon: FolderCheck,
+      key: 'profile',
+      title: tx('profile.title'),
+      body: tx('profile.subtitle'),
+      Icon: UserRound,
     },
   ]
-  const storyTab: Record<AuthStory, MarketingWorkspaceTab> = {
-    track: 'dossier',
-    deadline: 'timeline',
-    organize: 'materials',
-  }
-  const storyForTab: Record<MarketingWorkspaceTab, AuthStory> = {
-    dossier: 'track',
-    timeline: 'deadline',
-    materials: 'organize',
-  }
 
   return (
     <main className="auth-canvas auth-marketing-page" ref={pageRef}>
@@ -355,7 +360,17 @@ export function AuthScreen({
 
       <section className="auth-marketing-hero" id="auth-top" aria-labelledby="auth-marketing-title">
         <div className="auth-marketing-hero-copy" data-marketing-reveal data-marketing-visible="true">
-          <h1 id="auth-marketing-title">{tx('authMarketingHeroTitle')}</h1>
+          <h1 id="auth-marketing-title" aria-label={heroTitleLines.join(' ')}>
+            {heroTitleLines.map((line, index) => (
+              <span
+                key={`${index}-${line}`}
+                className={`auth-marketing-title-line${index === heroTitleLines.length - 1 ? ' is-accent' : ''}`}
+                aria-hidden="true"
+              >
+                {line}
+              </span>
+            ))}
+          </h1>
           <p>{tx('authMarketingHeroBody')}</p>
           <div className="auth-marketing-hero-actions">
             <a
@@ -425,11 +440,18 @@ export function AuthScreen({
           </div>
 
           <div className="auth-story-preview" data-story={activeStory} data-marketing-reveal aria-live="polite">
-            <MarketingWorkspaceDemo
-              className="auth-story-real-workspace"
-              activeTab={storyTab[activeStory]}
-              onTabChange={(tab) => setActiveStory(storyForTab[tab])}
-            />
+            {activeStory === 'applications' ? (
+              <MarketingWorkspaceDemo
+                className="auth-story-real-workspace"
+                activeTab={activeStoryTab}
+                onTabChange={setActiveStoryTab}
+              />
+            ) : (
+              <MarketingProductDemo
+                className="auth-story-product-workspace"
+                surface={activeStory}
+              />
+            )}
           </div>
         </div>
       </section>
@@ -504,16 +526,16 @@ export function AuthScreen({
               ) : null}
               <label>
                 <span>{tx('email')}</span>
-                  <input
-                    required
-                    type="email"
+                <input
+                  required
+                  type="email"
                   value={email}
                   onChange={(event) => {
                     setEmail(event.target.value)
                     if (emailCodeToken || emailCodeError) {
                       setEmailCodeToken('')
                       setEmailCodeValue('')
-                      setEmailCodeCooldown(0)
+                      setEmailCodeCooldownUntil(null)
                       setEmailCodeError('')
                     }
                   }}
@@ -536,7 +558,9 @@ export function AuthScreen({
                     />
                   ) : (
                     <div className="captcha-row">
-                      <strong>{captchaQuestion || tx('working')}</strong>
+                      <strong aria-live="polite" aria-busy={captchaLoading || undefined}>
+                        {captchaQuestion || <PendingLabel label={tx('working')} iconSize={11} />}
+                      </strong>
                       <input
                         required
                         inputMode="numeric"
@@ -547,8 +571,16 @@ export function AuthScreen({
                         }}
                         placeholder={tx('captchaPlaceholder')}
                       />
-                      <button type="button" className="icon-action" onClick={() => void refreshCaptcha()} aria-label={tx('refreshCaptcha')} title={tx('refreshCaptcha')}>
-                        <RefreshCw size={14} aria-hidden="true" />
+                      <button
+                        type="button"
+                        className="icon-action captcha-refresh-action"
+                        onClick={() => void refreshCaptcha()}
+                        disabled={captchaLoading}
+                        aria-busy={captchaLoading || undefined}
+                        aria-label={tx('refreshCaptcha')}
+                        title={tx('refreshCaptcha')}
+                      >
+                        <RefreshCw size={13} className={captchaLoading ? 'spin-icon' : undefined} aria-hidden="true" />
                       </button>
                     </div>
                   )}
@@ -580,9 +612,10 @@ export function AuthScreen({
                         || !captchaToken
                         || (captchaProvider === 'math' && !captchaAnswer.trim())
                       }
+                      aria-busy={emailCodeSending || undefined}
                     >
                       {emailCodeSending ? (
-                        tx('working')
+                        <PendingLabel label={tx('working')} iconSize={12} />
                       ) : emailCodeCooldown > 0 ? (
                         format(tx('resendCodeIn'), { seconds: emailCodeCooldown })
                       ) : (
@@ -626,9 +659,9 @@ export function AuthScreen({
                   </div>
                 </label>
               ) : null}
-              <button className="primary-action" type="submit" disabled={busy}>
+              <button className="primary-action" type="submit" disabled={busy} aria-busy={busy || undefined}>
                 {busy
-                  ? tx('working')
+                  ? <PendingLabel label={tx('working')} iconSize={13} />
                   : mode === 'login'
                     ? tx('signIn')
                     : mode === 'register'
@@ -687,6 +720,9 @@ export function AuthScreen({
           </div>
         </section>
       </section>
+      <div className="auth-marketing-footer">
+        <ProjectFooter />
+      </div>
     </main>
   )
 }

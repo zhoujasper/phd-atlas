@@ -11,8 +11,20 @@ import {
   enqueueMailSyncJob,
   claimNextMailSyncJob,
   finishMailSyncJob,
+  retryMailSyncJob,
+  enqueueSystemMailJob,
+  claimNextSystemMailJob,
+  finishSystemMailJob,
+  getSystemMailJob,
+  retrySystemMailJob,
+  deleteSystemMailJob,
   getMailFetchState,
+  insertNotificationIfNew,
+  listPendingNotificationPushes,
+  markNotificationsPushEnqueued,
+  archiveNotification,
   listPushSubscriptions,
+  MAX_PUSH_SUBSCRIPTIONS_PER_USER,
   listBackups,
   lockedWriteStore,
   normalizeSystemLogRetentionDays,
@@ -89,8 +101,36 @@ describe('durable mail sync jobs', () => {
       })
 
       const claimed = await claimNextMailSyncJob(first.job.id)
-      expect(claimed).toMatchObject({ id: first.job.id, userId, status: 'running' })
+      expect(claimed).toMatchObject({
+        id: first.job.id,
+        userId,
+        status: 'running',
+        attemptCount: 1,
+      })
       expect((await getMailFetchState(userId)).syncJob).toMatchObject({ id: first.job.id, status: 'running' })
+
+      const nextAttemptAt = new Date(Date.now() + 60_000).toISOString()
+      await retryMailSyncJob(first.job.id, {
+        nextAttemptAt,
+        errorCode: 'CONNECTION_FAILED',
+        errorMessage: 'Temporary network failure',
+      })
+      expect((await getMailFetchState(userId)).syncJob).toMatchObject({
+        id: first.job.id,
+        status: 'queued',
+        attemptCount: 1,
+        nextAttemptAt,
+        errorCode: 'CONNECTION_FAILED',
+      })
+      await expect(claimNextMailSyncJob(first.job.id)).resolves.toBeNull()
+
+      const expedited = await enqueueMailSyncJob(userId, 'history')
+      expect(expedited).toMatchObject({
+        alreadyQueued: true,
+        job: { id: first.job.id, nextAttemptAt: null },
+      })
+      const reclaimed = await claimNextMailSyncJob(first.job.id)
+      expect(reclaimed).toMatchObject({ status: 'running', attemptCount: 2 })
 
       await finishMailSyncJob(first.job.id, {
         status: 'succeeded',
@@ -125,6 +165,138 @@ describe('durable mail sync jobs', () => {
         latest.applications = latest.applications.filter((application) => application.ownerId !== userId)
         await writeStore(latest)
       })
+    }
+  })
+})
+
+describe('durable system mail outbox', () => {
+  it('deduplicates, reclaims, retries, expires, and completes sealed system email jobs', async () => {
+    const stamp = `${Date.now()}_${Math.random().toString(36).slice(2)}`
+    const dedupeKey = `storage-system-mail:${stamp}`
+    const first = await enqueueSystemMailJob({
+      dedupeKey,
+      kind: 'verification',
+      to: `mail-${stamp}@example.com`,
+      subject: 'Verification',
+      text: 'Secret one-time code: 123456',
+      scope: 'Storage test',
+      metadata: { codeKind: 'test' },
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+    })
+    const duplicate = await enqueueSystemMailJob({
+      dedupeKey,
+      kind: 'verification',
+      to: `mail-${stamp}@example.com`,
+      subject: 'A duplicate must not replace the original',
+      text: 'replacement',
+      scope: 'Storage test',
+    })
+
+    try {
+      expect(first.alreadyQueued).toBe(false)
+      expect(first.job).toMatchObject({
+        status: 'queued',
+        payload: {
+          subject: 'Verification',
+          text: 'Secret one-time code: 123456',
+          metadata: { codeKind: 'test' },
+        },
+      })
+      expect(first.job.messageId).toMatch(/^<phd-atlas\.system\.[a-f0-9]{40}@mail\.local>$/)
+      expect(duplicate).toMatchObject({
+        alreadyQueued: true,
+        job: {
+          id: first.job.id,
+          messageId: first.job.messageId,
+          payload: { subject: 'Verification' },
+        },
+      })
+
+      const claimedAt = new Date().toISOString()
+      const claimed = await claimNextSystemMailJob(first.job.id, { at: claimedAt })
+      expect(claimed).toMatchObject({ status: 'sending', attemptCount: 1 })
+
+      const staleAt = new Date(Date.parse(claimedAt) + 3 * 60_000).toISOString()
+      const reclaimed = await claimNextSystemMailJob(first.job.id, { at: staleAt })
+      expect(reclaimed).toMatchObject({ status: 'sending', attemptCount: 2 })
+
+      const nextAttemptAt = new Date(Date.parse(staleAt) + 60_000).toISOString()
+      const retry = await retrySystemMailJob(first.job.id, {
+        at: staleAt,
+        nextAttemptAt,
+        errorCode: 'TEMPORARY_FAILURE',
+        errorMessage: 'Retry later',
+      })
+      expect(retry).toMatchObject({
+        status: 'queued',
+        attemptCount: 2,
+        nextAttemptAt,
+        lastErrorCode: 'TEMPORARY_FAILURE',
+      })
+      await expect(
+        claimNextSystemMailJob(first.job.id, { at: staleAt }),
+      ).resolves.toBeNull()
+
+      const finalClaim = await claimNextSystemMailJob(first.job.id, {
+        at: new Date(Date.parse(nextAttemptAt) + 1_000).toISOString(),
+      })
+      expect(finalClaim).toMatchObject({ status: 'sending', attemptCount: 3 })
+      const sent = await finishSystemMailJob(first.job.id, {
+        messageId: first.job.messageId,
+      })
+      expect(sent).toMatchObject({
+        status: 'sent',
+        attemptCount: 3,
+        lastErrorCode: null,
+      })
+    } finally {
+      await deleteSystemMailJob(first.job.id)
+    }
+
+    const expired = await enqueueSystemMailJob({
+      dedupeKey: `${dedupeKey}:expired`,
+      kind: 'verification',
+      to: `mail-${stamp}@example.com`,
+      subject: 'Expired',
+      text: 'expired',
+      scope: 'Storage test',
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    })
+    try {
+      await expect(claimNextSystemMailJob(expired.job.id)).resolves.toBeNull()
+      await expect(getSystemMailJob(expired.job.id)).resolves.toMatchObject({
+        status: 'expired',
+        lastErrorCode: 'EXPIRED',
+      })
+    } finally {
+      await deleteSystemMailJob(expired.job.id)
+    }
+  })
+})
+
+describe('durable notification push handoff', () => {
+  it('keeps a notification pending until the encrypted push journal accepts it', async () => {
+    const store = await readStore()
+    const user = store.users[0]
+    const stamp = `${Date.now()}_${Math.random().toString(36).slice(2)}`
+    const created = await insertNotificationIfNew(user.id, {
+      type: 'test_push_handoff',
+      applicationId: null,
+      title: 'Push handoff',
+      body: 'Durable notification',
+      dedupeKey: `push-handoff-${stamp}`,
+      triggerDate: '2026-07-29',
+    })
+    expect(created).toBeTruthy()
+
+    try {
+      expect((await listPendingNotificationPushes({ limit: 500 }))
+        .some((notification) => notification.id === created.id)).toBe(true)
+      await markNotificationsPushEnqueued([created.id])
+      expect((await listPendingNotificationPushes({ limit: 500 }))
+        .some((notification) => notification.id === created.id)).toBe(false)
+    } finally {
+      await archiveNotification(user.id, created.id)
     }
   })
 })
@@ -429,6 +601,30 @@ describe.sequential('push subscription storage', () => {
     } finally {
       await deletePushSubscription(firstUser.id, endpoint)
       await deletePushSubscription(secondUser.id, endpoint)
+    }
+  })
+
+  it('bounds forged endpoint fan-out while retaining the newest browser subscription', async () => {
+    const store = await readStore()
+    const user = store.users[0]
+    const prefix = `https://push.example.test/bounded/${Date.now()}`
+    const endpoints = Array.from(
+      { length: MAX_PUSH_SUBSCRIPTIONS_PER_USER + 3 },
+      (_value, index) => `${prefix}/${String(index).padStart(2, '0')}`,
+    )
+    try {
+      for (const [index, endpoint] of endpoints.entries()) {
+        await upsertPushSubscription(user.id, {
+          endpoint,
+          keys: { p256dh: `bounded-key-${index}`, auth: `bounded-auth-${index}` },
+        })
+      }
+      const retained = await listPushSubscriptions(user.id)
+      const bounded = retained.filter((subscription) => subscription.endpoint.startsWith(prefix))
+      expect(retained.length).toBeLessThanOrEqual(MAX_PUSH_SUBSCRIPTIONS_PER_USER)
+      expect(bounded.some((subscription) => subscription.endpoint === endpoints.at(-1))).toBe(true)
+    } finally {
+      await Promise.all(endpoints.map((endpoint) => deletePushSubscription(user.id, endpoint)))
     }
   })
 })

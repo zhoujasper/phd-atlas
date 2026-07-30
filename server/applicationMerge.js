@@ -88,24 +88,6 @@ function valuesEqual(left, right) {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null)
 }
 
-export function buildApplicationMergePreview(baseApplication, eventApplication, currentApplication) {
-  const fields = summarizeApplicationChanges(baseApplication, eventApplication)
-  return fields.map((field) => {
-    const baseValue = valueAtPath(baseApplication, field)
-    const eventValue = valueAtPath(eventApplication, field)
-    const currentValue = valueAtPath(currentApplication, field)
-    const currentChanged = !valuesEqual(baseValue, currentValue)
-    const alreadyApplied = valuesEqual(eventValue, currentValue)
-    return {
-      field,
-      status: alreadyApplied ? 'same' : currentChanged ? 'conflict' : 'clean',
-      baseValue,
-      eventValue,
-      currentValue,
-    }
-  })
-}
-
 export function buildApplicationAutoMerge(baseApplication, submittedApplication, currentApplication) {
   const submittedFields = summarizeApplicationChanges(baseApplication, submittedApplication)
   const currentFields = new Set(summarizeApplicationChanges(baseApplication, currentApplication))
@@ -143,7 +125,10 @@ export function buildApplicationAutoMerge(baseApplication, submittedApplication,
  * Clean fields always apply. When the incoming editor is a teacher or institution
  * admin, their value also wins same-field conflicts. When the incoming editor is
  * the student, the already-saved value is retained, which preserves a concurrent
- * teacher/admin edit. The returned record is a detached clone.
+ * teacher/admin edit. This priority applies only when both edits diverged from the
+ * same saved base. A later edit based on the latest saved record is a clean change
+ * and therefore wins regardless of the editor's role. The returned record is a
+ * detached clone.
  */
 export function resolveApplicationAutoMerge(
   baseApplication,

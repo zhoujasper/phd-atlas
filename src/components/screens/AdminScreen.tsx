@@ -68,13 +68,16 @@ import chineseTeam from '../../i18n/zh/team.json'
 import { useI18n } from '../hooks/useI18n'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { useModalA11y } from '../hooks/useModalA11y'
+import { useVisibilityAwarePolling } from '../hooks/useVisibilityAwarePolling'
 import { CollapsiblePanel } from '../shared/CollapsiblePanel'
 import { AnchoredPopover } from '../shared/AnchoredPopover'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/ExplorerContextMenu'
 import { InlineTestEmailAction } from '../shared/InlineTestEmailAction'
+import { InfoTooltip } from '../shared/InfoTooltip'
 import { ModalPortal } from '../shared/ModalPortal'
 import { NotificationPublisherPanel, type NotificationPublisherAudience, type NotificationPublisherRecipient } from '../shared/NotificationPublisherPanel'
+import { PendingLabel } from '../shared/PendingLabel'
 import { Select } from '../shared/Select'
 import { SwitchControl } from '../shared/SwitchControl'
 import { Skeleton } from '../shared/Skeleton'
@@ -101,7 +104,6 @@ import {
   formatBytes,
   formatLogTime,
   formatQuotaLimit,
-  formatUptime,
   isUnlimitedQuota,
   localizeEventMessage,
   localizeScope,
@@ -116,6 +118,7 @@ import {
   type UserSortField,
   type UserUpdatePatch,
 } from './adminScreenModel'
+import { AdminLiveUptime } from './AdminLiveUptime'
 
 registerLanguage('en', englishAdmin as LangDict, 'admin')
 registerLanguage('zh', chineseAdmin as LangDict, 'admin')
@@ -168,29 +171,30 @@ function QuotaEditor({
   showValue?: boolean
   onCommit: (next: number) => void
 }) {
-  const [value, setValue] = useState(String(quota))
+  const quotaInputValue = isUnlimitedQuota(quota) ? '-1' : String(quota)
+  const [value, setValue] = useState(quotaInputValue)
   const [editing, setEditing] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const skipNextBlurRef = useRef(false)
 
   useEffect(() => {
     if (!editing) {
-      setValue(String(quota))
+      setValue(quotaInputValue)
       return
     }
-    setValue(String(quota))
+    setValue(quotaInputValue)
     skipNextBlurRef.current = false
     inputRef.current?.focus()
     inputRef.current?.select()
-  }, [editing, quota])
+  }, [editing, quota, quotaInputValue])
 
   const commit = (rawValue = value) => {
     const next = Number(rawValue)
-    if (Number.isInteger(next) && next > 0 && next <= max) {
+    if (Number.isInteger(next) && (next === -1 || (next > 0 && next <= max))) {
       if (next !== quota) onCommit(next)
       setValue(String(next))
     } else {
-      setValue(String(quota))
+      setValue(quotaInputValue)
     }
     setEditing(false)
   }
@@ -203,8 +207,9 @@ function QuotaEditor({
           <input
             ref={inputRef}
             type="number"
-            min={1}
+            min={-1}
             max={max}
+            step={1}
             inputMode="numeric"
             value={value}
             onChange={(event) => setValue(event.target.value)}
@@ -221,7 +226,7 @@ function QuotaEditor({
               }
               if (event.key === 'Escape') {
                 skipNextBlurRef.current = true
-                setValue(String(quota))
+                setValue(quotaInputValue)
                 setEditing(false)
               }
             }}
@@ -231,7 +236,11 @@ function QuotaEditor({
     )
   }
 
-  const displayValue = suffix ? `${quota} ${suffix}` : String(quota)
+  const displayValue = isUnlimitedQuota(quota)
+    ? '∞'
+    : suffix
+      ? `${quota} ${suffix}`
+      : String(quota)
 
   return (
     <span className={`admin-quota-edit admin-quota-edit-${variant}`}>
@@ -548,11 +557,10 @@ export function AdminScreen({
     { id: 'account', label: tx('admin.userColumnAccount'), defaultWidth: 220, minWidth: 140 },
     { id: 'role', label: tx('admin.userColumnRole'), defaultWidth: 120, minWidth: 96 },
     { id: 'status', label: tx('admin.userColumnStatus'), defaultWidth: 100, minWidth: 80 },
-    { id: 'records', label: tx('admin.userColumnRecords'), defaultWidth: 180, minWidth: 120 },
-    { id: 'storage', label: tx('admin.userColumnStorage'), defaultWidth: 140, minWidth: 100 },
-    { id: 'quota', label: tx('admin.userColumnQuota'), defaultWidth: 120, minWidth: 88 },
+    { id: 'records', label: tx('admin.userColumnRecords'), defaultWidth: 190, minWidth: 132 },
+    { id: 'storage', label: tx('admin.userColumnStorage'), defaultWidth: 184, minWidth: 128 },
     { id: 'lastLogin', label: tx('admin.userColumnLastLogin'), defaultWidth: 140, minWidth: 100 },
-    { id: 'actions', label: tx('admin.userColumnActions'), defaultWidth: 140, minWidth: 96, hideable: false },
+    { id: 'actions', label: tx('admin.userColumnActions'), defaultWidth: 176, minWidth: 96, hideable: false },
   ], [tx])
   const {
     api: userTableApi,
@@ -654,9 +662,6 @@ export function AdminScreen({
   const [manualUpdateOpen, setManualUpdateOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Live uptime counter
-  const [liveUptime, setLiveUptime] = useState(systemInfo?.uptime ?? 0)
-  const uptimeStartRef = useRef(Date.now() - ((systemInfo?.uptime ?? 0) * 1000))
   const [copiedPath, setCopiedPath] = useState<string | null>(null)
   const [notificationGroups, setNotificationGroups] = useState<NotificationGroup[]>([])
   const [notificationGroupsLoaded, setNotificationGroupsLoaded] = useState(false)
@@ -740,27 +745,32 @@ export function AdminScreen({
     void loadDatabaseConfiguration()
   }, [activeTab, databaseConfigOpen, databaseConfigurationLoaded, databaseLoading, encryptionOpen, loadDatabaseConfiguration])
 
-  const loadSystemUpdateLogs = useCallback(async (showSpinner = true) => {
+  const loadSystemUpdateLogs = useCallback(async (
+    showSpinner = true,
+    signal?: AbortSignal,
+  ) => {
     if (showSpinner) setSystemUpdateLogsLoading(true)
     try {
-      const result = await phdApi.systemUpdateLogs(token, 100)
-      setSystemUpdateLogs(result.entries)
+      const result = await phdApi.systemUpdateLogs(token, 100, { signal })
+      if (!signal?.aborted) setSystemUpdateLogs(result.entries)
     } catch (error) {
-      if (showSpinner) onNotify?.(normalizeErrorMessage(error, lang), 'error')
+      if (showSpinner && !signal?.aborted) {
+        onNotify?.(normalizeErrorMessage(error, lang), 'error')
+      }
     } finally {
-      if (showSpinner) setSystemUpdateLogsLoading(false)
+      if (showSpinner && !signal?.aborted) setSystemUpdateLogsLoading(false)
     }
   }, [lang, onNotify, token])
 
-  useEffect(() => {
-    if (activeTab !== 'systemInfo') return undefined
-    let cancelled = false
-    let timer = 0
-    const poll = async () => {
+  useVisibilityAwarePolling({
+    enabled: activeTab === 'systemInfo',
+    intervalMs: 5_000,
+    restartKey: `${token}:${activeTab}`,
+    poll: async (signal) => {
       let nextDelay = 5_000
       try {
-        const status = await phdApi.systemUpdateStatus(token)
-        if (cancelled) return
+        const status = await phdApi.systemUpdateStatus(token, { signal })
+        if (signal.aborted) return false
         setSystemUpdateStatus(status)
         const active = status.operationInFlight
           || status.restartPending
@@ -770,27 +780,14 @@ export function AdminScreen({
           setInstallingReleaseUpdate(false)
           setUploading(false)
         }
-        if (systemUpdateLogsOpen) void loadSystemUpdateLogs(false)
+        if (systemUpdateLogsOpen) await loadSystemUpdateLogs(false, signal)
       } catch {
         // A short disconnect is expected once the verified update restarts the server.
         nextDelay = installingReleaseUpdate || uploading ? 1_800 : 5_000
-      } finally {
-        if (!cancelled) timer = window.setTimeout(() => void poll(), nextDelay)
       }
-    }
-    void poll()
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-    }
-  }, [
-    activeTab,
-    installingReleaseUpdate,
-    loadSystemUpdateLogs,
-    systemUpdateLogsOpen,
-    token,
-    uploading,
-  ])
+      return nextDelay
+    },
+  })
 
   const loadNotificationGroups = useCallback(async () => {
     const groups = await phdApi.adminNotificationGroups(token)
@@ -853,17 +850,6 @@ export function AdminScreen({
       return changed ? next : current
     })
   }, [users])
-
-  // Live uptime: tick every second
-  useEffect(() => {
-    if (!systemInfo) return
-    uptimeStartRef.current = Date.now() - systemInfo.uptime * 1000
-    setLiveUptime(systemInfo.uptime)
-    const timer = setInterval(() => {
-      setLiveUptime(Math.floor((Date.now() - uptimeStartRef.current) / 1000))
-    }, 1000)
-    return () => clearInterval(timer)
-  }, [systemInfo])
 
   useEffect(() => {
     setLogPage(0)
@@ -1965,9 +1951,9 @@ export function AdminScreen({
                 </label>
               </div>
               <div className="admin-card-actions">
-                <button type="button" className="quiet-action" disabled={passwordBusy} onClick={() => void handleChangePassword()}>
+                <button type="button" className="quiet-action" disabled={passwordBusy} aria-busy={passwordBusy || undefined} onClick={() => void handleChangePassword()}>
                   {passwordBusy ? (
-                    <><RefreshCw size={13} aria-hidden="true" className="spin-icon" /> {tx('working')}</>
+                    <PendingLabel label={tx('working')} />
                   ) : (
                     <><LockKeyhole size={13} aria-hidden="true" /> {tx('admin.changePasswordButton')}</>
                   )}
@@ -2071,9 +2057,10 @@ export function AdminScreen({
                       className="quiet-action compact-action mail-save-btn save-action"
                       onClick={() => void saveSystemMail()}
                       disabled={mailSaving || mailTesting}
+                      aria-busy={mailSaving || undefined}
                     >
                       {mailSaving ? (
-                        <><RefreshCw size={12} aria-hidden="true" className="spin-icon" /> {tx('working')}</>
+                        <PendingLabel label={tx('working')} iconSize={12} />
                       ) : (
                         <><Send size={12} aria-hidden="true" /> {tx('admin.saveSystemMail')}</>
                       )}
@@ -2347,7 +2334,7 @@ export function AdminScreen({
                           <Database size={15} />
                         </span>
                         <span className="admin-workspace-backup-copy">
-                          <strong>{backup.fileName}</strong>
+                          <strong data-overflow-reveal="auto">{backup.fileName}</strong>
                           <small>
                             {formatAdminDateTime(backup.createdAt, lang, tx('admin.neverLoggedIn'))}
                             {' · '}
@@ -2500,10 +2487,20 @@ export function AdminScreen({
                       <TableHeaderCell column={userCol.role} api={userTableApi}>{renderUserSortHeader('role', tx('admin.userColumnRole'))}</TableHeaderCell>
                       <TableHeaderCell column={userCol.status} api={userTableApi}>{renderUserSortHeader('status', tx('admin.userColumnStatus'))}</TableHeaderCell>
                       <TableHeaderCell column={userCol.records} api={userTableApi}>{renderUserSortHeader('applicationCount', tx('admin.userColumnRecords'))}</TableHeaderCell>
-                      <TableHeaderCell column={userCol.storage} api={userTableApi}>{renderUserSortHeader('storageUsedBytes', tx('admin.userColumnStorage'))}</TableHeaderCell>
-                      <TableHeaderCell column={userCol.quota} api={userTableApi}>{renderUserSortHeader('storageQuotaMb', tx('admin.userColumnQuota'))}</TableHeaderCell>
+                      <TableHeaderCell column={userCol.storage} api={userTableApi}>
+                        <div className="admin-user-usage-header">
+                          {renderUserSortHeader('storageUsedBytes', tx('admin.userColumnStorage'))}
+                          <InfoTooltip
+                            className="admin-user-usage-help"
+                            label={tx('admin.quotaUsageHelpLabel')}
+                            content={tx('admin.quotaUsageHelp')}
+                          />
+                        </div>
+                      </TableHeaderCell>
                       <TableHeaderCell column={userCol.lastLogin} api={userTableApi}>{renderUserSortHeader('lastLoginAt', tx('admin.userColumnLastLogin'))}</TableHeaderCell>
-                      <TableHeaderCell column={userCol.actions} api={userTableApi}><span>{tx('admin.userColumnActions')}</span></TableHeaderCell>
+                      <TableHeaderCell column={userCol.actions} api={userTableApi}>
+                        <span className="admin-user-column-label">{tx('admin.userColumnActions')}</span>
+                      </TableHeaderCell>
                     </tr>
                   </thead>
                   <tbody>
@@ -2511,15 +2508,15 @@ export function AdminScreen({
                       const persistedAccountType = accountTypeForUser(user)
                       const accountType = pendingAccountTypes[user.id] ?? persistedAccountType
                       const userUpdating = updatingUserIds.has(user.id)
-                      const quota = Number(user.storageQuotaMb || user.settings.storageQuotaMb || (accountType === 'free' ? 5 : 100))
-                      const storageUnlimited = user.storageQuotaBytes === null || accountType === 'admin'
-                      const applicationQuota = Math.max(1, Number(user.applicationQuota ?? user.settings.applicationQuota ?? 100) || 100)
-                      const applicationCreateQuota = Math.max(1, Number(user.applicationCreateQuota ?? user.settings.applicationCreateQuota ?? applicationQuota) || applicationQuota)
+                      const quota = Number(user.storageQuotaMb ?? user.settings.storageQuotaMb ?? (accountType === 'free' ? 5 : 100))
+                      const storageUnlimited = user.storageQuotaBytes === null || isUnlimitedQuota(quota) || accountType === 'admin'
+                      const applicationQuota = Number(user.applicationQuota ?? user.settings.applicationQuota ?? 100)
+                      const applicationCreateQuota = Number(user.applicationCreateQuota ?? user.settings.applicationCreateQuota ?? applicationQuota)
                       const applicationCreatedCount = Number(user.applicationCreatedCount ?? user.settings.applicationCreatedCount ?? user.applicationCount ?? 0)
                       const applicationQuotaUnlimited = isUnlimitedQuota(applicationQuota) || accountType === 'admin'
                       const applicationCreateQuotaUnlimited = isUnlimitedQuota(applicationCreateQuota) || accountType !== 'free'
-                      const shareQuota = Math.max(1, Number(user.shareQuota ?? user.settings.shareQuota ?? 100) || 100)
-                      const shareCreateQuota = Math.max(1, Number(user.shareCreateQuota ?? user.settings.shareCreateQuota ?? shareQuota) || shareQuota)
+                      const shareQuota = Number(user.shareQuota ?? user.settings.shareQuota ?? 100)
+                      const shareCreateQuota = Number(user.shareCreateQuota ?? user.settings.shareCreateQuota ?? shareQuota)
                       const activeShareCount = Number(user.activeShareCount ?? 0)
                       const shareCreatedCount = Number(user.shareCreatedCount ?? user.settings.shareCreatedCount ?? activeShareCount)
                       const shareQuotaUnlimited = isUnlimitedQuota(shareQuota) || accountType === 'admin'
@@ -2570,7 +2567,7 @@ export function AdminScreen({
                               <div className="admin-record-quota-line">
                                 <div className="admin-record-quota-head">
                                   <span>{format(tx('admin.recordUsage'), { count: user.applicationCount, limit: formatQuotaLimit(applicationQuota) })}</span>
-                                  {applicationQuotaUnlimited ? (
+                                  {accountType === 'admin' ? (
                                     <span className="admin-quota-infinite">∞</span>
                                   ) : (
                                     <QuotaEditor
@@ -2590,8 +2587,8 @@ export function AdminScreen({
                                   role="progressbar"
                                   aria-label={tx('admin.recordUsageLabel')}
                                   aria-valuemin={0}
-                                  aria-valuemax={applicationQuota}
-                                  aria-valuenow={Math.min(Number(user.applicationCount ?? 0), applicationQuota)}
+                                  aria-valuemax={applicationQuotaUnlimited ? undefined : applicationQuota}
+                                  aria-valuenow={applicationQuotaUnlimited ? undefined : Math.min(Number(user.applicationCount ?? 0), applicationQuota)}
                                   aria-valuetext={format(tx('admin.recordUsage'), { count: user.applicationCount, limit: formatQuotaLimit(applicationQuota) })}
                                 >
                                   <i className={quotaProgressClass(applicationPercent)} style={{ width: `${applicationPercent}%` }} />
@@ -2600,7 +2597,7 @@ export function AdminScreen({
                               <div className="admin-record-quota-line">
                                 <div className="admin-record-quota-head">
                                   <span>{format(tx('admin.recordCreateUsage'), { count: applicationCreatedCount, limit: formatQuotaLimit(applicationCreateQuota) })}</span>
-                                  {applicationCreateQuotaUnlimited ? (
+                                  {accountType !== 'free' ? (
                                     <span className="admin-quota-infinite">∞</span>
                                   ) : (
                                     <QuotaEditor
@@ -2620,8 +2617,8 @@ export function AdminScreen({
                                   role="progressbar"
                                   aria-label={tx('admin.recordCreateUsageLabel')}
                                   aria-valuemin={0}
-                                  aria-valuemax={applicationCreateQuota}
-                                  aria-valuenow={Math.min(applicationCreatedCount, applicationCreateQuota)}
+                                  aria-valuemax={applicationCreateQuotaUnlimited ? undefined : applicationCreateQuota}
+                                  aria-valuenow={applicationCreateQuotaUnlimited ? undefined : Math.min(applicationCreatedCount, applicationCreateQuota)}
                                   aria-valuetext={format(tx('admin.recordCreateUsage'), { count: applicationCreatedCount, limit: formatQuotaLimit(applicationCreateQuota) })}
                                 >
                                   <i className={quotaProgressClass(applicationCreatePercent)} style={{ width: `${applicationCreatePercent}%` }} />
@@ -2630,7 +2627,7 @@ export function AdminScreen({
                               <div className="admin-record-quota-line">
                                 <div className="admin-record-quota-head">
                                   <span>{format(tx('admin.shareUsage'), { count: activeShareCount, limit: formatQuotaLimit(shareQuota) })}</span>
-                                  {shareQuotaUnlimited ? (
+                                  {accountType === 'admin' ? (
                                     <span className="admin-quota-infinite">∞</span>
                                   ) : (
                                     <QuotaEditor
@@ -2650,8 +2647,8 @@ export function AdminScreen({
                                   role="progressbar"
                                   aria-label={tx('admin.shareUsageLabel')}
                                   aria-valuemin={0}
-                                  aria-valuemax={shareQuota}
-                                  aria-valuenow={Math.min(activeShareCount, shareQuota)}
+                                  aria-valuemax={shareQuotaUnlimited ? undefined : shareQuota}
+                                  aria-valuenow={shareQuotaUnlimited ? undefined : Math.min(activeShareCount, shareQuota)}
                                   aria-valuetext={format(tx('admin.shareUsage'), { count: activeShareCount, limit: formatQuotaLimit(shareQuota) })}
                                 >
                                   <i className={quotaProgressClass(sharePercent)} style={{ width: `${sharePercent}%` }} />
@@ -2660,7 +2657,7 @@ export function AdminScreen({
                               <div className="admin-record-quota-line">
                                 <div className="admin-record-quota-head">
                                   <span>{format(tx('admin.shareCreateUsage'), { count: shareCreatedCount, limit: formatQuotaLimit(shareCreateQuota) })}</span>
-                                  {shareCreateQuotaUnlimited ? (
+                                  {accountType === 'admin' ? (
                                     <span className="admin-quota-infinite">∞</span>
                                   ) : (
                                     <QuotaEditor
@@ -2680,8 +2677,8 @@ export function AdminScreen({
                                   role="progressbar"
                                   aria-label={tx('admin.shareCreateUsageLabel')}
                                   aria-valuemin={0}
-                                  aria-valuemax={shareCreateQuota}
-                                  aria-valuenow={Math.min(shareCreatedCount, shareCreateQuota)}
+                                  aria-valuemax={shareCreateQuotaUnlimited ? undefined : shareCreateQuota}
+                                  aria-valuenow={shareCreateQuotaUnlimited ? undefined : Math.min(shareCreatedCount, shareCreateQuota)}
                                   aria-valuetext={format(tx('admin.shareCreateUsage'), { count: shareCreatedCount, limit: formatQuotaLimit(shareCreateQuota) })}
                                 >
                                   <i className={quotaProgressClass(shareCreatePercent)} style={{ width: `${shareCreatePercent}%` }} />
@@ -2692,21 +2689,13 @@ export function AdminScreen({
                           <TableCell columnId="storage" api={userTableApi}>
                             <div className="admin-usage-lines">
                               <div className="admin-storage-line" aria-label={tx('admin.storageUsage')}>
-                                <span>{formatBytes(usedBytes)} / {storageUnlimited ? '∞' : `${quota} MB`}</span>
-                                <div><i style={{ width: `${percent}%` }} /></div>
-                              </div>
-                            </div>
-                          </TableCell>
-                          <TableCell columnId="quota" api={userTableApi}>
-                            <div className="admin-user-quota-stack">
-                              <div className="admin-record-quota-line admin-record-quota-line-inline">
                                 <div className="admin-record-quota-head">
-                                  <span>{storageUnlimited ? tx('admin.storageUnlimited') : `${quota} MB`}</span>
-                                  {storageUnlimited ? (
+                                  <span>{formatBytes(usedBytes)} / {storageUnlimited ? '∞' : `${quota} MB`}</span>
+                                  {accountType === 'admin' ? (
                                     <span className="admin-quota-infinite">∞</span>
                                   ) : (
                                     <QuotaEditor
-                                      key={user.id}
+                                      key={`${user.id}-storage`}
                                       quota={quota}
                                       label={tx('admin.quotaMb')}
                                       editLabel={tx('admin.editStorageQuota')}
@@ -2717,6 +2706,17 @@ export function AdminScreen({
                                     />
                                   )}
                                 </div>
+                                <div
+                                  className="admin-mini-progress admin-storage-progress"
+                                  role="progressbar"
+                                  aria-label={tx('admin.storageUsage')}
+                                  aria-valuemin={0}
+                                  aria-valuemax={storageUnlimited ? undefined : quota * 1024 * 1024}
+                                  aria-valuenow={storageUnlimited ? undefined : Math.min(usedBytes, quota * 1024 * 1024)}
+                                  aria-valuetext={`${formatBytes(usedBytes)} / ${storageUnlimited ? '∞' : `${quota} MB`}`}
+                                >
+                                  <i className={quotaProgressClass(percent)} style={{ width: `${percent}%` }} />
+                                </div>
                               </div>
                             </div>
                           </TableCell>
@@ -2726,37 +2726,39 @@ export function AdminScreen({
                             </span>
                           </TableCell>
                           <TableCell columnId="actions" api={userTableApi}>
-                            {confirmingDelete ? (
-                              <div className="admin-user-confirm-actions">
-                                <button type="button" className="danger-action" onClick={() => onUserDelete(user.id)}>
-                                  <Trash2 size={12} aria-hidden="true" /> {tx('admin.confirmDeleteUser')}
-                                </button>
-                                <button type="button" className="quiet-action" onClick={() => setPendingDeleteUserId(null)}>
-                                  {tx('cancel')}
-                                </button>
-                              </div>
-                            ) : (
-                              <div className="admin-user-actions">
-                                <button
-                                  type="button"
-                                  className="quiet-action"
-                                  onClick={() => void commitUserUpdate(user.id, { disabled: !isDisabled })}
-                                  disabled={isCurrentUser}
-                                  title={isCurrentUser ? tx('admin.currentUserProtected') : undefined}
-                                >
-                                  <XCircle size={12} aria-hidden="true" /> {tx(isDisabled ? 'admin.enableAccount' : 'admin.disableAccount')}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="quiet-action admin-user-delete-trigger"
-                                  onClick={() => setPendingDeleteUserId(user.id)}
-                                  disabled={isCurrentUser}
-                                  title={isCurrentUser ? tx('admin.currentUserProtected') : tx('admin.deleteUser')}
-                                >
-                                  <Trash2 size={12} aria-hidden="true" /> {tx('admin.deleteUser')}
-                                </button>
-                              </div>
-                            )}
+                            <div className="admin-user-action-cell">
+                              {confirmingDelete ? (
+                                <div className="admin-user-confirm-actions">
+                                  <button type="button" className="danger-action" onClick={() => onUserDelete(user.id)}>
+                                    <Trash2 size={12} aria-hidden="true" /> {tx('admin.confirmDeleteUser')}
+                                  </button>
+                                  <button type="button" className="quiet-action" onClick={() => setPendingDeleteUserId(null)}>
+                                    {tx('cancel')}
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="admin-user-actions">
+                                  <button
+                                    type="button"
+                                    className="quiet-action"
+                                    onClick={() => void commitUserUpdate(user.id, { disabled: !isDisabled })}
+                                    disabled={isCurrentUser}
+                                    title={isCurrentUser ? tx('admin.currentUserProtected') : undefined}
+                                  >
+                                    <XCircle size={12} aria-hidden="true" /> {tx(isDisabled ? 'admin.enableAccount' : 'admin.disableAccount')}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="quiet-action admin-user-delete-trigger"
+                                    onClick={() => setPendingDeleteUserId(user.id)}
+                                    disabled={isCurrentUser}
+                                    title={isCurrentUser ? tx('admin.currentUserProtected') : tx('admin.deleteUser')}
+                                  >
+                                    <Trash2 size={12} aria-hidden="true" /> {tx('admin.deleteUser')}
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </TableCell>
                         </tr>
                       )
@@ -2944,12 +2946,14 @@ export function AdminScreen({
                         type="button"
                         className="primary-action admin-log-retention-save"
                         disabled={logRetentionSaving}
+                        aria-busy={logRetentionSaving || undefined}
                         onClick={() => void handleSaveLogRetention(close)}
                       >
-                        {logRetentionSaving
-                          ? <RefreshCw size={12} className="spin-icon" aria-hidden="true" />
-                          : <Save size={12} aria-hidden="true" />}
-                        {logRetentionSaving ? tx('admin.logRetentionSaving') : tx('admin.logRetentionSave')}
+                        {logRetentionSaving ? (
+                          <PendingLabel label={tx('admin.logRetentionSaving')} iconSize={12} />
+                        ) : (
+                          <><Save size={12} aria-hidden="true" /> {tx('admin.logRetentionSave')}</>
+                        )}
                       </button>
                     </div>
                   </>
@@ -3113,11 +3117,11 @@ export function AdminScreen({
                           <span className="admin-scope-chip">{localizeScope(event.scope, tx)}</span>
                         </TableCell>
                         <TableCell columnId="message" api={logTableApi}>
-                          <strong>{localizeEventMessage(event.message, tx)}</strong>
-                          <span>{event.id}</span>
+                          <strong data-overflow-reveal="auto">{localizeEventMessage(event.message, tx)}</strong>
+                          <span data-overflow-reveal="auto">{event.id}</span>
                         </TableCell>
                         <TableCell columnId="actor" api={logTableApi}>
-                          <span>{event.actorId ?? tx('admin.logSystemActor')}</span>
+                          <span data-overflow-reveal="auto">{event.actorId ?? tx('admin.logSystemActor')}</span>
                         </TableCell>
                       </tr>
                     ))}
@@ -3178,7 +3182,11 @@ export function AdminScreen({
             </div>
             {systemInfo ? (
               <div className="admin-health-meta">
-                <span>{tx('admin.uptime')} <strong>{formatUptime(liveUptime, tx)}</strong></span>
+                <AdminLiveUptime
+                  initialSeconds={systemInfo.uptime}
+                  label={tx('admin.uptime')}
+                  tx={tx}
+                />
                 <span className="admin-health-sep">·</span>
                 <span>{tx('admin.hostname')} <strong>{systemInfo.hostname}</strong></span>
                 <span className="admin-health-sep">·</span>
@@ -3204,10 +3212,10 @@ export function AdminScreen({
             </div>
             {systemInfo ? (
               <div className="admin-stats-row">
-                <div className="admin-stat-pill" title={systemInfo.cpu.model}>
+                <div className="admin-stat-pill">
                   <Cpu size={14} />
                   <span>{tx('admin.cpuModel')}</span>
-                  <strong>{systemInfo.cpu.model.length > 32 ? systemInfo.cpu.model.slice(0, 32) + '…' : systemInfo.cpu.model}</strong>
+                  <strong data-overflow-full-text={systemInfo.cpu.model}>{systemInfo.cpu.model}</strong>
                 </div>
                 <div className="admin-stat-pill">
                   <Layers size={14} />
@@ -3464,7 +3472,7 @@ export function AdminScreen({
                     <span className="admin-release-update-copy">
                       <em>{tx('admin.currentVersion')}</em>
                       <strong>PhD Atlas v{releaseUpdate?.currentVersion ?? systemInfo?.version ?? '…'}</strong>
-                      <small role="status">
+                      <small role="status" data-overflow-reveal="auto">
                         {systemUpdateBusy && systemUpdateStatus
                           ? tx(UPDATE_STATUS_KEYS[systemUpdateStatus.phase])
                           : releaseUpdate?.updateAvailable && releaseUpdate.release
@@ -3503,7 +3511,7 @@ export function AdminScreen({
                       </span>
                       <span className="admin-update-progress-copy">
                         <strong>{tx(UPDATE_STATUS_KEYS[updatePhase])}</strong>
-                        <small>
+                        <small data-overflow-reveal="auto">
                           {[
                             updateSourceLabel,
                             updatePhase === 'downloading' && systemUpdateStatus?.total
@@ -3752,7 +3760,7 @@ function AdminTeamPanel({
   const [pendingRemoveMemberId, setPendingRemoveMemberId] = useState<string | null>(null)
   const memberSearchRef = useRef<HTMLInputElement>(null)
   const dialogRef = useModalA11y<HTMLDivElement>({
-    open: !panelClose.exiting && !pendingRemoveMemberId,
+    open: !pendingRemoveMemberId,
     onClose: () => panelClose.requestClose(),
     initialFocusRef: memberSearchRef,
   })
@@ -3910,23 +3918,6 @@ function AdminTeamPanel({
       await phdApi.removeTeamMember(token, teamId, memberId)
       setPendingRemoveMemberId(null)
       setContextMenu(null)
-      await reload()
-    } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
-    } finally {
-      setBusyId(null)
-    }
-  }
-
-  async function handleMemberDelegatedAccess(
-    memberId: string,
-    patch: { accessLevel?: 'pro' | 'standard'; studentProLimit?: number },
-  ) {
-    if (!teamId) return
-    setBusyId(`access:${memberId}`)
-    setError(null)
-    try {
-      await phdApi.updateTeamMemberAccess(token, teamId, memberId, patch)
       await reload()
     } catch (err) {
       setError(normalizeErrorMessage(err, lang))
@@ -4527,45 +4518,6 @@ function AdminTeamPanel({
                                   />
                                 )}
                               </div>
-
-                              {member.role !== 'owner' ? (
-                                <div className="admin-team-member-field">
-                                  <span>{tx('team.delegatedAccessTitle')}</span>
-                                  <Select
-                                    size="small"
-                                    value={member.relationships?.accessLevel === 'standard' ? 'standard' : 'pro'}
-                                    disabled={memberBusy}
-                                    options={[
-                                      { value: 'pro', label: tx('team.delegatedAccessPro') },
-                                      { value: 'standard', label: tx('team.delegatedAccessStandard') },
-                                    ]}
-                                    onChange={(accessLevel) => void handleMemberDelegatedAccess(member.id, {
-                                      accessLevel: accessLevel as 'pro' | 'standard',
-                                    })}
-                                  />
-                                </div>
-                              ) : null}
-
-                              {member.role === 'admin' ? (
-                                <label className="admin-team-member-field admin-team-pro-limit-field">
-                                  <span>{tx('team.teacherStudentProLimit')}</span>
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    max={100}
-                                    defaultValue={member.relationships?.studentProLimit ?? 100}
-                                    disabled={memberBusy}
-                                    onBlur={(event) => {
-                                      const current = member.relationships?.studentProLimit ?? 100
-                                      const next = Math.max(0, Math.min(100, Number.parseInt(event.currentTarget.value, 10) || 0))
-                                      event.currentTarget.value = String(next)
-                                      if (next !== current) {
-                                        void handleMemberDelegatedAccess(member.id, { studentProLimit: next })
-                                      }
-                                    }}
-                                  />
-                                </label>
-                              ) : null}
 
                               {member.role === 'member' ? (
                                 <div className="admin-team-member-field teachers">

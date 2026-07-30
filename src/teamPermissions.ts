@@ -1,6 +1,7 @@
 import type {
   TeamMember,
   TeamMemberRelationships,
+  TeamPermissionDefaults,
   TeamRole,
   TeamStudentPermissions,
   TeamTeacherPermissions,
@@ -33,25 +34,67 @@ function normalizedOptionalLimit(value: unknown): number | null {
   return Number.isInteger(parsed) ? Math.max(1, Math.min(10_000, parsed)) : null
 }
 
+export function teamPermissionDefaults(
+  value?: Partial<{
+    student: Partial<TeamStudentPermissions>
+    teacher: Partial<TeamTeacherPermissions>
+  }> | null,
+): TeamPermissionDefaults {
+  const student = value?.student
+  return {
+    student: {
+      ...DEFAULT_TEAM_STUDENT_PERMISSIONS,
+      ...(student ?? {}),
+      activeApplicationLimit: student?.activeApplicationLimit === undefined
+        ? DEFAULT_TEAM_STUDENT_PERMISSIONS.activeApplicationLimit
+        : normalizedOptionalLimit(student.activeApplicationLimit),
+      lifetimeApplicationLimit: student?.lifetimeApplicationLimit === undefined
+        ? DEFAULT_TEAM_STUDENT_PERMISSIONS.lifetimeApplicationLimit
+        : normalizedOptionalLimit(student.lifetimeApplicationLimit),
+      activeShareLimit: student?.activeShareLimit === undefined
+        ? DEFAULT_TEAM_STUDENT_PERMISSIONS.activeShareLimit
+        : normalizedOptionalLimit(student.activeShareLimit),
+      lifetimeShareLimit: student?.lifetimeShareLimit === undefined
+        ? DEFAULT_TEAM_STUDENT_PERMISSIONS.lifetimeShareLimit
+        : normalizedOptionalLimit(student.lifetimeShareLimit),
+    },
+    teacher: {
+      ...DEFAULT_TEAM_TEACHER_PERMISSIONS,
+      ...(value?.teacher ?? {}),
+    },
+  }
+}
+
 export function teamStudentPermissions(
   relationships?: TeamMemberRelationships | null,
+  defaults?: TeamPermissionDefaults | null,
 ): TeamStudentPermissions {
   const candidate = relationships?.studentPermissions
+  const roleDefaults = teamPermissionDefaults(defaults).student
   return {
-    ...DEFAULT_TEAM_STUDENT_PERMISSIONS,
+    ...roleDefaults,
     ...(candidate ?? {}),
-    activeApplicationLimit: normalizedOptionalLimit(candidate?.activeApplicationLimit),
-    lifetimeApplicationLimit: normalizedOptionalLimit(candidate?.lifetimeApplicationLimit),
-    activeShareLimit: normalizedOptionalLimit(candidate?.activeShareLimit),
-    lifetimeShareLimit: normalizedOptionalLimit(candidate?.lifetimeShareLimit),
+    activeApplicationLimit: candidate?.activeApplicationLimit === undefined
+      ? roleDefaults.activeApplicationLimit
+      : normalizedOptionalLimit(candidate.activeApplicationLimit),
+    lifetimeApplicationLimit: candidate?.lifetimeApplicationLimit === undefined
+      ? roleDefaults.lifetimeApplicationLimit
+      : normalizedOptionalLimit(candidate.lifetimeApplicationLimit),
+    activeShareLimit: candidate?.activeShareLimit === undefined
+      ? roleDefaults.activeShareLimit
+      : normalizedOptionalLimit(candidate.activeShareLimit),
+    lifetimeShareLimit: candidate?.lifetimeShareLimit === undefined
+      ? roleDefaults.lifetimeShareLimit
+      : normalizedOptionalLimit(candidate.lifetimeShareLimit),
   }
 }
 
 export function teamTeacherPermissions(
   relationships?: TeamMemberRelationships | null,
+  defaults?: TeamPermissionDefaults | null,
 ): TeamTeacherPermissions {
   return {
-    ...DEFAULT_TEAM_TEACHER_PERMISSIONS,
+    ...teamPermissionDefaults(defaults).teacher,
     ...(relationships?.teacherPermissions ?? {}),
   }
 }
@@ -67,23 +110,25 @@ export function teamMemberForUser(
 export function canUseTeamDiscover(
   role: TeamRole | null | undefined,
   membership?: TeamMember | null,
+  defaults?: TeamPermissionDefaults | null,
 ): boolean {
   if (role === 'owner') return true
-  if (role === 'admin') return teamTeacherPermissions(membership?.relationships).useDiscover
-  if (role === 'member') return teamStudentPermissions(membership?.relationships).useDiscover
+  if (role === 'admin') return teamTeacherPermissions(membership?.relationships, defaults).useDiscover
+  if (role === 'member') return teamStudentPermissions(membership?.relationships, defaults).useDiscover
   return false
 }
 
 export function canCreateTeamApplication(
   role: TeamRole | null | undefined,
   membership?: TeamMember | null,
+  defaults?: TeamPermissionDefaults | null,
 ): boolean {
   if (role === 'owner') return true
   if (role === 'admin') {
-    return teamTeacherPermissions(membership?.relationships).createStudentApplications
+    return teamTeacherPermissions(membership?.relationships, defaults).createStudentApplications
   }
   if (role === 'member') {
-    return teamStudentPermissions(membership?.relationships).createApplications
+    return teamStudentPermissions(membership?.relationships, defaults).createApplications
   }
   return false
 }
@@ -91,13 +136,14 @@ export function canCreateTeamApplication(
 export function canEditTeamApplication(
   role: TeamRole | null | undefined,
   membership?: TeamMember | null,
+  defaults?: TeamPermissionDefaults | null,
 ): boolean {
   if (role === 'owner') return true
   if (role === 'admin') {
-    return teamTeacherPermissions(membership?.relationships).editStudentApplications
+    return teamTeacherPermissions(membership?.relationships, defaults).editStudentApplications
   }
   if (role === 'member') {
-    return teamStudentPermissions(membership?.relationships).editApplications
+    return teamStudentPermissions(membership?.relationships, defaults).editApplications
   }
   return false
 }
@@ -105,13 +151,14 @@ export function canEditTeamApplication(
 export function canCreateTeamShare(
   role: TeamRole | null | undefined,
   membership?: TeamMember | null,
+  defaults?: TeamPermissionDefaults | null,
 ): boolean {
   if (role === 'owner') return true
   if (role === 'admin') {
-    return teamTeacherPermissions(membership?.relationships).manageStudentShares
+    return teamTeacherPermissions(membership?.relationships, defaults).manageStudentShares
   }
   if (role === 'member') {
-    return teamStudentPermissions(membership?.relationships).createShareLinks
+    return teamStudentPermissions(membership?.relationships, defaults).createShareLinks
   }
   return false
 }

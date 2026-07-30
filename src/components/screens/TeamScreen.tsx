@@ -2,18 +2,23 @@ import '../../styles/team.css'
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   CalendarDays,
   Check,
   ChevronDown,
+  ChevronRight,
   Clock,
   Compass,
   Copy,
   Database,
+  Download,
   ExternalLink,
   FileCheck,
   FileText,
+  Fingerprint,
   FolderOpen,
+  GripVertical,
   Paperclip,
   GitMerge,
   History,
@@ -42,7 +47,8 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react'
-import { lazy, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { lazy, startTransition, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { flushSync } from 'react-dom'
 import {
   phdApi,
   type AuthSession,
@@ -53,7 +59,6 @@ import {
   type TeamApplicationRecord,
   type TeamMember,
   type TeamMemberContactProfile,
-  type TeamMergePreview,
   type TeamRole,
   type TeamStudentPermissions,
   type TeamTeacherPermissions,
@@ -74,7 +79,6 @@ import {
 } from '../../teamRelationships'
 import {
   canUseTeamDiscover,
-  teamStudentPermissions,
   teamTeacherPermissions,
 } from '../../teamPermissions'
 import {
@@ -93,7 +97,7 @@ import {
 const TEAM_SECTION_ORDER: TeamSection[] = ['overview', 'applications', 'members', 'resources', 'discover', 'audit', 'settings']
 
 function hasAuditAccess(role: TeamRole | null | undefined) {
-  return role === 'owner' || role === 'admin'
+  return role === 'owner'
 }
 import { normalizeErrorMessage } from '../../errorMessages'
 import { localeForLanguage, registerLanguage, type LangDict } from '../../i18n'
@@ -104,10 +108,10 @@ import { safeMailtoHref } from '../../safeLinks'
 import { contentLanguagesFromSettings } from '../../contentLanguages'
 import { groupProfileAssetsIntoFamilies, profileAssetFamilyId } from '../../profileAssets'
 import { defaultProfilePresets, profilePresetText } from '../../profilePresets'
+import { MAX_CSV_IMPORT_FILE_SIZE } from '../../fileUploads'
 import { useI18n } from '../hooks/useI18n'
 import { getMotionDelay } from '../hooks/useAnimatedClose'
 import { CollapsiblePanel } from '../shared/CollapsiblePanel'
-import { InlinePresence } from '../shared/InlinePresence'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/ExplorerContextMenu'
 import { NotificationPublisherPanel, type NotificationPublisherAudience, type NotificationPublisherRecipient } from '../shared/NotificationPublisherPanel'
@@ -121,31 +125,27 @@ import { ProfilePresetIcon } from '../shared/ProfilePresetIcon'
 import { LibraryInsertionMotionBoundary } from '../shared/LibraryInsertionMotion'
 import { LibraryViewSwitch, type LibraryViewMode } from '../shared/LibraryViewSwitch'
 import { LazyOverlayBoundary } from '../shared/LazyOverlayBoundary'
+import { PendingLabel } from '../shared/PendingLabel'
 import { ProjectFooter } from '../shared/ProjectFooter'
 import { UserAvatar } from '../shared/UserAvatar'
+import { CopyButton } from '../shared/CopyButton'
+import { downloadCsvFile } from '../shared/csv'
 import { TeamPortraitFamilyDeck } from './TeamPortraitFamilyDeck'
 import { ProfileScreen } from './ProfileScreen'
 import { TeamJoinCodeGenerator } from '../shared/TeamJoinCodeGenerator'
 import {
-  auditFieldSummary,
-  canMergeEvent,
-  canRestoreEvent,
-  changedFields,
-  eventApplicationOwnerId,
+  TeamDefaultPermissionsEditor,
+  TeamMemberPermissionEditor,
+} from './TeamPermissionEditor'
+import {
+  buildTeamBulkInvitePreview,
+  createTeamBulkInviteTemplate,
+  MAX_TEAM_BULK_INVITE_ROWS,
+  type TeamBulkInviteIssue,
+} from './teamBulkInviteModel'
+import {
   eventMetadata,
-  formatMergeValue,
-  isAutomaticMergeAuditEvent,
-  isManualMergeEvent,
   localizeAuditMessage,
-  localizeAuditScope,
-  mergeChangeKindKey,
-  mergeConflictDeltaKey,
-  mergeFieldLabel,
-  mergeFieldRoot,
-  mergeFieldSectionLabel,
-  mergeImpactText,
-  mergeStatusRank,
-  mergeStatusRecommendationKey,
 } from './teamAuditMergeModel'
 import {
   readStoredTeamStudentProfiles,
@@ -176,6 +176,8 @@ const ROLE_DESCRIPTION_KEYS: Record<TeamRole, string> = {
 
 const INVITABLE_ROLES = ['admin', 'member'] as const
 const TEAM_TABS: TeamSection[] = ['overview', 'applications', 'members', 'resources', 'discover', 'audit', 'settings']
+const EMPTY_TEACHER_GROUPS: TeamTeacherGroup[] = []
+const EMPTY_TRANSFER_REQUESTS: NonNullable<TeamSummary['transferRequests']> = []
 type HealthFilter = 'all' | ReturnType<typeof applicationHealth>
 const HEALTH_FILTERS: HealthFilter[] = ['all', 'risk', 'watch', 'steady', 'closed']
 type TeamMemberView = 'table' | 'map'
@@ -186,7 +188,28 @@ type StudentProfileFilter = 'all' | 'attention' | 'missing'
 type StudentProfileSort = 'attention' | 'name' | 'progress'
 type StudentProfileState = 'missing' | 'risk' | 'due' | 'feedback' | 'steady'
 type OwnerOverviewFocusKey = 'transfers' | 'risk' | 'resources' | 'students' | 'invites' | 'steady'
+type TeamPortraitViewTransition = {
+  finished: Promise<unknown>
+}
+type TeamPortraitViewTransitionDocument = Document & {
+  startViewTransition?: (update: () => void) => TeamPortraitViewTransition
+}
 const TEAM_DISCOVER_VIEW_KEY = 'phd-atlas-team-discover-view:v1'
+const TEAM_RELATION_INSPECTOR_WIDTH_KEY = 'phd-atlas-team-relation-inspector-width:v1'
+const TEAM_RELATION_INSPECTOR_DEFAULT_WIDTH = 360
+const TEAM_RELATION_INSPECTOR_MIN_WIDTH = 316
+const TEAM_RELATION_INSPECTOR_MAX_WIDTH = 520
+const TEAM_RELATION_INSPECTOR_CLOSE_WIDTH = 250
+const TEAM_RELATION_INSPECTOR_REVEAL_WIDTH = 48
+const TEAM_RELATION_INSPECTOR_DRAG_THRESHOLD = 3
+const TEAM_PORTRAIT_VIEW_TRANSITION_NAME = 'team-portrait-student-profile'
+
+function releaseTeamPortraitTransitionRoot(transitionToken: number) {
+  if (typeof document === 'undefined') return
+  const transitionRoot = document.documentElement
+  if (transitionRoot.dataset.teamPortraitTransitionToken !== String(transitionToken)) return
+  delete transitionRoot.dataset.teamPortraitTransitionToken
+}
 
 function storedTeamDiscoverView(): LibraryViewMode {
   try {
@@ -317,15 +340,158 @@ function TeamMemberAvatar({
   )
 }
 
+function TeamPortraitPresetTargetPicker({
+  rows,
+  targetUserId,
+  className = '',
+  align = 'start',
+  onSelect,
+  onWarm,
+}: {
+  rows: readonly StudentProfileRow[]
+  targetUserId?: string | null
+  className?: string
+  align?: 'start' | 'end'
+  onSelect: (studentUserId: string) => void
+  onWarm?: (studentUserId: string) => void
+}) {
+  const { tx, format } = useI18n()
+  const [query, setQuery] = useState('')
+  const searchId = useId()
+  const targetStudent = rows.find((row) => row.member.userId === targetUserId)
+    ?? rows.find((row) => Boolean(row.member.userId))
+    ?? null
+
+  if (!targetStudent?.member.userId) return null
+
+  const targetStudentName = memberDisplayName(targetStudent.member, tx('team.memberFallback'))
+  const normalizedQuery = query.trim().toLowerCase()
+  const visibleStudents = rows.filter((row) => {
+    if (!row.member.userId) return false
+    if (!normalizedQuery) return true
+    return [
+      memberDisplayName(row.member, ''),
+      memberEmail(row.member),
+    ].join(' ').toLowerCase().includes(normalizedQuery)
+  })
+
+  return (
+    <div className={`team-portrait-preset-target${className ? ` ${className}` : ''}`}>
+      <AnchoredPopover
+        triggerAriaLabel={`${tx('team.studentProfilePickerTitle')}: ${targetStudentName}`}
+        popoverAriaLabel={tx('team.studentProfilePickerTitle')}
+        triggerClassName="team-portrait-preset-target-trigger"
+        popoverClassName="team-portrait-preset-target-popover"
+        width={292}
+        estimatedHeight={390}
+        align={align}
+        onOpenChange={(open) => {
+          if (!open) setQuery('')
+        }}
+        trigger={(
+          <>
+            <span className="team-portrait-preset-target-label">
+              <UserRound size={14} aria-hidden="true" />
+              <span>
+                <small>{tx('team.studentProfilePickerEyebrow')}</small>
+                <strong>{tx('team.studentProfilePickerTitle')}</strong>
+              </span>
+            </span>
+            <TeamMemberAvatar member={targetStudent.member} className="team-portrait-preset-target-avatar" />
+            <span className="team-portrait-preset-target-copy">
+              <strong>{targetStudentName}</strong>
+              <em>{memberEmail(targetStudent.member) || tx('team.noLinkedEmail')}</em>
+            </span>
+            <ChevronDown size={13} aria-hidden="true" />
+          </>
+        )}
+      >
+        {(close) => (
+          <div className="team-portrait-preset-target-picker">
+            <div className="team-portrait-preset-target-picker-head">
+              <div>
+                <span className="eyebrow">{tx('team.studentProfilePickerEyebrow')}</span>
+                <strong>{tx('team.studentProfilePickerTitle')}</strong>
+              </div>
+              <span className="team-portrait-count">
+                {format(tx('team.studentProfilePickerCount'), { count: rows.length })}
+              </span>
+            </div>
+            <label className="search-field team-portrait-preset-target-search" htmlFor={searchId}>
+              <Search size={13} aria-hidden="true" />
+              <span className="sr-only">{tx('team.studentProfileSearchPlaceholder')}</span>
+              <input
+                id={searchId}
+                type="search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={tx('team.studentProfileSearchPlaceholder')}
+                data-popover-autofocus
+              />
+            </label>
+            <div
+              className="team-portrait-preset-target-options"
+              role="listbox"
+              aria-label={tx('team.studentProfilePickerTitle')}
+            >
+              {visibleStudents.length > 0 ? visibleStudents.map((row) => {
+                const studentUserId = row.member.userId!
+                const name = memberDisplayName(row.member, tx('team.memberFallback'))
+                const selected = studentUserId === targetStudent.member.userId
+                return (
+                  <button
+                    key={row.member.id}
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    onPointerEnter={() => onWarm?.(studentUserId)}
+                    onFocus={() => onWarm?.(studentUserId)}
+                    onClick={() => {
+                      onSelect(studentUserId)
+                      onWarm?.(studentUserId)
+                      setQuery('')
+                      close()
+                    }}
+                  >
+                    <TeamMemberAvatar member={row.member} className="team-portrait-preset-target-avatar" />
+                    <span>
+                      <strong>{name}</strong>
+                      <em>{memberEmail(row.member) || tx('team.noLinkedEmail')}</em>
+                    </span>
+                    {selected ? <Check size={13} aria-hidden="true" /> : null}
+                  </button>
+                )
+              }) : (
+                <div className="team-portrait-preset-target-empty">
+                  <Search size={16} aria-hidden="true" />
+                  <span>{tx('noResults')}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </AnchoredPopover>
+    </div>
+  )
+}
+
 function TeamTeacherAssignmentPicker({
   teachers,
   assignedTeacherUserIds,
   busy,
+  title,
+  description,
+  emptySelectionLabel,
+  ariaLabel,
   onCommit,
 }: {
   teachers: TeamMember[]
   assignedTeacherUserIds: readonly string[]
   busy: boolean
+  title?: string
+  description?: string
+  emptySelectionLabel?: string
+  ariaLabel?: string
   onCommit: (teacherUserIds: string[]) => void | boolean | Promise<void | boolean>
 }) {
   const { tx, format, lang } = useI18n()
@@ -355,9 +521,12 @@ function TeamTeacherAssignmentPicker({
         lang,
       )
     })
+  const pickerTitle = title ?? tx('team.collaborationTeachersLabel')
+  const pickerDescription = description ?? tx('team.relationshipQuickAssign')
+  const pickerAriaLabel = ariaLabel ?? tx('team.relationshipQuickAssign')
   const selectionLabel = assignedTeachers.length > 0
     ? format(tx('team.collaborationTeachersCount'), { count: assignedTeachers.length })
-    : tx('team.relationshipNoAdvisor')
+    : (emptySelectionLabel ?? tx('team.relationshipNoAdvisor'))
   const teacherNames = assignedTeachers
     .slice(0, 3)
     .map((teacher) => memberDisplayName(teacher, tx('team.memberFallback')))
@@ -365,8 +534,8 @@ function TeamTeacherAssignmentPicker({
 
   return (
     <AnchoredPopover
-      triggerAriaLabel={`${tx('team.relationshipQuickAssign')}: ${selectionLabel}`}
-      popoverAriaLabel={tx('team.relationshipQuickAssign')}
+      triggerAriaLabel={`${pickerAriaLabel}: ${selectionLabel}`}
+      popoverAriaLabel={pickerAriaLabel}
       triggerClassName={`team-teacher-picker-trigger${busy ? ' is-busy' : ''}`}
       popoverClassName="team-teacher-picker-popover-shell"
       width={360}
@@ -397,7 +566,7 @@ function TeamTeacherAssignmentPicker({
           </span>
           <span className="team-teacher-picker-trigger-copy">
             <strong>{selectionLabel}</strong>
-            <em>{teacherNames || tx('team.relationshipQuickAssign')}</em>
+            <em>{teacherNames || pickerDescription}</em>
           </span>
           {busy
             ? <LoaderCircle className="spin" size={15} aria-hidden="true" />
@@ -409,7 +578,7 @@ function TeamTeacherAssignmentPicker({
         <div className="team-teacher-picker-popover">
           <div className="team-teacher-picker-popover-head">
             <span>
-              <strong>{tx('team.collaborationTeachersLabel')}</strong>
+              <strong>{pickerTitle}</strong>
               <em>{selectionLabel}</em>
             </span>
             <button
@@ -640,6 +809,12 @@ export function TeamScreen({
   onOpenTeamDiscover?: (studentUserId: string) => void
 }) {
   const { tx, format, lang } = useI18n()
+  const notifyTeamSuccess = useCallback((notification: string) => {
+    onNotify?.(notification, 'success')
+  }, [onNotify])
+  const notifyTeamError = useCallback((notification: string) => {
+    onNotify?.(notification, 'error')
+  }, [onNotify])
   const teamContentLanguages = useMemo(
     () => contentLanguagesFromSettings({
       contentLanguagePrimary: session.user.settings.contentLanguagePrimary,
@@ -649,8 +824,6 @@ export function TeamScreen({
   )
   const [loading, setLoading] = useState(!initialSummary)
   const [summary, setSummary] = useState<TeamSummary | null>(initialSummary ?? null)
-  const [error, setError] = useState<string | null>(null)
-  const [message, setMessage] = useState<string | null>(null)
   const [internalActiveTab, setInternalActiveTab] = useState<TeamSection>('overview')
   const [teamQuery, setTeamQuery] = useState('')
   const [teamDiscoverQuery, setTeamDiscoverQuery] = useState('')
@@ -665,7 +838,7 @@ export function TeamScreen({
   const [teacherOverviewStudentId, setTeacherOverviewStudentId] = useState<string | null>(null)
   const [overviewMoreOpen, setOverviewMoreOpen] = useState(false)
   const [teacherQuickCreateOpen, setTeacherQuickCreateOpen] = useState(false)
-  const [memberView, setMemberView] = useState<TeamMemberView>('table')
+  const [memberView, setMemberView] = useState<TeamMemberView>('map')
   const [memberWorkspaceView, setMemberWorkspaceView] = useState<MemberWorkspaceView>('students')
   const [renderedMemberWorkspaceView, setRenderedMemberWorkspaceView] = useState<MemberWorkspaceView>('students')
   const [memberWorkspaceMotion, setMemberWorkspaceMotion] = useState<'idle' | 'exiting' | 'entering'>('idle')
@@ -679,6 +852,9 @@ export function TeamScreen({
   const [inviteMode, setInviteMode] = useState<'single' | 'bulk'>('single')
   const [bulkInviteText, setBulkInviteText] = useState('')
   const [bulkInviteBusy, setBulkInviteBusy] = useState(false)
+  const [bulkInviteFileName, setBulkInviteFileName] = useState('')
+  const [bulkInviteImportMessage, setBulkInviteImportMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null)
+  const bulkInviteFileInputRef = useRef<HTMLInputElement>(null)
   const [joinMethod, setJoinMethod] = useState<'invite' | 'code'>('code')
   const [joinCode, setJoinCode] = useState('')
   const [joinBusy, setJoinBusy] = useState(false)
@@ -697,21 +873,15 @@ export function TeamScreen({
   const [selectedTransferRequestId, setSelectedTransferRequestId] = useState<string | null>(null)
   const [selectedTransferTeacherId, setSelectedTransferTeacherId] = useState('')
   const [pendingRemove, setPendingRemove] = useState<TeamMember | null>(null)
-  const [pendingRestore, setPendingRestore] = useState<SystemEvent | null>(null)
-  const [restoreBusyId, setRestoreBusyId] = useState<string | null>(null)
-  const [mergePreview, setMergePreview] = useState<TeamMergePreview | null>(null)
-  const [mergePreviewEvent, setMergePreviewEvent] = useState<SystemEvent | null>(null)
-  const [mergeBusyId, setMergeBusyId] = useState<string | null>(null)
-  const [mergeApplyBusy, setMergeApplyBusy] = useState(false)
-  const [mergeConflictBusy, setMergeConflictBusy] = useState(false)
-  const [selectedMergeFields, setSelectedMergeFields] = useState<string[]>([])
-  const [auditExpanded, setAuditExpanded] = useState(false)
-  const [selectedAuditEventId, setSelectedAuditEventId] = useState<string | null>(null)
-  const [selectedAuditStudentId, setSelectedAuditStudentId] = useState('all')
   const [selectedRelationStudentId, setSelectedRelationStudentId] = useState<string | null>(null)
+  const [relationInspectorOpen, setRelationInspectorOpen] = useState(false)
+  const [relationInspectorWidth, setRelationInspectorWidth] = useState(storedTeamRelationInspectorWidth)
+  const [relationInspectorResizing, setRelationInspectorResizing] = useState(false)
   const [relationFocus, setRelationFocus] = useState<{ memberId: string; nonce: number } | null>(null)
   const [selectedResourceStudentId, setSelectedResourceStudentId] = useState<string | null>(null)
   const [displayedResourceStudentId, setDisplayedResourceStudentId] = useState<string | null>(null)
+  const [studentPortraitMobileDetailOpen, setStudentPortraitMobileDetailOpen] = useState(false)
+  const [presetTargetStudentId, setPresetTargetStudentId] = useState<string | null>(null)
   const [studentResourceQuery, setStudentResourceQuery] = useState('')
   const [studentProfileFilter, setStudentProfileFilter] = useState<StudentProfileFilter>('all')
   const [studentProfileSort, setStudentProfileSort] = useState<StudentProfileSort>('attention')
@@ -729,6 +899,7 @@ export function TeamScreen({
   const [studentAssetView, setStudentAssetView] = useState<LibraryViewMode>('cards')
   const [expandedStudentFamilyId, setExpandedStudentFamilyId] = useState<string | null>(null)
   const [studentSnippetPreset, setStudentSnippetPreset] = useState<TeamProfilePreset | null>(null)
+  const [studentSnippetTargetUserId, setStudentSnippetTargetUserId] = useState<string | null>(null)
   const [editingViewedStudentAssetId, setEditingViewedStudentAssetId] = useState<string | null>(null)
   const [enteredStudentAssetId, setEnteredStudentAssetId] = useState<string | null>(null)
   const [pendingViewedStudentAssetDelete, setPendingViewedStudentAssetDelete] = useState<ProfileAsset | null>(null)
@@ -773,7 +944,13 @@ export function TeamScreen({
   const studentPortraitListRef = useRef<HTMLDivElement | null>(null)
   const studentPortraitSelectionRef = useRef<HTMLSpanElement | null>(null)
   const studentPortraitRowRefs = useRef(new Map<string, HTMLButtonElement>())
+  const studentPortraitProfilePaneRef = useRef<HTMLElement | null>(null)
+  const studentPortraitMobileBackRef = useRef<HTMLButtonElement | null>(null)
+  const studentPortraitMobileReturnFocusRef = useRef<HTMLButtonElement | null>(null)
+  const studentPortraitMobileNavigationStartedRef = useRef(false)
   const studentPortraitSelectionMotionTimerRef = useRef<number | null>(null)
+  const studentPortraitProfileContentRef = useRef<HTMLDivElement | null>(null)
+  const studentPortraitViewTransitionTokenRef = useRef(0)
   const studentPortraitDossierScrollRef = useRef<HTMLDivElement | null>(null)
   const studentPortraitAssetCacheRef = useRef(new Map<string, ProfileAsset[]>())
   const studentPortraitAssetRequestRef = useRef(new Map<string, Promise<ProfileAsset[]>>())
@@ -781,6 +958,10 @@ export function TeamScreen({
   const relationCanvasRef = useRef<HTMLDivElement | null>(null)
   const relationCanvasStageRef = useRef<HTMLDivElement | null>(null)
   const relationZoomLabelRef = useRef<HTMLOutputElement | null>(null)
+  const relationBoardRef = useRef<HTMLDivElement | null>(null)
+  const relationInspectorResizeHandleRef = useRef<HTMLButtonElement | null>(null)
+  const relationInspectorResizeCleanupRef = useRef<(() => void) | null>(null)
+  const relationInspectorSettleFrameRef = useRef<number | null>(null)
   const relationZoomRef = useRef(1)
   const relationZoomCommitTimerRef = useRef<number | null>(null)
   const relationArrivalTimerRef = useRef<number | null>(null)
@@ -946,6 +1127,11 @@ export function TeamScreen({
   }, [finishStudentPortraitSelectionMotion])
 
   useEffect(() => () => {
+    const transitionToken = studentPortraitViewTransitionTokenRef.current
+    studentPortraitViewTransitionTokenRef.current += 1
+    releaseTeamPortraitTransitionRoot(transitionToken)
+    studentPortraitProfileContentRef.current?.classList.remove('is-native-handoff')
+    studentPortraitProfileContentRef.current?.style.removeProperty('view-transition-name')
     if (relationZoomCommitTimerRef.current !== null) {
       window.clearTimeout(relationZoomCommitTimerRef.current)
     }
@@ -954,6 +1140,10 @@ export function TeamScreen({
     }
     if (studentPortraitSelectionMotionTimerRef.current !== null) {
       window.clearTimeout(studentPortraitSelectionMotionTimerRef.current)
+    }
+    relationInspectorResizeCleanupRef.current?.()
+    if (relationInspectorSettleFrameRef.current !== null) {
+      window.cancelAnimationFrame(relationInspectorSettleFrameRef.current)
     }
     relationZoomAnimationRef.current?.cancel()
     studentFamilyLayoutAnimationsRef.current.forEach((animation) => animation.cancel())
@@ -1069,6 +1259,14 @@ export function TeamScreen({
     }
   }, [teamDiscoverView])
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(TEAM_RELATION_INSPECTOR_WIDTH_KEY, String(relationInspectorWidth))
+    } catch {
+      // A blocked storage backend should not affect the resizable relationship inspector.
+    }
+  }, [relationInspectorWidth])
+
   useLayoutEffect(() => {
     const beforeRects = pendingStudentFamilyLayoutFlipRef.current
     pendingStudentFamilyLayoutFlipRef.current = null
@@ -1148,6 +1346,13 @@ export function TeamScreen({
     else setMemberRevealStep(0)
   }, [displayedSection, activeTeamId])
 
+  useEffect(() => {
+    if (displayedSection === 'resources') return
+    setStudentPortraitMobileDetailOpen(false)
+    studentPortraitMobileReturnFocusRef.current = null
+    studentPortraitMobileNavigationStartedRef.current = false
+  }, [displayedSection])
+
   function changeTab(tab: TeamSection) {
     if (onSectionChange) {
       onSectionChange(tab)
@@ -1186,7 +1391,6 @@ export function TeamScreen({
       && activeTeamIdRef.current === requestTeamId
     const showSkeleton = !summary
     if (showSkeleton) setLoading(true)
-    setError(null)
     try {
       const result = await phdApi.myTeam(requestToken, requestTeamId)
       if (!isCurrentRequest()) return
@@ -1202,7 +1406,7 @@ export function TeamScreen({
         setNotificationGroups([])
       }
     } catch (err) {
-      if (isCurrentRequest()) setError(normalizeErrorMessage(err, lang))
+      if (isCurrentRequest()) notifyTeamError(normalizeErrorMessage(err, lang))
     } finally {
       if (showSkeleton && isCurrentRequest()) setLoading(false)
     }
@@ -1240,8 +1444,6 @@ export function TeamScreen({
     event.preventDefault()
     if (!summary || !viewerTeamMember || !canEditContactProfile || contactProfileBusy) return
     setContactProfileBusy(true)
-    setError(null)
-    setMessage(null)
     try {
       const saved = await phdApi.updateMyTeamContactProfile(
         session.token,
@@ -1259,10 +1461,10 @@ export function TeamScreen({
       } : current)
       setContactProfileDraft(teamContactProfileDraft(saved))
       setContactProfileOpen(false)
-      setMessage(tx('team.contactProfileSaved'))
+      notifyTeamSuccess(tx('team.contactProfileSaved'))
       await syncAfterMutation()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     } finally {
       setContactProfileBusy(false)
     }
@@ -1279,7 +1481,6 @@ export function TeamScreen({
     if (!summary || (viewerRole !== 'owner' && viewerRole !== 'admin')) return
     if (editingTeamPreset?.builtIn) return
     setTeamPresetBusy(true)
-    setError(null)
     try {
       const saved = editingTeamPreset
         ? await phdApi.updateTeamProfilePreset(session.token, summary.team.id, editingTeamPreset.id, value)
@@ -1287,11 +1488,11 @@ export function TeamScreen({
       updateVisibleTeamPresets(editingTeamPreset
         ? teamProfilePresets.map((preset) => preset.id === saved.id ? saved : preset)
         : [...teamProfilePresets, saved])
-      setMessage(tx(editingTeamPreset ? 'team.profilePresetUpdated' : 'team.profilePresetCreated'))
+      notifyTeamSuccess(tx(editingTeamPreset ? 'team.profilePresetUpdated' : 'team.profilePresetCreated'))
       setEditingTeamPresetId(null)
       void onChanged?.()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
       throw err
     } finally {
       setTeamPresetBusy(false)
@@ -1302,15 +1503,14 @@ export function TeamScreen({
     if (!summary || !pendingDeleteTeamPreset || teamPresetBusy) return
     if (pendingDeleteTeamPreset.builtIn) return
     setTeamPresetBusy(true)
-    setError(null)
     try {
       await phdApi.deleteTeamProfilePreset(session.token, summary.team.id, pendingDeleteTeamPreset.id)
       updateVisibleTeamPresets(teamProfilePresets.filter((preset) => preset.id !== pendingDeleteTeamPreset.id))
       setPendingDeleteTeamPreset(null)
-      setMessage(tx('team.profilePresetDeleted'))
+      notifyTeamSuccess(tx('team.profilePresetDeleted'))
       void onChanged?.()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     } finally {
       setTeamPresetBusy(false)
     }
@@ -1319,14 +1519,13 @@ export function TeamScreen({
   async function restoreTeamProfilePresets() {
     if (!summary || (viewerRole !== 'owner' && viewerRole !== 'admin') || teamPresetBusy) return
     setTeamPresetBusy(true)
-    setError(null)
     try {
       const presets = await phdApi.restoreTeamProfilePresets(session.token, summary.team.id)
       updateVisibleTeamPresets(presets)
-      setMessage(tx('team.profilePresetRestored'))
+      notifyTeamSuccess(tx('team.profilePresetRestored'))
       void onChanged?.()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     } finally {
       setTeamPresetBusy(false)
     }
@@ -1386,6 +1585,74 @@ export function TeamScreen({
     void loadStudentPortraitAssets(studentUserId).catch(() => undefined)
   }, [loadStudentPortraitAssets])
 
+  const commitStudentPortraitHandoff = useCallback((
+    studentUserId: string,
+    assets: ProfileAsset[],
+  ) => {
+    const previousStudentUserId = displayedResourceStudentIdRef.current
+    const commit = () => {
+      studentFamilyLayoutAnimationsRef.current.forEach((animation) => animation.cancel())
+      studentFamilyLayoutAnimationsRef.current = []
+      studentFamilyStackRefs.current.clear()
+      displayedResourceStudentIdRef.current = studentUserId
+      setDisplayedResourceStudentId(studentUserId)
+      setViewedStudentAssets(assets)
+      setViewedStudentAssetQuery('')
+      setExpandedStudentFamilyId(null)
+      setStudentSnippetPreset(null)
+      setEditingViewedStudentAssetId(null)
+      setEnteredStudentAssetId(null)
+      setPendingViewedStudentAssetDelete(null)
+      setStudentPortraitHandoffCycle((current) => current === 'a' ? 'b' : 'a')
+      setStudentPortraitStable(true)
+      setViewedStudentAssetsLoading(false)
+    }
+
+    const content = studentPortraitProfileContentRef.current
+    const transitionDocument = typeof document === 'undefined'
+      ? null
+      : document as TeamPortraitViewTransitionDocument
+    const transitionRoot = transitionDocument?.documentElement
+    const startViewTransition = transitionDocument?.startViewTransition
+    if (
+      !previousStudentUserId
+      || previousStudentUserId === studentUserId
+      || !content
+      || !transitionDocument
+      || !transitionRoot
+      || typeof startViewTransition !== 'function'
+      || getMotionDelay(190) === 0
+    ) {
+      commit()
+      return
+    }
+
+    const transitionToken = studentPortraitViewTransitionTokenRef.current + 1
+    studentPortraitViewTransitionTokenRef.current = transitionToken
+    content.classList.add('is-native-handoff')
+    content.style.setProperty('view-transition-name', TEAM_PORTRAIT_VIEW_TRANSITION_NAME)
+    transitionRoot.dataset.teamPortraitTransitionToken = String(transitionToken)
+
+    const clearTransitionOwner = () => {
+      if (studentPortraitViewTransitionTokenRef.current !== transitionToken) return
+      content.classList.remove('is-native-handoff')
+      content.style.removeProperty('view-transition-name')
+      releaseTeamPortraitTransitionRoot(transitionToken)
+    }
+
+    let committed = false
+    try {
+      const transition = startViewTransition.call(transitionDocument, () => {
+        committed = true
+        flushSync(commit)
+      })
+      void transition.finished.then(clearTransitionOwner, clearTransitionOwner)
+    } catch {
+      if (!committed) commit()
+      clearTransitionOwner()
+    }
+  }, [])
+
   const selectResourceStudent = useCallback((
     studentUserId: string | null | undefined,
     targetRow?: HTMLButtonElement | null,
@@ -1393,6 +1660,7 @@ export function TeamScreen({
     if (!studentUserId) return
     positionStudentPortraitSelection(studentUserId, targetRow)
     warmStudentPortraitAssets(studentUserId)
+    setPresetTargetStudentId(studentUserId)
     if (selectedResourceStudentIdRef.current === studentUserId) return
 
     selectedResourceStudentIdRef.current = studentUserId
@@ -1401,6 +1669,37 @@ export function TeamScreen({
       setSelectedResourceStudentId(studentUserId)
     })
   }, [positionStudentPortraitSelection, warmStudentPortraitAssets])
+
+  const openStudentPortraitMobileDetail = useCallback((
+    studentUserId: string | null | undefined,
+    targetRow?: HTMLButtonElement | null,
+  ) => {
+    if (!studentUserId) return
+    selectResourceStudent(studentUserId, targetRow)
+    if (
+      typeof window.matchMedia !== 'function'
+      || !window.matchMedia('(max-width: 820px)').matches
+    ) return
+
+    studentPortraitMobileReturnFocusRef.current = targetRow
+      ?? studentPortraitRowRefs.current.get(studentUserId)
+      ?? null
+    studentPortraitMobileNavigationStartedRef.current = true
+    setStudentPortraitMobileDetailOpen(true)
+    window.requestAnimationFrame(() => {
+      studentPortraitProfilePaneRef.current?.scrollIntoView?.({ block: 'start' })
+      studentPortraitMobileBackRef.current?.focus({ preventScroll: true })
+    })
+  }, [selectResourceStudent])
+
+  const closeStudentPortraitMobileDetail = useCallback(() => {
+    const returnTarget = studentPortraitMobileReturnFocusRef.current
+    setStudentPortraitMobileDetailOpen(false)
+    window.requestAnimationFrame(() => {
+      returnTarget?.scrollIntoView?.({ block: 'center', inline: 'nearest' })
+      returnTarget?.focus({ preventScroll: true })
+    })
+  }, [])
 
   const updateCachedStudentPortraitAssets = useCallback((
     studentUserId: string,
@@ -1420,15 +1719,25 @@ export function TeamScreen({
   }, [contactProfileOpen, viewerTeamMember])
 
   useEffect(() => {
+    const transitionToken = studentPortraitViewTransitionTokenRef.current
+    studentPortraitViewTransitionTokenRef.current += 1
+    releaseTeamPortraitTransitionRoot(transitionToken)
+    studentPortraitProfileContentRef.current?.classList.remove('is-native-handoff')
+    studentPortraitProfileContentRef.current?.style.removeProperty('view-transition-name')
     studentPortraitAssetCacheRef.current.clear()
     studentPortraitAssetRequestRef.current.clear()
     displayedResourceStudentIdRef.current = null
     setDisplayedResourceStudentId(null)
+    setPresetTargetStudentId(null)
     setViewedStudentAssets([])
     setViewedStudentAssetsLoading(false)
     setEnteredStudentAssetId(null)
     setStudentPortraitHandoffCycle(null)
     setStudentPortraitStable(false)
+    setStudentSnippetTargetUserId(null)
+    setStudentPortraitMobileDetailOpen(false)
+    studentPortraitMobileReturnFocusRef.current = null
+    studentPortraitMobileNavigationStartedRef.current = false
   }, [session.user.id, summary?.team.id])
 
   useEffect(() => {
@@ -1441,6 +1750,7 @@ export function TeamScreen({
       setViewedStudentAssetsLoading(false)
       setExpandedStudentFamilyId(null)
       setStudentSnippetPreset(null)
+      setStudentSnippetTargetUserId(null)
       setEditingViewedStudentAssetId(null)
       setEnteredStudentAssetId(null)
       setPendingViewedStudentAssetDelete(null)
@@ -1454,21 +1764,7 @@ export function TeamScreen({
     void loadStudentPortraitAssets(studentUserId)
       .then((assets) => {
         if (cancelled || selectedResourceStudentIdRef.current !== studentUserId) return
-        studentFamilyLayoutAnimationsRef.current.forEach((animation) => animation.cancel())
-        studentFamilyLayoutAnimationsRef.current = []
-        studentFamilyStackRefs.current.clear()
-        displayedResourceStudentIdRef.current = studentUserId
-        setDisplayedResourceStudentId(studentUserId)
-        setViewedStudentAssets(assets)
-        setViewedStudentAssetQuery('')
-        setExpandedStudentFamilyId(null)
-        setStudentSnippetPreset(null)
-        setEditingViewedStudentAssetId(null)
-        setEnteredStudentAssetId(null)
-        setPendingViewedStudentAssetDelete(null)
-        setStudentPortraitHandoffCycle((current) => current === 'a' ? 'b' : 'a')
-        setStudentPortraitStable(true)
-        setViewedStudentAssetsLoading(false)
+        commitStudentPortraitHandoff(studentUserId, assets)
       })
       .catch((err) => {
         if (cancelled || selectedResourceStudentIdRef.current !== studentUserId) return
@@ -1484,13 +1780,13 @@ export function TeamScreen({
           setStudentPortraitStable(true)
         }
         setViewedStudentAssetsLoading(false)
-        setError(normalizeErrorMessage(err, lang))
+        notifyTeamError(normalizeErrorMessage(err, lang))
       })
 
     return () => {
       cancelled = true
     }
-  }, [lang, loadStudentPortraitAssets, selectedResourceStudentId, summary?.team.id, viewerRole])
+  }, [commitStudentPortraitHandoff, lang, loadStudentPortraitAssets, notifyTeamError, selectedResourceStudentId, summary?.team.id, viewerRole])
 
   const teamProfilePresets = useMemo<TeamProfilePreset[]>(() => {
     if (summary?.team.profilePresets) return summary.team.profilePresets
@@ -1515,12 +1811,11 @@ export function TeamScreen({
 
   async function createSelectedStudentSnippet(input: ProfileAssetInput) {
     const teamId = summary?.team.id
-    const studentUserId = displayedResourceStudentId
+    const studentUserId = studentSnippetTargetUserId ?? displayedResourceStudentId
     const presetId = studentSnippetPreset?.id ?? 'student-snippet'
     if (!teamId || !studentUserId || applyingStudentPresetId) return
 
     setApplyingStudentPresetId(presetId)
-    setError(null)
     try {
       const created = await phdApi.addTeamMemberProfileAsset(
         session.token,
@@ -1537,11 +1832,13 @@ export function TeamScreen({
         setViewedStudentAssetQuery('')
         setViewedStudentAssets((items) => [created, ...items.filter((item) => item.id !== created.id)])
         setExpandedStudentFamilyId(profileAssetFamilyId(created))
+      } else {
+        selectResourceStudent(studentUserId)
       }
-      setMessage(tx('team.studentProfileSnippetAdded'))
+      notifyTeamSuccess(tx('team.studentProfileSnippetAdded'))
       void onChanged?.()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     } finally {
       setApplyingStudentPresetId(null)
     }
@@ -1550,9 +1847,8 @@ export function TeamScreen({
   function openSelectedStudentSnippet(asset: ProfileAsset) {
     if (deletingViewedStudentAssetId === asset.id) return
     void loadTeamSnippetEditorDialog().catch(() => undefined)
-    setError(null)
-    setMessage(null)
     setStudentSnippetPreset(null)
+    setStudentSnippetTargetUserId(null)
     setEditingViewedStudentAssetId(asset.id)
   }
 
@@ -1577,7 +1873,6 @@ export function TeamScreen({
     const studentUserId = displayedResourceStudentId
     if (!teamId || !studentUserId) return
 
-    setError(null)
     try {
       const updated = await phdApi.updateTeamMemberProfileAsset(
         session.token,
@@ -1593,10 +1888,10 @@ export function TeamScreen({
       if (displayedResourceStudentIdRef.current === studentUserId) {
         setViewedStudentAssets((items) => items.map((item) => item.id === updated.id ? updated : item))
       }
-      setMessage(tx('toast.profileAssetUpdated'))
+      notifyTeamSuccess(tx('toast.profileAssetUpdated'))
       void onChanged?.()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     }
   }
 
@@ -1608,7 +1903,6 @@ export function TeamScreen({
 
     setPendingViewedStudentAssetDelete(null)
     setDeletingViewedStudentAssetId(asset.id)
-    setError(null)
     try {
       await phdApi.deleteTeamMemberProfileAsset(
         session.token,
@@ -1624,22 +1918,28 @@ export function TeamScreen({
         setViewedStudentAssets((items) => items.filter((item) => item.id !== asset.id))
         setEditingViewedStudentAssetId((current) => current === asset.id ? null : current)
       }
-      setMessage(tx('toast.profileAssetDeleted'))
+      notifyTeamSuccess(tx('toast.profileAssetDeleted'))
       void onChanged?.()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     } finally {
       setDeletingViewedStudentAssetId(null)
     }
   }
 
-  const viewerTeacherPermissions = teamTeacherPermissions(summary?.membership?.relationships)
+  const viewerTeacherPermissions = teamTeacherPermissions(
+    summary?.membership?.relationships,
+    summary?.team.permissionDefaults,
+  )
   const canInvite = viewerRole === 'owner'
     || (viewerRole === 'admin' && viewerTeacherPermissions.inviteStudents)
-  const canDiscover = canUseTeamDiscover(viewerRole, summary?.membership)
+  const canDiscover = canUseTeamDiscover(
+    viewerRole,
+    summary?.membership,
+    summary?.team.permissionDefaults,
+  )
   const canRename = viewerRole === 'owner'
   const canManageLogo = viewerRole === 'owner'
-  const canRestore = viewerRole === 'owner'
   const invitableRoles = useMemo<Array<Exclude<TeamRole, 'owner'>>>(
     () => viewerRole === 'owner' ? [...INVITABLE_ROLES] : ['member'],
     [viewerRole],
@@ -1653,7 +1953,6 @@ export function TeamScreen({
         'members',
         'resources',
         ...(canDiscover ? ['discover' as const] : []),
-        'audit',
       ]
     }
     return TEAM_TABS
@@ -1694,6 +1993,10 @@ export function TeamScreen({
     }
     return map
   }, [summary])
+  const studentTeachersFor = useCallback(
+    (member: TeamMember) => teachersForStudent(member, membersByUserId),
+    [membersByUserId],
+  )
   const notificationMembers = useMemo(() => {
     const active = (summary?.members ?? []).filter((member) => member.status === 'active' && member.userId)
     if (viewerRole === 'owner') return active
@@ -1756,7 +2059,7 @@ export function TeamScreen({
     })
   }, [invitationTeachers, session.user.id])
 
-  const teacherGroups = summary?.team.teacherGroups ?? []
+  const teacherGroups = summary?.team.teacherGroups ?? EMPTY_TEACHER_GROUPS
   const activeTeacherGroup = selectedTeacherGroupId === 'all' || selectedTeacherGroupId === 'ungrouped'
     ? null
     : teacherGroups.find((group) => group.id === selectedTeacherGroupId) ?? null
@@ -1816,13 +2119,10 @@ export function TeamScreen({
   )
 
   useEffect(() => {
-    if (relationshipStudents.length === 0) {
-      if (selectedRelationStudentId) setSelectedRelationStudentId(null)
-      return
-    }
-    if (!selectedRelationStudentId || !relationshipStudents.some((student) => student.id === selectedRelationStudentId)) {
-      setSelectedRelationStudentId(relationshipStudents[0].id)
-    }
+    if (!selectedRelationStudentId) return
+    if (relationshipStudents.some((student) => student.id === selectedRelationStudentId)) return
+    setSelectedRelationStudentId(null)
+    setRelationInspectorOpen(false)
   }, [relationshipStudents, selectedRelationStudentId])
 
   const filteredApplications = useMemo(() => {
@@ -1931,7 +2231,7 @@ export function TeamScreen({
         })),
       }))
       .filter((group) => group.students.length > 0 || group.advisor)
-  }, [activeTab, filteredApplications, applicationsByOwner, membersByUserId, summary])
+  }, [activeTab, filteredApplications, applicationsByOwner, membersByUserId, studentTeachersFor, summary])
 
   useEffect(() => {
     if (!expandedAdvisorId && advisorGroups[0]) setExpandedAdvisorId(advisorGroups[0].id)
@@ -1960,67 +2260,6 @@ export function TeamScreen({
     }
     return map
   }, [activeTab, applications])
-  const auditVisibleOwnerIds = useMemo(() => {
-    if (viewerRole === 'owner') return null
-    if (viewerRole === 'member') return new Set([session.user.id])
-    if (viewerRole === 'admin') {
-      return new Set(relationshipStudents
-        .filter((student) => isTeacherAssignedToStudent(student, session.user.id))
-        .map((student) => student.userId)
-        .filter(Boolean) as string[])
-    }
-    return new Set<string>()
-  }, [relationshipStudents, session.user.id, viewerRole])
-  const auditStudents = useMemo(() => {
-    if (!summary) return []
-    return relationshipStudents.filter((student) => {
-      if (!student.userId) return false
-      if (viewerRole === 'owner') return true
-      return auditVisibleOwnerIds?.has(student.userId) ?? false
-    })
-  }, [auditVisibleOwnerIds, relationshipStudents, summary, viewerRole])
-  const auditStudentOptions = useMemo(() => [
-    {
-      value: 'all',
-      label: tx('team.gitStudentAll'),
-      description: format(tx('team.gitStudentAllDesc'), { count: auditStudents.length }),
-      disabled: viewerRole === 'member',
-    },
-    ...auditStudents.map((student) => ({
-      value: student.userId ?? student.id,
-      label: memberDisplayName(student, tx('team.unknownMember')),
-      description: format(tx('team.gitStudentDesc'), {
-        count: applicationCounts?.[student.userId ?? ''] ?? 0,
-      }),
-    })),
-  ], [applicationCounts, auditStudents, format, tx, viewerRole])
-
-  useEffect(() => {
-    if (viewerRole === 'member') {
-      if (selectedAuditStudentId !== session.user.id) setSelectedAuditStudentId(session.user.id)
-      return
-    }
-    if (selectedAuditStudentId !== 'all' && !auditStudents.some((student) => student.userId === selectedAuditStudentId)) {
-      setSelectedAuditStudentId('all')
-    }
-  }, [auditStudents, selectedAuditStudentId, session.user.id, viewerRole])
-
-  const canAccessAuditEvent = (event: SystemEvent) => {
-    if (viewerRole === 'owner') return true
-    const metadata = eventMetadata(event)
-    const ownerId = eventApplicationOwnerId(event) ?? (
-      metadata.applicationId ? applicationsById.get(metadata.applicationId)?.ownerId ?? null : null
-    )
-    return Boolean(ownerId && auditVisibleOwnerIds?.has(ownerId))
-  }
-  const canMutateAuditApplications = viewerRole === 'owner'
-    || (viewerRole === 'admin' && viewerTeacherPermissions.editStudentApplications)
-  const canPreviewMergeEvent = (event: SystemEvent) => (
-    canMutateAuditApplications && canMergeEvent(event, viewerRole) && canAccessAuditEvent(event)
-  )
-  const canRestoreAuditEvent = (event: SystemEvent) => (
-    canMutateAuditApplications && canRestoreEvent(event, viewerRole) && canAccessAuditEvent(event)
-  )
   const priorityApplications = useMemo(() => sortedTeamApplications
     .map((application) => ({
       application,
@@ -2030,7 +2269,7 @@ export function TeamScreen({
     .filter((item) => item.health === 'risk' || item.health === 'watch' || (item.due >= 0 && item.due <= 30))
     .slice(0, 6), [sortedTeamApplications])
   const pendingMembers = summary?.members.filter((member) => member.status === 'pending') ?? []
-  const pendingTransferRequests = summary?.transferRequests ?? []
+  const pendingTransferRequests = summary?.transferRequests ?? EMPTY_TRANSFER_REQUESTS
   const studentPendingTransferRequests = viewerRole === 'member'
     ? pendingTransferRequests.filter((request) => request.ownerId === session.user.id)
     : []
@@ -2175,8 +2414,17 @@ export function TeamScreen({
   const selectedResourceStudent = accessibleStudentProfileRows.find(
     (row) => row.member.userId === (displayedResourceStudentId ?? selectedResourceStudentId),
   ) ?? null
-  const selectedResourceStudentName = selectedResourceStudent
-    ? memberDisplayName(selectedResourceStudent.member, tx('team.memberFallback'))
+  const presetTargetStudent = accessibleStudentProfileRows.find(
+    (row) => row.member.userId === presetTargetStudentId,
+  ) ?? selectedResourceStudent ?? accessibleStudentProfileRows[0] ?? null
+  const studentSnippetTarget = accessibleStudentProfileRows.find(
+    (row) => row.member.userId === studentSnippetTargetUserId,
+  ) ?? null
+  const activeStudentSnippetEditorTarget = editingViewedStudentAsset
+    ? selectedResourceStudent
+    : studentSnippetTarget
+  const activeStudentSnippetEditorTargetName = activeStudentSnippetEditorTarget
+    ? memberDisplayName(activeStudentSnippetEditorTarget.member, tx('team.memberFallback'))
     : ''
 
   useEffect(() => {
@@ -2190,8 +2438,17 @@ export function TeamScreen({
     if (selectedResourceStudentId && !selectable.includes(selectedResourceStudentId)) {
       selectedResourceStudentIdRef.current = null
       setSelectedResourceStudentId(null)
+      setPresetTargetStudentId(selectable[0] ?? null)
     }
-  }, [accessibleStudentProfileRows, selectResourceStudent, selectedResourceStudentId])
+    if (presetTargetStudentId && !selectable.includes(presetTargetStudentId)) {
+      setPresetTargetStudentId(selectable[0] ?? null)
+    }
+  }, [
+    accessibleStudentProfileRows,
+    presetTargetStudentId,
+    selectResourceStudent,
+    selectedResourceStudentId,
+  ])
 
   useLayoutEffect(() => {
     positionStudentPortraitSelection(selectedResourceStudentId)
@@ -2357,12 +2614,10 @@ export function TeamScreen({
     event.preventDefault()
     if (!summary || !inviteEmail.trim()) return false
     if (inviteRole === 'member' && inviteTeacherIds.length === 0) {
-      setError(tx('team.inviteTeacherRequired'))
+      notifyTeamError(tx('team.inviteTeacherRequired'))
       return false
     }
     setInviteBusy(true)
-    setError(null)
-    setMessage(null)
     try {
       await phdApi.inviteTeamMember(
         session.token,
@@ -2371,58 +2626,44 @@ export function TeamScreen({
         inviteRole,
         inviteRole === 'member' ? inviteTeacherIds : [],
       )
-      setMessage(format(tx('team.inviteSent'), { email: inviteEmail.trim() }))
+      notifyTeamSuccess(format(tx('team.inviteSent'), { email: inviteEmail.trim() }))
       setInviteEmail('')
       await syncAfterMutation()
       return true
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
       return false
     } finally {
       setInviteBusy(false)
     }
   }
 
-  function parseBulkInviteLines(text: string) {
-    return text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const parts = line.split(/[,;\t]/).map((part) => part.trim()).filter(Boolean)
-        const email = (parts[0] ?? '').toLowerCase()
-        const roleRaw = (parts[1] ?? 'member').toLowerCase()
-        const role: Exclude<TeamRole, 'owner'> | null =
-          roleRaw === 'admin' || roleRaw === 'teacher' || roleRaw === 'counselor'
-            ? 'admin'
-            : roleRaw === 'member' || roleRaw === 'student'
-              ? 'member'
-              : null
-        return { line, email, role }
-      })
-  }
-
-  async function handleBulkInvite(event: FormEvent): Promise<boolean> {
+  async function handleBulkInvite(
+    event: FormEvent,
+    allowedRoles: readonly Exclude<TeamRole, 'owner'>[],
+  ): Promise<boolean> {
     event.preventDefault()
     if (!summary || !bulkInviteText.trim() || !canInvite) return false
-    const rows = parseBulkInviteLines(bulkInviteText)
-    if (rows.some((row) => row.role === 'member') && inviteTeacherIds.length === 0) {
-      setError(tx('team.inviteTeacherRequired'))
+    const preview = buildTeamBulkInvitePreview(
+      bulkInviteText,
+      invitationTeachers,
+      allowedRoles,
+    )
+    if (
+      preview.validRows.length === 0
+      || preview.invalidRows.length > 0
+      || preview.truncatedCount > 0
+    ) {
+      notifyTeamError(tx('team.bulkInviteResolveBeforeSubmit'))
       return false
     }
     setBulkInviteBusy(true)
-    setError(null)
-    setMessage(null)
     let sent = 0
     let failed = 0
     let skipped = 0
     try {
-      for (const row of rows) {
-        if (!row.email.includes('@') || !row.role) {
-          skipped += 1
-          continue
-        }
-        if (!invitableRoles.includes(row.role)) {
+      for (const row of preview.validRows) {
+        if (!row.role || !allowedRoles.includes(row.role)) {
           skipped += 1
           continue
         }
@@ -2432,25 +2673,92 @@ export function TeamScreen({
             summary.team.id,
             row.email,
             row.role,
-            row.role === 'member' ? inviteTeacherIds : [],
+            row.teacherMemberIds,
           )
           sent += 1
         } catch {
           failed += 1
         }
       }
-      setMessage(format(tx('team.bulkInviteResult'), { sent, failed, skipped }))
+      notifyTeamSuccess(format(tx('team.bulkInviteResult'), { sent, failed, skipped }))
       if (sent > 0) {
         setBulkInviteText('')
+        setBulkInviteFileName('')
+        setBulkInviteImportMessage(null)
         await syncAfterMutation()
       }
       return sent > 0
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
       return false
     } finally {
       setBulkInviteBusy(false)
     }
+  }
+
+  async function handleBulkInviteCsvChange(
+    event: ChangeEvent<HTMLInputElement>,
+    allowedRoles: readonly Exclude<TeamRole, 'owner'>[],
+  ) {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file) return
+    setBulkInviteFileName(file.name)
+    if (file.size > MAX_CSV_IMPORT_FILE_SIZE) {
+      setBulkInviteImportMessage({
+        tone: 'error',
+        text: format(tx('team.bulkInviteFileTooLarge'), {
+          size: Math.round(MAX_CSV_IMPORT_FILE_SIZE / (1024 * 1024)),
+        }),
+      })
+      return
+    }
+    try {
+      const contents = await file.text()
+      const preview = buildTeamBulkInvitePreview(
+        contents,
+        invitationTeachers,
+        allowedRoles,
+      )
+      if (preview.rows.length === 0) {
+        setBulkInviteImportMessage({ tone: 'error', text: tx('team.bulkInviteFileInvalid') })
+        return
+      }
+      setBulkInviteText(contents)
+      setBulkInviteImportMessage({
+        tone: 'success',
+        text: format(tx('team.bulkInviteImported'), { count: preview.rows.length }),
+      })
+    } catch {
+      setBulkInviteImportMessage({ tone: 'error', text: tx('team.bulkInviteFileInvalid') })
+    }
+  }
+
+  function downloadBulkInviteTemplate(
+    allowedRoles: readonly Exclude<TeamRole, 'owner'>[],
+  ) {
+    downloadCsvFile(
+      createTeamBulkInviteTemplate(invitationTeachers, allowedRoles),
+      tx('team.bulkInviteTemplateFilename'),
+    )
+  }
+
+  function bulkInviteIssueLabel(issue: TeamBulkInviteIssue) {
+    if (issue.code === 'invalid-email') return tx('team.bulkInviteIssueInvalidEmail')
+    if (issue.code === 'invalid-role') {
+      return format(tx('team.bulkInviteIssueInvalidRole'), { value: issue.value || '-' })
+    }
+    if (issue.code === 'unavailable-role') {
+      return format(tx('team.bulkInviteIssueUnavailableRole'), { value: issue.value || '-' })
+    }
+    if (issue.code === 'missing-teachers') return tx('team.bulkInviteIssueMissingTeachers')
+    if (issue.code === 'unknown-teacher') {
+      return format(tx('team.bulkInviteIssueUnknownTeacher'), { value: issue.value || '-' })
+    }
+    if (issue.code === 'ambiguous-teacher') {
+      return format(tx('team.bulkInviteIssueAmbiguousTeacher'), { value: issue.value || '-' })
+    }
+    return tx('team.bulkInviteIssueDuplicateEmail')
   }
 
   async function handleRedeemJoinCode(event: FormEvent) {
@@ -2458,15 +2766,13 @@ export function TeamScreen({
     const value = joinCode.trim()
     if (!value) return
     setJoinBusy(true)
-    setError(null)
-    setMessage(null)
     try {
       const result = await phdApi.redeemTeamJoinCode(session.token, value)
       setJoinCode('')
-      setMessage(format(tx('team.joinCodeJoined'), { team: result.team.name }))
+      notifyTeamSuccess(format(tx('team.joinCodeJoined'), { team: result.team.name }))
       await syncAfterMutation()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     } finally {
       setJoinBusy(false)
     }
@@ -2494,31 +2800,23 @@ export function TeamScreen({
   async function handleRoleChange(member: TeamMember, role: Exclude<TeamRole, 'owner'>) {
     if (!summary) return
     setRowBusyId(member.id)
-    setError(null)
-    setMessage(null)
     try {
       await phdApi.updateTeamMemberRole(session.token, summary.team.id, member.id, role)
-      setMessage(format(tx('team.roleUpdated'), {
+      notifyTeamSuccess(format(tx('team.roleUpdated'), {
         name: memberDisplayName(member, tx('team.memberFallback')),
         role: tx(ROLE_LABEL_KEYS[role]),
       }))
       await syncAfterMutation()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     } finally {
       setRowBusyId(null)
     }
   }
 
-  function studentTeachersFor(member: TeamMember) {
-    return teachersForStudent(member, membersByUserId)
-  }
-
   async function handleStudentTeachersChange(member: TeamMember, teacherMemberIds: string[]) {
     if (!summary || member.role !== 'member') return false
     setRowBusyId(member.id)
-    setError(null)
-    setMessage(null)
     try {
       await phdApi.updateTeamMemberAccess(
         session.token,
@@ -2526,13 +2824,13 @@ export function TeamScreen({
         member.id,
         { teacherIds: teacherMemberIds },
       )
-      setMessage(format(tx('team.relationshipUpdated'), {
+      notifyTeamSuccess(format(tx('team.relationshipUpdated'), {
         name: memberDisplayName(member, tx('team.memberFallback')),
       }))
       await syncAfterMutation()
       return true
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
       return false
     } finally {
       setRowBusyId(null)
@@ -2542,26 +2840,59 @@ export function TeamScreen({
   async function handleDelegatedAccessChange(
     member: TeamMember,
     patch: {
-      accessLevel?: 'pro' | 'standard'
-      studentProLimit?: number
-      studentPermissions?: Partial<TeamStudentPermissions>
-      teacherPermissions?: Partial<TeamTeacherPermissions>
+      studentPermissions?: Partial<TeamStudentPermissions> | null
+      teacherPermissions?: Partial<TeamTeacherPermissions> | null
     },
   ) {
     if (!summary) return
-    setRowBusyId(member.id)
-    setError(null)
-    setMessage(null)
     try {
-      await phdApi.updateTeamMemberAccess(session.token, summary.team.id, member.id, patch)
-      setMessage(format(tx('team.delegatedAccessUpdated'), {
+      const updated = await phdApi.updateTeamMemberAccess(
+        session.token,
+        summary.team.id,
+        member.id,
+        patch,
+      )
+      setSummary((current) => {
+        if (!current || current.team.id !== summary.team.id) return current
+        const mergeUpdatedMember = (candidate: TeamMember) => (
+          candidate.id === updated.id ? { ...candidate, ...updated } : candidate
+        )
+        return {
+          ...current,
+          members: current.members.map(mergeUpdatedMember),
+          membership: current.membership?.id === updated.id
+            ? mergeUpdatedMember(current.membership)
+            : current.membership,
+        }
+      })
+      notifyTeamSuccess(format(tx('team.delegatedAccessUpdated'), {
         name: memberDisplayName(member, tx('team.memberFallback')),
       }))
-      await syncAfterMutation()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
-    } finally {
-      setRowBusyId(null)
+      notifyTeamError(normalizeErrorMessage(err, lang))
+      throw err
+    }
+  }
+
+  async function handlePermissionDefaultsChange(patch: {
+    student?: Partial<TeamStudentPermissions>
+    teacher?: Partial<TeamTeacherPermissions>
+  }) {
+    if (!summary) return
+    try {
+      const updated = await phdApi.updateTeamPermissionDefaults(
+        session.token,
+        summary.team.id,
+        patch,
+      )
+      setSummary((current) => (
+        current?.team.id === updated.id
+          ? { ...current, team: { ...current.team, ...updated } }
+          : current
+      ))
+    } catch (err) {
+      notifyTeamError(normalizeErrorMessage(err, lang))
+      throw err
     }
   }
 
@@ -2895,17 +3226,16 @@ export function TeamScreen({
     const name = teacherGroupDraftName.trim()
     if (!summary || !name) return
     setTeacherGroupBusyId('create')
-    setError(null)
     try {
       const created = await phdApi.createTeamTeacherGroup(session.token, summary.team.id, { name })
       updateTeacherGroupsLocally([...teacherGroups, created])
       setSelectedTeacherGroupId(created.id)
       setTeacherGroupDraftName('')
       setTeacherGroupCreateOpen(false)
-      setMessage(format(tx('team.teacherGroupCreated'), { name: created.name }))
+      notifyTeamSuccess(format(tx('team.teacherGroupCreated'), { name: created.name }))
       void onChanged?.()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     } finally {
       setTeacherGroupBusyId(null)
     }
@@ -2915,7 +3245,6 @@ export function TeamScreen({
     const name = teacherGroupRenameDraft.trim()
     if (!summary || !activeTeacherGroup || !name || name === activeTeacherGroup.name) return
     setTeacherGroupBusyId(activeTeacherGroup.id)
-    setError(null)
     try {
       const updated = await phdApi.updateTeamTeacherGroup(
         session.token,
@@ -2924,10 +3253,10 @@ export function TeamScreen({
         { name },
       )
       updateTeacherGroupsLocally(teacherGroups.map((group) => group.id === updated.id ? updated : group))
-      setMessage(tx('team.teacherGroupSaved'))
+      notifyTeamSuccess(tx('team.teacherGroupSaved'))
       void onChanged?.()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     } finally {
       setTeacherGroupBusyId(null)
     }
@@ -2939,7 +3268,6 @@ export function TeamScreen({
       ? group.memberIds.filter((memberId) => memberId !== teacherMemberId)
       : [...group.memberIds, teacherMemberId]
     setTeacherGroupBusyId(group.id)
-    setError(null)
     try {
       const updated = await phdApi.updateTeamTeacherGroup(
         session.token,
@@ -2950,7 +3278,7 @@ export function TeamScreen({
       updateTeacherGroupsLocally(teacherGroups.map((item) => item.id === updated.id ? updated : item))
       void onChanged?.()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     } finally {
       setTeacherGroupBusyId(null)
     }
@@ -2960,16 +3288,15 @@ export function TeamScreen({
     if (!summary || !pendingTeacherGroupDelete) return
     const deleting = pendingTeacherGroupDelete
     setTeacherGroupBusyId(deleting.id)
-    setError(null)
     try {
       await phdApi.deleteTeamTeacherGroup(session.token, summary.team.id, deleting.id)
       updateTeacherGroupsLocally(teacherGroups.filter((group) => group.id !== deleting.id))
       setPendingTeacherGroupDelete(null)
       setSelectedTeacherGroupId('all')
-      setMessage(format(tx('team.teacherGroupDeleted'), { name: deleting.name }))
+      notifyTeamSuccess(format(tx('team.teacherGroupDeleted'), { name: deleting.name }))
       void onChanged?.()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     } finally {
       setTeacherGroupBusyId(null)
     }
@@ -2978,128 +3305,38 @@ export function TeamScreen({
   async function handleRemove() {
     if (!summary || !pendingRemove) return
     setRowBusyId(pendingRemove.id)
-    setError(null)
-    setMessage(null)
     try {
       await phdApi.removeTeamMember(session.token, summary.team.id, pendingRemove.id)
-      setMessage(format(tx('team.memberRemoved'), {
+      notifyTeamSuccess(format(tx('team.memberRemoved'), {
         name: memberDisplayName(pendingRemove, tx('team.memberFallback')),
       }))
       setPendingRemove(null)
       await syncAfterMutation()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     } finally {
       setRowBusyId(null)
-    }
-  }
-
-  async function handleRestoreEvent() {
-    if (!summary || !pendingRestore) return
-    setRestoreBusyId(pendingRestore.id)
-    setError(null)
-    setMessage(null)
-    try {
-      const result = await phdApi.restoreTeamEvent(session.token, summary.team.id, pendingRestore.id)
-      setPendingRestore(null)
-      setMessage(format(tx('team.restoreSucceeded'), { name: result.application.school.name }))
-      await syncAfterMutation()
-    } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
-    } finally {
-      setRestoreBusyId(null)
     }
   }
 
   async function handleTransferDecision(requestId: string, decision: 'approve' | 'reject', teacherMemberId?: string) {
     if (!summary) return
     setTransferBusyId(requestId)
-    setError(null)
-    setMessage(null)
     try {
       const result = decision === 'approve'
         ? await phdApi.approveTeamTransferRequest(session.token, summary.team.id, requestId, teacherMemberId)
         : await phdApi.rejectTeamTransferRequest(session.token, summary.team.id, requestId)
-      setMessage(format(
+      notifyTeamSuccess(format(
         tx(decision === 'approve' ? 'team.transferApproved' : 'team.transferRejected'),
         { name: result.school.name },
       ))
       setSelectedTransferTeacherId('')
       await syncAfterMutation()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     } finally {
       setTransferBusyId(null)
     }
-  }
-
-  async function handlePreviewMerge(event: SystemEvent) {
-    if (!summary) return
-    setMergeBusyId(event.id)
-    setSelectedAuditEventId(event.id)
-    setError(null)
-    setMessage(null)
-    try {
-      const preview = await phdApi.previewTeamEventMerge(session.token, summary.team.id, event.id)
-      setMergePreview(preview)
-      setMergePreviewEvent(event)
-      setSelectedMergeFields(preview.fields.filter((field) => field.status === 'clean').map((field) => field.field))
-    } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
-    } finally {
-      setMergeBusyId(null)
-    }
-  }
-
-  function clearMergePreview() {
-    setMergePreview(null)
-    setMergePreviewEvent(null)
-    setSelectedMergeFields([])
-  }
-
-  async function handleApplyMerge() {
-    if (!summary || !mergePreview) return
-    setMergeApplyBusy(true)
-    setError(null)
-    setMessage(null)
-    try {
-      const result = await phdApi.applyTeamEventMerge(session.token, summary.team.id, mergePreview.eventId, selectedMergeFields)
-      setMessage(format(tx('team.mergeSucceeded'), { count: result.changedFields.length, name: result.application.school.name }))
-      clearMergePreview()
-      await syncAfterMutation()
-    } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
-    } finally {
-      setMergeApplyBusy(false)
-    }
-  }
-
-  async function handleFlagMergeConflict() {
-    if (!summary || !mergePreview) return
-    setMergeConflictBusy(true)
-    setError(null)
-    setMessage(null)
-    try {
-      const result = await phdApi.flagTeamEventMergeConflict(session.token, summary.team.id, mergePreview.eventId)
-      setMessage(format(tx('team.mergeConflictFlagged'), {
-        count: result.conflictCount,
-        name: result.application.school.name,
-      }))
-      clearMergePreview()
-      await syncAfterMutation()
-    } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
-    } finally {
-      setMergeConflictBusy(false)
-    }
-  }
-
-  function toggleMergeField(field: string) {
-    setSelectedMergeFields((current) => (
-      current.includes(field)
-        ? current.filter((item) => item !== field)
-        : [...current, field]
-    ))
   }
 
   function openOrganizationSettingsSection(section: OrganizationSettingsSection) {
@@ -3120,25 +3357,23 @@ export function TeamScreen({
     if (!file || !summary || !canManageLogo || teamLogoBusy) return
 
     setTeamLogoBusy(true)
-    setError(null)
-    setMessage(null)
     try {
       const logoDataUrl = await normalizeTeamLogoFile(file)
       const updatedTeam = await phdApi.updateTeam(session.token, summary.team.id, { logoDataUrl })
       setSummary((current) => current && current.team.id === updatedTeam.id
         ? { ...current, team: { ...current.team, ...updatedTeam } }
         : current)
-      setMessage(tx('team.logoSaved'))
+      notifyTeamSuccess(tx('team.logoSaved'))
       await syncAfterMutation()
     } catch (err) {
       if (err instanceof TeamLogoError) {
-        setError(tx(err.reason === 'file-type'
+        notifyTeamError(tx(err.reason === 'file-type'
           ? 'team.logoFormatUnsupported'
           : err.reason === 'file-size'
             ? 'team.logoFileSize'
             : 'team.logoInvalidImage'))
       } else {
-        setError(normalizeErrorMessage(err, lang))
+        notifyTeamError(normalizeErrorMessage(err, lang))
       }
     } finally {
       setTeamLogoBusy(false)
@@ -3151,15 +3386,13 @@ export function TeamScreen({
       setTeamName(summary?.team.name ?? '')
       return
     }
-    setError(null)
-    setMessage(null)
     try {
       await phdApi.renameTeam(session.token, summary.team.id, teamName.trim())
       setRenaming(false)
-      setMessage(tx('team.renameSaved'))
+      notifyTeamSuccess(tx('team.renameSaved'))
       await syncAfterMutation()
     } catch (err) {
-      setError(normalizeErrorMessage(err, lang))
+      notifyTeamError(normalizeErrorMessage(err, lang))
     }
   }
 
@@ -3333,11 +3566,155 @@ export function TeamScreen({
     })
   }
 
+  function openRelationInspectorForStudent(studentId: string) {
+    setSelectedRelationStudentId(studentId)
+    setRelationInspectorOpen(true)
+  }
+
+  function closeRelationInspector(restoreHandleFocus = false) {
+    setRelationInspectorOpen(false)
+    if (!restoreHandleFocus) return
+    if (relationInspectorSettleFrameRef.current !== null) {
+      window.cancelAnimationFrame(relationInspectorSettleFrameRef.current)
+    }
+    relationInspectorSettleFrameRef.current = window.requestAnimationFrame(() => {
+      relationInspectorSettleFrameRef.current = null
+      const handle = relationInspectorResizeHandleRef.current
+      if (handle?.isConnected) handle.focus({ preventScroll: true })
+    })
+  }
+
+  function handleRelationInspectorResizeStart(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0 || !selectedRelationStudentId) return
+    const board = relationBoardRef.current
+    const handle = relationInspectorResizeHandleRef.current
+    if (!board || !handle) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    relationInspectorResizeCleanupRef.current?.()
+
+    const boardBounds = board.getBoundingClientRect()
+    const handleBounds = handle.getBoundingClientRect()
+    const grabOffset = event.clientX - handleBounds.left
+    const startClientX = event.clientX
+    const startOpen = relationInspectorOpen
+    const startWidth = relationInspectorWidth
+    const maximumWidth = Math.min(
+      TEAM_RELATION_INSPECTOR_MAX_WIDTH,
+      Math.max(TEAM_RELATION_INSPECTOR_MIN_WIDTH, boardBounds.width - 320),
+    )
+    let latestRawWidth = startOpen ? startWidth : 0
+    let moved = false
+    let revealed = startOpen
+
+    const paintWidth = (width: number) => {
+      board.style.setProperty(
+        '--team-relation-inspector-width',
+        `${Math.max(0, Math.min(maximumWidth, width))}px`,
+      )
+    }
+
+    const widthFromPointer = (clientX: number) => (
+      boardBounds.right - clientX + grabOffset - handleBounds.width
+    )
+
+    const cleanup = () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', finishResize)
+      window.removeEventListener('pointercancel', finishResize)
+      document.body.classList.remove('team-relation-inspector-resizing')
+      board.classList.remove('is-resizing')
+      if (relationInspectorResizeCleanupRef.current === cleanup) {
+        relationInspectorResizeCleanupRef.current = null
+      }
+    }
+
+    const handlePointerMove = (pointerEvent: PointerEvent) => {
+      pointerEvent.preventDefault()
+      if (!moved && Math.abs(pointerEvent.clientX - startClientX) < TEAM_RELATION_INSPECTOR_DRAG_THRESHOLD) {
+        return
+      }
+      moved = true
+      latestRawWidth = widthFromPointer(pointerEvent.clientX)
+      if (!revealed) {
+        if (latestRawWidth < TEAM_RELATION_INSPECTOR_REVEAL_WIDTH) return
+        revealed = true
+        board.classList.remove('is-inspector-closed')
+        board.classList.add('is-inspector-open')
+        setRelationInspectorOpen(true)
+      }
+      paintWidth(latestRawWidth)
+    }
+
+    const finishResize = () => {
+      cleanup()
+      setRelationInspectorResizing(false)
+
+      if (!moved) {
+        paintWidth(startWidth)
+        if (!startOpen) setRelationInspectorOpen(true)
+        return
+      }
+
+      if (!revealed || latestRawWidth < TEAM_RELATION_INSPECTOR_CLOSE_WIDTH) {
+        board.classList.remove('is-inspector-open')
+        board.classList.add('is-inspector-closed')
+        setRelationInspectorOpen(false)
+        if (relationInspectorSettleFrameRef.current !== null) {
+          window.cancelAnimationFrame(relationInspectorSettleFrameRef.current)
+        }
+        relationInspectorSettleFrameRef.current = window.requestAnimationFrame(() => {
+          relationInspectorSettleFrameRef.current = null
+          paintWidth(startWidth)
+        })
+        return
+      }
+
+      const settledWidth = Math.min(
+        maximumWidth,
+        Math.max(TEAM_RELATION_INSPECTOR_MIN_WIDTH, Math.round(latestRawWidth)),
+      )
+      paintWidth(settledWidth)
+      setRelationInspectorWidth(settledWidth)
+      setRelationInspectorOpen(true)
+    }
+
+    setRelationInspectorResizing(true)
+    board.classList.add('is-resizing')
+    document.body.classList.add('team-relation-inspector-resizing')
+    window.addEventListener('pointermove', handlePointerMove, { passive: false })
+    window.addEventListener('pointerup', finishResize)
+    window.addEventListener('pointercancel', finishResize)
+    relationInspectorResizeCleanupRef.current = cleanup
+  }
+
+  function handleRelationInspectorResizeKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    if (!selectedRelationStudentId) return
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      setRelationInspectorOpen((open) => !open)
+      return
+    }
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+    if (event.key === 'ArrowLeft') {
+      setRelationInspectorOpen(true)
+      setRelationInspectorWidth((width) => Math.min(TEAM_RELATION_INSPECTOR_MAX_WIDTH, width + 24))
+      return
+    }
+    if (!relationInspectorOpen || relationInspectorWidth <= TEAM_RELATION_INSPECTOR_MIN_WIDTH) {
+      closeRelationInspector()
+      return
+    }
+    setRelationInspectorWidth((width) => Math.max(TEAM_RELATION_INSPECTOR_MIN_WIDTH, width - 24))
+  }
+
   function focusMemberInRelationshipMap(member: TeamMember) {
     if ((member.role !== 'member' && member.role !== 'admin') || member.status !== 'active') return
     setMemberQuery('')
     setMemberStatusFilter('all')
-    if (member.role === 'member') setSelectedRelationStudentId(member.id)
+    if (member.role === 'member') openRelationInspectorForStudent(member.id)
     setRelationFocus({ memberId: member.id, nonce: Date.now() })
     setMemberView('map')
   }
@@ -3364,71 +3741,6 @@ export function TeamScreen({
     })
     return () => window.cancelAnimationFrame(frame)
   }, [memberView, relationFocus, renderedMemberWorkspaceView])
-
-  function openAuditContextMenu(event: ReactMouseEvent<HTMLElement>, auditEvent: SystemEvent) {
-    event.preventDefault()
-    const fields = changedFields(auditEvent)
-    const metadata = eventMetadata(auditEvent)
-    const restorable = canRestore && canRestoreAuditEvent(auditEvent)
-    const mergeable = canPreviewMergeEvent(auditEvent)
-    const humanFields = fields.map((field) => mergeFieldPath(field))
-    const summaryText = auditFieldSummary(fields, tx, format, lang)
-    const summary = [
-      localizeAuditMessage(auditEvent.message, tx),
-      `${auditActorLabel(auditEvent)} · ${eventTime(auditEvent.time, lang)} · ${localizeAuditScope(auditEvent.scope, tx)}`,
-      summaryText,
-    ].filter(Boolean).join('\n')
-    setContextMenu({
-      x: event.clientX,
-      y: event.clientY,
-      title: localizeAuditMessage(auditEvent.message, tx),
-      subtitle: eventTime(auditEvent.time, lang),
-      items: [
-        {
-          id: 'open-application',
-          label: tx('team.contextOpenRelatedApplication'),
-          icon: <FolderOpen size={14} aria-hidden="true" />,
-          disabled: !metadata.applicationId || !onOpenApplication,
-          onSelect: () => metadata.applicationId && onOpenApplication?.(metadata.applicationId),
-        },
-        {
-          id: 'open-application-new-page',
-          label: tx('explorer.openInNewPage'),
-          icon: <ExternalLink size={14} aria-hidden="true" />,
-          disabled: !metadata.applicationId || !onOpenApplicationInNewPage,
-          onSelect: () => metadata.applicationId && onOpenApplicationInNewPage?.(metadata.applicationId),
-        },
-        {
-          id: 'preview-merge',
-          label: tx('team.auditMergePreview'),
-          icon: <GitMerge size={14} aria-hidden="true" />,
-          disabled: !mergeable || mergeBusyId === auditEvent.id,
-          onSelect: () => handlePreviewMerge(auditEvent),
-        },
-        {
-          id: 'restore',
-          label: tx('team.auditRestore'),
-          icon: <RotateCcw size={14} aria-hidden="true" />,
-          disabled: !restorable || restoreBusyId === auditEvent.id,
-          onSelect: () => setPendingRestore(auditEvent),
-        },
-        {
-          id: 'copy-summary',
-          label: tx('explorer.copySummary'),
-          icon: <Copy size={14} aria-hidden="true" />,
-          disabled: !onCopy,
-          onSelect: () => onCopy?.(summary, tx('team.copyAuditSummaryLabel')),
-        },
-        {
-          id: 'copy-fields',
-          label: tx('team.contextCopyChangedFields'),
-          icon: <Copy size={14} aria-hidden="true" />,
-          disabled: fields.length === 0 || !onCopy,
-          onSelect: () => onCopy?.(humanFields.join(', '), tx('team.changedFields')),
-        },
-      ],
-    })
-  }
 
   function renderRelationshipControls(member: TeamMember) {
     if (member.role === 'member') {
@@ -3548,305 +3860,17 @@ export function TeamScreen({
         )
       : member.role === 'admin' && viewerRole === 'owner'
     if (!canEdit) return null
-    const accessLevel = member.relationships?.accessLevel === 'standard' ? 'standard' : 'pro'
-    const studentProLimit = Number.isInteger(member.relationships?.studentProLimit)
-      ? member.relationships!.studentProLimit!
-      : 100
-    const studentPermissions = teamStudentPermissions(member.relationships)
-    const teacherPermissions = teamTeacherPermissions(member.relationships)
-    const busy = rowBusyId === member.id
-    const studentUsage = member.relationships?.usage ?? { applicationsCreated: 0, sharesCreated: 0 }
     const studentStats = summary?.memberStats?.[member.id]
-    const studentPermissionRows: Array<{
-      key: keyof Pick<TeamStudentPermissions,
-        | 'editApplications'
-        | 'createApplications'
-        | 'useDiscover'
-        | 'createShareLinks'
-        | 'requestTeamTransfers'>
-      title: string
-      description: string
-      icon: typeof Pencil
-    }> = [
-      {
-        key: 'editApplications',
-        title: tx('team.permissionStudentEditTitle'),
-        description: tx('team.permissionStudentEditDesc'),
-        icon: Pencil,
-      },
-      {
-        key: 'createApplications',
-        title: tx('team.permissionStudentCreateTitle'),
-        description: tx('team.permissionStudentCreateDesc'),
-        icon: Plus,
-      },
-      {
-        key: 'useDiscover',
-        title: tx('team.permissionStudentDiscoverTitle'),
-        description: tx('team.permissionStudentDiscoverDesc'),
-        icon: Compass,
-      },
-      {
-        key: 'createShareLinks',
-        title: tx('team.permissionStudentShareTitle'),
-        description: tx('team.permissionStudentShareDesc'),
-        icon: ExternalLink,
-      },
-      {
-        key: 'requestTeamTransfers',
-        title: tx('team.permissionStudentTransferTitle'),
-        description: tx('team.permissionStudentTransferDesc'),
-        icon: GitMerge,
-      },
-    ]
-    const teacherPermissionRows: Array<{
-      key: keyof TeamTeacherPermissions
-      title: string
-      description: string
-      icon: typeof Pencil
-    }> = [
-      {
-        key: 'inviteStudents',
-        title: tx('team.permissionTeacherInviteTitle'),
-        description: tx('team.permissionTeacherInviteDesc'),
-        icon: UserPlus,
-      },
-      {
-        key: 'manageStudentPermissions',
-        title: tx('team.permissionTeacherStudentPermissionsTitle'),
-        description: tx('team.permissionTeacherStudentPermissionsDesc'),
-        icon: ShieldCheck,
-      },
-      {
-        key: 'useDiscover',
-        title: tx('team.permissionTeacherDiscoverTitle'),
-        description: tx('team.permissionTeacherDiscoverDesc'),
-        icon: Compass,
-      },
-      {
-        key: 'createStudentApplications',
-        title: tx('team.permissionTeacherCreateTitle'),
-        description: tx('team.permissionTeacherCreateDesc'),
-        icon: Plus,
-      },
-      {
-        key: 'editStudentApplications',
-        title: tx('team.permissionTeacherEditTitle'),
-        description: tx('team.permissionTeacherEditDesc'),
-        icon: Pencil,
-      },
-      {
-        key: 'manageStudentShares',
-        title: tx('team.permissionTeacherShareTitle'),
-        description: tx('team.permissionTeacherShareDesc'),
-        icon: ExternalLink,
-      },
-    ]
-    const limitRows: Array<{
-      key: keyof Pick<TeamStudentPermissions,
-        | 'activeApplicationLimit'
-        | 'lifetimeApplicationLimit'
-        | 'activeShareLimit'
-        | 'lifetimeShareLimit'>
-      title: string
-      description: string
-      defaultValue: number
-      used: number
-    }> = [
-      {
-        key: 'activeApplicationLimit',
-        title: tx('team.permissionStudentActiveApplicationLimitTitle'),
-        description: tx('team.permissionStudentActiveApplicationLimitDesc'),
-        defaultValue: 10,
-        used: studentStats?.applicationCount ?? 0,
-      },
-      {
-        key: 'lifetimeApplicationLimit',
-        title: tx('team.permissionStudentLifetimeApplicationLimitTitle'),
-        description: tx('team.permissionStudentLifetimeApplicationLimitDesc'),
-        defaultValue: 50,
-        used: studentUsage.applicationsCreated,
-      },
-      {
-        key: 'activeShareLimit',
-        title: tx('team.permissionStudentActiveShareLimitTitle'),
-        description: tx('team.permissionStudentActiveShareLimitDesc'),
-        defaultValue: 10,
-        used: studentStats?.studentActiveShareCount ?? 0,
-      },
-      {
-        key: 'lifetimeShareLimit',
-        title: tx('team.permissionStudentLifetimeShareLimitTitle'),
-        description: tx('team.permissionStudentLifetimeShareLimitDesc'),
-        defaultValue: 100,
-        used: studentUsage.sharesCreated,
-      },
-    ]
-    const permissionSwitch = (
-      enabled: boolean,
-      label: string,
-      onChange: () => void,
-    ) => (
-      <button
-        type="button"
-        className={`team-permission-switch${enabled ? ' enabled' : ''}`}
-        role="switch"
-        aria-checked={enabled}
-        aria-label={label}
-        disabled={busy}
-        onClick={onChange}
-      >
-        <span aria-hidden="true" />
-      </button>
-    )
     return (
-      <section className={`team-permission-editor role-${member.role}${busy ? ' is-saving' : ''}`}>
-        <header className="team-permission-editor-head">
-          <span className="team-permission-editor-icon"><ShieldCheck size={15} aria-hidden="true" /></span>
-          <div>
-            <strong>{tx(member.role === 'admin'
-              ? 'team.permissionTeacherTitle'
-              : 'team.permissionStudentTitle')}</strong>
-            <p>{tx(member.role === 'admin'
-              ? 'team.permissionTeacherDesc'
-              : 'team.permissionStudentDesc')}</p>
-          </div>
-          <span className="team-permission-save-state" aria-live="polite">
-            {busy ? <><LoaderCircle size={12} className="spin" aria-hidden="true" /> {tx('working')}</> : tx('team.permissionSaved')}
-          </span>
-        </header>
-
-        <div className="team-permission-list">
-          {(member.role === 'member' ? studentPermissionRows : teacherPermissionRows).map((permission) => {
-            const enabled = member.role === 'member'
-              ? studentPermissions[permission.key as keyof typeof studentPermissions] === true
-              : teacherPermissions[permission.key as keyof typeof teacherPermissions] === true
-            const Icon = permission.icon
-            return (
-              <div key={permission.key} className="team-permission-row">
-                <span className="team-permission-row-icon"><Icon size={14} aria-hidden="true" /></span>
-                <span className="team-permission-row-copy">
-                  <strong>{permission.title}</strong>
-                  <small>{permission.description}</small>
-                </span>
-                {permissionSwitch(enabled, permission.title, () => {
-                  if (member.role === 'member') {
-                    void handleDelegatedAccessChange(member, {
-                      studentPermissions: { [permission.key]: !enabled },
-                    })
-                  } else {
-                    void handleDelegatedAccessChange(member, {
-                      teacherPermissions: { [permission.key]: !enabled },
-                    })
-                  }
-                })}
-              </div>
-            )
-          })}
-        </div>
-
-        {member.role === 'member' ? (
-          <div className="team-permission-limit-list">
-            <div className="team-permission-section-label">
-              <span>{tx('team.permissionLimitsTitle')}</span>
-              <em>{tx('team.permissionLimitsOptional')}</em>
-            </div>
-            {limitRows.map((limit) => {
-              const value = studentPermissions[limit.key]
-              const enabled = typeof value === 'number'
-              return (
-                <div key={limit.key} className={`team-permission-limit-row${enabled ? ' enabled' : ''}`}>
-                  <div className="team-permission-limit-summary">
-                    <span className="team-permission-row-copy">
-                      <strong>{limit.title}</strong>
-                      <small>{limit.description}</small>
-                    </span>
-                    <span className="team-permission-limit-usage">
-                      {format(tx('team.permissionLimitUsage'), { count: limit.used })}
-                    </span>
-                    {permissionSwitch(enabled, limit.title, () => {
-                      void handleDelegatedAccessChange(member, {
-                        studentPermissions: {
-                          [limit.key]: enabled ? null : Math.max(limit.defaultValue, limit.used + 1),
-                        },
-                      })
-                    })}
-                  </div>
-                  <CollapsiblePanel
-                    open={enabled}
-                    keepMounted
-                    className="team-permission-limit-field"
-                    innerClassName="team-permission-limit-field-inner"
-                    openMs={240}
-                    closeMs={180}
-                  >
-                    <label>
-                      <span>{tx('team.permissionMaximumAllowed')}</span>
-                      <input
-                        key={`${limit.key}:${value ?? 'off'}`}
-                        type="number"
-                        min={1}
-                        max={10_000}
-                        defaultValue={value ?? limit.defaultValue}
-                        disabled={busy}
-                        onBlur={(event) => {
-                          const next = Math.max(1, Math.min(10_000, Number.parseInt(event.currentTarget.value, 10) || 1))
-                          event.currentTarget.value = String(next)
-                          if (next !== value) {
-                            void handleDelegatedAccessChange(member, {
-                              studentPermissions: { [limit.key]: next },
-                            })
-                          }
-                        }}
-                      />
-                    </label>
-                  </CollapsiblePanel>
-                </div>
-              )
-            })}
-          </div>
-        ) : null}
-
-        <footer className="team-permission-entitlement">
-          <div>
-            <strong>{tx('team.permissionPlanTitle')}</strong>
-            <small>{tx('team.permissionPlanDesc')}</small>
-          </div>
-          <div className="team-access-segment" role="group" aria-label={tx('team.delegatedAccessTitle')}>
-            {(['pro', 'standard'] as const).map((level) => (
-              <button
-                key={level}
-                type="button"
-                className={accessLevel === level ? 'selected' : ''}
-                aria-pressed={accessLevel === level}
-                disabled={busy}
-                onClick={() => {
-                  if (accessLevel !== level) void handleDelegatedAccessChange(member, { accessLevel: level })
-                }}
-              >
-                {tx(level === 'pro' ? 'team.delegatedAccessPro' : 'team.delegatedAccessStandard')}
-              </button>
-            ))}
-          </div>
-          {member.role === 'admin' ? (
-            <label className="team-student-pro-limit">
-              <span>{tx('team.teacherStudentProLimit')}</span>
-              <input
-                type="number"
-                min={0}
-                max={100}
-                defaultValue={studentProLimit}
-                disabled={busy}
-                onBlur={(event) => {
-                  const next = Math.max(0, Math.min(100, Number.parseInt(event.currentTarget.value, 10) || 0))
-                  event.currentTarget.value = String(next)
-                  if (next !== studentProLimit) void handleDelegatedAccessChange(member, { studentProLimit: next })
-                }}
-              />
-            </label>
-          ) : null}
-        </footer>
-      </section>
+      <TeamMemberPermissionEditor
+        role={member.role as 'member' | 'admin'}
+        relationships={member.relationships}
+        defaults={summary?.team.permissionDefaults}
+        usage={member.relationships?.usage}
+        activeApplications={studentStats?.applicationCount}
+        activeShares={studentStats?.studentActiveShareCount}
+        onSave={(patch) => handleDelegatedAccessChange(member, patch)}
+      />
     )
   }
 
@@ -3929,12 +3953,14 @@ export function TeamScreen({
         data-relation-member-id={student.id}
         className={`team-relation-node student ${compact ? 'compact' : ''} ${selected ? 'selected' : ''}${dragging ? ' is-dragging' : ''}${canDrag ? ' is-draggable' : ''}${rowBusyId === student.id ? ' is-updating' : ''}${arriving ? ` is-arriving mode-${relationArrival.mode}` : ''}`}
         aria-pressed={selected}
+        aria-controls="team-relation-inspector"
+        aria-expanded={selected && relationInspectorOpen}
         aria-busy={rowBusyId === student.id || undefined}
         aria-haspopup="menu"
         draggable={canDrag}
-        onClick={() => setSelectedRelationStudentId(student.id)}
+        onClick={() => openRelationInspectorForStudent(student.id)}
         onContextMenu={(event) => {
-          setSelectedRelationStudentId(student.id)
+          openRelationInspectorForStudent(student.id)
           openMemberContextMenu(event, student)
         }}
         onKeyDown={(event) => openMemberContextMenuFromKeyboard(event, student)}
@@ -3978,6 +4004,11 @@ export function TeamScreen({
   }
 
   function renderInviteTeacherPicker() {
+    const assignedTeacherUserIds = invitationTeachers
+      .filter((teacher) => inviteTeacherIds.includes(teacher.id))
+      .map((teacher) => teacher.userId)
+      .filter((teacherUserId): teacherUserId is string => Boolean(teacherUserId))
+
     return (
       <div className="team-invite-teacher-picker">
         <div>
@@ -3985,26 +4016,24 @@ export function TeamScreen({
           <p>{tx('team.inviteTeacherAssignmentDescription')}</p>
         </div>
         {invitationTeachers.length > 0 ? (
-          <div className="team-invite-teacher-options">
-            {invitationTeachers.map((teacher) => {
-              const selected = inviteTeacherIds.includes(teacher.id)
-              return (
-                <button
-                  key={teacher.id}
-                  type="button"
-                  className={selected ? 'selected' : ''}
-                  aria-pressed={selected}
-                  onClick={() => setInviteTeacherIds((current) => current.includes(teacher.id)
-                    ? current.filter((id) => id !== teacher.id)
-                    : [...current, teacher.id])}
-                >
-                  <TeamMemberAvatar member={teacher} />
-                  <span>{memberDisplayName(teacher, tx('team.memberFallback'))}</span>
-                  {selected ? <Check size={12} aria-hidden="true" /> : null}
-                </button>
-              )
-            })}
-          </div>
+          <TeamTeacherAssignmentPicker
+            teachers={invitationTeachers}
+            assignedTeacherUserIds={assignedTeacherUserIds}
+            busy={inviteBusy || bulkInviteBusy}
+            title={tx('team.inviteTeacherAssignment')}
+            description={tx('team.inviteTeacherAssignmentDescription')}
+            emptySelectionLabel={tx('team.inviteTeacherRequired')}
+            ariaLabel={tx('team.inviteTeacherAssignment')}
+            onCommit={(teacherUserIds) => {
+              const selectedUserIds = new Set(teacherUserIds)
+              setInviteTeacherIds(invitationTeachers
+                .filter((teacher) => Boolean(
+                  teacher.userId && selectedUserIds.has(teacher.userId),
+                ))
+                .map((teacher) => teacher.id))
+              return true
+            }}
+          />
         ) : (
           <p className="team-invite-teacher-empty">{tx('team.joinCodeNoTeachers')}</p>
         )}
@@ -4014,6 +4043,12 @@ export function TeamScreen({
 
   function renderInvitePopover(close: () => void, teacherOnly = false) {
     const roles = teacherOnly ? (['member'] as const) : invitableRoles
+    const preview = buildTeamBulkInvitePreview(bulkInviteText, invitationTeachers, roles)
+    const previewRows = preview.rows.slice(0, 6)
+    const remainingPreviewRows = Math.max(0, preview.rows.length - previewRows.length)
+    const bulkInviteReady = preview.validRows.length > 0
+      && preview.invalidRows.length === 0
+      && preview.truncatedCount === 0
     return (
       <div className="team-invite-popover">
         <div className="team-invite-popover-head">
@@ -4041,8 +4076,6 @@ export function TeamScreen({
           </div>
         </div>
 
-        {(inviteMode === 'bulk' || inviteRole === 'member') ? renderInviteTeacherPicker() : null}
-
         {inviteMode === 'single' ? (
           <form
             className="team-invite-popover-form"
@@ -4051,46 +4084,59 @@ export function TeamScreen({
               if (ok) close()
             }}
           >
-            <label className="team-field">
-              <span>{tx('team.inviteEmailLabel')}</span>
-              <input
-                type="email"
-                required
-                autoFocus
-                value={inviteEmail}
-                onChange={(event) => setInviteEmail(event.target.value)}
-                placeholder={tx('team.inviteEmailPlaceholder')}
-                disabled={inviteBusy || seatFull}
-              />
-            </label>
-            {!teacherOnly ? (
+            <div className="team-invite-popover-body">
+              {inviteRole === 'member' ? renderInviteTeacherPicker() : null}
               <label className="team-field">
-                <span>{tx('team.inviteRoleLabel')}</span>
-                <Select
-                  size="small"
-                  value={inviteRole}
-                  options={roles.map((role) => ({
-                    value: role,
-                    label: labelForRole(role),
-                    description: tx(ROLE_DESCRIPTION_KEYS[role]),
-                  }))}
+                <span>{tx('team.inviteEmailLabel')}</span>
+                <input
+                  type="email"
+                  required
+                  autoFocus
+                  value={inviteEmail}
+                  onChange={(event) => setInviteEmail(event.target.value)}
+                  placeholder={tx('team.inviteEmailPlaceholder')}
                   disabled={inviteBusy || seatFull}
-                  ariaLabel={tx('team.inviteRoleLabel')}
-                  onChange={(role) => setInviteRole(role as Exclude<TeamRole, 'owner'>)}
                 />
               </label>
-            ) : (
-              <input type="hidden" value="member" readOnly />
-            )}
+              {!teacherOnly ? (
+                <label className="team-field">
+                  <span>{tx('team.inviteRoleLabel')}</span>
+                  <Select
+                    size="small"
+                    value={inviteRole}
+                    options={roles.map((role) => ({
+                      value: role,
+                      label: labelForRole(role),
+                      description: tx(ROLE_DESCRIPTION_KEYS[role]),
+                    }))}
+                    disabled={inviteBusy || seatFull}
+                    ariaLabel={tx('team.inviteRoleLabel')}
+                    onChange={(role) => setInviteRole(role as Exclude<TeamRole, 'owner'>)}
+                  />
+                </label>
+              ) : (
+                <input type="hidden" value="member" readOnly />
+              )}
+              {seatFull ? (
+                <div className="team-inline-warning" role="alert">
+                  <AlertTriangle size={14} aria-hidden="true" />
+                  {tx('team.seatLimitReached')}
+                </div>
+              ) : null}
+            </div>
             <div className="team-invite-popover-actions">
               <button type="button" className="quiet-action" onClick={close}>{tx('cancel')}</button>
               <button
                 type="submit"
                 className="primary-action"
                 disabled={inviteBusy || seatFull || !inviteEmail.trim() || (inviteRole === 'member' && inviteTeacherIds.length === 0)}
+                aria-busy={inviteBusy || undefined}
               >
-                <Mail size={13} aria-hidden="true" />
-                {inviteBusy ? tx('working') : tx('team.inviteSubmit')}
+                {inviteBusy ? (
+                  <PendingLabel label={tx('working')} />
+                ) : (
+                  <><Mail size={13} aria-hidden="true" /> {tx('team.inviteSubmit')}</>
+                )}
               </button>
             </div>
           </form>
@@ -4098,19 +4144,132 @@ export function TeamScreen({
           <form
             className="team-invite-popover-form"
             onSubmit={async (event) => {
-              const ok = await handleBulkInvite(event)
+              const ok = await handleBulkInvite(event, roles)
               if (ok) close()
             }}
           >
-            <p className="team-panel-note">{tx('team.bulkInviteDesc')}</p>
-            <textarea
-              className="team-bulk-invite-input"
-              value={bulkInviteText}
-              onChange={(event) => setBulkInviteText(event.target.value)}
-              placeholder={tx('team.bulkInvitePlaceholder')}
-              rows={5}
-              disabled={bulkInviteBusy || seatFull}
-            />
+            <div className="team-invite-popover-body">
+              <p className="team-panel-note">{tx('team.bulkInviteDesc')}</p>
+              <div className="team-bulk-invite-workspace">
+                <div className="team-bulk-invite-toolbar">
+                  <span>
+                    <strong>{tx('team.bulkInviteDataLabel')}</strong>
+                    <small>{tx('team.bulkInviteDataHint')}</small>
+                  </span>
+                  <div className="team-bulk-invite-toolbar-actions">
+                    <input
+                      ref={bulkInviteFileInputRef}
+                      className="sr-only"
+                      type="file"
+                      accept=".csv,text/csv"
+                      tabIndex={-1}
+                      onChange={(event) => void handleBulkInviteCsvChange(event, roles)}
+                    />
+                    <button
+                      type="button"
+                      className="quiet-action compact-action"
+                      disabled={bulkInviteBusy || seatFull}
+                      onClick={() => bulkInviteFileInputRef.current?.click()}
+                    >
+                      <Upload size={13} aria-hidden="true" />
+                      {tx('team.bulkInviteUpload')}
+                    </button>
+                    <button
+                      type="button"
+                      className="quiet-action compact-action"
+                      onClick={() => downloadBulkInviteTemplate(roles)}
+                    >
+                      <Download size={13} aria-hidden="true" />
+                      {tx('team.bulkInviteDownloadTemplate')}
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  className="team-bulk-invite-input"
+                  aria-label={tx('team.bulkInviteDataLabel')}
+                  autoFocus
+                  value={bulkInviteText}
+                  onChange={(event) => {
+                    setBulkInviteText(event.target.value)
+                    setBulkInviteFileName('')
+                    setBulkInviteImportMessage(null)
+                  }}
+                  placeholder={tx('team.bulkInvitePlaceholder')}
+                  rows={6}
+                  disabled={bulkInviteBusy || seatFull}
+                />
+                {bulkInviteImportMessage ? (
+                  <div
+                    className={`team-bulk-invite-import-message is-${bulkInviteImportMessage.tone}`}
+                    role={bulkInviteImportMessage.tone === 'error' ? 'alert' : 'status'}
+                  >
+                    {bulkInviteImportMessage.tone === 'success'
+                      ? <Check size={13} aria-hidden="true" />
+                      : <AlertTriangle size={13} aria-hidden="true" />}
+                    <span>
+                      {bulkInviteFileName ? <strong>{bulkInviteFileName}</strong> : null}
+                      {bulkInviteImportMessage.text}
+                    </span>
+                  </div>
+                ) : null}
+                {preview.rows.length > 0 ? (
+                  <div className="team-bulk-invite-preview">
+                    <div className="team-bulk-invite-preview-head">
+                      <span className="is-ready">
+                        <Check size={12} aria-hidden="true" />
+                        {format(tx('team.bulkInvitePreviewReady'), { count: preview.validRows.length })}
+                      </span>
+                      {preview.invalidRows.length > 0 ? (
+                        <span className="has-issues">
+                          <AlertTriangle size={12} aria-hidden="true" />
+                          {format(tx('team.bulkInvitePreviewNeedsReview'), { count: preview.invalidRows.length })}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="team-bulk-invite-preview-list" role="list">
+                      {previewRows.map((row) => (
+                        <div
+                          key={`${row.lineNumber}:${row.email}`}
+                          className={row.issues.length > 0 ? 'has-issues' : 'is-ready'}
+                          role="listitem"
+                        >
+                          <span className="team-bulk-invite-line-number">{row.lineNumber}</span>
+                          <span className="team-bulk-invite-row-copy">
+                            <strong>{row.email || tx('team.bulkInviteMissingEmail')}</strong>
+                            <small>
+                              {row.role ? labelForRole(row.role) : tx('team.bulkInviteUnknownRole')}
+                              {row.teacherNames.length > 0 ? ` · ${row.teacherNames.join(' · ')}` : ''}
+                            </small>
+                          </span>
+                          <span className="team-bulk-invite-row-status">
+                            {row.issues.length > 0
+                              ? row.issues.map(bulkInviteIssueLabel).join(' · ')
+                              : <Check size={13} aria-label={tx('team.bulkInviteRowReady')} />}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    {remainingPreviewRows > 0 ? (
+                      <p className="team-bulk-invite-preview-more">
+                        {format(tx('team.bulkInvitePreviewMore'), { count: remainingPreviewRows })}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+                {preview.truncatedCount > 0 ? (
+                  <div className="team-inline-warning" role="alert">
+                    <AlertTriangle size={14} aria-hidden="true" />
+                    {format(tx('team.bulkInviteRowLimit'), { count: MAX_TEAM_BULK_INVITE_ROWS })}
+                  </div>
+                ) : null}
+              </div>
+              {seatFull ? (
+                <div className="team-inline-warning" role="alert">
+                  <AlertTriangle size={14} aria-hidden="true" />
+                  {tx('team.seatLimitReached')}
+                </div>
+              ) : null}
+            </div>
             <div className="team-invite-popover-actions">
               <button type="button" className="quiet-action" onClick={close}>{tx('cancel')}</button>
               <button
@@ -4119,26 +4278,19 @@ export function TeamScreen({
                 disabled={
                   bulkInviteBusy
                   || seatFull
-                  || !bulkInviteText.trim()
-                  || (
-                    inviteTeacherIds.length === 0
-                    && parseBulkInviteLines(bulkInviteText).some((row) => row.role === 'member')
-                  )
+                  || !bulkInviteReady
                 }
+                aria-busy={bulkInviteBusy || undefined}
               >
-                <UserPlus size={13} aria-hidden="true" />
-                {bulkInviteBusy ? tx('working') : tx('team.bulkInviteSubmit')}
+                {bulkInviteBusy ? (
+                  <PendingLabel label={tx('working')} />
+                ) : (
+                  <><UserPlus size={13} aria-hidden="true" /> {tx('team.bulkInviteSubmit')}</>
+                )}
               </button>
             </div>
           </form>
         )}
-
-        {seatFull ? (
-          <div className="team-message team-message-warning" role="alert">
-            <AlertTriangle size={14} aria-hidden="true" />
-            {tx('team.seatLimitReached')}
-          </div>
-        ) : null}
       </div>
     )
   }
@@ -4177,7 +4329,8 @@ export function TeamScreen({
       ...visibleRelationshipTeachers.map((teacher) => ({ id: teacher.id, teacher, students: studentsByAdvisorId.get(teacher.id) ?? [], muted: false })),
       ...(unassignedStudents.length > 0 ? [{ id: 'unassigned', teacher: null, students: unassignedStudents, muted: true }] : []),
     ]
-    const selectedStudent = filteredRelationshipStudents.find((student) => student.id === selectedRelationStudentId) ?? filteredRelationshipStudents[0] ?? null
+    const selectedStudent = relationshipStudents.find((student) => student.id === selectedRelationStudentId) ?? null
+    const inspectorVisible = Boolean(selectedStudent && relationInspectorOpen)
     const selectedTeachers = selectedStudent ? studentTeachersFor(selectedStudent) : []
     const selectedStats = selectedStudent ? memberStats[selectedStudent.id] : null
     const selectedStudentApps = selectedStudent?.userId ? allApplicationsByOwner.get(selectedStudent.userId) ?? [] : []
@@ -4203,20 +4356,25 @@ export function TeamScreen({
             })}</span>
             <div className="team-relation-map-tools">
               <div className="team-relation-help">
-                <button
-                  type="button"
-                  className="team-relation-tool-button"
-                  aria-label={tx('team.relationshipInstructionsTitle')}
-                  aria-describedby="team-relation-instructions"
+                <AnchoredPopover
+                  trigger={<Info size={15} aria-hidden="true" />}
+                  triggerAriaLabel={tx('team.relationshipInstructionsTitle')}
+                  popoverAriaLabel={tx('team.relationshipInstructionsTitle')}
+                  triggerClassName="team-relation-tool-button"
+                  popoverClassName="team-relation-help-popover"
+                  width={300}
+                  estimatedHeight={176}
+                  align="end"
                 >
-                  <Info size={15} aria-hidden="true" />
-                </button>
-                <div id="team-relation-instructions" className="team-relation-help-popover" role="tooltip">
-                  <strong>{tx('team.relationshipInstructionsTitle')}</strong>
-                  <span><kbd>{tx('team.relationshipKeyAlt')}</kbd>{tx('team.relationshipInstructionAdd')}</span>
-                  <span><kbd>{tx('team.relationshipKeyCtrl')}</kbd>{tx('team.relationshipInstructionMove')}</span>
-                  <span><ZoomIn size={13} aria-hidden="true" />{tx('team.relationshipInstructionZoom')}</span>
-                </div>
+                  {() => (
+                    <>
+                      <strong>{tx('team.relationshipInstructionsTitle')}</strong>
+                      <span><kbd>{tx('team.relationshipKeyAlt')}</kbd>{tx('team.relationshipInstructionAdd')}</span>
+                      <span><kbd>{tx('team.relationshipKeyCtrl')}</kbd>{tx('team.relationshipInstructionMove')}</span>
+                      <span><ZoomIn size={13} aria-hidden="true" />{tx('team.relationshipInstructionZoom')}</span>
+                    </>
+                  )}
+                </AnchoredPopover>
               </div>
               <div className="team-relation-zoom-controls" role="group" aria-label={tx('team.relationshipZoomControls')}>
                 <button
@@ -4257,7 +4415,11 @@ export function TeamScreen({
             </div>
           </div>
         </div>
-        <div className="team-relation-board">
+        <div
+          ref={relationBoardRef}
+          className={`team-relation-board ${inspectorVisible ? 'is-inspector-open' : 'is-inspector-closed'}${relationInspectorResizing ? ' is-resizing' : ''}`}
+          style={{ '--team-relation-inspector-width': `${relationInspectorWidth}px` } as CSSProperties}
+        >
           <div
             ref={setRelationCanvas}
             className="team-relation-canvas"
@@ -4373,67 +4535,97 @@ export function TeamScreen({
               </div>
             </div>
           </div>
-          <aside className="team-relation-inspector">
-            {selectedStudent ? (
-              <>
-                <div className="team-relation-inspector-head">
-                  <TeamMemberAvatar member={selectedStudent} />
-                  <span>
-                    <em>{tx('team.relationshipInspectorEyebrow')}</em>
-                    <strong>{memberDisplayName(selectedStudent, tx('team.memberFallback'))}</strong>
-                    <small>{memberEmail(selectedStudent)}</small>
-                  </span>
-                </div>
-                <div className="team-relation-inspector-metrics">
-                  <span><strong>{selectedStats?.applicationCount ?? selectedStudentApps.length}</strong><em>{tx('team.studentMembersSharedApps')}</em></span>
-                  <span><strong>{selectedStats?.riskCount ?? selectedStudentApps.filter((application) => applicationHealth(application) === 'risk').length}</strong><em>{tx('team.teacherKpiRisk')}</em></span>
-                  <span><strong>{selectedStats?.reviewCommentCount ?? selectedStudentApps.reduce((total, application) => total + countReviewComments(application.reviewComments), 0)}</strong><em>{tx('team.studentMembersFeedback')}</em></span>
-                </div>
-                <div className="team-relation-inspector-section">
-                  <span>{tx('team.collaborationTeachersLabel')}</span>
-                  {canEditSelectedAdvisor ? (
-                    <TeamTeacherAssignmentPicker
-                      teachers={relationshipManagers}
-                      assignedTeacherUserIds={teamMemberTeacherIds(selectedStudent)}
-                      busy={rowBusyId === selectedStudent.id}
-                      onCommit={(teacherUserIds) => handleStudentTeachersChange(
-                        selectedStudent,
-                        teacherMemberIdsForUserIds(teacherUserIds),
-                      )}
-                    />
-                  ) : (
-                    <div className="team-readonly-relation">
-                      <span>{selectedTeachers.length
-                        ? selectedTeachers.map((teacher) => memberDisplayName(teacher, tx('team.memberFallback'))).join(' · ')
-                        : tx('team.relationshipNoAdvisor')}</span>
-                    </div>
-                  )}
-                </div>
-                <div className="team-relation-inspector-actions">
-                  {selectedStudent.userId && onViewApplications ? (
-                    <button type="button" className="primary-action" onClick={() => onViewApplications(selectedStudent.userId!)}>
-                      <FileText size={13} aria-hidden="true" />
-                      {selectedStats?.applicationCount
-                        ? format(tx('team.viewApplications'), { count: selectedStats.applicationCount })
-                        : tx('team.viewApplicationsEmpty')}
+          <button
+            ref={relationInspectorResizeHandleRef}
+            type="button"
+            className="team-relation-inspector-resizer"
+            aria-label={`${tx('team.relationshipInspectorEyebrow')} · ${tx('team.relationshipViewMap')}`}
+            aria-controls="team-relation-inspector"
+            aria-expanded={inspectorVisible}
+            title={`${tx('team.relationshipInspectorEyebrow')} · ${tx('team.relationshipViewMap')}`}
+            disabled={!selectedStudent}
+            onPointerDown={handleRelationInspectorResizeStart}
+            onKeyDown={handleRelationInspectorResizeKeyDown}
+          >
+            <span aria-hidden="true"><GripVertical size={13} /></span>
+          </button>
+          <aside
+            id="team-relation-inspector"
+            className="team-relation-inspector"
+            aria-hidden={!inspectorVisible}
+          >
+            <div className="team-relation-inspector-scroll">
+              {selectedStudent ? (
+                <div key={selectedStudent.id} className="team-relation-inspector-content">
+                  <div className="team-relation-inspector-head">
+                    <TeamMemberAvatar member={selectedStudent} />
+                    <span>
+                      <em>{tx('team.relationshipInspectorEyebrow')}</em>
+                      <strong>{memberDisplayName(selectedStudent, tx('team.memberFallback'))}</strong>
+                      <small>{memberEmail(selectedStudent)}</small>
+                    </span>
+                    <button
+                      type="button"
+                      className="team-relation-inspector-close"
+                      aria-label={tx('close')}
+                      title={tx('close')}
+                      onClick={() => closeRelationInspector(true)}
+                    >
+                      <X size={14} aria-hidden="true" />
                     </button>
-                  ) : null}
-                  {memberCanEnterView(selectedStudent) ? (
-                    <button type="button" className="quiet-action" onClick={() => onImpersonateMember?.(selectedStudent.userId!)}>
-                      <LogIn size={13} aria-hidden="true" />
-                      {tx('team.enterStudentView')}
-                    </button>
-                  ) : null}
+                  </div>
+                  <div className="team-relation-inspector-metrics">
+                    <span><strong>{selectedStats?.applicationCount ?? selectedStudentApps.length}</strong><em>{tx('team.studentMembersSharedApps')}</em></span>
+                    <span><strong>{selectedStats?.riskCount ?? selectedStudentApps.filter((application) => applicationHealth(application) === 'risk').length}</strong><em>{tx('team.teacherKpiRisk')}</em></span>
+                    <span><strong>{selectedStats?.reviewCommentCount ?? selectedStudentApps.reduce((total, application) => total + countReviewComments(application.reviewComments), 0)}</strong><em>{tx('team.studentMembersFeedback')}</em></span>
+                  </div>
+                  <div className="team-relation-inspector-section">
+                    <span>{tx('team.collaborationTeachersLabel')}</span>
+                    {canEditSelectedAdvisor ? (
+                      <TeamTeacherAssignmentPicker
+                        teachers={relationshipManagers}
+                        assignedTeacherUserIds={teamMemberTeacherIds(selectedStudent)}
+                        busy={rowBusyId === selectedStudent.id}
+                        onCommit={(teacherUserIds) => handleStudentTeachersChange(
+                          selectedStudent,
+                          teacherMemberIdsForUserIds(teacherUserIds),
+                        )}
+                      />
+                    ) : (
+                      <div className="team-readonly-relation">
+                        <span>{selectedTeachers.length
+                          ? selectedTeachers.map((teacher) => memberDisplayName(teacher, tx('team.memberFallback'))).join(' · ')
+                          : tx('team.relationshipNoAdvisor')}</span>
+                      </div>
+                    )}
+                  </div>
+                  {renderDelegatedAccessControls(selectedStudent)}
+                  <div className="team-relation-inspector-actions">
+                    {selectedStudent.userId && onViewApplications ? (
+                      <button type="button" className="primary-action" onClick={() => onViewApplications(selectedStudent.userId!)}>
+                        <FileText size={13} aria-hidden="true" />
+                        {selectedStats?.applicationCount
+                          ? format(tx('team.viewApplications'), { count: selectedStats.applicationCount })
+                          : tx('team.viewApplicationsEmpty')}
+                      </button>
+                    ) : null}
+                    {memberCanEnterView(selectedStudent) ? (
+                      <button type="button" className="quiet-action" onClick={() => onImpersonateMember?.(selectedStudent.userId!)}>
+                        <LogIn size={13} aria-hidden="true" />
+                        {tx('team.enterStudentView')}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
-              </>
-            ) : (
-              <div className="team-empty compact">
-                <span className="empty-state-icon"><Users size={18} aria-hidden="true" /></span>
-                <div>
-                  <h3>{tx('team.relationshipNoStudents')}</h3>
+              ) : (
+                <div className="team-empty compact">
+                  <span className="empty-state-icon"><Users size={18} aria-hidden="true" /></span>
+                  <div>
+                    <h3>{tx('team.relationshipNoStudents')}</h3>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </aside>
         </div>
       </div>
@@ -4458,47 +4650,6 @@ export function TeamScreen({
       ? memberDisplayName(targetMember, tx('team.memberFallback'))
       : (delegated.targetName || delegated.targetEmail || tx('team.memberFallback'))
     return format(tx('team.auditActingAs'), { actor, target })
-  }
-
-  function shortEventId(eventId: string) {
-    return eventId.replace(/^(evt|event|sys)[_-]?/i, '').slice(0, 7) || eventId.slice(0, 7)
-  }
-
-  function auditStatus(event: SystemEvent, mergeable: boolean, restorable: boolean) {
-    const metadata = eventMetadata(event)
-    if (metadata.mergedFromEventId) return 'merged'
-    if (metadata.restoredFromEventId) return 'restored'
-    if (metadata.flaggedConflictForEventId) return 'manual'
-    if (mergeable) return 'merge'
-    if (restorable) return 'restore'
-    return 'logged'
-  }
-
-  function mergeFieldGroups(fields: TeamMergePreview['fields']) {
-    const groups = new Map<string, {
-      key: string
-      label: string
-      fields: TeamMergePreview['fields']
-    }>()
-    for (const field of fields) {
-      const key = mergeFieldRoot(field.field)
-      const label = mergeFieldSectionLabel(field.field, tx)
-      const group = groups.get(key) ?? { key, label, fields: [] }
-      group.fields.push(field)
-      groups.set(key, group)
-    }
-    return Array.from(groups.values()).map((group) => ({
-      ...group,
-      fields: [...group.fields].sort((left, right) => (
-        mergeStatusRank(left.status) - mergeStatusRank(right.status) || left.field.localeCompare(right.field)
-      )),
-    }))
-  }
-
-  function mergeFieldPath(field: string) {
-    const section = mergeFieldSectionLabel(field, tx)
-    const label = mergeFieldLabel(field, tx, format)
-    return section === label ? section : format(tx('team.mergeFieldLocation'), { section, field: label })
   }
 
   const roleLabel = viewerRole ? labelForRole(viewerRole) : ''
@@ -4857,7 +5008,11 @@ export function TeamScreen({
               <div className="team-overview-queue">
                 <div
                   className="team-overview-queue-list"
-                  style={{ '--team-overview-selected-index': selectedIndex } as CSSProperties}
+                  style={{
+                    '--team-overview-selected-index': selectedIndex,
+                    '--team-overview-item-count': visibleRows.length,
+                  } as CSSProperties}
+                  data-item-count={visibleRows.length}
                   aria-label={tx('team.teacherQueueTitle')}
                 >
                   <span className="team-overview-queue-slider" aria-hidden="true" />
@@ -4873,11 +5028,11 @@ export function TeamScreen({
                         onClick={() => setTeacherOverviewStudentId(row.member.userId)}
                       >
                         <TeamMemberAvatar member={row.member} className="team-overview-student-avatar" />
-                        <span>
+                        <span className="team-overview-queue-copy">
                           <strong>{memberDisplayName(row.member, tx('team.memberFallback'))}</strong>
                           <em>{tx(studentStateLabelKey(row.state))}</em>
                         </span>
-                        <small>{row.applications.length}</small>
+                        <small className="team-overview-queue-count">{row.applications.length}</small>
                         <ArrowRight size={13} aria-hidden="true" />
                       </button>
                     )
@@ -5478,7 +5633,7 @@ export function TeamScreen({
           <span className="team-organization-settings-hero-icon"><Settings size={18} aria-hidden="true" /></span>
           <div>
             <h2>{tx('team.settingsOwnerTitle')}</h2>
-            <p>{tx('team.settingsOwnerDesc')}</p>
+            <p>{format(tx('team.settingsOwnerDesc'), { team: summary?.team.name ?? screenTitle })}</p>
           </div>
         </header>
 
@@ -5573,6 +5728,23 @@ export function TeamScreen({
                     </button>
                   </div>
                 )}
+                <div className="team-organization-id-row">
+                  <span className="team-organization-id-icon" aria-hidden="true">
+                    <Fingerprint size={14} />
+                  </span>
+                  <span>
+                    <small>{tx('team.settingsTeamIdLabel')}</small>
+                    <code title={summary?.team.id}>{summary?.team.id}</code>
+                    <em>{tx('team.settingsTeamIdDesc')}</em>
+                  </span>
+                  <CopyButton
+                    value={summary?.team.id ?? ''}
+                    label={tx('team.settingsTeamIdLabel')}
+                    size={13}
+                    className="team-organization-id-copy"
+                    onNotify={onNotify}
+                  />
+                </div>
               </div>
             </section>
 
@@ -5587,31 +5759,11 @@ export function TeamScreen({
                   {tx('team.settingsPermissionsTitle')}
                 </h4>
               </div>
-              <div className="team-organization-settings-group team-settings-permission-summary">
-                <button type="button" onClick={() => {
-                  setMemberWorkspaceView('students')
-                  changeTab('members')
-                }}>
-                  <span className="team-settings-permission-summary-icon"><UserRound size={15} aria-hidden="true" /></span>
-                  <span>
-                    <strong>{tx('team.settingsStudentPermissionsTitle')}</strong>
-                    <small>{tx('team.settingsStudentPermissionsDesc')}</small>
-                  </span>
-                  <em>{summary?.roleCounts?.member ?? 0}</em>
-                  <ArrowRight size={13} aria-hidden="true" />
-                </button>
-                <button type="button" onClick={() => {
-                  setMemberWorkspaceView('teacher-groups')
-                  changeTab('members')
-                }}>
-                  <span className="team-settings-permission-summary-icon"><Users size={15} aria-hidden="true" /></span>
-                  <span>
-                    <strong>{tx('team.settingsTeacherPermissionsTitle')}</strong>
-                    <small>{tx('team.settingsTeacherPermissionsDesc')}</small>
-                  </span>
-                  <em>{summary?.roleCounts?.admin ?? 0}</em>
-                  <ArrowRight size={13} aria-hidden="true" />
-                </button>
+              <div className="team-organization-settings-group team-settings-permission-defaults">
+                <TeamDefaultPermissionsEditor
+                  defaults={summary?.team.permissionDefaults}
+                  onSave={handlePermissionDefaultsChange}
+                />
               </div>
             </section>
 
@@ -5654,6 +5806,7 @@ export function TeamScreen({
       show: boolean
       tone: 'attention' | 'resource' | 'student' | 'invite' | 'steady'
       icon: ReactNode
+      shortLabel: string
       title: string
       desc: string
       count: number
@@ -5664,6 +5817,7 @@ export function TeamScreen({
         show: pendingTransferRequests.length > 0,
         tone: 'attention',
         icon: <GitMerge size={15} aria-hidden="true" />,
+        shortLabel: tx('team.transferQueueEyebrow'),
         title: format(tx('team.overviewFocusTransfersTitle'), { count: pendingTransferRequests.length }),
         desc: tx('team.overviewFocusTransfersDesc'),
         count: pendingTransferRequests.length,
@@ -5674,6 +5828,7 @@ export function TeamScreen({
         show: riskApps + watchApps > 0,
         tone: 'attention',
         icon: <AlertTriangle size={15} aria-hidden="true" />,
+        shortLabel: tx('team.applicationHealthEyebrow'),
         title: format(tx('team.overviewFocusApplicationsTitle'), { count: riskApps + watchApps }),
         desc: tx('team.overviewFocusApplicationsDesc'),
         count: riskApps + watchApps,
@@ -5684,6 +5839,7 @@ export function TeamScreen({
         show: resourceAlerts.length > 0,
         tone: 'resource',
         icon: <Database size={15} aria-hidden="true" />,
+        shortLabel: tx('team.tabResources'),
         title: format(tx('team.overviewFocusResourcesTitle'), { count: resourceAlerts.length }),
         desc: resourceAlerts[0] || tx('team.overviewFocusResourcesDesc'),
         count: resourceAlerts.length,
@@ -5694,6 +5850,7 @@ export function TeamScreen({
         show: studentsWithoutApplications.length > 0,
         tone: 'student',
         icon: <Users size={15} aria-hidden="true" />,
+        shortLabel: tx('team.tabMembers'),
         title: format(tx('team.overviewFocusStudentsTitle'), { count: studentsWithoutApplications.length }),
         desc: tx('team.overviewFocusStudentsDesc'),
         count: studentsWithoutApplications.length,
@@ -5704,6 +5861,7 @@ export function TeamScreen({
         show: pendingMembers.length > 0,
         tone: 'invite',
         icon: <Mail size={15} aria-hidden="true" />,
+        shortLabel: tx('team.pendingInvites'),
         title: format(tx('team.overviewFocusInvitesTitle'), { count: pendingMembers.length }),
         desc: tx('team.overviewFocusInvitesDesc'),
         count: pendingMembers.length,
@@ -5716,6 +5874,7 @@ export function TeamScreen({
       show: true,
       tone: 'steady' as const,
       icon: <Check size={15} aria-hidden="true" />,
+      shortLabel: tx('team.priorityQueueEmpty'),
       title: tx('team.overviewFocusClearTitle'),
       desc: tx('team.overviewFocusClearDesc'),
       count: 0,
@@ -5879,7 +6038,11 @@ export function TeamScreen({
             <div className="team-overview-queue">
               <div
                 className="team-overview-queue-list"
-                style={{ '--team-overview-selected-index': selectedIndex } as CSSProperties}
+                style={{
+                  '--team-overview-selected-index': selectedIndex,
+                  '--team-overview-item-count': focusItems.length,
+                } as CSSProperties}
+                data-item-count={focusItems.length}
                 aria-label={tx('team.overviewFocusTitle')}
               >
                 <span className="team-overview-queue-slider" aria-hidden="true" />
@@ -5892,14 +6055,16 @@ export function TeamScreen({
                       className={`team-overview-queue-item tone-${item.tone}${selected ? ' is-selected' : ''}`}
                       style={{ '--team-overview-item-index': index } as CSSProperties}
                       aria-pressed={selected}
+                      aria-label={`${item.title}. ${item.desc}`}
                       onClick={() => setOwnerOverviewFocusKey(item.key)}
                     >
                       <span className="team-overview-queue-icon">{item.icon}</span>
-                      <span>
+                      <span className="team-overview-queue-copy">
                         <strong>{item.title}</strong>
                         <em>{item.desc}</em>
+                        <span className="team-overview-queue-mobile-label">{item.shortLabel}</span>
                       </span>
-                      <small>{item.count}</small>
+                      <small className="team-overview-queue-count">{item.count}</small>
                       <ArrowRight size={13} aria-hidden="true" />
                     </button>
                   )
@@ -6805,6 +6970,12 @@ export function TeamScreen({
       const canManagePresets = viewerRole === 'owner' || viewerRole === 'admin'
       const titleId = `team-portrait-presets-title-${scope}-${surface}`
       const searchId = `team-portrait-preset-search-${scope}-${surface}`
+      const targetStudent = profileRows.find(
+        (row) => row.member.userId === presetTargetStudent?.member.userId,
+      ) ?? profileRows[0] ?? null
+      const targetStudentName = targetStudent
+        ? memberDisplayName(targetStudent.member, tx('team.memberFallback'))
+        : ''
       const sourceTabs: Array<[ProfilePresetSourceFilter, string]> = isOwnerLibrary
         ? [
             ['all', tx('team.myPortraitPresetsSourceAll')],
@@ -6817,34 +6988,44 @@ export function TeamScreen({
             ['org', tx('team.myPortraitPresetsSourceOrg')],
             ['mine', tx('team.myPortraitPresetsSourceMine')],
           ]
+      const contextualAddSource: ProfilePresetSource = isOwnerLibrary ? 'org' : 'mine'
+      const showContextualAdd = canManagePresets
+        && !normalizedPresetQuery
+        && renderedSourceFilter === contextualAddSource
+      const contextualAddLabel = tx(
+        isOwnerLibrary ? 'team.orgPortraitPresetsAdd' : 'team.teacherPortraitPresetsAdd',
+      )
+      const contextualAddHint = tx(
+        isOwnerLibrary ? 'team.profilePresetAddHint' : 'team.profilePresetSettingsTeacherDesc',
+      )
+      const contextualAddSourceLabel = tx(
+        isOwnerLibrary ? 'team.myPortraitPresetsSourceOrgAdmin' : 'team.studentPortraitPresetButtonTeacher',
+      )
 
       return (
         <section className="team-portrait-presets" aria-labelledby={titleId}>
           <div className="team-portrait-presets-head">
-            <div>
+            <div className="team-portrait-presets-heading">
               <span className="eyebrow">{tx('team.myPortraitPresetsEyebrow')}</span>
-              <h3 id={titleId}>
-                {tx(isOwnerLibrary ? 'team.orgPortraitPresetsTitle' : 'team.myPortraitPresetsTitle')}
-              </h3>
-            </div>
-            <div className="team-portrait-presets-head-actions">
-              <span className="team-portrait-count">{format(tx('team.myPortraitPresetsCount'), { count: visiblePresets.length })}</span>
-              {canManagePresets ? (
-                <button
-                  type="button"
-                  className="primary-action compact-action"
-                  onClick={() => {
-                    setEditingTeamPresetId(null)
-                    setTeamPresetEditorOpen(true)
-                    onComplete?.()
-                  }}
-                >
-                  <Plus size={13} aria-hidden="true" />
-                  {tx(isOwnerLibrary ? 'team.orgPortraitPresetsAdd' : 'profile.addPreset')}
-                </button>
-              ) : null}
+              <div className="team-portrait-presets-title-line">
+                <h3 id={titleId}>
+                  {tx(isOwnerLibrary ? 'team.orgPortraitPresetsTitle' : 'team.myPortraitPresetsTitle')}
+                </h3>
+                <span className="team-portrait-count">
+                  {format(tx('team.myPortraitPresetsCount'), { count: visiblePresets.length })}
+                </span>
+              </div>
             </div>
           </div>
+
+          {canApplyPreset && targetStudent ? (
+            <TeamPortraitPresetTargetPicker
+              rows={profileRows}
+              targetUserId={targetStudent.member.userId}
+              onSelect={setPresetTargetStudentId}
+              onWarm={warmStudentPortraitAssets}
+            />
+          ) : null}
 
           <label className="search-field team-portrait-preset-search" htmlFor={searchId}>
             <Search size={13} aria-hidden="true" />
@@ -6879,26 +7060,12 @@ export function TeamScreen({
             className={`team-portrait-preset-results is-${presetSourceFilterPhase}`}
             aria-live="polite"
           >
-            {visiblePresets.length === 0 ? (
+            {visiblePresets.length === 0 && !showContextualAdd ? (
               <div className={`team-portrait-presets-empty${compactEmpty ? ' compact' : ''}`}>
               <span className="empty-state-icon"><ListChecks size={18} aria-hidden="true" /></span>
               <div>
                 <strong>{tx(normalizedPresetQuery ? 'noResults' : 'team.myPortraitPresetsEmpty')}</strong>
               </div>
-              {canManagePresets && !normalizedPresetQuery ? (
-                <button
-                  type="button"
-                  className="quiet-action compact-action"
-                  onClick={() => {
-                    setEditingTeamPresetId(null)
-                    setTeamPresetEditorOpen(true)
-                    onComplete?.()
-                  }}
-                >
-                  <Plus size={13} aria-hidden="true" />
-                  {tx(isOwnerLibrary ? 'team.orgPortraitPresetsAdd' : 'profile.addPreset')}
-                </button>
-              ) : null}
               </div>
             ) : (
               <div className="team-portrait-preset-list" role="list">
@@ -6919,13 +7086,16 @@ export function TeamScreen({
                     <button
                       type="button"
                       className="team-portrait-preset-main"
-                      disabled={!canApplyPreset || applyingStudentPresetId !== null}
-                      aria-label={`${tx('team.studentProfileUsePreset')}: ${display.name}`}
+                      disabled={!canApplyPreset || !targetStudent?.member.userId || applyingStudentPresetId !== null}
+                      aria-busy={applyingStudentPresetId === preset.id || undefined}
+                      aria-label={`${tx('team.studentProfileUsePreset')}: ${display.name} · ${targetStudentName}`}
                       onClick={() => {
+                        const targetStudentId = targetStudent?.member.userId
+                        if (!targetStudentId) return
                         void loadTeamSnippetEditorDialog().catch(() => undefined)
-                        setError(null)
-                        setMessage(null)
+                        warmStudentPortraitAssets(targetStudentId)
                         setEditingViewedStudentAssetId(null)
+                        setStudentSnippetTargetUserId(targetStudentId)
                         setStudentSnippetPreset(preset)
                         onComplete?.()
                       }}
@@ -6939,8 +7109,11 @@ export function TeamScreen({
                         {display.description ? <em>{display.description}</em> : null}
                         {canApplyPreset ? (
                           <span className="team-portrait-preset-use">
-                            <Plus size={11} aria-hidden="true" />
-                            {applyingStudentPresetId === preset.id ? tx('working') : tx('team.studentProfileUsePreset')}
+                            {applyingStudentPresetId === preset.id ? (
+                              <PendingLabel label={tx('working')} iconSize={11} />
+                            ) : (
+                              <><Plus size={11} aria-hidden="true" /> {tx('team.studentProfileUsePreset')}</>
+                            )}
                           </span>
                         ) : null}
                       </span>
@@ -6977,6 +7150,39 @@ export function TeamScreen({
                   </article>
                 )
                 })}
+                {showContextualAdd ? (
+                  <div
+                    className={`team-portrait-preset-add-item${visiblePresets.length === 0 ? ' is-empty' : ''}`}
+                    role="listitem"
+                  >
+                    <button
+                      type="button"
+                      className="team-portrait-preset-add-row"
+                      aria-label={contextualAddLabel}
+                      onClick={() => {
+                        setEditingTeamPresetId(null)
+                        setTeamPresetEditorOpen(true)
+                        onComplete?.()
+                      }}
+                    >
+                      <span className="team-portrait-preset-add-icon">
+                        <Plus size={15} aria-hidden="true" />
+                      </span>
+                      <span className="team-portrait-preset-add-copy">
+                        {visiblePresets.length === 0 ? (
+                          <small>{tx('team.myPortraitPresetsEmpty')}</small>
+                        ) : null}
+                        <span className="team-portrait-preset-title-row">
+                          <strong>{contextualAddLabel}</strong>
+                          <span className={`team-portrait-source-chip source-${contextualAddSource}`}>
+                            {contextualAddSourceLabel}
+                          </span>
+                        </span>
+                        <em>{contextualAddHint}</em>
+                      </span>
+                    </button>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>
@@ -7071,13 +7277,36 @@ export function TeamScreen({
         {profileRows.length === 0 ? (
           <div className="team-portrait-empty-students">
             <span className="empty-state-icon"><UserRound size={22} aria-hidden="true" /></span>
-            <div>
+            <div className="team-portrait-empty-students-copy">
               <h3>{tx(scope === 'owner' ? 'team.ownerStudentProfilesEmpty' : 'team.resourcesTeacherEmpty')}</h3>
               <p>{tx(scope === 'owner' ? 'team.ownerStudentProfilesEmptyDesc' : 'team.resourcesTeacherEmptyDesc')}</p>
             </div>
+            {canInvite ? (
+              <AnchoredPopover
+                triggerAriaLabel={tx('team.teacherInviteSubmit')}
+                popoverAriaLabel={tx('team.teacherInviteTitle')}
+                triggerClassName="primary-action team-portrait-empty-invite-trigger"
+                popoverClassName="team-invite-popover-shell team-member-invite-popover-shell"
+                width={inviteMode === 'bulk' ? 560 : 420}
+                estimatedHeight={inviteMode === 'bulk' ? 680 : 520}
+                align="start"
+                onOpenChange={(open) => {
+                  if (!open) return
+                  setInviteRole('member')
+                  setInviteMode('single')
+                }}
+                trigger={<><UserPlus size={14} aria-hidden="true" />{tx('team.teacherInviteSubmit')}</>}
+              >
+                {(close) => renderInvitePopover(close, true)}
+              </AnchoredPopover>
+            ) : null}
           </div>
         ) : (
-          <div className="team-portrait-workspace">
+          <div className={[
+            'team-portrait-workspace',
+            studentPortraitMobileDetailOpen ? 'is-mobile-detail-open' : '',
+            studentPortraitMobileNavigationStartedRef.current ? 'has-mobile-navigation' : '',
+          ].filter(Boolean).join(' ')}>
             <aside className="team-portrait-list-pane" aria-label={tx('team.studentProfilePickerTitle')}>
               <div className="team-portrait-list-head">
                 <div>
@@ -7144,6 +7373,7 @@ export function TeamScreen({
               ) : (
                 <div
                   ref={studentPortraitListRef}
+                  id="team-student-portrait-list"
                   className="team-portrait-student-list"
                   role="listbox"
                   aria-label={tx('team.studentProfilePickerTitle')}
@@ -7172,13 +7402,15 @@ export function TeamScreen({
                         role="option"
                         className={`team-portrait-student-row state-${row.state}${isSelected ? ' selected' : ''}`}
                         aria-selected={isSelected}
+                        aria-controls="team-student-portrait-detail"
+                        aria-label={`${studentName} · ${tx('team.teacherOpenStudentProfile')}`}
                         onPointerDown={(event) => {
                           if (event.button !== 0 || !studentUserId) return
                           positionStudentPortraitSelection(studentUserId, event.currentTarget)
                         }}
                         onPointerEnter={() => warmStudentPortraitAssets(studentUserId)}
                         onFocus={() => warmStudentPortraitAssets(studentUserId)}
-                        onClick={(event) => selectResourceStudent(studentUserId, event.currentTarget)}
+                        onClick={(event) => openStudentPortraitMobileDetail(studentUserId, event.currentTarget)}
                       >
                         <TeamMemberAvatar member={row.member} className="team-portrait-student-avatar" />
                         <span className="team-portrait-student-copy">
@@ -7194,6 +7426,7 @@ export function TeamScreen({
                           <strong>{row.averageProgress}%</strong>
                           <i aria-hidden="true"><b style={{ width: `${row.averageProgress}%` }} /></i>
                         </span>
+                        <ChevronRight className="team-portrait-mobile-disclosure" size={15} aria-hidden="true" />
                       </button>
                     )
                   })}
@@ -7202,12 +7435,15 @@ export function TeamScreen({
             </aside>
 
             <section
+              ref={studentPortraitProfilePaneRef}
+              id="team-student-portrait-detail"
               className={`team-portrait-profile-pane${studentPortraitPending ? ' is-student-loading' : ''}`}
               aria-label={tx('profile.title')}
               aria-busy={viewedStudentAssetsLoading || undefined}
             >
               {studentPortraitPending ? <span className="team-portrait-student-loading-line" aria-hidden="true" /> : null}
               <div
+                ref={studentPortraitProfileContentRef}
                 className={`team-portrait-profile-content${studentPortraitHandoffCycle ? ` is-handoff-${studentPortraitHandoffCycle}` : ''}`}
                 data-student-portrait-stable={studentPortraitStable ? 'true' : undefined}
                 inert={studentPortraitPending || undefined}
@@ -7315,9 +7551,18 @@ export function TeamScreen({
                         <div className="team-portrait-profile-loading" aria-busy="true"><span /><span /><span /></div>
                       ) : filteredStudentAssets.length === 0 ? (
                         <div className="team-portrait-section-empty team-portrait-profile-empty">
-                          <FileText size={18} aria-hidden="true" />
-                          <span>{tx('profile.noSnippets')}</span>
-                          <p>{tx('team.studentPortraitLibraryEmpty')}</p>
+                          <span className="team-portrait-profile-empty-icon">
+                            <FileText size={17} aria-hidden="true" />
+                          </span>
+                          <div className="team-portrait-profile-empty-copy">
+                            <strong>{tx('profile.noSnippets')}</strong>
+                            <p>{tx('team.studentPortraitLibraryEmpty')}</p>
+                            <span className="team-portrait-profile-empty-guide">
+                              <ListChecks size={12} aria-hidden="true" />
+                              {tx('team.studentProfileUsePreset')}
+                              <ArrowRight size={11} aria-hidden="true" />
+                            </span>
+                          </div>
                         </div>
                       ) : studentAssetView === 'list' ? (
                         <div id="team-student-library-view" key="team-student-library-list" className="team-portrait-library-view is-list">
@@ -7326,6 +7571,7 @@ export function TeamScreen({
                             const KindIcon = asset.kind === 'CV' || asset.kind === 'Transcript' ? FileCheck : FileText
                             const attachmentCount = asset.attachments?.length ?? 0
                             const deleting = deletingViewedStudentAssetId === asset.id
+                            const description = asset.description?.replace(/\s+/g, ' ').trim() ?? ''
                             return (
                               <article
                                 key={asset.id}
@@ -7342,7 +7588,9 @@ export function TeamScreen({
                                   <span className="team-portrait-snippet-icon"><KindIcon size={16} aria-hidden="true" /></span>
                                   <span className="team-portrait-snippet-copy">
                                     <span><strong>{asset.name}</strong><b>{asset.kind}</b></span>
-                                    {asset.description ? <em>{asset.description.replace(/\s+/g, ' ').slice(0, 132)}{asset.description.length > 132 ? '…' : ''}</em> : null}
+                                    {description ? (
+                                      <em>{description}</em>
+                                    ) : null}
                                     <small><Paperclip size={11} aria-hidden="true" />{attachmentCount > 0 ? format(tx(attachmentCount === 1 ? 'profile.attachmentCount' : 'profile.attachmentCountPlural'), { count: attachmentCount }) : tx('profile.noAttachments')}</small>
                                   </span>
                                 </button>
@@ -7418,8 +7666,22 @@ export function TeamScreen({
             </section>
 
             <aside className="team-portrait-template-pane" aria-label={tx('team.myPortraitPresetsEyebrow')}>
-              {renderPresetLibrary(false, Boolean(selectedRow && !viewedStudentAssetsLoading), 'inspector')}
+              {renderPresetLibrary(false, profileRows.length > 0, 'inspector')}
             </aside>
+
+            {studentPortraitMobileDetailOpen ? (
+              <button
+                ref={studentPortraitMobileBackRef}
+                type="button"
+                className="mobile-detail-back-fab team-portrait-mobile-back"
+                aria-label={tx('back')}
+                aria-controls="team-student-portrait-list"
+                onClick={closeStudentPortraitMobileDetail}
+              >
+                <ArrowLeft size={15} aria-hidden="true" />
+                <span>{tx('back')}</span>
+              </button>
+            ) : null}
           </div>
         )}
       </div>
@@ -7710,14 +7972,14 @@ export function TeamScreen({
             />
           </label>
           <div className="team-member-view-switch" role="tablist" aria-label={tx('team.relationshipViewLabel')}>
-            <span className={`team-member-view-indicator ${memberView === 'map' ? 'is-map' : ''}`} aria-hidden="true" />
-            <button type="button" className={memberView === 'table' ? 'active' : ''} aria-selected={memberView === 'table'} onClick={() => setMemberView('table')}>
-              <Table2 size={13} aria-hidden="true" />
-              {tx('team.collaborationListView')}
-            </button>
+            <span className={`team-member-view-indicator ${memberView === 'table' ? 'is-list' : ''}`} aria-hidden="true" />
             <button type="button" className={memberView === 'map' ? 'active' : ''} aria-selected={memberView === 'map'} onClick={() => setMemberView('map')}>
               <Network size={13} aria-hidden="true" />
               {tx('team.relationshipViewMap')}
+            </button>
+            <button type="button" className={memberView === 'table' ? 'active' : ''} aria-selected={memberView === 'table'} onClick={() => setMemberView('table')}>
+              <Table2 size={13} aria-hidden="true" />
+              {tx('team.collaborationListView')}
             </button>
           </div>
         </div>
@@ -8262,9 +8524,9 @@ export function TeamScreen({
                     triggerAriaLabel={tx('team.inviteTitle')}
                     popoverAriaLabel={tx('team.inviteTitle')}
                     triggerClassName="primary-action compact-action team-invite-trigger"
-                    popoverClassName="team-invite-popover-shell"
-                    width={380}
-                    estimatedHeight={520}
+                    popoverClassName="team-invite-popover-shell team-member-invite-popover-shell"
+                    width={inviteMode === 'bulk' ? 560 : 380}
+                    estimatedHeight={inviteMode === 'bulk' ? 680 : 520}
                     align="end"
                     trigger={<><UserPlus size={14} aria-hidden="true" />{tx('team.inviteTitle')}</>}
                   >
@@ -8539,18 +8801,18 @@ export function TeamScreen({
                     type="button"
                     className="primary-action"
                     disabled={!approvalCanSubmit}
+                    aria-busy={approvalBusy || undefined}
                     onClick={() => void handleTransferDecision(
                       approvalRequest.id,
                       'approve',
                       approvalRequiresTeacher ? selectedTransferTeacherId : undefined,
                     )}
                   >
-                    <Check size={13} aria-hidden="true" />
-                    {approvalBusy
-                      ? tx('working')
-                      : approvalRequiresTeacher
-                        ? tx('team.transferApproveAndAssign')
-                        : tx('team.transferApprove')}
+                    {approvalBusy ? (
+                      <PendingLabel label={tx('working')} />
+                    ) : (
+                      <><Check size={13} aria-hidden="true" /> {approvalRequiresTeacher ? tx('team.transferApproveAndAssign') : tx('team.transferApprove')}</>
+                    )}
                   </button>
                 </footer>
               </aside>
@@ -8560,527 +8822,7 @@ export function TeamScreen({
       </section>
     ) : null
 
-    const allAuditEvents = summary?.recentEvents ?? []
-    const selectedOwnerId = selectedAuditStudentId === 'all' ? null : selectedAuditStudentId
-    const ownerForEvent = (event: SystemEvent) => {
-      const metadata = eventMetadata(event)
-      return eventApplicationOwnerId(event)
-        ?? (metadata.applicationId ? applicationsById.get(metadata.applicationId)?.ownerId ?? null : null)
-    }
-    const applicationForEvent = (event: SystemEvent) => {
-      const applicationId = eventMetadata(event).applicationId
-      return applicationId ? applicationsById.get(applicationId) ?? null : null
-    }
-    const studentLabelForEvent = (event: SystemEvent) => {
-      const ownerId = ownerForEvent(event)
-      const owner = ownerId ? membersByUserId.get(ownerId) : null
-      return owner ? memberDisplayName(owner, tx('team.memberFallback')) : tx('team.gitUnknownStudent')
-    }
-    const eventContextLabel = (event: SystemEvent) => {
-      const application = applicationForEvent(event)
-      const student = studentLabelForEvent(event)
-      return application
-        ? format(tx('team.auditEventContext'), { student, application: application.school.name })
-        : format(tx('team.auditEventContextNoApp'), { student })
-    }
-    const eventMatchesSelectedStudent = (event: SystemEvent) => {
-      const ownerId = ownerForEvent(event)
-      return !selectedOwnerId || ownerId === selectedOwnerId
-    }
-    const auditEvents = allAuditEvents
-      .filter(canAccessAuditEvent)
-      .filter(eventMatchesSelectedStudent)
-    const conflictEvents = auditEvents.filter(isManualMergeEvent)
-    const automaticEvents = auditEvents.filter(isAutomaticMergeAuditEvent)
-    const visibleAuditEvents = auditExpanded ? conflictEvents : conflictEvents.slice(0, 7)
-    const mergeSourceEventFor = (event: SystemEvent) => {
-      const flaggedId = eventMetadata(event).flaggedConflictForEventId
-      return flaggedId
-        ? allAuditEvents.find((candidate) => candidate.id === flaggedId) ?? event
-        : event
-    }
-    const defaultAuditEvent = visibleAuditEvents[0]
-      ?? null
-    const selectedAuditEvent = conflictEvents.find((event) => event.id === selectedAuditEventId)
-      ?? mergePreviewEvent
-      ?? defaultAuditEvent
-    const selectedMergeSourceEvent = selectedAuditEvent ? mergeSourceEventFor(selectedAuditEvent) : null
-    const selectedAuditFields = selectedAuditEvent ? changedFields(selectedAuditEvent) : []
-    const selectedAuditMetadata = selectedAuditEvent ? eventMetadata(selectedAuditEvent) : {}
-    const selectedAuditRestorable = Boolean(selectedAuditEvent && canRestore && canRestoreAuditEvent(selectedAuditEvent))
-    const selectedAuditMergeable = Boolean(selectedMergeSourceEvent && canPreviewMergeEvent(selectedMergeSourceEvent))
-    const selectedAuditStatus = selectedAuditEvent
-      ? auditStatus(selectedAuditEvent, selectedAuditMergeable, selectedAuditRestorable)
-      : 'logged'
-    const selectedAuditSummary = selectedAuditEvent
-      ? auditFieldSummary(selectedAuditFields, tx, format, lang)
-      : ''
-    const mergeDecisionTone = !mergePreview
-      ? 'idle'
-      : mergePreview.conflictCount > 0
-        ? 'conflict'
-        : mergePreview.cleanCount > 0
-          ? 'clean'
-          : 'same'
-    return (
-    <div className="team-audit-page">
-      {transferAudit}
-      <div className="team-tab-panel">
-      <div className="team-activity-grid">
-        <section className="team-panel">
-          <div className="team-panel-head">
-            <div>
-              <span className="eyebrow">{tx('team.auditEyebrow')}</span>
-              <h3>{tx('team.gitStudentVersionTitle')}</h3>
-            </div>
-            <History size={16} aria-hidden="true" />
-          </div>
-          <div className="team-git-scope-bar">
-            <div>
-              <span>{tx('team.gitStudentScope')}</span>
-              <Select
-                value={selectedAuditStudentId}
-                options={auditStudentOptions}
-                onChange={(value) => {
-                  setSelectedAuditStudentId(value)
-                  setSelectedAuditEventId(null)
-                  setAuditExpanded(false)
-                  clearMergePreview()
-                }}
-                ariaLabel={tx('team.gitStudentScope')}
-                size="small"
-                searchable
-              />
-            </div>
-          </div>
-          <div className="team-git-stats">
-            <span>
-              <strong>{conflictEvents.length}</strong>
-              <em>{tx('team.gitConflictQueue')}</em>
-            </span>
-            <span>
-              <strong>{automaticEvents.length}</strong>
-              <em>{tx('team.gitAutoMergedCount')}</em>
-            </span>
-            <span>
-              <strong>{auditEvents.length}</strong>
-              <em>{tx('team.gitAuditTotal')}</em>
-            </span>
-          </div>
-          {auditEvents.length === 0 ? (
-            <div className="team-empty compact">
-              <span className="empty-state-icon"><History size={18} aria-hidden="true" /></span>
-              <div>
-                <h3>{tx('team.noAuditEvents')}</h3>
-                <p>{tx('team.noAuditEventsDesc')}</p>
-              </div>
-            </div>
-          ) : conflictEvents.length === 0 ? (
-            <div className="team-empty compact">
-              <span className="empty-state-icon"><GitMerge size={18} aria-hidden="true" /></span>
-              <div>
-                <h3>{tx('team.gitNoManualQueueTitle')}</h3>
-              </div>
-            </div>
-          ) : (
-            <div className="team-version-queue">
-              <div className="team-version-queue-head">
-                <span>{tx('team.auditManualQueueTitle')}</span>
-                <em>{format(tx('team.auditManualQueueCount'), { count: conflictEvents.length })}</em>
-              </div>
-              <div className="team-version-timeline">
-                {conflictEvents.map((event, index) => {
-                  const fields = changedFields(event)
-                  const restorable = canRestore && canRestoreAuditEvent(event)
-                  const mergeSourceEvent = mergeSourceEventFor(event)
-                  const mergeable = canPreviewMergeEvent(mergeSourceEvent)
-                  const metadata = eventMetadata(event)
-                  const status = auditStatus(event, mergeable, restorable)
-                  const summaryText = auditFieldSummary(fields, tx, format, lang)
-                  const eventRow = (
-                    <article
-                      className={`team-version-row status-${status} ${selectedAuditEvent?.id === event.id ? 'selected' : ''}`}
-                      tabIndex={0}
-                      onClick={() => {
-                        setSelectedAuditEventId(event.id)
-                        if (mergePreview && mergePreview.eventId !== event.id) clearMergePreview()
-                      }}
-                      onKeyDown={(keyEvent) => {
-                        if (keyEvent.key !== 'Enter' && keyEvent.key !== ' ') return
-                        keyEvent.preventDefault()
-                        setSelectedAuditEventId(event.id)
-                        if (mergePreview && mergePreview.eventId !== event.id) clearMergePreview()
-                      }}
-                      onContextMenu={(contextEvent) => openAuditContextMenu(contextEvent, event)}
-                    >
-                      <div className="team-version-rail" aria-hidden="true">
-                        <span />
-                        {index < conflictEvents.length - 1 ? <i /> : null}
-                      </div>
-                      <div className="team-version-card">
-                        <div className="team-version-main">
-                          <div className="team-version-copy">
-                            <div className="team-version-context">
-                              <FileText size={12} aria-hidden="true" />
-                              <span>{eventContextLabel(event)}</span>
-                            </div>
-                            <div className="team-version-title-row">
-                              <strong>{localizeAuditMessage(event.message, tx)}</strong>
-                              <span className={`team-version-status status-${status}`}>{tx(`team.auditStatus${status[0].toUpperCase()}${status.slice(1)}`)}</span>
-                            </div>
-                            <span>{auditActorLabel(event)} · {eventTime(event.time, lang)}</span>
-                            {summaryText ? <p className="team-version-summary">{summaryText}</p> : null}
-                          </div>
-                          <div className="team-version-actions">
-                            {mergeable ? (
-                              <button
-                                type="button"
-                                className="quiet-action compact-action"
-                                disabled={mergeBusyId === mergeSourceEvent.id}
-                                onClick={(clickEvent) => {
-                                  clickEvent.stopPropagation()
-                                  handlePreviewMerge(mergeSourceEvent)
-                                }}
-                              >
-                                <GitMerge size={12} aria-hidden="true" />
-                                {mergeBusyId === mergeSourceEvent.id ? tx('working') : tx('team.auditMergePreview')}
-                              </button>
-                            ) : null}
-                            {restorable ? (
-                              <button
-                                type="button"
-                                className="quiet-action compact-action"
-                                disabled={restoreBusyId === event.id}
-                                onClick={(clickEvent) => {
-                                  clickEvent.stopPropagation()
-                                  setPendingRestore(event)
-                                }}
-                              >
-                                <RotateCcw size={12} aria-hidden="true" />
-                                {restoreBusyId === event.id ? tx('working') : tx('team.auditRestore')}
-                              </button>
-                            ) : null}
-                          </div>
-                        </div>
-                        <div className="team-version-meta">
-                          {fields.slice(0, 3).map((field) => <em key={field}>{mergeFieldPath(field)}</em>)}
-                          {fields.length > 3 ? <em>{format(tx('team.changedFieldsMore'), { count: fields.length - 3 })}</em> : null}
-                          {metadata.mergedFromEventId ? <em>{format(tx('team.auditMergedFrom'), { id: shortEventId(metadata.mergedFromEventId) })}</em> : null}
-                          {metadata.restoredFromEventId ? <em>{format(tx('team.auditRestoredFrom'), { id: shortEventId(metadata.restoredFromEventId) })}</em> : null}
-                          {metadata.flaggedConflictForEventId ? <em>{format(tx('team.auditManualFor'), { id: shortEventId(metadata.flaggedConflictForEventId) })}</em> : null}
-                          {typeof metadata.conflictCount === 'number' ? <em>{format(tx('team.auditConflictCount'), { count: metadata.conflictCount })}</em> : null}
-                        </div>
-                      </div>
-                    </article>
-                  )
-                  if (index < 7) return <div key={event.id} className="team-version-row-stage">{eventRow}</div>
-                  return (
-                    <CollapsiblePanel
-                      key={event.id}
-                      open={auditExpanded}
-                      keepMounted
-                      className="team-version-extra-collapse"
-                      innerClassName="team-version-extra-collapse-inner"
-                      openMs={380}
-                      closeMs={320}
-                    >
-                      {eventRow}
-                    </CollapsiblePanel>
-                  )
-                })}
-                {conflictEvents.length > 7 ? (
-                  <button type="button" className="team-version-expand" onClick={() => setAuditExpanded((current) => !current)}>
-                    <History size={12} aria-hidden="true" />
-                    <InlinePresence present={auditExpanded} className="team-version-expand-label" parentGap="6px">
-                      <span>{tx('team.auditShowLess')}</span>
-                    </InlinePresence>
-                    <InlinePresence present={!auditExpanded} className="team-version-expand-label" parentGap="6px">
-                      <span>{format(tx('team.auditShowMore'), { count: conflictEvents.length - 7 })}</span>
-                    </InlinePresence>
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          )}
-        </section>
-
-        <section className="team-panel">
-          <div className="team-panel-head">
-            <div>
-              <span className="eyebrow">{mergePreview ? tx('team.mergePreviewEyebrow') : selectedAuditEvent ? tx('team.auditDetailEyebrow') : tx('team.recoveryEyebrow')}</span>
-              <h3>{mergePreview ? tx('team.mergePreviewTitle') : selectedAuditEvent ? tx('team.auditDetailTitle') : tx('team.recoveryTitle')}</h3>
-            </div>
-            <GitMerge size={16} aria-hidden="true" />
-          </div>
-          {mergePreview ? (
-            <div className="team-merge-preview">
-              <div className="team-merge-intro">
-                <span className="team-merge-app-chip">
-                  <FileText size={12} aria-hidden="true" />
-                  {mergePreview.application.school.name}
-                </span>
-                <strong>{tx('team.mergeDecisionTitle')}</strong>
-                {mergePreviewEvent ? (
-                  <div className="team-merge-source-row">
-                    <span>{auditActorLabel(mergePreviewEvent)}</span>
-                    <span>{eventTime(mergePreviewEvent.time, lang)}</span>
-                    <span>{localizeAuditMessage(mergePreviewEvent.message, tx)}</span>
-                  </div>
-                ) : null}
-              </div>
-              <div className={`team-merge-decision-strip tone-${mergeDecisionTone}`}>
-                <span aria-hidden="true">
-                  {mergeDecisionTone === 'conflict'
-                    ? <AlertTriangle size={15} />
-                    : mergeDecisionTone === 'clean'
-                      ? <GitMerge size={15} />
-                      : <Check size={15} />}
-                </span>
-                <div>
-                  <strong>{tx(`team.mergeDecision${mergeDecisionTone[0].toUpperCase()}${mergeDecisionTone.slice(1)}`)}</strong>
-                  <p>{format(tx('team.mergeDecisionSummary'), {
-                    clean: mergePreview.cleanCount,
-                    conflict: mergePreview.conflictCount,
-                    same: mergePreview.sameCount,
-                    selected: selectedMergeFields.length,
-                  })}</p>
-                </div>
-              </div>
-              <div className="team-merge-summary">
-                <span><strong>{mergePreview.cleanCount}</strong><em>{tx('team.mergeCleanFields')}</em></span>
-                <span><strong>{mergePreview.conflictCount}</strong><em>{tx('team.mergeConflictFields')}</em></span>
-                <span><strong>{mergePreview.sameCount}</strong><em>{tx('team.mergeSameFields')}</em></span>
-              </div>
-              <div className="team-merge-field-list">
-                {mergePreview.fields.length === 0 ? (
-                  <div className="team-review-empty">{tx('team.mergeNoFields')}</div>
-                ) : mergeFieldGroups(mergePreview.fields).map((group) => (
-                  <section key={group.key} className="team-merge-section">
-                    <div className="team-merge-section-head">
-                      <span>{group.label}</span>
-                      <em>{format(tx('team.mergeSectionCount'), { count: group.fields.length })}</em>
-                    </div>
-                    <div className="team-merge-section-fields">
-                      {group.fields.map((field) => {
-                        const selectable = field.status === 'clean'
-                        const selected = selectedMergeFields.includes(field.field)
-                        const label = mergeFieldLabel(field.field, tx, format)
-                        const changeKindKey = mergeChangeKindKey(field)
-                        const impact = mergeImpactText(field, label, tx, format)
-                        const conflictDeltaKey = mergeConflictDeltaKey(field)
-                        return (
-                          <article key={field.field} className={`team-merge-field status-${field.status} ${selected ? 'selected' : ''}`}>
-                            <div className="team-merge-field-head">
-                              <div className="team-merge-checkline">
-                                {selectable ? (
-                                  <input
-                                    type="checkbox"
-                                    checked={selected}
-                                    disabled={mergeApplyBusy}
-                                    aria-label={format(tx('team.mergeToggleField'), { field: label })}
-                                    onChange={() => toggleMergeField(field.field)}
-                                  />
-                                ) : (
-                                  <span className={`team-merge-state-dot status-${field.status}`} aria-hidden="true">
-                                    {field.status === 'conflict'
-                                      ? <AlertTriangle size={11} />
-                                      : <Check size={11} />}
-                                  </span>
-                                )}
-                                <span>
-                                  <strong>{label}</strong>
-                                  <em>{mergeFieldPath(field.field)}</em>
-                                </span>
-                              </div>
-                              <span className={`team-merge-status-pill status-${field.status}`}>
-                                {tx(`team.mergeStatus${field.status[0].toUpperCase()}${field.status.slice(1)}`)}
-                              </span>
-                            </div>
-                            <div className="team-merge-field-brief">
-                              <span className={`team-merge-change-kind status-${field.status}`}>
-                                {tx(changeKindKey)}
-                              </span>
-                              <p>{impact}</p>
-                            </div>
-                            <p className="team-merge-recommendation">{tx(mergeStatusRecommendationKey(field.status))}</p>
-                            {field.status === 'same' ? (
-                              <div className="team-merge-readable-values same">
-                                <span className="team-merge-value-row current">
-                                  <small>{tx('team.mergeCurrentKept')}</small>
-                                  <b>{formatMergeValue(field.currentValue, tx, format)}</b>
-                                </span>
-                              </div>
-                            ) : field.status === 'conflict' ? (
-                              <div className="team-merge-readable-values conflict">
-                                <p className="team-merge-conflict-note">{tx(conflictDeltaKey)}</p>
-                                <span className="team-merge-value-row incoming">
-                                  <small>{tx('team.mergeIncomingChange')}</small>
-                                  <b>{formatMergeValue(field.eventValue, tx, format)}</b>
-                                </span>
-                                <span className="team-merge-value-row current">
-                                  <small>{tx('team.mergeCurrentVersion')}</small>
-                                  <b>{formatMergeValue(field.currentValue, tx, format)}</b>
-                                </span>
-                                <span className="team-merge-value-row base">
-                                  <small>{tx('team.mergeCommonBase')}</small>
-                                  <b>{formatMergeValue(field.baseValue, tx, format)}</b>
-                                </span>
-                              </div>
-                            ) : (
-                              <div className="team-merge-readable-values clean">
-                                <span className="team-merge-value-row removed">
-                                  <small>{tx('team.mergeWillReplace')}</small>
-                                  <b>{formatMergeValue(field.baseValue, tx, format)}</b>
-                                </span>
-                                <span className="team-merge-arrow" aria-hidden="true">
-                                  <ArrowRight size={13} />
-                                </span>
-                                <span className="team-merge-value-row added">
-                                  <small>{tx('team.mergeWillBecome')}</small>
-                                  <b>{formatMergeValue(field.eventValue, tx, format)}</b>
-                                </span>
-                              </div>
-                            )}
-                          </article>
-                        )
-                      })}
-                    </div>
-                  </section>
-                ))}
-              </div>
-              <div className="team-merge-actions">
-                <button type="button" className="quiet-action" onClick={clearMergePreview} disabled={mergeApplyBusy || mergeConflictBusy}>
-                  <X size={12} aria-hidden="true" />
-                  {tx('cancel')}
-                </button>
-                {mergePreview.conflictCount > 0 ? (
-                  <button type="button" className="quiet-action" onClick={handleFlagMergeConflict} disabled={mergeConflictBusy}>
-                    <AlertTriangle size={12} aria-hidden="true" />
-                    {mergeConflictBusy ? tx('working') : tx('team.flagMergeConflict')}
-                  </button>
-                ) : null}
-                <button type="button" className="primary-action" onClick={handleApplyMerge} disabled={mergeApplyBusy || mergeConflictBusy || selectedMergeFields.length === 0}>
-                  <GitMerge size={13} aria-hidden="true" />
-                  {mergeApplyBusy
-                    ? tx('working')
-                    : mergePreview.conflictCount === 0
-                      ? format(tx('team.autoMergeClean'), { count: selectedMergeFields.length })
-                      : format(tx('team.applySelectedMerge'), { count: selectedMergeFields.length })}
-                </button>
-              </div>
-            </div>
-          ) : selectedAuditEvent ? (
-            <div className="team-audit-detail">
-              <div className="team-audit-detail-card">
-                <span className={`team-version-status status-${selectedAuditStatus}`}>
-                  {tx(`team.auditStatus${selectedAuditStatus[0].toUpperCase()}${selectedAuditStatus.slice(1)}`)}
-                </span>
-                <strong>{localizeAuditMessage(selectedAuditEvent.message, tx)}</strong>
-                <p>
-                  {applicationForEvent(selectedAuditEvent)
-                    ? format(tx('team.auditDetailContextWithApp'), {
-                        student: studentLabelForEvent(selectedAuditEvent),
-                        application: applicationForEvent(selectedAuditEvent)?.school.name ?? '',
-                      })
-                    : format(tx('team.auditDetailContext'), { student: studentLabelForEvent(selectedAuditEvent) })}
-                </p>
-                <div className="team-audit-detail-meta">
-                  <span>
-                    <small>{tx('team.auditDetailActor')}</small>
-                    <b>{auditActorLabel(selectedAuditEvent)}</b>
-                  </span>
-                  <span>
-                    <small>{tx('team.auditDetailTime')}</small>
-                    <b>{eventTime(selectedAuditEvent.time, lang)}</b>
-                  </span>
-                  <span>
-                    <small>{tx('team.auditDetailScope')}</small>
-                    <b>{localizeAuditScope(selectedAuditEvent.scope, tx)}</b>
-                  </span>
-                </div>
-              </div>
-
-              <div className="team-audit-impact-card">
-                <div className="team-audit-impact-head">
-                  <span>
-                    <ListChecks size={14} aria-hidden="true" />
-                    {tx('team.auditDetailImpact')}
-                  </span>
-                  <em>{format(tx('team.auditDetailFieldCount'), { count: selectedAuditFields.length })}</em>
-                </div>
-                {selectedAuditFields.length === 0 ? (
-                  <p className="team-panel-note">{tx('team.auditDetailNoFields')}</p>
-                ) : (
-                  <div className="team-audit-field-grid">
-                    {selectedAuditFields.slice(0, 8).map((field) => (
-                      <span key={field}>{mergeFieldPath(field)}</span>
-                    ))}
-                    {selectedAuditFields.length > 8 ? (
-                      <span>{format(tx('team.changedFieldsMore'), { count: selectedAuditFields.length - 8 })}</span>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-
-              {(selectedAuditMergeable || selectedAuditRestorable) ? (
-              <div className="team-audit-decision-card">
-                <strong>{tx('team.auditDetailActions')}</strong>
-                <p>{selectedAuditSummary || tx('team.auditDetailNoFields')}</p>
-                <div className="team-audit-detail-actions">
-                  {selectedAuditMergeable ? (
-                    <button
-                      type="button"
-                      className="primary-action"
-                      disabled={mergeBusyId === selectedMergeSourceEvent?.id}
-                      onClick={() => {
-                        if (selectedMergeSourceEvent) handlePreviewMerge(selectedMergeSourceEvent)
-                      }}
-                    >
-                      <GitMerge size={13} aria-hidden="true" />
-                      {mergeBusyId === selectedMergeSourceEvent?.id ? tx('working') : tx('team.auditMergePreview')}
-                    </button>
-                  ) : null}
-                  {selectedAuditRestorable ? (
-                    <button
-                      type="button"
-                      className="quiet-action"
-                      disabled={restoreBusyId === selectedAuditEvent.id}
-                      onClick={() => setPendingRestore(selectedAuditEvent)}
-                    >
-                      <RotateCcw size={13} aria-hidden="true" />
-                      {restoreBusyId === selectedAuditEvent.id ? tx('working') : tx('team.auditRestore')}
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-              ) : null}
-
-              {(selectedAuditMetadata.mergedFromEventId || selectedAuditMetadata.restoredFromEventId || selectedAuditMetadata.flaggedConflictForEventId || typeof selectedAuditMetadata.conflictCount === 'number') ? (
-                <div className="team-audit-related-card">
-                  <strong>{tx('team.auditDetailRelated')}</strong>
-                  <div className="team-version-meta">
-                    {selectedAuditMetadata.mergedFromEventId ? <em>{format(tx('team.auditMergedFrom'), { id: shortEventId(selectedAuditMetadata.mergedFromEventId) })}</em> : null}
-                    {selectedAuditMetadata.restoredFromEventId ? <em>{format(tx('team.auditRestoredFrom'), { id: shortEventId(selectedAuditMetadata.restoredFromEventId) })}</em> : null}
-                    {selectedAuditMetadata.flaggedConflictForEventId ? <em>{format(tx('team.auditManualFor'), { id: shortEventId(selectedAuditMetadata.flaggedConflictForEventId) })}</em> : null}
-                    {typeof selectedAuditMetadata.conflictCount === 'number' ? <em>{format(tx('team.auditConflictCount'), { count: selectedAuditMetadata.conflictCount })}</em> : null}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <div className="team-empty compact">
-              <span className="empty-state-icon"><GitMerge size={18} aria-hidden="true" /></span>
-              <div>
-                <h3>{tx('team.auditSelectConflictTitle')}</h3>
-                <p>{tx('team.auditSelectConflictDesc')}</p>
-              </div>
-            </div>
-          )}
-        </section>
-      </div>
-      </div>
-    </div>
-    )
+    return <div className="team-audit-page">{transferAudit}</div>
   }
 
   const teamDiscoverLibraryId = `team-discover-library-${summary?.team.id ?? 'active'}`
@@ -9358,19 +9100,6 @@ export function TeamScreen({
         </header>
       ) : null}
 
-      {error ? (
-        <div className="team-message team-message-error" role="alert">
-          <AlertTriangle size={14} aria-hidden="true" />
-          {error}
-        </div>
-      ) : null}
-      {message ? (
-        <div className="team-message" role="status">
-          <Check size={14} aria-hidden="true" />
-          {message}
-        </div>
-      ) : null}
-
       {loading ? (
         <ScreenSkeleton variant="team" className="team-screen-skeleton" />
       ) : !summary ? (
@@ -9426,9 +9155,12 @@ export function TeamScreen({
                   autoFocus
                 />
               </label>
-              <button type="submit" className="primary-action" disabled={joinBusy || !joinCode.trim()}>
-                {joinBusy ? <LoaderCircle size={15} className="spin" aria-hidden="true" /> : <ArrowRight size={15} aria-hidden="true" />}
-                {joinBusy ? tx('working') : tx('team.joinCodeSubmit')}
+              <button type="submit" className="primary-action" disabled={joinBusy || !joinCode.trim()} aria-busy={joinBusy || undefined}>
+                {joinBusy ? (
+                  <PendingLabel label={tx('working')} iconSize={15} />
+                ) : (
+                  <><ArrowRight size={15} aria-hidden="true" /> {tx('team.joinCodeSubmit')}</>
+                )}
               </button>
               <p>{tx('team.joinCodeInputDescription')}</p>
             </form>
@@ -9463,8 +9195,8 @@ export function TeamScreen({
 
       <ExplorerContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} />
 
-      {(editingViewedStudentAsset || (studentSnippetPreset && studentSnippetPresetDisplay)) && selectedResourceStudent ? (
-        <LazyOverlayBoundary namespaces={['core', 'shared', 'profile', 'team']}>
+      {(editingViewedStudentAsset || (studentSnippetPreset && studentSnippetPresetDisplay)) && activeStudentSnippetEditorTarget ? (
+        <LazyOverlayBoundary namespaces={['core', 'shared', 'profile', 'team', 'dossier', 'share']}>
           <TeamSnippetEditorDialog
             open
             asset={editingViewedStudentAsset}
@@ -9477,7 +9209,20 @@ export function TeamScreen({
             initialColor={studentSnippetPreset?.color}
             fromPreset={Boolean(studentSnippetPreset)}
             attachmentsEnabled={false}
-            contextLabel={format(tx('team.studentPortraitLibraryTitle'), { name: selectedResourceStudentName })}
+            contextLabel={format(tx('team.studentPortraitLibraryTitle'), { name: activeStudentSnippetEditorTargetName })}
+            headerAccessory={studentSnippetPreset ? (
+              <TeamPortraitPresetTargetPicker
+                rows={accessibleStudentProfileRows}
+                targetUserId={activeStudentSnippetEditorTarget.member.userId}
+                className="is-dialog"
+                align="end"
+                onSelect={(studentUserId) => {
+                  setStudentSnippetTargetUserId(studentUserId)
+                  setPresetTargetStudentId(studentUserId)
+                }}
+                onWarm={warmStudentPortraitAssets}
+              />
+            ) : null}
             profilePresets={[]}
             contentLanguages={teamContentLanguages}
             globalPhrase={{
@@ -9488,6 +9233,7 @@ export function TeamScreen({
             }}
             onClose={() => {
               setStudentSnippetPreset(null)
+              setStudentSnippetTargetUserId(null)
               setEditingViewedStudentAssetId(null)
             }}
             onCreate={(input) => createSelectedStudentSnippet(input)}
@@ -9584,16 +9330,21 @@ export function TeamScreen({
         onCancel={() => setPendingRemove(null)}
       />
 
-      <ConfirmDialog
-        open={Boolean(pendingRestore)}
-        title={tx('team.auditRestoreTitle')}
-        message={pendingRestore ? format(tx('team.auditRestoreConfirm'), { event: pendingRestore.message }) : ''}
-        confirmLabel={restoreBusyId ? tx('working') : tx('team.auditRestore')}
-        cancelLabel={tx('cancel')}
-        onConfirm={handleRestoreEvent}
-        onCancel={() => setPendingRestore(null)}
-      />
-
     </section>
   )
+}
+
+function storedTeamRelationInspectorWidth() {
+  try {
+    const storedValue = localStorage.getItem(TEAM_RELATION_INSPECTOR_WIDTH_KEY)
+    if (storedValue === null) return TEAM_RELATION_INSPECTOR_DEFAULT_WIDTH
+    const storedWidth = Number(storedValue)
+    if (!Number.isFinite(storedWidth)) return TEAM_RELATION_INSPECTOR_DEFAULT_WIDTH
+    return Math.min(
+      TEAM_RELATION_INSPECTOR_MAX_WIDTH,
+      Math.max(TEAM_RELATION_INSPECTOR_MIN_WIDTH, Math.round(storedWidth)),
+    )
+  } catch {
+    return TEAM_RELATION_INSPECTOR_DEFAULT_WIDTH
+  }
 }

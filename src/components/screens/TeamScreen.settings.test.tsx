@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AuthSession, TeamSummary } from '../../api/phdApi'
 import { phdApi } from '../../api/phdApi'
@@ -111,10 +111,59 @@ describe('TeamScreen organization settings access', () => {
     expect(screen.getByRole('heading', { name: 'Member permissions' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Organization quotas' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Shared organization keys' })).toBeInTheDocument()
+    expect(screen.getByText(/Configure how Atlas Lab separates roles/)).toBeInTheDocument()
+    expect(view.container).not.toHaveTextContent('{team}')
     expect(view.container.querySelectorAll('.team-organization-settings-section')).toHaveLength(4)
     expect(view.container.querySelector('.team-role-labels-panel')).not.toBeInTheDocument()
     expect(view.container.querySelector('.team-permission-matrix')).not.toBeInTheDocument()
     expect(view.container.querySelector('.team-profile-preset-settings')).not.toBeInTheDocument()
+  })
+
+  it('edits compact role defaults optimistically while saving only the changed role field', async () => {
+    vi.spyOn(phdApi, 'teamNotificationGroups').mockResolvedValue([])
+    const initial = summaryFor('owner')
+    const updateDefaults = vi.spyOn(phdApi, 'updateTeamPermissionDefaults').mockResolvedValue({
+      ...initial.team,
+      permissionDefaults: {
+        student: {
+          editApplications: true,
+          createApplications: true,
+          useDiscover: true,
+          createShareLinks: true,
+          requestTeamTransfers: true,
+          activeApplicationLimit: null,
+          lifetimeApplicationLimit: null,
+          activeShareLimit: null,
+          lifetimeShareLimit: null,
+        },
+        teacher: {
+          inviteStudents: true,
+          manageStudentPermissions: true,
+          useDiscover: true,
+          createStudentApplications: true,
+          editStudentApplications: true,
+          manageStudentShares: true,
+        },
+      },
+    })
+    renderSettings(ownerSession, initial)
+
+    expect(await screen.findByText('Student default')).toBeInTheDocument()
+    expect(screen.getByText('Teacher default')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Student default/i }))
+    const [studentDiscover] = screen.getAllByRole('switch', { name: 'Use Discover' })
+    expect(studentDiscover).toHaveAttribute('aria-checked', 'false')
+
+    fireEvent.click(studentDiscover)
+    expect(studentDiscover).toHaveAttribute('aria-checked', 'true')
+
+    await waitFor(() => {
+      expect(updateDefaults).toHaveBeenCalledWith(
+        'owner-token',
+        'team-1',
+        { student: { useDiscover: true } },
+      )
+    })
   })
 
   it('redirects teachers away from the owner-only settings section', async () => {

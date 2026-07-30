@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   completeChat,
+  sanitizeAiAttachmentFileName,
   streamEmailDraft,
   supportsNativeOpenAiWebSearch,
   testAiResearchKeyConnection,
@@ -186,7 +187,10 @@ describe('AI provider streaming', () => {
             index: 0,
             id: 'call_attachments_1',
             type: 'function',
-            function: { name: 'select_email_attachments', arguments: '{"attachmentIds":["file:cv-1","file:forged"]}' },
+            function: {
+              name: 'select_email_attachments',
+              arguments: '{"attachments":[{"attachmentId":"file:cv-1","fileName":"Jasper Zhou Academic CV.docx"},{"attachmentId":"file:forged","fileName":"stolen.pdf"}]}',
+            },
           }],
         } }] },
       ]))
@@ -207,7 +211,9 @@ describe('AI provider streaming', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(onStatus).toHaveBeenCalledWith('attaching')
-    expect(onAttachmentSelection).toHaveBeenCalledWith(['file:cv-1'])
+    expect(onAttachmentSelection).toHaveBeenCalledWith([
+      { attachmentId: 'file:cv-1', fileName: 'Jasper Zhou Academic CV.pdf' },
+    ])
     const firstRequest = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(firstRequest.tools).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -219,7 +225,113 @@ describe('AI provider streaming', () => {
       expect.objectContaining({
         role: 'tool',
         tool_call_id: 'call_attachments_1',
-        content: JSON.stringify({ selectedAttachmentIds: ['file:cv-1'], draftOnly: true }),
+        content: JSON.stringify({
+          selectedAttachments: [{ attachmentId: 'file:cv-1', fileName: 'Jasper Zhou Academic CV.pdf' }],
+          draftOnly: true,
+        }),
+      }),
+    ]))
+  })
+
+  it('sanitizes recipient-facing attachment names without changing the real extension', () => {
+    expect(sanitizeAiAttachmentFileName('../../Research CV.exe', 'original.CV.pdf')).toBe('Research CV.pdf')
+    expect(sanitizeAiAttachmentFileName('CON', 'writing-sample.docx')).toBe('attachment-CON.docx')
+    expect(sanitizeAiAttachmentFileName('', 'statement-of-purpose.pdf')).toBe('statement-of-purpose.pdf')
+  })
+
+  it('supports the same constrained attachment plan through Anthropic tool use', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(sseResponse([
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_attach_1', name: 'select_email_attachments', input: {} },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"attachments":[{"attachmentId":"file:cv-1","fileName":"Applicant CV.pdf"}]}',
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(sseResponse([
+        { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Subject: Research fit' } },
+      ]))
+    vi.stubGlobal('fetch', fetchMock)
+    const onAttachmentSelection = vi.fn()
+
+    await streamEmailDraft({
+      ...baseRequest,
+      key: {
+        provider: 'anthropic',
+        apiKey: 'test-key-only',
+        baseUrl: 'https://api.anthropic.com',
+        model: 'claude-test',
+      },
+      attachmentCandidates: [{ id: 'file:cv-1', name: 'CV.pdf', mimeType: 'application/pdf' }],
+      onAttachmentSelection,
+      onText: vi.fn(),
+    })
+
+    expect(onAttachmentSelection).toHaveBeenCalledWith([
+      { attachmentId: 'file:cv-1', fileName: 'Applicant CV.pdf' },
+    ])
+    const continuation = JSON.parse(fetchMock.mock.calls[1][1].body)
+    expect(continuation.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: 'user',
+        content: [expect.objectContaining({ type: 'tool_result', tool_use_id: 'toolu_attach_1' })],
+      }),
+    ]))
+  })
+
+  it('supports the same constrained attachment plan through Gemini function calls', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(sseResponse([
+        {
+          candidates: [{
+            content: {
+              parts: [{
+                functionCall: {
+                  name: 'select_email_attachments',
+                  args: { attachments: [{ attachmentId: 'file:cv-1', fileName: 'Applicant CV.pdf' }] },
+                },
+              }],
+            },
+          }],
+        },
+      ]))
+      .mockResolvedValueOnce(sseResponse([
+        { candidates: [{ content: { parts: [{ text: 'Subject: Research fit' }] } }] },
+      ]))
+    vi.stubGlobal('fetch', fetchMock)
+    const onAttachmentSelection = vi.fn()
+
+    await streamEmailDraft({
+      ...baseRequest,
+      key: {
+        provider: 'gemini',
+        apiKey: 'test-key-only',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        model: 'gemini-test',
+      },
+      attachmentCandidates: [{ id: 'file:cv-1', name: 'CV.pdf', mimeType: 'application/pdf' }],
+      onAttachmentSelection,
+      onText: vi.fn(),
+    })
+
+    expect(onAttachmentSelection).toHaveBeenCalledWith([
+      { attachmentId: 'file:cv-1', fileName: 'Applicant CV.pdf' },
+    ])
+    const continuation = JSON.parse(fetchMock.mock.calls[1][1].body)
+    expect(continuation.contents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: 'user',
+        parts: [expect.objectContaining({
+          functionResponse: expect.objectContaining({ name: 'select_email_attachments' }),
+        })],
       }),
     ]))
   })

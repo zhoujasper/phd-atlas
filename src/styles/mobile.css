@@ -32,11 +32,28 @@
 
   html {
     -webkit-text-size-adjust: 100%;
+    -ms-overflow-style: none;
+    scrollbar-gutter: auto;
+    scrollbar-width: none;
     text-size-adjust: 100%;
   }
 
   body {
     -webkit-tap-highlight-color: transparent;
+    -ms-overflow-style: none;
+    scrollbar-gutter: auto;
+    scrollbar-width: none;
+  }
+
+  /* Keep document scrolling, but remove the desktop-style root scrollbar
+     gutter that Chromium exposes when a phone viewport is emulated on
+     Windows. That reserved strip otherwise remains visible beside the fixed
+     bottom rail and makes the Team shell look several pixels too narrow. */
+  html::-webkit-scrollbar,
+  body::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
   }
 
   :where(button, a, input, textarea, [role='button'], [role='tab'], [role='switch']) {
@@ -50,6 +67,7 @@
 
   /* iOS-style translucent tab bar with a real safe-area footprint. */
   .atlas-rail {
+    --mobile-rail-item-width: 50px;
     height: calc(var(--mobile-tab-bar-height) + env(safe-area-inset-bottom, 0px));
     min-height: calc(var(--mobile-tab-bar-height) + env(safe-area-inset-bottom, 0px));
     padding: 7px 8px calc(7px + env(safe-area-inset-bottom, 0px));
@@ -63,7 +81,7 @@
 
   .rail-btn,
   .rail-bottom-stack .rail-mode-toggle {
-    width: 50px;
+    width: var(--mobile-rail-item-width);
     min-width: 0;
     min-height: 48px;
     height: 48px;
@@ -88,7 +106,12 @@
   }
 
   .rail-active-indicator {
-    width: 50px;
+    left: calc(
+      (100% / var(--rail-item-count, 4) - var(--mobile-rail-item-width)) / 2
+      + var(--rail-active-x, 0%)
+    );
+    right: auto;
+    width: var(--mobile-rail-item-width);
     height: 48px;
     border-radius: var(--radius-xl);
   }
@@ -393,7 +416,43 @@
 
   .kanban-hero {
     position: relative;
-    padding-right: 50px;
+    padding-right: 0;
+  }
+
+  .kanban-hero:has(.kanban-mobile-new) .kanban-hero-info {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 50px;
+  }
+
+  .kanban-hero:has(.kanban-mobile-new) .application-pipeline-heading-copy {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 50px;
+  }
+
+  .kanban-hero:has(.kanban-mobile-new) .kanban-hero-info > .eyebrow,
+  .kanban-hero:has(.kanban-mobile-new) .kanban-hero-info > h2,
+  .kanban-hero:has(.kanban-mobile-new) .application-pipeline-heading-copy > .eyebrow,
+  .kanban-hero:has(.kanban-mobile-new) .application-pipeline-heading-copy > h2 {
+    grid-column: 1;
+  }
+
+  .kanban-hero:has(.kanban-mobile-new) .kanban-hero-info > p {
+    grid-column: 1 / -1;
+  }
+
+  .kanban-hero:has(.kanban-mobile-new) .application-pipeline-heading-copy > p {
+    grid-column: 1 / -1;
+  }
+
+  .kanban-hero .kanban-summary {
+    width: 100%;
+    min-width: 0;
+    overscroll-behavior-inline: contain;
+  }
+
+  .kanban-hero .kanban-summary > span {
+    flex: 0 0 auto;
   }
 
   .kanban-mobile-new {
@@ -513,13 +572,13 @@
 
   .checklist-hero {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
-      "eyebrow eyebrow"
-      "title actions";
-    column-gap: 8px;
-    row-gap: 2px;
-    align-items: center;
+      "eyebrow"
+      "title"
+      "actions";
+    row-gap: 3px;
+    align-items: start;
     padding-bottom: 12px;
   }
 
@@ -558,29 +617,36 @@
 
   .checklist-hero-actions {
     grid-area: actions;
-    min-height: 38px;
+    width: 100%;
+    min-width: 0;
+    min-height: 32px;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
-    gap: 0;
-    align-self: center;
+    gap: 4px;
+    align-self: stretch;
+    margin-top: 5px;
   }
 
   .checklist-progress-ring {
-    width: auto;
-    height: 38px;
+    width: 100%;
+    min-width: 0;
+    height: 32px;
     display: flex;
     align-items: center;
     justify-content: flex-start;
     gap: 8px;
-    padding-right: 10px;
+    padding: 0 9px;
+    border-radius: var(--radius);
+    background: var(--surface-secondary);
   }
 
   .checklist-progress-ring::before {
     content: '';
-    width: clamp(30px, 9vw, 44px);
+    width: auto;
+    min-width: 36px;
     height: 3px;
-    flex: 0 0 auto;
+    flex: 1 1 auto;
     border-radius: var(--radius-pill);
     background:
       linear-gradient(
@@ -605,12 +671,12 @@
   body .checklist-hero button.checklist-reminder-filter-btn,
   body .checklist-hero .checklist-hero-add-btn {
     min-width: 0;
-    min-height: 38px !important;
+    min-height: 32px !important;
     margin: 0;
-    padding: 0 10px;
+    padding: 0 8px;
     border: 0;
-    border-left: 1px solid var(--border);
-    border-radius: 0;
+    border-left: 0;
+    border-radius: var(--radius);
     background: transparent;
     box-shadow: none;
     font-size: 11px;
@@ -618,10 +684,9 @@
 
   body .checklist-hero button.checklist-reminder-filter-btn:hover,
   body .checklist-hero button.checklist-reminder-filter-btn.active,
-  body .checklist-hero button.checklist-reminder-filter-btn.active:hover,
-  body .checklist-hero .checklist-hero-add-btn:hover {
-    border-color: var(--border);
-    background: transparent;
+  body .checklist-hero button.checklist-reminder-filter-btn.active:hover {
+    border-color: transparent;
+    background: var(--warning-bg);
     box-shadow: none;
   }
 
@@ -633,15 +698,20 @@
 
   body .checklist-hero button.checklist-reminder-filter-btn:focus-visible,
   body .checklist-hero .checklist-hero-add-btn:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-    box-shadow: none;
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-ring);
   }
 
   body .checklist-hero .checklist-hero-add-btn {
-    padding-right: 0;
+    padding-inline: 9px;
+    background: var(--accent-soft);
     color: var(--accent);
     white-space: nowrap;
+  }
+  body .checklist-hero .checklist-hero-add-btn:hover,
+  body .checklist-hero .checklist-hero-add-btn:active {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--accent-soft) 72%, var(--accent) 8%);
   }
 
   button.checklist-reminder-filter-btn .checklist-reminder-filter-label {
@@ -649,9 +719,9 @@
   }
 
   body .checklist-hero button.checklist-hero-add-btn {
-    min-height: 38px !important;
-    padding: 0 0 0 10px;
-    border-radius: 0;
+    min-height: 32px !important;
+    padding: 0 9px;
+    border-radius: var(--radius);
     font-size: 11px;
   }
 
@@ -661,31 +731,120 @@
   }
 
   .checklist-manage-bar {
-    gap: 8px;
-    padding: 0 0 8px;
+    gap: 0;
+    padding: 0;
+    overflow: clip;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    background: var(--surface);
   }
 
   .checklist-manage-search {
-    min-height: 38px;
+    min-height: 40px;
     grid-template-columns: 16px minmax(0, 1fr) auto;
     gap: 6px;
-    padding-inline: 9px;
+    padding-inline: 10px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .checklist-manage-search:focus-within {
+    border-color: transparent;
+    box-shadow: inset 0 0 0 2px var(--accent-ring);
   }
 
   body .checklist-manage-search input {
-    height: 36px;
-    min-height: 36px !important;
+    height: 38px;
+    min-height: 38px !important;
     font-size: 15px;
   }
 
+  .checklist-mobile-tools-toggle {
+    width: 100%;
+    min-height: 36px;
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto 16px;
+    align-items: center;
+    gap: 7px;
+    padding: 0 10px;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 590;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
+  }
+
+  .checklist-mobile-tools-toggle:hover,
+  .checklist-mobile-tools-toggle.open {
+    background: var(--surface-secondary);
+    color: var(--text);
+  }
+
+  .checklist-mobile-tools-toggle:active {
+    background: var(--surface-tertiary);
+  }
+
+  .checklist-mobile-tools-toggle:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--accent-ring);
+  }
+
+  .checklist-mobile-tools-count {
+    grid-column: 3;
+    min-width: 18px;
+    height: 18px;
+    display: inline-grid;
+    place-items: center;
+    padding: 0 5px;
+    border-radius: var(--radius-pill);
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 680;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+
+  .checklist-mobile-tools-chevron {
+    grid-column: 4;
+    justify-self: end;
+    color: var(--text-tertiary);
+    transform: rotate(0deg);
+    transition: transform var(--duration) var(--ease-out);
+  }
+
+  .checklist-mobile-tools-toggle.open .checklist-mobile-tools-chevron {
+    transform: rotate(180deg);
+  }
+
+  .checklist-tool-collapse {
+    --collapsible-panel-y: -2px;
+    --collapsible-content-y: -2px;
+  }
+
   .checklist-tool-grid {
-    gap: 8px;
+    gap: 0;
+    border-top: 1px solid var(--border);
   }
 
   .checklist-tool-group {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 7px;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .checklist-tool-group + .checklist-tool-group {
+    border-top: 1px solid var(--border);
   }
 
   .checklist-tool-label,
@@ -700,9 +859,20 @@
 
   .checklist-tool-group .custom-select-trigger {
     width: 100%;
-    min-height: 34px !important;
+    min-height: 36px !important;
     padding-inline: 10px;
     font-size: 12px;
+  }
+
+  .checklist-tool-group > .compact-action:last-child {
+    grid-column: 1 / -1;
+    width: auto !important;
+    min-height: 28px !important;
+    justify-self: end;
+    padding-inline: 6px;
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
   }
 
   /* Shared mobile control rhythm. Icon actions are 32px, ordinary controls and
@@ -2366,6 +2536,10 @@
     gap: 6px;
   }
 
+  .correspondence-mode-toolbar {
+    align-items: flex-start;
+  }
+
   .correspondence-mode-bar button {
     width: 100%;
     min-width: 0;
@@ -2382,9 +2556,54 @@
     height: 13px;
   }
 
+  .correspondence-recipient-settings-trigger {
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    min-height: 32px !important;
+  }
+
   .correspondence-composer {
     gap: 10px;
     padding: 11px;
+  }
+
+  .composer-reply-context-toggle {
+    grid-template-columns: 30px minmax(0, 1fr) 28px;
+    gap: 8px;
+    min-height: 54px !important;
+    padding: 8px 8px 8px 10px;
+  }
+
+  .composer-reply-context-avatar {
+    width: 30px;
+    height: 30px;
+    font-size: 9px;
+  }
+
+  .composer-reply-context-meta {
+    flex-wrap: wrap;
+    gap: 3px 6px;
+  }
+
+  .composer-reply-context-meta time {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .composer-reply-context-subject-row {
+    display: grid;
+    gap: 2px;
+  }
+
+  .composer-reply-context-detail {
+    max-height: 200px;
+    margin: 0 10px 10px;
+    padding-top: 9px;
+  }
+
+  .composer-reply-context-route {
+    white-space: normal;
   }
 
   .composer-status-row {
@@ -2551,13 +2770,8 @@
     justify-self: end;
   }
 
-  .fee-action-label {
-    gap: 0;
-    font-size: 0;
-  }
-
   .fee-item-actions > .quiet-action svg,
-  .fee-action-label svg,
+  .fee-action-icon-stage svg,
   .fee-delete-confirm .inline-confirm-idle svg {
     width: 13px;
     height: 13px;
@@ -2576,7 +2790,7 @@
     grid-template-areas:
       "amount currency"
       "notes notes"
-      "waiver actions";
+      "status actions";
     gap: 6px;
     padding: 7px;
   }
@@ -2595,8 +2809,8 @@
     grid-area: notes;
   }
 
-  .fee-add-form > .fee-waiver-toggle {
-    grid-area: waiver;
+  .fee-add-status {
+    grid-area: status;
     justify-self: start;
   }
 
@@ -2611,10 +2825,8 @@
     padding-inline: 9px;
   }
 
-  .fee-add-form > .fee-state-toggle {
-    min-height: 32px;
-    padding-inline: 9px;
-    font-size: 12px;
+  .fee-add-form .fee-status-control {
+    min-height: 30px;
   }
 
   .fee-add-actions {
@@ -2632,25 +2844,27 @@
 
   .fee-edit-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "amount currency"
+      "status status"
+      "date date"
+      "notes notes"
+      "actions actions";
     gap: 8px;
     padding-top: 10px;
   }
 
-  .fee-edit-date,
-  .fee-edit-notes,
-  .fee-edit-form:not(.has-paid-date) .fee-edit-notes,
-  .fee-edit-actions {
-    grid-column: auto;
+  .fee-edit-status {
+    justify-self: start;
   }
 
-  .fee-edit-notes,
-  .fee-edit-form:not(.has-paid-date) .fee-edit-notes,
-  .fee-edit-actions {
-    grid-column: 1 / -1;
+  .fee-edit-form:not(.has-paid-date) .fee-edit-notes {
+    grid-area: notes;
   }
 
-  .fee-state-toggle {
-    min-height: 34px;
+  .fee-status-option {
+    min-height: 26px;
+    padding-inline: 7px;
   }
 
   /* Device experience rows remain one calm grouped list. The action is a
@@ -3249,13 +3463,18 @@
     grid-template-areas:
       "amount currency"
       "notes notes"
-      "waiver waiver"
+      "status status"
       "actions actions";
   }
 
-  .fee-add-form > .fee-waiver-toggle {
+  .fee-add-status,
+  .fee-add-status .fee-status-control {
     width: 100%;
     justify-self: stretch;
+  }
+
+  .fee-add-status .fee-status-option {
+    flex: 1 1 0;
   }
 
   .fee-add-actions {
@@ -3286,7 +3505,9 @@
   .mobile-workspace-view-toggle,
   .mobile-detail-back-fab,
   .kanban-column-grid,
-  .dossier-pane .tab-strip {
+  .dossier-pane .tab-strip,
+  .checklist-progress-ring::before,
+  .checklist-mobile-tools-chevron {
     scroll-behavior: auto;
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;

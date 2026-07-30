@@ -76,6 +76,13 @@ export function schoolLogoInitials(schoolName: string) {
   return `${Array.from(words[0])[0] ?? ''}${Array.from(words[words.length - 1])[0] ?? ''}`.toUpperCase()
 }
 
+export function normalizeSchoolLogoLinkInput(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed || /^[a-z][a-z\d+.-]*:/iu.test(trimmed)) return trimmed
+  if (trimmed.startsWith('//')) return `https:${trimmed}`
+  return `https://${trimmed}`
+}
+
 export function resolveSchoolLogoMimeType(fileName: string, declaredType: string) {
   const normalizedDeclaredType = declaredType.trim().toLowerCase()
   const extension = fileName.trim().toLowerCase().match(/\.([^.]+)$/)?.[1] ?? ''

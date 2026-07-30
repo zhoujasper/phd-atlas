@@ -2,12 +2,13 @@
   "share": {
     "eyebrow": "Schreibgeschützte Vorschau",
     "title": "Teilen Sie „{name}“",
-    "activeLinks": "Aktive Aktien",
+    "activeLinks": "Aktive Freigabelinks",
+    "activeCount": "{count}/{limit} aktive Links",
     "noLinks": "Noch keine Links zum Teilen.",
     "createNew": "Erstellen Sie einen neuen Freigabelink",
     "create": "Teilen-Link erstellen",
     "previewHint": "Wählen Sie ein komplettes Projektpaket oder wählen Sie nur die Seiten aus, die der Empfänger sehen soll.",
-    "linkLabel": "Link teilen",
+    "linkLabel": "Freigabelink",
     "revoke": "Freigabelink widerrufen",
     "neverExpires": "Läuft nie ab",
     "expiresAt": "Läuft ab {date}",
@@ -25,7 +26,7 @@
       "subject": "Geteiltes Element"
     },
     "permission": {
-      "view": "Sicht",
+      "view": "Ansehen",
       "upload": "Dateien hochladen",
       "edit": "Bearbeiten"
     },
@@ -36,7 +37,7 @@
       "30d": "30 Tage",
       "never": "Niemals"
     },
-    "packageMode": "Modus „Paket teilen“.",
+    "packageMode": "Freigabemodus",
     "completePackage": "Komplettes Projekt",
     "completePackageDesc": "Teilen Sie jede öffentliche Projektseite als ein ausgefeiltes Dossier.",
     "customPackage": "Wählen Sie Seiten aus",

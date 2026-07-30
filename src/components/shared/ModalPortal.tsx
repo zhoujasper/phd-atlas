@@ -1,7 +1,18 @@
-import type { ReactNode } from 'react'
+import {
+  Fragment,
+  cloneElement,
+  isValidElement,
+  useLayoutEffect,
+  useState,
+  type ReactNode,
+} from 'react'
 import { createPortal } from 'react-dom'
 
 let cachedModalHost: HTMLElement | null = null
+type ModalPortalState = 'preparing' | 'ready'
+type ModalPortalChildProps = {
+  'data-modal-portal-state'?: ModalPortalState
+}
 
 function getModalHost() {
   // A public/auth route can open a portal before the signed-in shell exists.
@@ -13,7 +24,27 @@ function getModalHost() {
 }
 
 export function ModalPortal({ children }: { children: ReactNode }) {
+  const [portalState, setPortalState] = useState<ModalPortalState>('preparing')
+
+  useLayoutEffect(() => {
+    if (typeof window === 'undefined') return undefined
+    if (
+      typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
+      setPortalState('ready')
+      return undefined
+    }
+
+    const frame = window.requestAnimationFrame(() => setPortalState('ready'))
+    return () => window.cancelAnimationFrame(frame)
+  }, [])
+
   if (typeof document === 'undefined') return null
 
-  return createPortal(children, getModalHost())
+  const portalChildren = isValidElement<ModalPortalChildProps>(children) && children.type !== Fragment
+    ? cloneElement(children, { 'data-modal-portal-state': portalState })
+    : children
+
+  return createPortal(portalChildren, getModalHost())
 }

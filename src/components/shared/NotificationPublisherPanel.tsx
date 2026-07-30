@@ -21,6 +21,8 @@ import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { useModalA11y } from '../hooks/useModalA11y'
 import { ModalPortal } from './ModalPortal'
 import { FileDropzone } from './FileDropzone'
+import { PendingLabel } from './PendingLabel'
+import { downloadCsvFile, escapeCsvValue, parseCsvRows } from './csv'
 
 export type NotificationPublisherRecipient = {
   id: string
@@ -48,45 +50,6 @@ const CSV_MEMBER_COLUMNS = ['member_email', 'email', 'recipient_email', 'member_
 
 function normalizeLookup(value?: string) {
   return value?.trim().toLocaleLowerCase() ?? ''
-}
-
-function parseCsvRows(text: string) {
-  const rows: string[][] = []
-  let row: string[] = []
-  let cell = ''
-  let inQuotes = false
-
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index]
-    const next = text[index + 1]
-    if (char === '"') {
-      if (inQuotes && next === '"') {
-        cell += '"'
-        index += 1
-      } else {
-        inQuotes = !inQuotes
-      }
-      continue
-    }
-    if (char === ',' && !inQuotes) {
-      row.push(cell.trim())
-      cell = ''
-      continue
-    }
-    if ((char === '\n' || char === '\r') && !inQuotes) {
-      if (char === '\r' && next === '\n') index += 1
-      row.push(cell.trim())
-      if (row.some(Boolean)) rows.push(row)
-      row = []
-      cell = ''
-      continue
-    }
-    cell += char
-  }
-
-  row.push(cell.trim())
-  if (row.some(Boolean)) rows.push(row)
-  return rows
 }
 
 function csvValue(row: string[], headers: Map<string, number>, candidates: string[]) {
@@ -144,11 +107,6 @@ function buildCsvPreview(text: string, recipients: NotificationPublisherRecipien
     matchedMembers: groups.reduce((total, group) => total + group.memberIds.length, 0),
     skippedRows,
   }
-}
-
-function csvEscape(value: string) {
-  if (!/[",\n\r]/.test(value)) return value
-  return `"${value.replace(/"/g, '""')}"`
 }
 
 export function NotificationPublisherPanel({
@@ -227,21 +185,21 @@ export function NotificationPublisherPanel({
   const csvImportClose = useAnimatedClose(csvImportOpen, () => setCsvImportOpen(false))
 
   const composeDialogRef = useModalA11y<HTMLDivElement>({
-    open: composeOpen && !composeClose.exiting,
+    open: composeOpen,
     onClose: () => {
       if (!sending) composeClose.requestClose()
     },
     initialFocusRef: titleInputRef,
   })
   const groupDialogRef = useModalA11y<HTMLDivElement>({
-    open: groupDialogOpen && !groupClose.exiting,
+    open: groupDialogOpen,
     onClose: () => {
       if (!groupBusy && !csvBusy && !csvImportOpen) groupClose.requestClose()
     },
     initialFocusRef: groupNameInputRef,
   })
   const csvImportDialogRef = useModalA11y<HTMLDivElement>({
-    open: csvImportOpen && !csvImportClose.exiting,
+    open: csvImportOpen,
     onClose: () => {
       if (!csvBusy) csvImportClose.requestClose()
     },
@@ -386,6 +344,7 @@ export function NotificationPublisherPanel({
       setGroupMemberIds(new Set())
       setGroupRecipientQuery('')
       setGroupMessage({ type: 'success', text: tx('notificationPublisher.groupCreated') })
+      groupNameInputRef.current?.focus({ preventScroll: true })
     } catch (error) {
       setGroupMessage({ type: 'error', text: normalizeErrorMessage(error, lang) })
     } finally {
@@ -471,14 +430,8 @@ export function NotificationPublisherPanel({
       ['group_name', 'member_email'],
       [tx('notificationPublisher.templateGroupOne'), sampleEmail],
       [tx('notificationPublisher.templateGroupTwo'), secondEmail],
-    ].map((row) => row.map(csvEscape).join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
-    const href = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = href
-    link.download = tx('notificationPublisher.csvTemplateFilename')
-    link.click()
-    URL.revokeObjectURL(href)
+    ].map((row) => row.map(escapeCsvValue).join(',')).join('\n')
+    downloadCsvFile(csv, tx('notificationPublisher.csvTemplateFilename'))
   }
 
   const handleImportCsvGroups = async () => {
@@ -614,26 +567,26 @@ export function NotificationPublisherPanel({
             <span className="eyebrow">{tx('notificationPublisher.groupDialogEyebrow')}</span>
             <h3 id={groupTitleId}>{tx('notificationPublisher.groupDialogTitle')}</h3>
             <p id={groupDescId}>{tx('notificationPublisher.groupDialogDesc')}</p>
-            <div className="notification-group-dialog-tools">
-              <button type="button" className="quiet-action compact-action" onClick={openCsvImport} disabled={groupBusy || csvBusy}>
-                <UploadCloud size={13} aria-hidden="true" />
-                {tx('notificationPublisher.csvImportTitle')}
-              </button>
-            </div>
           </div>
-          <button
-            type="button"
-            className="notification-dialog-close"
-            onClick={() => groupClose.requestClose()}
-            disabled={groupBusy || csvBusy || csvImportOpen}
-            aria-label={tx('notificationPublisher.closeDialog')}
-          >
-            <X size={15} aria-hidden="true" />
-          </button>
+          <div className="notification-dialog-head-actions">
+            <button type="button" className="quiet-action compact-action" onClick={openCsvImport} disabled={groupBusy || csvBusy}>
+              <UploadCloud size={13} aria-hidden="true" />
+              {tx('notificationPublisher.csvImportTitle')}
+            </button>
+            <button
+              type="button"
+              className="notification-dialog-close"
+              onClick={() => groupClose.requestClose()}
+              disabled={groupBusy || csvBusy || csvImportOpen}
+              aria-label={tx('notificationPublisher.closeDialog')}
+            >
+              <X size={15} aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
         <div className="notification-group-dialog-grid">
-          <section className="notification-group-manager-section">
+          <aside className="notification-group-manager-section notification-group-library">
             <div className="notification-publisher-section-head">
               <div>
                 <strong>{tx('notificationPublisher.savedGroupsTitle')}</strong>
@@ -654,7 +607,7 @@ export function NotificationPublisherPanel({
                       onClick={() => void handleDeleteGroup(group.id)}
                       disabled={deletingGroupId === group.id}
                       aria-label={format(tx('notificationPublisher.deleteGroup'), { name: group.name })}
-                      title={format(tx('notificationPublisher.deleteGroup'), { name: group.name })}
+                      aria-busy={deletingGroupId === group.id}
                     >
                       <Trash2 size={12} aria-hidden="true" />
                     </button>
@@ -668,16 +621,30 @@ export function NotificationPublisherPanel({
                 <p>{tx('notificationPublisher.noSavedGroupsDesc')}</p>
               </div>
             )}
-          </section>
+          </aside>
 
-          <section className="notification-group-manager-section">
+          <section className="notification-group-manager-section notification-group-builder">
             <div className="notification-publisher-section-head">
               <div>
                 <strong>{tx('notificationPublisher.manualGroupTitle')}</strong>
-                <span>{tx('notificationPublisher.groupBuilderHint')}</span>
+                <span>
+                  {groupMemberIds.size > 0
+                    ? format(tx('notificationPublisher.groupMemberCount'), { count: groupMemberIds.size })
+                    : tx('notificationPublisher.groupBuilderHint')}
+                </span>
               </div>
+              {groupMemberIds.size > 0 ? (
+                <button
+                  type="button"
+                  className="notification-publisher-clear"
+                  onClick={() => setGroupMemberIds(new Set())}
+                >
+                  <X size={12} aria-hidden="true" />
+                  {tx('notificationPublisher.clearTargets')}
+                </button>
+              ) : null}
             </div>
-            <label className="team-field">
+            <label className="notification-group-name-field">
               <span>{tx('notificationPublisher.groupName')}</span>
               <input
                 ref={groupNameInputRef}
@@ -695,7 +662,7 @@ export function NotificationPublisherPanel({
                 placeholder={tx('notificationPublisher.searchRecipients')}
               />
             </label>
-            <div className="notification-publisher-recipient-list compact">
+            <div className="notification-publisher-recipient-list compact notification-group-recipient-list">
               {filteredGroupRecipients.length === 0 ? (
                 <div className="notification-publisher-empty-row">
                   <Users size={15} aria-hidden="true" />
@@ -719,24 +686,35 @@ export function NotificationPublisherPanel({
                 </label>
               ))}
             </div>
-            <button
-              type="button"
-              className="quiet-action notification-publisher-create-group"
-              onClick={() => void handleCreateGroup()}
-              disabled={!canCreateGroup}
-            >
-              <Users size={13} aria-hidden="true" />
-              {groupBusy ? tx('working') : format(tx('notificationPublisher.createGroup'), { count: groupMemberIds.size })}
-            </button>
           </section>
-
         </div>
 
-        <div className="notification-dialog-footer">
-          {groupMessage ? <p className={`notification-publisher-message ${groupMessage.type}`}>{groupMessage.text}</p> : <span />}
-          <button type="button" className="quiet-action compact-action" onClick={() => groupClose.requestClose()} disabled={groupBusy || csvBusy || csvImportOpen}>
-            {tx('done')}
-          </button>
+        <div className="notification-dialog-footer notification-group-dialog-footer">
+          {groupMessage ? (
+            <p className={`notification-publisher-message ${groupMessage.type}`} role="status">{groupMessage.text}</p>
+          ) : (
+            <span className="notification-group-footer-summary">
+              {format(tx('notificationPublisher.groupMemberCount'), { count: groupMemberIds.size })}
+            </span>
+          )}
+          <div className="notification-group-dialog-actions">
+            <button type="button" className="quiet-action compact-action" onClick={() => groupClose.requestClose()} disabled={groupBusy || csvBusy || csvImportOpen}>
+              {tx('done')}
+            </button>
+            <button
+              type="button"
+              className="primary-action compact-action notification-publisher-create-group"
+              onClick={() => void handleCreateGroup()}
+              disabled={!canCreateGroup}
+              aria-busy={groupBusy}
+            >
+              {groupBusy ? (
+                <PendingLabel label={tx('working')} />
+              ) : (
+                <><Users size={13} aria-hidden="true" /> {format(tx('notificationPublisher.createGroup'), { count: groupMemberIds.size })}</>
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -833,9 +811,13 @@ export function NotificationPublisherPanel({
                 className="primary-action compact-action"
                 onClick={() => void handleImportCsvGroups()}
                 disabled={!canImportGroups}
+                aria-busy={csvBusy || undefined}
               >
-                <UploadCloud size={13} aria-hidden="true" />
-                {csvBusy ? tx('working') : format(tx('notificationPublisher.importGroups'), { count: csvPreview.groups.length })}
+                {csvBusy ? (
+                  <PendingLabel label={tx('working')} />
+                ) : (
+                  <><UploadCloud size={13} aria-hidden="true" /> {format(tx('notificationPublisher.importGroups'), { count: csvPreview.groups.length })}</>
+                )}
               </button>
             ) : null}
           </div>
@@ -948,9 +930,12 @@ export function NotificationPublisherPanel({
 
           <div className="notification-dialog-footer">
             {message ? <p className={`notification-publisher-message ${message.type}`}>{message.text}</p> : <span />}
-            <button type="submit" className="primary-action compact-action" disabled={!canSend}>
-              <Send size={13} aria-hidden="true" />
-              {sending ? tx('working') : tx('notificationPublisher.send')}
+            <button type="submit" className="primary-action compact-action" disabled={!canSend} aria-busy={sending || undefined}>
+              {sending ? (
+                <PendingLabel label={tx('working')} />
+              ) : (
+                <><Send size={13} aria-hidden="true" /> {tx('notificationPublisher.send')}</>
+              )}
             </button>
           </div>
         </form>

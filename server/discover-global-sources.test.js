@@ -66,7 +66,7 @@ describe('Discover global institution sources', () => {
   it('round-robins every selected region before spending extra country slots', async () => {
     const calls = []
     const sources = await discoverGlobalInstitutionSources({
-      terms: ['machine learning'],
+      terms: ['机器学习', 'machine learning', 'robotics'],
       regions: ['US', 'UK', 'EU', 'CA', 'SG', 'HK', 'CN', 'AU', 'OTHER'],
       limit: 9,
       fetchImpl: openAlexFixtureFetch(calls),
@@ -81,6 +81,12 @@ describe('Discover global institution sources', () => {
       && source.url.startsWith('https://')
     ))).toBe(true)
     expect(calls.every((url) => url.hostname === 'api.openalex.org')).toBe(true)
+    expect(new Set(calls
+      .filter((url) => url.searchParams.get('group_by') === 'authorships.institutions.country_code')
+      .map((url) => url.searchParams.get('search')))).toEqual(new Set([
+      'machine learning',
+      'robotics',
+    ]))
   })
 
   it('treats non-curated countries as OTHER and removes existing official domains', async () => {
@@ -99,5 +105,48 @@ describe('Discover global institution sources', () => {
 
     expect(sources).toEqual([])
     expect(calls.some((url) => url.searchParams.get('filter')?.includes('country_code:IN'))).toBe(true)
+  })
+
+  it('keeps a healthy research direction when a peer OpenAlex query fails', async () => {
+    const calls = []
+    const fixture = openAlexFixtureFetch(calls)
+    const sources = await discoverGlobalInstitutionSources({
+      terms: ['machine learning', 'robotics'],
+      regions: ['US'],
+      limit: 1,
+      fetchImpl: async (value) => {
+        const url = new URL(String(value))
+        if (url.searchParams.get('search') === 'robotics') return jsonResponse({}, 404)
+        return fixture(value)
+      },
+    })
+
+    expect(sources).toHaveLength(1)
+    expect(sources[0]).toMatchObject({
+      region: 'US',
+      school: 'US Research University',
+    })
+  })
+
+  it('uses stable topic IDs for broad institution discovery when available', async () => {
+    const calls = []
+    await discoverGlobalInstitutionSources({
+      terms: ['constitutional law', 'comparative public law'],
+      topics: [{
+        id: 'T12345',
+        query: 'constitutional law',
+        displayName: 'Comparative Constitutional Law',
+      }],
+      regions: ['UK'],
+      limit: 1,
+      fetchImpl: openAlexFixtureFetch(calls),
+    })
+
+    const groupedWorkCalls = calls.filter((url) => url.pathname === '/works')
+    expect(groupedWorkCalls.some((url) => (
+      url.searchParams.get('filter')?.includes('topics.id:T12345')
+      && !url.searchParams.has('search')
+    ))).toBe(true)
+    expect(groupedWorkCalls.some((url) => url.searchParams.get('search') === 'comparative public law')).toBe(true)
   })
 })

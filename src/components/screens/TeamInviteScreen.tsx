@@ -4,6 +4,7 @@ import { phdApi, type AuthSession, type TeamInvitePreview } from '../../api/phdA
 import { normalizeErrorMessage } from '../../errorMessages'
 import { useI18n } from '../hooks/useI18n'
 import { LaunchScreen } from '../shared/LaunchScreen'
+import { PendingLabel } from '../shared/PendingLabel'
 
 const SESSION_KEY = 'phd-atlas-session'
 
@@ -118,8 +119,8 @@ export function TeamInviteScreen({ token }: { token: string }) {
               </>
             ) : (
               <div className="auth-actions">
-                <button type="button" className="primary-action" disabled={busy} onClick={handleAccept}>
-                  {busy ? tx('working') : tx('team.inviteAccept')}
+                <button type="button" className="primary-action" disabled={busy} aria-busy={busy || undefined} onClick={handleAccept}>
+                  {busy ? <PendingLabel label={tx('working')} /> : tx('team.inviteAccept')}
                 </button>
                 <button type="button" className="quiet-action" disabled={busy} onClick={handleDecline}>
                   {tx('team.inviteDecline')}

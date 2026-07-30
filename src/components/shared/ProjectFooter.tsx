@@ -67,7 +67,7 @@ export function ProjectFooter() {
   )
   const closeSupport = () => requestClose(() => setSupportOpen(false))
   const dialogRef = useModalA11y<HTMLDivElement>({
-    open: supportOpen && !exiting,
+    open: supportOpen,
     onClose: closeSupport,
     initialFocusRef: closeButtonRef,
   })

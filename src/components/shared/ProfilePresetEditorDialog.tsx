@@ -17,6 +17,7 @@ import { useI18n } from '../hooks/useI18n'
 import { useModalA11y } from '../hooks/useModalA11y'
 import { ModalPortal } from './ModalPortal'
 import { InfoTooltip } from './InfoTooltip'
+import { PendingLabel } from './PendingLabel'
 import { ProfileAppearancePicker } from './ProfileAppearancePicker'
 
 export type ProfilePresetEditorValue = TeamProfilePresetInput
@@ -98,7 +99,7 @@ export function ProfilePresetEditorDialog({
 
   const { exiting, requestClose } = useAnimatedClose(open, onClose, 120)
   const dialogRef = useModalA11y<HTMLElement>({
-    open: open && !exiting,
+    open,
     onClose: () => requestClose(),
     initialFocusRef: nameRef,
   })
@@ -252,8 +253,12 @@ export function ProfilePresetEditorDialog({
 
             <div className="profile-preset-editor-actions">
               <button type="button" className="secondary-action" onClick={() => requestClose()}>{tx('cancel')}</button>
-              <button type="submit" className="primary-action" disabled={!valid || saving}>
-                <Save size={13} aria-hidden="true" /> {saving ? tx('working') : tx('profile.savePreset')}
+              <button type="submit" className="primary-action" disabled={!valid || saving} aria-busy={saving || undefined}>
+                {saving ? (
+                  <PendingLabel label={tx('working')} />
+                ) : (
+                  <><Save size={13} aria-hidden="true" /> {tx('profile.savePreset')}</>
+                )}
               </button>
             </div>
           </form>

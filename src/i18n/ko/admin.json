@@ -75,6 +75,8 @@
     "editShareQuota": "공유 링크 제한 수정",
     "editShareCreateQuota": "평생 공유 링크 제한 수정",
     "editStorageQuota": "저장용량 수정",
+    "quotaUsageHelpLabel": "사용량 한도 사용 방법",
+    "quotaUsageHelp": "사용량 행 위에 마우스를 올리고 연필을 선택해 한도를 수정하세요. -1을 입력하면 해당 한도가 무제한(∞)으로 설정됩니다.",
     "recordUsage": "{count}/{limit} 기록",
     "recordUsageLabel": "신청기록 활용",
     "recordCreateUsage": "{count}/{limit} 생성됨",

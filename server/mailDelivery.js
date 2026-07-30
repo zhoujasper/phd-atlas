@@ -17,6 +17,7 @@ async function deliverEmail(store, smtpSettings, {
   text,
   html,
   attachments = [],
+  messageId,
   scope,
   metadata,
 }) {
@@ -36,6 +37,7 @@ async function deliverEmail(store, smtpSettings, {
       text,
       html,
       attachments,
+      messageId,
     })
     logEvent(store, {
       scope,

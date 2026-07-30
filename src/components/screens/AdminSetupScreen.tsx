@@ -25,6 +25,7 @@ import { languageOptions, type Language } from '../../i18n'
 import { Select } from '../shared/Select'
 import { SwitchControl } from '../shared/SwitchControl'
 import { CollapsiblePanel } from '../shared/CollapsiblePanel'
+import { PendingLabel } from '../shared/PendingLabel'
 
 type SetupStep = 'account' | 'security' | 'storage' | 'mail' | 'review'
 type SmtpVerificationState = 'idle' | 'sending' | 'sent' | 'checking' | 'verified'
@@ -81,17 +82,15 @@ export function AdminSetupScreen({
   const [smtpVerificationState, setSmtpVerificationState] = useState<SmtpVerificationState>('idle')
   const [smtpVerificationError, setSmtpVerificationError] = useState<string | null>(null)
 
-  const fetchSecrets = useCallback(async () => {
+  const fetchSecrets = useCallback(async (signal?: AbortSignal) => {
     setSecretsLoading(true)
     try {
-      const response = await fetch('/api/setup/secrets')
-      if (!response.ok) return
-      const data = await response.json()
-      if (data.ok && data.data) setSecrets(data.data)
+      const data = await phdApi.initialSetupSecrets({ signal })
+      if (!signal?.aborted) setSecrets(data)
     } catch {
       // Non-critical
     } finally {
-      setSecretsLoading(false)
+      if (!signal?.aborted) setSecretsLoading(false)
     }
   }, [])
 
@@ -99,14 +98,7 @@ export function AdminSetupScreen({
     setRegenerating(true)
     setShowRegenConfirm(false)
     try {
-      const response = await fetch('/api/setup/secrets/regenerate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirm: 'REGENERATE' }),
-      })
-      if (!response.ok) return
-      const data = await response.json()
-      if (data.ok && data.data) setSecrets(data.data)
+      setSecrets(await phdApi.regenerateInitialSetupSecrets())
     } catch {
       // Non-critical
     } finally {
@@ -116,7 +108,10 @@ export function AdminSetupScreen({
 
   // Fetch secrets when the security step becomes active
   useEffect(() => {
-    if (step === 'security' && !secrets) fetchSecrets()
+    if (step !== 'security' || secrets) return undefined
+    const controller = new AbortController()
+    void fetchSecrets(controller.signal)
+    return () => controller.abort()
   }, [step, secrets, fetchSecrets])
 
   const copyToClipboard = useCallback(async (text: string, key: string) => {
@@ -416,8 +411,7 @@ export function AdminSetupScreen({
               <div className="admin-setup-fields">
                 {secretsLoading ? (
                   <div className="admin-setup-secrets-loading">
-                    <span className="admin-setup-spinner" aria-hidden="true" />
-                    <span>{tx('admin.setup.verifying')}</span>
+                    <PendingLabel label={tx('admin.setup.verifying')} />
                   </div>
                 ) : secrets ? (
                   <>
@@ -753,9 +747,12 @@ export function AdminSetupScreen({
                 {tx('admin.setup.continue')} <ArrowRight size={14} aria-hidden="true" />
               </button>
             ) : (
-              <button type="button" className="primary-action" onClick={() => void submit()} disabled={busy}>
-                {busy ? tx('admin.setup.verifying') : tx('admin.setup.finish')}
-                {busy ? <span className="admin-setup-spinner" aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}
+              <button type="button" className="primary-action" onClick={() => void submit()} disabled={busy} aria-busy={busy || undefined}>
+                {busy ? (
+                  <PendingLabel label={tx('admin.setup.verifying')} />
+                ) : (
+                  <>{tx('admin.setup.finish')}<Check size={14} aria-hidden="true" /></>
+                )}
               </button>
             )}
           </footer>

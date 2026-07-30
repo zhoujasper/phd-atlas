@@ -80,7 +80,7 @@ describe('Rail i18n', () => {
     expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
   })
 
-  it('shows assigned-student audit but keeps organization settings out of the teacher team rail', () => {
+  it('keeps owner-only Audit and Settings out of the teacher team rail', () => {
     render(
       <I18nContext.Provider value={{
         lang: 'en',
@@ -104,9 +104,9 @@ describe('Rail i18n', () => {
     )
 
     const nav = screen.getByRole('navigation')
-    expect(nav.querySelectorAll('button')).toHaveLength(6)
+    expect(nav.querySelectorAll('button')).toHaveLength(5)
     expect(screen.getByRole('button', { name: 'Discover' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Audit' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Audit' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
   })
 

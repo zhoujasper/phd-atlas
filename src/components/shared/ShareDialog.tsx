@@ -164,7 +164,7 @@ export function ShareDialog({
     }
   }, [sharePage, sharePageCount])
 
-  const dialogRef = useModalA11y({ open: open && !exiting && Boolean(application), onClose: () => requestClose() })
+  const dialogRef = useModalA11y({ open: open && Boolean(application), onClose: () => requestClose() })
 
   if (!open || !application) return null
 
@@ -221,7 +221,7 @@ export function ShareDialog({
             <Link2 size={13} aria-hidden="true" />
             <span>{tx('share.activeLinks')}</span>
             {shares.length > 0 && <span className="share-count-badge">{shares.length}</span>}
-            <span className="share-quota-note">{format(tx('settings.shareCount'), { count: totalActiveShares, limit: resolvedShareQuota })}</span>
+            <span className="share-quota-note">{format(tx('share.activeCount'), { count: totalActiveShares, limit: resolvedShareQuota })}</span>
           </div>
 
           {shares.length === 0 ? (

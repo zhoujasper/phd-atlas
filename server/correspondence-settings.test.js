@@ -2,14 +2,63 @@ import { describe, expect, it } from 'vitest'
 import {
   AdminSettingsPatchSchema,
   AdminUserPatchSchema,
+  ApplicationSchema,
   CommunicationCreateSchema,
   CommunicationPatchSchema,
+  CommunicationSendSchema,
   RegisterSchema,
   UserSettingsPatchSchema,
   parseOrThrow,
 } from './validation.js'
 
 describe('correspondence and mailbox validation', () => {
+  it('accepts nine additional application recipient addresses and rejects a tenth', () => {
+    const application = {
+      id: 'app_multi_recipient',
+      professor: {
+        english: 'Professor Lee',
+        chinese: '',
+        email: 'primary@example.edu',
+        correspondenceEmails: Array.from({ length: 9 }, (_, index) => `alias-${index}@example.edu`),
+        phone: '',
+        social: '',
+        homepage: '',
+        research: 'Human-computer interaction',
+        lab: 'Interaction Lab',
+      },
+      school: {
+        name: 'Example University',
+        country: 'United Kingdom',
+        website: '',
+      },
+      program: 'Computer Science PhD',
+      deadline: '2026-12-01',
+      status: 'Preparing',
+      progress: 10,
+      priority: 50,
+      tags: [],
+      nextReminder: '2026-08-01',
+      result: '',
+      materials: [],
+      communications: [],
+      scholarships: [],
+      tasks: [],
+      timeline: [],
+    }
+
+    expect(parseOrThrow(ApplicationSchema, application).professor.correspondenceEmails).toHaveLength(9)
+    expect(() => parseOrThrow(ApplicationSchema, {
+      ...application,
+      professor: {
+        ...application.professor,
+        correspondenceEmails: [
+          ...application.professor.correspondenceEmails,
+          'overflow@example.edu',
+        ],
+      },
+    })).toThrow()
+  })
+
   it('accepts correspondence records with timeline metadata', () => {
     const record = parseOrThrow(CommunicationCreateSchema, {
       subject: 'Research follow-up',
@@ -46,6 +95,34 @@ describe('correspondence and mailbox validation', () => {
 
     expect(() => parseOrThrow(CommunicationPatchSchema, {
       subject: '',
+    })).toThrow()
+  })
+
+  it('accepts an explicit send-time recipient tracking decision', () => {
+    const send = parseOrThrow(CommunicationSendSchema, {
+      subject: 'Research follow-up',
+      summary: 'Thank you for the detailed reply.',
+      date: '2026-07-29',
+      to: 'lab@example.edu',
+      trackRecipient: true,
+      bodyFormat: 'markdown',
+    })
+
+    expect(send).toMatchObject({
+      to: 'lab@example.edu',
+      trackRecipient: true,
+      bodyFormat: 'markdown',
+    })
+    expect(parseOrThrow(CommunicationSendSchema, {
+      subject: 'Research follow-up',
+      summary: 'Thank you.',
+      date: '2026-07-29',
+    }).trackRecipient).toBe(false)
+    expect(() => parseOrThrow(CommunicationSendSchema, {
+      subject: 'Research follow-up',
+      summary: 'Thank you.',
+      date: '2026-07-29',
+      bodyFormat: 'rtf',
     })).toThrow()
   })
 
@@ -155,6 +232,19 @@ describe('correspondence and mailbox validation', () => {
       applicationQuota: 80,
       shareQuota: 150,
     })
+    expect(parseOrThrow(AdminUserPatchSchema, {
+      storageQuotaMb: -1,
+      applicationQuota: -1,
+      applicationCreateQuota: -1,
+      shareQuota: -1,
+      shareCreateQuota: -1,
+    })).toEqual({
+      storageQuotaMb: -1,
+      applicationQuota: -1,
+      applicationCreateQuota: -1,
+      shareQuota: -1,
+      shareCreateQuota: -1,
+    })
     expect(() => parseOrThrow(AdminUserPatchSchema, {
       role: 'teacher',
     })).toThrow()
@@ -166,6 +256,9 @@ describe('correspondence and mailbox validation', () => {
     })).toThrow()
     expect(() => parseOrThrow(AdminUserPatchSchema, {
       shareQuota: 0,
+    })).toThrow()
+    expect(() => parseOrThrow(AdminUserPatchSchema, {
+      storageQuotaMb: -2,
     })).toThrow()
   })
 })

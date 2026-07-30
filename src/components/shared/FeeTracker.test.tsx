@@ -34,7 +34,7 @@ type FeePatch = {
 }
 
 function renderFeeTracker(
-  onUpdate: (feeId: string, patch: FeePatch) => void | Promise<void>,
+  onUpdate: (feeId: string, patch: FeePatch) => boolean | void | Promise<boolean | void>,
   fees: Array<typeof paidFee | typeof unpaidFee> = [paidFee],
   onDelete = vi.fn(),
   onAdd = vi.fn(),
@@ -85,7 +85,7 @@ describe('FeeTracker editing', () => {
     const amount = within(fee!).getByRole('spinbutton', { name: 'Amount' })
     await user.clear(amount)
     await user.type(amount, '95')
-    await user.click(within(fee!).getByRole('button', { name: 'Paid' }))
+    await user.click(within(fee!).getByRole('button', { name: 'Remaining' }))
 
     const notes = within(fee!).getByRole('textbox', { name: 'Notes' })
     await user.clear(notes)
@@ -101,6 +101,52 @@ describe('FeeTracker editing', () => {
     })
     await waitFor(() => expect(fee).not.toHaveClass('editing'))
     expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
+  })
+
+  it('keeps paid, waived, and remaining in one mutually exclusive status group', async () => {
+    const user = userEvent.setup()
+    renderFeeTracker(vi.fn(async () => {}))
+
+    const fee = document.getElementById('fee-paid-fee')!
+    await user.click(within(fee).getByRole('button', { name: 'Edit fee: 80 GBP' }))
+
+    const statusGroup = within(fee).getByRole('group', { name: 'Status' })
+    const remaining = within(statusGroup).getByRole('button', { name: 'Remaining' })
+    const paid = within(statusGroup).getByRole('button', { name: 'Paid' })
+    const waived = within(statusGroup).getByRole('button', { name: 'Waived' })
+
+    expect(statusGroup).toHaveStyle({ '--fee-status-count': '3', '--fee-status-index': '1' })
+    expect(statusGroup.querySelector('.fee-status-indicator')).toBeInTheDocument()
+    expect(paid).toHaveAttribute('aria-pressed', 'true')
+    expect(remaining).toHaveAttribute('aria-pressed', 'false')
+    expect(waived).toHaveAttribute('aria-pressed', 'false')
+
+    await user.click(waived)
+    expect(statusGroup).toHaveStyle({ '--fee-status-index': '2' })
+    expect(waived).toHaveAttribute('aria-pressed', 'true')
+    expect(paid).toHaveAttribute('aria-pressed', 'false')
+
+    await user.click(remaining)
+    expect(statusGroup).toHaveStyle({ '--fee-status-index': '0' })
+    expect(remaining).toHaveAttribute('aria-pressed', 'true')
+    expect(waived).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('keeps an explicit fee editor open when persistence reports a failure', async () => {
+    const user = userEvent.setup()
+    const onUpdate = vi.fn(async () => false)
+    renderFeeTracker(onUpdate)
+
+    const fee = document.getElementById('fee-paid-fee')!
+    await user.click(within(fee).getByRole('button', { name: 'Edit fee: 80 GBP' }))
+    const amount = within(fee).getByRole('spinbutton', { name: 'Amount' })
+    await user.clear(amount)
+    await user.type(amount, '95')
+    await user.click(within(fee).getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledOnce())
+    expect(fee).toHaveClass('editing')
+    expect(within(fee).getByRole('spinbutton', { name: 'Amount' })).toHaveValue(95)
   })
 
   it('toggles expand and collapse with a single click when nothing changed', async () => {

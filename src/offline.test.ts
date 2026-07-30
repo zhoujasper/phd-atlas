@@ -6,6 +6,7 @@ import {
   enqueueApplicationUpdate,
   isNetworkLikeError,
   loadOfflineSnapshot,
+  markOfflineQueueItemBlocked,
   mergeOfflineApplicationUpdate,
   offlineAccessForSession,
   readOfflineQueue,
@@ -155,6 +156,10 @@ describe('offline queue safeguards', () => {
         channel: 'Email',
         date: '2026-07-08',
         summary: 'Follow-up',
+        deliveryStatus: 'queued',
+        scheduledAt: '2026-07-29T12:00:00.000Z',
+        deliveryId: 'private-delivery-id',
+        deliveryUserId: 'private-delivery-user',
         sourceMessageKey: 'private-message-key',
         sourceMailbox: 'private-mailbox',
         attachments: [{
@@ -189,6 +194,8 @@ describe('offline queue safeguards', () => {
     expect(data?.applications[0].materials[0]).not.toHaveProperty('storageName')
     expect(data?.applications[0].materials[0].versions?.[0]).not.toHaveProperty('fileId')
     expect(data?.applications[0].communications[0]).not.toHaveProperty('sourceMessageKey')
+    expect(data?.applications[0].communications[0]).not.toHaveProperty('deliveryId')
+    expect(data?.applications[0].communications[0]).not.toHaveProperty('scheduledAt')
     expect(data?.applications[0].communications[0].attachments?.[0]).not.toHaveProperty('fileId')
     expect(offlineStorageValue('phd-atlas-offline-snapshot:v3:').value).not.toContain('private-')
     expect(data).toMatchObject({
@@ -260,6 +267,34 @@ describe('offline queue safeguards', () => {
     expect(queue[0].application.progress).toBe(35)
   })
 
+  it('folds a newer local edit into an older blocked entry so it can retry automatically', () => {
+    enqueueApplicationUpdate(
+      session,
+      application,
+      application.updatedAt ?? null,
+      application,
+    )
+    const blocked = readOfflineQueue(session.user.id)[0]
+    markOfflineQueueItemBlocked(session.user.id, blocked.id, 'conflict')
+
+    enqueueApplicationUpdate(
+      session,
+      { ...application, progress: 35 },
+      '2026-07-09T00:00:00.000Z',
+      application,
+    )
+
+    const queue = readOfflineQueue(session.user.id)
+    expect(queue).toHaveLength(1)
+    expect(queue[0]).toMatchObject({
+      id: blocked.id,
+      status: 'pending',
+      baseUpdatedAt: application.updatedAt,
+    })
+    expect(queue[0]).not.toHaveProperty('blockedReason')
+    expect(queue[0].application.progress).toBe(35)
+  })
+
   it('automatically merges offline and server edits made to different application fields', () => {
     const local = { ...application, progress: 35 }
     enqueueApplicationUpdate(
@@ -268,7 +303,10 @@ describe('offline queue safeguards', () => {
       application.updatedAt ?? null,
       application,
     )
-    const operation = readOfflineQueue(session.user.id)[0]
+    const operation = {
+      ...readOfflineQueue(session.user.id)[0],
+      localEditedAt: '2026-07-08T12:00:00.000Z',
+    }
     const server = {
       ...application,
       priority: 92,
@@ -281,23 +319,86 @@ describe('offline queue safeguards', () => {
     expect(result?.application.progress).toBe(35)
     expect(result?.application.priority).toBe(92)
     expect(result?.application.updatedAt).toBe(server.updatedAt)
+    expect(result?.replayRequired).toBe(true)
   })
 
-  it('keeps overlapping offline/server edits blocked instead of overwriting either copy', () => {
+  it('uses the newer offline value for an overlapping field without manual review', () => {
     enqueueApplicationUpdate(
       session,
       { ...application, progress: 35 },
       application.updatedAt ?? null,
       application,
     )
-    const operation = readOfflineQueue(session.user.id)[0]
+    const operation = {
+      ...readOfflineQueue(session.user.id)[0],
+      localEditedAt: '2026-07-10T00:00:00.000Z',
+    }
+    const server = {
+      ...application,
+      progress: 60,
+      priority: 92,
+      updatedAt: '2026-07-09T00:00:00.000Z',
+    }
+
+    const result = mergeOfflineApplicationUpdate(operation, server)
+
+    expect(result?.merged).toBe(true)
+    expect(result?.application.progress).toBe(35)
+    expect(result?.application.priority).toBe(92)
+    expect(result?.application.updatedAt).toBe(server.updatedAt)
+    expect(result?.replayRequired).toBe(true)
+  })
+
+  it('keeps the newer server value for an overlapping field without replaying an identical record', () => {
+    enqueueApplicationUpdate(
+      session,
+      { ...application, progress: 35 },
+      application.updatedAt ?? null,
+      application,
+    )
+    const operation = {
+      ...readOfflineQueue(session.user.id)[0],
+      localEditedAt: '2026-07-08T12:00:00.000Z',
+    }
     const server = {
       ...application,
       progress: 60,
       updatedAt: '2026-07-09T00:00:00.000Z',
     }
 
-    expect(mergeOfflineApplicationUpdate(operation, server)).toBeNull()
+    const result = mergeOfflineApplicationUpdate(operation, server)
+
+    expect(result?.merged).toBe(true)
+    expect(result?.application.progress).toBe(60)
+    expect(result?.application.updatedAt).toBe(server.updatedAt)
+    expect(result?.replayRequired).toBe(false)
+  })
+
+  it('does not mistake an older blocked-status timestamp for a newer local edit', () => {
+    enqueueApplicationUpdate(
+      session,
+      { ...application, progress: 35 },
+      application.updatedAt ?? null,
+      application,
+    )
+    const queued = readOfflineQueue(session.user.id)[0]
+    const legacyBlockedOperation = {
+      ...queued,
+      status: 'blocked' as const,
+      createdAt: '2026-07-08T12:00:00.000Z',
+      updatedAt: '2026-07-10T00:00:00.000Z',
+      localEditedAt: undefined,
+    }
+    const server = {
+      ...application,
+      progress: 60,
+      updatedAt: '2026-07-09T00:00:00.000Z',
+    }
+
+    const result = mergeOfflineApplicationUpdate(legacyBlockedOperation, server)
+
+    expect(result?.application.progress).toBe(60)
+    expect(result?.replayRequired).toBe(false)
   })
 
   it('drops a locally tampered offline queue before replay', () => {

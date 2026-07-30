@@ -77,9 +77,11 @@ describe('ProjectFooter', () => {
     vi.stubGlobal('Image', DeferredImage)
     renderFooter()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Support PhD Atlas' }))
+    const supportButton = screen.getByRole('button', { name: 'Support PhD Atlas' })
+    supportButton.focus()
+    fireEvent.click(supportButton)
     expect(screen.queryByRole('dialog', { name: 'Give PhD Atlas a little boost' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Support PhD Atlas' })).toHaveAttribute('aria-busy', 'true')
+    expect(supportButton).toHaveAttribute('aria-busy', 'true')
 
     await act(async () => {
       decodeResolvers.forEach((resolve) => resolve())
@@ -104,10 +106,16 @@ describe('ProjectFooter', () => {
       '/assets/support/alipay-support-art.png',
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    act(() => vi.advanceTimersByTime(20))
+    const closeButton = screen.getByRole('button', { name: 'Close' })
+    expect(closeButton).toHaveFocus()
+
+    fireEvent.click(closeButton)
     expect(document.querySelector('.project-support-layer')).toHaveClass('exiting')
+    expect(closeButton).toHaveFocus()
 
     act(() => vi.advanceTimersByTime(160))
     expect(screen.queryByRole('dialog', { name: 'Give PhD Atlas a little boost' })).not.toBeInTheDocument()
+    expect(supportButton).toHaveFocus()
   })
 })

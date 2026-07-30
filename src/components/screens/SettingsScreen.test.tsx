@@ -17,6 +17,7 @@ const SETTINGS_SECTION_TEST_IDS = [
   'settings-usage-section',
   'settings-data-section',
 ]
+const ACTIVE_SHARE_EXPIRES_AT = '2099-07-28T09:00:00.000Z'
 
 function session(protocol: 'imap' | 'pop3' = 'imap', autoFetchMail = false): AuthSession {
   return {
@@ -175,7 +176,7 @@ describe('SettingsScreen share scope editor', () => {
               id: 'share_1',
               token: 'scope-test-token',
               createdAt: '2026-07-21T09:00:00.000Z',
-              expiresAt: '2099-07-28T09:00:00.000Z',
+              expiresAt: ACTIVE_SHARE_EXPIRES_AT,
               permission: 'view',
               sections: ['overview', 'materials'],
             },
@@ -197,7 +198,7 @@ describe('SettingsScreen share scope editor', () => {
     expect(onUpdateShare).toHaveBeenCalledWith(
       'application_1',
       'share_1',
-      '2099-07-28T09:00:00.000Z',
+      ACTIVE_SHARE_EXPIRES_AT,
       'view',
       ['overview', 'materials', 'tasks'],
     )
@@ -219,7 +220,7 @@ describe('SettingsScreen share scope editor', () => {
               token: 'upload-test-token',
               url: '/asset-upload/upload-test-token',
               createdAt: '2026-07-21T09:00:00.000Z',
-              expiresAt: '2099-07-28T09:00:00.000Z',
+              expiresAt: ACTIVE_SHARE_EXPIRES_AT,
             },
           }]}
           onLanguage={vi.fn()}
@@ -291,6 +292,89 @@ describe('SettingsScreen calendar feed', () => {
       expect(within(calendarCard).getByRole('button', { name: 'Enable Calendar Feed' })).toBeEnabled()
       expect(calendarCard).not.toHaveAttribute('aria-busy')
     })
+  })
+})
+
+describe('SettingsScreen unlimited usage', () => {
+  it('keeps a null server storage limit unlimited instead of falling back to the -1 sentinel', async () => {
+    const unlimitedSession = session()
+    unlimitedSession.user.settings.storageQuotaMb = -1
+    unlimitedSession.usage = {
+      plan: 'pro',
+      storageUsedBytes: 1024,
+      storageQuotaBytes: null,
+      applicationCount: 2,
+      applicationQuota: Number.MAX_SAFE_INTEGER,
+      applicationCreatedCount: 4,
+      applicationCreateQuota: Number.MAX_SAFE_INTEGER,
+      activeShareCount: 1,
+      shareQuota: Number.MAX_SAFE_INTEGER,
+      shareCreatedCount: 3,
+      shareCreateQuota: Number.MAX_SAFE_INTEGER,
+      trashCount: 0,
+      trashLimit: 500,
+      trashRetentionDays: 30,
+    }
+
+    await renderSettings('imap', false, vi.fn().mockResolvedValue(undefined), unlimitedSession)
+
+    expect(within(screen.getByRole('region', { name: 'Storage usage' })).getByText(/used \/ unlimited/i)).toBeInTheDocument()
+  })
+})
+
+describe('SettingsScreen data export', () => {
+  it('reports the empty state without invoking an export when there are no applications', async () => {
+    await preloadLanguage('en', ['settings', 'workspace'])
+    const onExport = vi.fn()
+    const onNotify = vi.fn()
+    render(
+      <I18nContext.Provider value={{ lang: 'en', t: getDict('en'), format: tpl, tx: (path, fallback) => t('en', path, fallback) }}>
+        <SettingsScreen
+          session={session()}
+          onLanguage={vi.fn()}
+          onHighContrast={vi.fn()}
+          onDeleteAccount={vi.fn()}
+          exportApplicationCount={0}
+          onExport={onExport}
+          onNotify={onNotify}
+        />
+      </I18nContext.Provider>,
+    )
+
+    const user = userEvent.setup()
+    for (const name of [
+      'Structured data (JSON)',
+      'Spreadsheet rows (CSV)',
+      'Excel workbook (XLS)',
+      'Printable report (PDF)',
+    ]) {
+      await user.click(screen.getByRole('button', { name }))
+    }
+
+    expect(onExport).not.toHaveBeenCalled()
+    expect(onNotify).toHaveBeenCalledTimes(4)
+    expect(onNotify).toHaveBeenCalledWith('No applications yet', 'info')
+  })
+
+  it('keeps the existing export path when application data is available', async () => {
+    await preloadLanguage('en', ['settings'])
+    const onExport = vi.fn()
+    render(
+      <I18nContext.Provider value={{ lang: 'en', t: getDict('en'), format: tpl, tx: (path, fallback) => t('en', path, fallback) }}>
+        <SettingsScreen
+          session={session()}
+          onLanguage={vi.fn()}
+          onHighContrast={vi.fn()}
+          onDeleteAccount={vi.fn()}
+          exportApplicationCount={1}
+          onExport={onExport}
+        />
+      </I18nContext.Provider>,
+    )
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Spreadsheet rows (CSV)' }))
+
+    expect(onExport).toHaveBeenCalledWith('csv')
   })
 })
 
@@ -415,6 +499,7 @@ describe('SettingsScreen section navigation', () => {
       await waitFor(() => expect(root?.scrollTop).toBe(1762))
       expect(securityButton).toHaveClass('active')
       expect(securityButton).toHaveAttribute('aria-current', 'location')
+      expect(document.getElementById('settings-data-section')).not.toBeInTheDocument()
 
       root?.dispatchEvent(new Event('scrollend'))
       root?.dispatchEvent(new Event('scroll'))
@@ -435,6 +520,132 @@ describe('SettingsScreen section navigation', () => {
       else Reflect.deleteProperty(HTMLElement.prototype, 'scrollTo')
       if (rectDescriptor) Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', rectDescriptor)
       else Reflect.deleteProperty(HTMLElement.prototype, 'getBoundingClientRect')
+    }
+  })
+
+  it('preheats one lower settings group at a time near the scroll boundary', async () => {
+    await preloadLanguage('en', ['settings'])
+    const userAgentDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'userAgent')
+    const matchMediaDescriptor = Object.getOwnPropertyDescriptor(window, 'matchMedia')
+    const intersectionObserverDescriptor = Object.getOwnPropertyDescriptor(window, 'IntersectionObserver')
+    const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
+
+    class MockIntersectionObserver {
+      readonly root: Element | Document | null
+      readonly rootMargin: string
+      readonly thresholds: readonly number[]
+      readonly callback: IntersectionObserverCallback
+      readonly disconnect = vi.fn()
+      readonly observe = vi.fn()
+      readonly takeRecords = vi.fn(() => [])
+      readonly unobserve = vi.fn()
+
+      constructor(callback: IntersectionObserverCallback, options: IntersectionObserverInit = {}) {
+        this.callback = callback
+        this.root = options.root ?? null
+        this.rootMargin = options.rootMargin ?? '0px'
+        this.thresholds = Array.isArray(options.threshold)
+          ? options.threshold
+          : [options.threshold ?? 0]
+        observerInstances.push(this)
+      }
+    }
+
+    const observerInstances: MockIntersectionObserver[] = []
+    Object.defineProperty(window.navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 Chrome/140.0.0.0',
+    })
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    })
+    Object.defineProperty(window, 'IntersectionObserver', {
+      configurable: true,
+      value: MockIntersectionObserver,
+    })
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('settings-screen') ? 3000 : 0
+      },
+    })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('settings-screen') ? 900 : 0
+      },
+    })
+
+    const rendered = render(
+      <I18nContext.Provider value={{ lang: 'en', t: getDict('en'), format: tpl, tx: (path, fallback) => t('en', path, fallback) }}>
+        <SettingsScreen
+          session={session()}
+          onLanguage={vi.fn()}
+          onHighContrast={vi.fn()}
+          onDeleteAccount={vi.fn()}
+        />
+      </I18nContext.Provider>,
+    )
+
+    const activeProgressiveObservers = () => observerInstances.filter((observer) => (
+      observer.disconnect.mock.calls.length === 0
+      && observer.rootMargin === '0px 0px 520px'
+      && observer.observe.mock.calls.some(([target]) => (target as Element).classList.contains('settings-progressive-sentinel'))
+    ))
+    const revealLatestGroup = async () => {
+      const observers = activeProgressiveObservers()
+      const observer = observers[observers.length - 1]
+      expect(observer).toBeDefined()
+      await act(async () => {
+        observer.callback(
+          [{ isIntersecting: true } as IntersectionObserverEntry],
+          observer as unknown as IntersectionObserver,
+        )
+        await new Promise((resolve) => window.setTimeout(resolve, 24))
+      })
+    }
+
+    try {
+      expect(document.getElementById('settings-ai-section')).not.toBeInTheDocument()
+      expect(document.getElementById('settings-security-section')).not.toBeInTheDocument()
+      expect(document.getElementById('settings-data-section')).not.toBeInTheDocument()
+      expect(activeProgressiveObservers()).toHaveLength(1)
+      expect(activeProgressiveObservers()[0].root).toBe(document.querySelector('.settings-screen'))
+
+      await revealLatestGroup()
+      await waitFor(() => expect(document.getElementById('settings-ai-section')).toBeInTheDocument())
+      expect(document.getElementById('settings-security-section')).not.toBeInTheDocument()
+
+      await revealLatestGroup()
+      await waitFor(() => expect(document.getElementById('settings-usage-section')).toBeInTheDocument())
+      expect(document.getElementById('settings-data-section')).not.toBeInTheDocument()
+
+      await revealLatestGroup()
+      await waitFor(() => expect(document.getElementById('settings-data-section')).toBeInTheDocument())
+      expect(document.querySelector('.settings-progressive-sentinel')).not.toBeInTheDocument()
+    } finally {
+      rendered.unmount()
+      if (userAgentDescriptor) Object.defineProperty(window.navigator, 'userAgent', userAgentDescriptor)
+      else Reflect.deleteProperty(window.navigator, 'userAgent')
+      if (matchMediaDescriptor) Object.defineProperty(window, 'matchMedia', matchMediaDescriptor)
+      else Reflect.deleteProperty(window, 'matchMedia')
+      if (intersectionObserverDescriptor) Object.defineProperty(window, 'IntersectionObserver', intersectionObserverDescriptor)
+      else Reflect.deleteProperty(window, 'IntersectionObserver')
+      if (scrollHeightDescriptor) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scrollHeightDescriptor)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight')
+      if (clientHeightDescriptor) Object.defineProperty(HTMLElement.prototype, 'clientHeight', clientHeightDescriptor)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight')
     }
   })
 

@@ -268,7 +268,7 @@ describe('large workspace collections', () => {
     expect(onToggleScholarshipTask).not.toHaveBeenCalled()
   })
 
-  it('keeps dense kanban columns bounded and progressively reveals cards while scrolling', () => {
+  it('keeps dense kanban columns in page flow and progressively reveals cards on demand', () => {
     const items = manyApplications(20, 'Draft')
     const { container } = renderWithI18n(
       <KanbanBoard
@@ -279,18 +279,18 @@ describe('large workspace collections', () => {
     )
 
     expect(container.querySelectorAll('.kanban-card')).toHaveLength(4)
-    const draftColumn = container.querySelector<HTMLElement>('.kanban-column-body.is-scrollable')
-    expect(draftColumn).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Show 8 more' })).not.toBeInTheDocument()
+    const showMore = screen.getByRole('button', { name: 'Show 8 more' })
+    expect(showMore).toBeInTheDocument()
+    expect(container.querySelector('.kanban-column-body.is-scrollable')).not.toBeInTheDocument()
 
-    fireEvent.wheel(draftColumn!, { deltaY: 120 })
+    fireEvent.click(showMore)
     expect(container.querySelectorAll('.kanban-card')).toHaveLength(12)
     const firstRevealBatch = [...container.querySelectorAll('.kanban-card.is-revealing')] as HTMLElement[]
     expect(firstRevealBatch).toHaveLength(8)
     expect(firstRevealBatch[0].style.getPropertyValue('--reveal-index')).toBe('0')
     expect(firstRevealBatch[7].style.getPropertyValue('--reveal-index')).toBe('7')
 
-    fireEvent.wheel(draftColumn!, { deltaY: 120 })
+    fireEvent.click(screen.getByRole('button', { name: 'Show 8 more' }))
     expect(container.querySelectorAll('.kanban-card')).toHaveLength(20)
     expect(container.querySelectorAll('.kanban-card.is-revealing')).toHaveLength(8)
   })
@@ -345,6 +345,44 @@ describe('large workspace collections', () => {
     expect(container.querySelectorAll('.inspector-deadline-row')).toHaveLength(12)
     await userEvent.click(screen.getByRole('button', { name: 'Show more' }))
     expect(container.querySelectorAll('.inspector-deadline-row').length).toBeGreaterThan(12)
+  })
+
+  it('keeps a collapsed inspector as a lightweight resident portal shell', () => {
+    const application = manyApplications(1)[0]
+    const taskSeed = application.tasks[0] ?? {
+      id: 'collapsed-deadline-seed',
+      title: 'Collapsed deadline',
+      due: today,
+      done: false,
+    }
+    application.tasks = Array.from({ length: 20 }, (_, index) => ({
+      ...taskSeed,
+      id: `collapsed-deadline-${index + 1}`,
+      title: `Collapsed deadline ${index + 1}`,
+      due: dateFromToday(index + 1),
+      done: false,
+    }))
+
+    const { container } = renderWithI18n(
+      <Inspector
+        application={application}
+        backups={[]}
+        isPro
+        collapsed
+        onCopy={vi.fn()}
+        onEditField={vi.fn()}
+        onExport={vi.fn()}
+        onBackup={vi.fn()}
+        onUpgrade={vi.fn()}
+        onRestore={vi.fn()}
+        onDeleteBackup={vi.fn()}
+      />,
+    )
+
+    expect(container.querySelector('.inspector-pane')).toHaveAttribute('data-collapsed-shell', 'true')
+    expect(container.querySelector('#ai-inspector-host')).toBeInTheDocument()
+    expect(container.querySelector('.inspector-deadline-row')).not.toBeInTheDocument()
+    expect(container.querySelector('.inspector-card')).not.toBeInTheDocument()
   })
 
   it('keeps expired inspector deadlines hidden until the user asks to reveal them', async () => {

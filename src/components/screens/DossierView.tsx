@@ -115,8 +115,10 @@ import {
   Send,
   Settings,
   Share2,
+  ShieldAlert,
   ShieldCheck,
   Signature,
+  SlidersHorizontal,
   Sparkles,
   SquarePen,
   Stamp,
@@ -162,7 +164,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { phdApi, type AiDraftEvent, type AiDraftInput, type AiKey, type AuthSession, type CommunicationAttachmentInput, type CommunicationInput, type CommunicationPatchInput, type CommunicationSendInput, type ProfileAsset, type TeamRole, type TeamTransferPreflight, type TeamWorkspaceOption } from '../../api/phdApi'
+import { phdApi, type AiDraftAttachmentSelection, type AiDraftEvent, type AiDraftInput, type AiKey, type AuthSession, type CommunicationAttachmentInput, type CommunicationInput, type CommunicationPatchInput, type CommunicationSendInput, type ProfileAsset, type TeamRole, type TeamTransferPreflight, type TeamWorkspaceOption } from '../../api/phdApi'
 import type {
   ApplicationRecord,
   ApplicationStatus,
@@ -179,6 +181,13 @@ import { formatDate, today, daysUntil, deadlineUrgency, relativeTime, groupTimel
 import { PrioritySlider } from '../shared/PrioritySlider'
 import { contentLanguagesFromSettings } from '../../contentLanguages'
 import { normalizeErrorMessage } from '../../errorMessages'
+import {
+  MAX_APPLICATION_CORRESPONDENCE_EMAILS,
+  additionalCorrespondenceEmails,
+  applicationCorrespondenceEmails,
+  isValidCorrespondenceEmail,
+  normalizeCorrespondenceEmail,
+} from '../../correspondenceRecipients'
 import { formatList, localeForLanguage, localizeStaticText, t as translate, tpl, type Language } from '../../i18n'
 import { materialStatusMenuTone, statusCssSlug, statusLabel } from '../../statusLabels'
 import { profileKindLabel } from '../../profileAssets'
@@ -205,6 +214,13 @@ import {
   resourceFieldSummary,
   resourceTags,
 } from './dossierResourceModel'
+import {
+  resolveChecklistDrop,
+  type ChecklistDragKind,
+  type ChecklistDragRowMetric,
+  type ChecklistDropPosition,
+  type ChecklistDropTarget,
+} from './checklistDragModel'
 import type {
   DossierResourceCard,
   DossierResourceCardSettingsDraft,
@@ -253,19 +269,37 @@ import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/Ex
 import { ExplorerSelectionBar } from '../shared/ExplorerSelectionBar'
 import { FileDropzone } from '../shared/FileDropzone'
 import { AttachmentPreviewDialog, type AttachmentPreviewFile } from '../shared/AttachmentPreviewDialog'
+import { PendingLabel } from '../shared/PendingLabel'
+import { ProjectFooter } from '../shared/ProjectFooter'
+import { AnimatedCheckmark } from '../shared/AnimatedCheckmark'
+import { UserAvatar } from '../shared/UserAvatar'
+import { emailLeadingInitial } from '../shared/avatarInitial'
 import FeeTracker from '../shared/FeeTracker'
 import { MarkdownContent } from '../shared/MarkdownContent'
+import { detectRichTextFormat } from '../shared/richText'
 import { LazyMarkdownTextarea as MarkdownTextarea } from '../shared/LazyMarkdownTextarea'
 import { AiDraftPanel } from '../shared/AiDraftPanel'
 import { AnchoredPopover } from '../shared/AnchoredPopover'
+import {
+  ComposerRecipientControl,
+  CorrespondenceRecipientSettings,
+  RecipientTrackingDialog,
+} from '../shared/CorrespondenceRecipients'
 import { ApplicationTransferDialog } from '../shared/ApplicationTransferDialog'
 import { SchoolLogoManager, SchoolLogoMark } from '../shared/SchoolLogo'
 import { buildDossierAiAttachmentCandidates } from './dossierAiAttachmentCandidates'
+import {
+  defaultScheduledEmailTime,
+  isFutureScheduledEmail,
+  scheduledEmailIso,
+  shouldConfirmMissingEmailAttachment,
+} from './dossierEmailComposerModel'
 import {
   cleanScholarshipDraft,
   createScholarshipDraft,
   scholarshipStatusOrder,
   scholarshipToDraft,
+  sortScholarshipTimelineNewestFirst,
   type ScholarshipFormDraft,
   type ScholarshipItem,
   type ScholarshipMaterialItem,
@@ -315,6 +349,158 @@ const BASE_DETAIL_TABS: DetailTab[] = ['dossier', 'materials', 'mail', 'funding'
 
 type TaskItem = ApplicationRecord['tasks'][number]
 type CommunicationItem = ApplicationRecord['communications'][number]
+
+function createComposerDeliveryId() {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID()
+  }
+  return `delivery-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function localCommunicationDateTime(value: Date) {
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return {
+    date: `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`,
+    time: `${pad(value.getHours())}:${pad(value.getMinutes())}`,
+  }
+}
+
+function communicationAbsoluteTime(item: CommunicationItem) {
+  if (item.sentAt) return item.sentAt
+  if (
+    (item.deliveryStatus === 'queued' || item.deliveryStatus === 'sending')
+    && item.scheduledAt
+  ) return item.scheduledAt
+  return ''
+}
+
+function communicationSortStamp(item: CommunicationItem) {
+  return communicationAbsoluteTime(item) || `${item.date}T${item.time || '00:00'}`
+}
+
+function communicationCalendarDate(item: CommunicationItem) {
+  const absolute = communicationAbsoluteTime(item)
+  if (!absolute) return item.date
+  const parsed = new Date(absolute)
+  return Number.isNaN(parsed.getTime())
+    ? item.date
+    : localCommunicationDateTime(parsed).date
+}
+
+function communicationTimestamp(item: CommunicationItem, lang: Language) {
+  const absolute = communicationAbsoluteTime(item)
+  if (absolute) {
+    const parsed = new Date(absolute)
+    if (!Number.isNaN(parsed.getTime())) {
+      const local = localCommunicationDateTime(parsed)
+      return {
+        dateTime: absolute,
+        label: `${formatDate(local.date, lang)} ${local.time}`,
+      }
+    }
+  }
+  return {
+    dateTime: `${item.date}${item.time ? `T${item.time}` : ''}`,
+    label: `${formatDate(item.date, lang)}${item.time ? ` ${item.time}` : ''}`,
+  }
+}
+
+function DossierExternalLinkAction({
+  value,
+  label,
+}: {
+  value: string
+  label: string
+}) {
+  const href = normalizedExternalHref(value)
+  const icon = <ExternalLink size={14} aria-hidden="true" />
+
+  if (!href) {
+    return (
+      <button
+        type="button"
+        className="icon-action"
+        aria-label={label}
+        title={label}
+        disabled
+      >
+        {icon}
+      </button>
+    )
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="icon-action"
+      aria-label={label}
+      title={label}
+    >
+      {icon}
+    </a>
+  )
+}
+
+function communicationEditDraftFrom(item: CommunicationItem): CommunicationPatchInput {
+  return {
+    subject: item.subject,
+    channel: item.channel,
+    date: item.date || today,
+    summary: item.summary,
+    direction: item.direction ?? (item.channel === 'Email' ? 'incoming' : 'note'),
+    messageType: item.messageType ?? 'note',
+    from: item.from ?? '',
+    to: item.to ?? '',
+    time: item.time ?? '',
+  }
+}
+
+function communicationDirectionOf(item: CommunicationItem) {
+  return item.direction ?? (item.channel === 'Email' ? 'incoming' : 'note')
+}
+
+function correspondenceAvatarIdentity(
+  item: CommunicationItem,
+  professorName: string,
+  professorEmail: string,
+) {
+  const direction = communicationDirectionOf(item)
+  const counterpartyEmail = normalizeCorrespondenceEmail(
+    direction === 'incoming'
+      ? item.from
+      : direction === 'outgoing'
+        ? item.to
+        : '',
+  )
+  const primaryProfessorEmail = normalizeCorrespondenceEmail(professorEmail)
+  const hasMailProvenance = item.messageType === 'fetched-email'
+    || Boolean(
+      item.sourceMessageKey
+      || item.sourceMailbox
+      || item.importedAt
+      || item.deliveryStatus === 'sent',
+    )
+  const useProfessorIdentity = !hasMailProvenance
+    || !counterpartyEmail
+    || counterpartyEmail === primaryProfessorEmail
+
+  if (useProfessorIdentity) {
+    return {
+      name: professorName,
+      email: primaryProfessorEmail,
+      displayEmail: '',
+    }
+  }
+
+  return {
+    name: emailLeadingInitial(counterpartyEmail),
+    email: counterpartyEmail,
+    displayEmail: counterpartyEmail,
+  }
+}
+
 type ChecklistUploadTarget =
   | { kind: 'material'; id: string }
   | { kind: 'task'; id: string }
@@ -331,7 +517,6 @@ type UploadDraftFile = {
 type MaterialSort = 'manual' | 'name' | 'status' | 'group' | 'updated'
 type TaskFilter = 'all' | 'open' | 'done' | 'overdue' | 'with-attachment' | 'with-reminder'
 type TaskSort = 'manual' | 'due' | 'title' | 'status'
-type ChecklistDropPosition = 'before' | 'after'
 
 function scholarshipStatusMenuTone(status: ScholarshipStatus): 'neutral' | 'info' | 'success' | 'danger' {
   switch (status) {
@@ -346,19 +531,17 @@ function scholarshipStatusMenuTone(status: ScholarshipStatus): 'neutral' | 'info
   }
 }
 type ChecklistDragTarget =
-  | { kind: 'material'; id: string }
-  | { kind: 'task'; id: string }
+  | { kind: ChecklistDragKind; id: string }
   | null
-type ChecklistDropTarget =
-  | { kind: 'material'; id: string; position: ChecklistDropPosition }
-  | { kind: 'task'; id: string; position: ChecklistDropPosition }
-  | null
-type ChecklistDragOffset =
-  | { kind: 'material'; id: string; x: number; y: number; left: number; top: number; width: number; height: number }
-  | { kind: 'task'; id: string; x: number; y: number; left: number; top: number; width: number; height: number }
-  | null
+type ChecklistDragRowMeasurement = ChecklistDragRowMetric & {
+  element: HTMLElement
+  left: number
+  top: number
+  width: number
+  height: number
+}
 type ChecklistDragSession = {
-  kind: 'material' | 'task'
+  kind: ChecklistDragKind
   id: string
   pointerId: number
   startX: number
@@ -367,13 +550,30 @@ type ChecklistDragSession = {
   top: number
   width: number
   height: number
-  hasMoved: boolean
   handle: HTMLElement
   item: HTMLElement
+  scope: HTMLElement
+  rows: ChecklistDragRowMeasurement[]
+  sourceIndex: number
+  rowGap: number
   scrollParent: HTMLElement | null
+  scrollStart: number
+  scrollMax: number
+  viewportTop: number
+  viewportBottom: number
   frame: number
   latestClientX: number
   latestClientY: number
+  target: ChecklistDropTarget
+  insertionIndex: number
+  sourceShift: number
+  overlay: HTMLElement | null
+  dropAnimation: Animation | null
+  status: 'pending' | 'dragging' | 'settling' | 'done'
+  reducedMotion: boolean
+  cleanupListeners: (() => void) | null
+  finish: ((commit: boolean, immediate?: boolean) => void) | null
+  settleFinalize: (() => void) | null
 }
 type DossierResourceDropTarget = { id: string; position: ChecklistDropPosition } | null
 type DossierResourceDragOffset =
@@ -441,6 +641,179 @@ function SortableResourceFieldRow({
     </div>
   )
 }
+
+const SCHOLARSHIP_ROW_EDITOR_MAX_HEIGHT = 76
+
+function ScholarshipRowTitleEditor({
+  value,
+  onChange,
+  placeholder,
+  label,
+  completed = false,
+}: {
+  value: string
+  onChange: (value: string) => void
+  placeholder: string
+  label: string
+  completed?: boolean
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+
+  const resizeEditor = useCallback(() => {
+    const editor = textareaRef.current
+    if (!editor) return
+    editor.style.height = '0px'
+    const contentHeight = editor.scrollHeight
+    const nextHeight = Math.min(
+      SCHOLARSHIP_ROW_EDITOR_MAX_HEIGHT,
+      Math.max(20, contentHeight),
+    )
+    editor.style.height = `${nextHeight}px`
+    editor.style.overflowY = contentHeight > SCHOLARSHIP_ROW_EDITOR_MAX_HEIGHT ? 'auto' : 'hidden'
+  }, [])
+
+  useLayoutEffect(() => {
+    resizeEditor()
+  }, [resizeEditor, value])
+
+  useEffect(() => {
+    const editor = textareaRef.current
+    if (!editor || typeof ResizeObserver === 'undefined') return undefined
+    let observedWidth = Math.round(editor.getBoundingClientRect().width)
+    const observer = new ResizeObserver(([entry]) => {
+      const nextWidth = Math.round(entry.contentRect.width)
+      if (nextWidth === observedWidth) return
+      observedWidth = nextWidth
+      resizeEditor()
+    })
+    observer.observe(editor)
+    return () => observer.disconnect()
+  }, [resizeEditor])
+
+  return (
+    <label className={`scholarship-row-title-editor${completed ? ' is-complete' : ''}`}>
+      <span className="sr-only">{label}</span>
+      <PencilLine size={13} aria-hidden="true" />
+      <textarea
+        ref={textareaRef}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        rows={1}
+        wrap="soft"
+      />
+    </label>
+  )
+}
+
+function ScholarshipTimelineEditorRow({
+  eventId,
+  entering,
+  onEntered,
+  children,
+}: {
+  eventId: string
+  entering: boolean
+  onEntered: () => void
+  children: ReactNode
+}) {
+  const enteringOnMountRef = useRef(entering)
+  const onEnteredRef = useRef(onEntered)
+  const rowRef = useRef<HTMLDivElement | null>(null)
+  const didFocusRef = useRef(false)
+  const [open, setOpen] = useState(() => !enteringOnMountRef.current)
+  onEnteredRef.current = onEntered
+
+  useLayoutEffect(() => {
+    if (!enteringOnMountRef.current) return undefined
+    const frame = window.requestAnimationFrame(() => setOpen(true))
+    return () => window.cancelAnimationFrame(frame)
+  }, [])
+
+  useLayoutEffect(() => {
+    if (!open || !enteringOnMountRef.current || didFocusRef.current) return
+    didFocusRef.current = true
+    rowRef.current
+      ?.querySelector<HTMLInputElement>('[data-timeline-title-input="true"]')
+      ?.focus({ preventScroll: true })
+    onEnteredRef.current()
+  }, [open])
+
+  return (
+    <div
+      ref={rowRef}
+      className={`scholarship-timeline-row-presence${open ? ' open' : ''}${enteringOnMountRef.current ? ' is-entering' : ''}`}
+      data-scholarship-timeline-event-id={eventId}
+      role="listitem"
+    >
+      <div className="scholarship-timeline-row-presence-inner">
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function SortableScholarshipRow({
+  id,
+  handleLabel,
+  className,
+  children,
+}: {
+  id: string
+  handleLabel: string
+  className: string
+  children: ReactNode
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id })
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={`scholarship-mini-row ${className}${isDragging ? ' is-dragging' : ''}`}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition: transition || undefined,
+        zIndex: isDragging ? 2 : undefined,
+      }}
+    >
+      <button
+        ref={setActivatorNodeRef}
+        type="button"
+        className="scholarship-row-drag-handle"
+        title={handleLabel}
+        aria-label={handleLabel}
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical size={14} aria-hidden="true" />
+      </button>
+      {children}
+    </div>
+  )
+}
+
+function reorderScholarshipRows<T extends { id: string }>(
+  rows: T[],
+  event: DragEndEvent,
+  idPrefix: string,
+) {
+  if (!event.over || event.active.id === event.over.id) return rows
+  const activeId = String(event.active.id)
+  const overId = String(event.over.id)
+  const fromIndex = rows.findIndex((row) => `${idPrefix}${row.id}` === activeId)
+  const toIndex = rows.findIndex((row) => `${idPrefix}${row.id}` === overId)
+  if (fromIndex < 0 || toIndex < 0) return rows
+  return arrayMove(rows, fromIndex, toIndex)
+}
+
 /** Where a generated (non-manual) timeline card should jump to when clicked. */
 type TimelineNav =
   | { tab: 'dossier' }
@@ -458,6 +831,7 @@ export type DossierJumpIntent = {
   fallbackText?: string[]
   expand?: DossierJumpExpand
 }
+export type ApplicationDraftSaveIntent = 'settled' | 'immediate' | 'external'
 
 function ChecklistDisclosureItem({
   id,
@@ -587,6 +961,50 @@ function DossierDeferredRows({ className = '' }: { className?: string }) {
   )
 }
 
+const ChecklistReminderFilterButton = memo(function ChecklistReminderFilterButton({
+  active,
+  count,
+  label,
+  actionLabel,
+  onToggle,
+}: {
+  active: boolean
+  count: number
+  label: string
+  actionLabel: string
+  onToggle: () => void
+}) {
+  const [hasPointerIntent, setHasPointerIntent] = useState(false)
+  const [hasFocusIntent, setHasFocusIntent] = useState(false)
+
+  return (
+    <button
+      type="button"
+      className={`checklist-hero-stat checklist-reminder-filter-btn${active ? ' active' : ''}`}
+      onClick={onToggle}
+      onPointerEnter={() => setHasPointerIntent(true)}
+      onPointerLeave={() => setHasPointerIntent(false)}
+      onPointerCancel={() => setHasPointerIntent(false)}
+      onFocus={() => setHasFocusIntent(true)}
+      onBlur={() => setHasFocusIntent(false)}
+      aria-pressed={active}
+      title={actionLabel}
+      aria-label={actionLabel}
+    >
+      {active ? <BellRing size={13} aria-hidden="true" /> : <Bell size={13} aria-hidden="true" />}
+      <strong className="checklist-reminder-filter-count">{count}</strong>
+      <InlinePresence
+        present={active || hasPointerIntent || hasFocusIntent}
+        durationMs={220}
+        parentGap="4px"
+        className="checklist-reminder-filter-label"
+      >
+        {label}
+      </InlinePresence>
+    </button>
+  )
+})
+
 type EmailAttachmentDraft = CommunicationAttachmentInput & {
   id: string
   name: string
@@ -597,8 +1015,11 @@ type EmailAttachmentDraft = CommunicationAttachmentInput & {
   mimeType?: string
   /** Candidate selected in the AI attachment planner. */
   aiCandidateId?: string
-  /** Gives tool-selected chips a one-time arrival animation in the composer. */
+  /** Marks attachments owned by the AI plan while keeping them user-editable. */
   aiAttachedByTool?: boolean
+  /** Replays bounded chip motion only when the AI plan actually changes this item. */
+  aiMotionRevision?: number
+  aiMotionKind?: 'enter' | 'update'
 }
 
 type CorrespondenceKind =
@@ -611,6 +1032,19 @@ type CorrespondenceKind =
 type CorrespondenceMode = 'draft-email' | 'record-email' | 'record-message' | 'note'
 type CorrespondenceView = 'all' | 'drafts'
 type ComposerExitRequest = { proceed: () => void; keepOpenAfterSave?: boolean }
+type PendingRecipientSend = {
+  payload: CommunicationSendInput
+  sourceApplicationId: string
+  afterSend?: () => void
+}
+type PendingMissingAttachmentSend = {
+  afterSend?: () => void
+  timing?: {
+    sendAt: string
+    date: string
+    time: string
+  }
+}
 
 const correspondenceKinds: Array<{
   value: CorrespondenceKind
@@ -781,7 +1215,7 @@ function reorderById<T extends { id: string }>(
   const targetIndex = next.findIndex((item) => item.id === targetId)
   if (targetIndex === -1) return items
   next.splice(position === 'after' ? targetIndex + 1 : targetIndex, 0, moved)
-  return next
+  return next.every((item, index) => item === items[index]) ? items : next
 }
 
 function sameChecklistDropTarget(a: ChecklistDropTarget, b: ChecklistDropTarget) {
@@ -1072,6 +1506,8 @@ export function DossierView({
   onCloseApplication,
   onOpenUpgrade,
   onRegisterNavigationGuard,
+  autoSaveEnabled = false,
+  onFlushAutoSave,
   onCopy,
   onAddReviewComment,
   currentUserApplicationRole,
@@ -1111,14 +1547,16 @@ export function DossierView({
   onNotify?: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
   onTab: (tab: DetailTab, direction?: 'forward' | 'backward') => void
   onRegisterNavigationGuard?: (guard: ((proceed: () => void) => boolean) | null) => void
-  onDraft: (draft: ApplicationRecord) => void
-  onSave: () => void | Promise<void>
+  autoSaveEnabled?: boolean
+  onFlushAutoSave?: () => Promise<boolean>
+  onDraft: (draft: ApplicationRecord, intent?: ApplicationDraftSaveIntent) => void
+  onSave: () => boolean | void | Promise<boolean | void>
   onDiscardDraft: () => void
   onDelete: () => void
   onShare: () => void
   onEnrich?: () => void
   onResolveSchoolLogo?: (
-    input: { website?: string; imageUrl?: string },
+    input: { website?: string; imageUrl?: string; auto?: true; refresh?: boolean },
     options?: { silent?: boolean },
   ) => Promise<boolean>
   onUploadSchoolLogo?: (file: File) => Promise<boolean>
@@ -1146,20 +1584,20 @@ export function DossierView({
   onToggleTask: (taskId: string, done: boolean) => void
   onRemoveTask: (taskId: string) => void
   onRemoveTasks?: (taskIds: string[]) => void
-  onAddCommunication: (input: CommunicationInput) => void | Promise<void>
-  onUpdateCommunication?: (id: string, input: CommunicationPatchInput) => void | Promise<void>
+  onAddCommunication: (input: CommunicationInput) => boolean | void | Promise<boolean | void>
+  onUpdateCommunication?: (id: string, input: CommunicationPatchInput) => boolean | void | Promise<boolean | void>
   onSendCommunication?: (input: CommunicationSendInput) => Promise<boolean>
   onRemoveCommunication: (id: string) => void
   onRemoveCommunications?: (ids: string[]) => void
-  onAddScholarship: (input: Omit<ScholarshipItem, 'id'>) => void
-  onUpdateScholarship?: (id: string, input: Omit<ScholarshipItem, 'id'>) => void | Promise<void>
+  onAddScholarship: (input: Omit<ScholarshipItem, 'id'>) => boolean | void | Promise<boolean | void>
+  onUpdateScholarship?: (id: string, input: Omit<ScholarshipItem, 'id'>) => boolean | void | Promise<boolean | void>
   onRemoveScholarship: (id: string) => void
   onRemoveScholarships?: (ids: string[]) => void
-  onAddFee: (input: { amount: number; currency: string; paidDate?: string; waived: boolean; notes: string }) => void
-  onUpdateFee: (feeId: string, patch: { amount?: number; currency?: string; paidDate?: string | null; waived?: boolean; notes?: string }) => void
+  onAddFee: (input: { amount: number; currency: string; paidDate?: string; waived: boolean; notes: string }) => boolean | void | Promise<boolean | void>
+  onUpdateFee: (feeId: string, patch: { amount?: number; currency?: string; paidDate?: string | null; waived?: boolean; notes?: string }) => boolean | void | Promise<boolean | void>
   onDeleteFee: (feeId: string) => void | Promise<void>
-  onAddTimelineEvent?: (title: string, date: string, note: string) => void
-  onUpdateTimelineEvent?: (id: string, title: string, date: string, note: string) => void
+  onAddTimelineEvent?: (title: string, date: string, note: string) => boolean | void | Promise<boolean | void>
+  onUpdateTimelineEvent?: (id: string, title: string, date: string, note: string) => boolean | void | Promise<boolean | void>
   onRemoveTimelineEvent?: (id: string) => void
   onRemoveTimelineEvents?: (ids: string[]) => void
   onAddReviewComment?: (
@@ -1266,6 +1704,7 @@ export function DossierView({
   const [savingScholarshipId, setSavingScholarshipId] = useState<string | null>(null)
   const [optimisticScholarships, setOptimisticScholarships] = useState<Record<string, ScholarshipItem>>({})
   const [scholarshipMaterialPreviousStatuses, setScholarshipMaterialPreviousStatuses] = useState<Record<string, MaterialStatus>>({})
+  const recentScholarshipTimelineEventIdRef = useRef<string | null>(null)
   const [timelineTitle, setTimelineTitle] = useState('')
   const [timelineDate, setTimelineDate] = useState(today)
   const [timelineNote, setTimelineNote] = useState('')
@@ -1302,6 +1741,12 @@ export function DossierView({
   const [taskExpansionSyncVersion, setTaskExpansionSyncVersion] = useState(0)
   const [pendingTimelineNav, setPendingTimelineNav] = useState<TimelineNav | null>(null)
   const [checklistSearch, setChecklistSearch] = useState('')
+  const [checklistToolsOpen, setChecklistToolsOpen] = useState(false)
+  const [checklistToolsCompact, setChecklistToolsCompact] = useState(() => (
+    typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(max-width: 820px)').matches
+  ))
   const [materialFilter, setMaterialFilter] = useState<MaterialFilter>('all')
   const [checklistFilterAnimKey, setChecklistFilterAnimKey] = useState(0)
   const [materialGroupFilter, setMaterialGroupFilter] = useState('all')
@@ -1309,9 +1754,6 @@ export function DossierView({
   const [materialPreviousStatuses, setMaterialPreviousStatuses] = useState<Record<string, MaterialStatus>>({})
   const [taskFilter, setTaskFilter] = useState<TaskFilter>('all')
   const [taskSort, setTaskSort] = useState<TaskSort>('manual')
-  const [checklistDrag, setChecklistDrag] = useState<ChecklistDragTarget>(null)
-  const [checklistDropTarget, setChecklistDropTarget] = useState<ChecklistDropTarget>(null)
-  const [checklistDragOffset, setChecklistDragOffset] = useState<ChecklistDragOffset>(null)
   const [recentChecklistItem, setRecentChecklistItem] = useState<ChecklistDragTarget>(null)
   const [removingMaterialIds, setRemovingMaterialIds] = useState<Set<string>>(new Set())
   const [removingTaskIds, setRemovingTaskIds] = useState<Set<string>>(new Set())
@@ -1352,7 +1794,7 @@ export function DossierView({
     requestClose: requestChecklistUploadClose,
   } = useAnimatedClose(checklistUploadOpen, finalizeChecklistUploadClose, 180, application.id)
   const checklistUploadDialogRef = useModalA11y<HTMLDivElement>({
-    open: checklistUploadOpen && !checklistUploadExiting,
+    open: checklistUploadOpen,
     onClose: () => requestChecklistUploadClose(),
   })
   const [reminderMenu, setReminderMenu] = useState<ReminderMenuTarget>(null)
@@ -1361,16 +1803,24 @@ export function DossierView({
   const [explorerMenu, setExplorerMenu] = useState<ExplorerContextMenuState | null>(null)
   const [emailSubject, setEmailSubject] = useState('')
   const [emailBody, setEmailBody] = useState('')
+  const [emailRecipient, setEmailRecipient] = useState(() => normalizeCorrespondenceEmail(draft.professor.email))
   const [emailScheduleDate, setEmailScheduleDate] = useState(today)
   const [emailScheduleTime, setEmailScheduleTime] = useState('')
+  const initialScheduledEmailRef = useRef(defaultScheduledEmailTime())
+  const [scheduledSendDate, setScheduledSendDate] = useState(initialScheduledEmailRef.current.date)
+  const [scheduledSendTime, setScheduledSendTime] = useState(initialScheduledEmailRef.current.time)
+  const composerDeliveryIdRef = useRef(createComposerDeliveryId())
   const [emailAttachments, setEmailAttachments] = useState<EmailAttachmentDraft[]>([])
-  const [aiOutputAttachmentIds, setAiOutputAttachmentIds] = useState<string[]>([])
   const [emailInsertAnimating, setEmailInsertAnimating] = useState(false)
+  const [emailAiGenerating, setEmailAiGenerating] = useState(false)
+  const [emailAiSettling, setEmailAiSettling] = useState(false)
   const [emailAiRestoreAnimating, setEmailAiRestoreAnimating] = useState(false)
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
   const [aiDraftSessionKey, setAiDraftSessionKey] = useState(0)
   const [aiDraftMode, setAiDraftMode] = useState<'compose' | 'reply'>('compose')
   const [aiReplyToId, setAiReplyToId] = useState<string | null>(null)
+  const [replyContextExpanded, setReplyContextExpanded] = useState(false)
+  const [replyComposerNavigationToken, setReplyComposerNavigationToken] = useState(0)
   const [lastInsertSelection, setLastInsertSelection] = useState<{ ids: string[]; language: InsertLanguage } | null>(null)
   const [renamingAttachmentId, setRenamingAttachmentId] = useState<string | null>(null)
   const [renameAttachmentValue, setRenameAttachmentValue] = useState('')
@@ -1389,6 +1839,8 @@ export function DossierView({
   const [communicationEditDraft, setCommunicationEditDraft] = useState<CommunicationPatchInput | null>(null)
   const [activeRouteSwap, setActiveRouteSwap] = useState<string | null>(null)
   const [pendingComposerExit, setPendingComposerExit] = useState<ComposerExitRequest | null>(null)
+  const [pendingRecipientSend, setPendingRecipientSend] = useState<PendingRecipientSend | null>(null)
+  const [pendingMissingAttachmentSend, setPendingMissingAttachmentSend] = useState<PendingMissingAttachmentSend | null>(null)
   const [pendingDraftExit, setPendingDraftExit] = useState<{ proceed: () => void } | null>(null)
   const [pendingResourceSettingsExit, setPendingResourceSettingsExit] = useState<{ proceed?: () => void; navigation?: boolean } | null>(null)
   const [pendingItemEditExit, setPendingItemEditExit] = useState<{
@@ -1418,22 +1870,23 @@ export function DossierView({
     requestClose: requestItemEditExitClose,
   } = useAnimatedClose(pendingItemEditExit !== null, () => setPendingItemEditExit(null), undefined, application.id)
   const composerExitDialogRef = useModalA11y<HTMLElement>({
-    open: pendingComposerExit !== null && !composerExitExiting,
+    open: pendingComposerExit !== null,
     onClose: () => requestComposerExitClose(),
   })
   const draftExitDialogRef = useModalA11y<HTMLElement>({
-    open: pendingDraftExit !== null && !draftExitExiting,
+    open: pendingDraftExit !== null,
     onClose: () => requestDraftExitClose(),
   })
   const resourceSettingsExitDialogRef = useModalA11y<HTMLElement>({
-    open: pendingResourceSettingsExit !== null && !resourceSettingsExitExiting,
+    open: pendingResourceSettingsExit !== null,
     onClose: () => requestResourceSettingsExitClose(),
   })
   const itemEditExitDialogRef = useModalA11y<HTMLElement>({
-    open: pendingItemEditExit !== null && !itemEditExitExiting,
+    open: pendingItemEditExit !== null,
     onClose: () => requestItemEditExitClose(),
   })
   const draftRef = useRef(draft)
+  const previousProfessorEmailRef = useRef(normalizeCorrespondenceEmail(draft.professor.email))
   const activeApplicationIdRef = useRef(application.id)
   const composerBodyRef = useRef<HTMLTextAreaElement | null>(null)
   const dossierResourceDragSessionRef = useRef<DossierResourceDragSession | null>(null)
@@ -1441,7 +1894,6 @@ export function DossierView({
   const dossierResourceSettingsInitialRef = useRef<string | null>(null)
   const dossierResourceListRef = useRef<HTMLDivElement | null>(null)
   const checklistDragSessionRef = useRef<ChecklistDragSession | null>(null)
-  const checklistDropTargetRef = useRef<ChecklistDropTarget>(null)
   const reminderAnchorRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const reminderPopoverRef = useRef<HTMLDivElement | null>(null)
   const reminderCloseTimerRef = useRef<number | null>(null)
@@ -1458,6 +1910,8 @@ export function DossierView({
   const routeSwapTimerRef = useRef<number | null>(null)
   const scholarshipSaveTimerRef = useRef<number | null>(null)
   const emailInsertTimersRef = useRef<number[]>([])
+  const emailAiSettleTimerRef = useRef<number | null>(null)
+  const emailAiWasGeneratingRef = useRef(false)
   /** The exact range/text of the most recent auto-inserted snippet phrase, so a later selection change can replace it in place instead of appending. */
   const lastInsertRangeRef = useRef<{ start: number; end: number; text: string } | null>(null)
   /** The full email body an in-flight animated write is converging toward — lets a new insert/replace settle a prior one to its intended end state instead of racing it. */
@@ -1476,17 +1930,11 @@ export function DossierView({
   const editingCommunication = editingCommunicationId
     ? application.communications.find((item) => item.id === editingCommunicationId) ?? null
     : null
-  const communicationEditDirty = Boolean(editingCommunication && communicationEditDraft && JSON.stringify(communicationEditDraft) !== JSON.stringify({
-    subject: editingCommunication.subject,
-    channel: editingCommunication.channel,
-    date: editingCommunication.date || today,
-    summary: editingCommunication.summary,
-    direction: editingCommunication.direction ?? (editingCommunication.channel === 'Email' ? 'incoming' : 'note'),
-    messageType: editingCommunication.messageType ?? 'note',
-    from: editingCommunication.from ?? '',
-    to: editingCommunication.to ?? '',
-    time: editingCommunication.time ?? '',
-  }))
+  const communicationEditDirty = Boolean(
+    editingCommunication
+    && communicationEditDraft
+    && JSON.stringify(communicationEditDraft) !== JSON.stringify(communicationEditDraftFrom(editingCommunication)),
+  )
   const editingScholarship = editingScholarshipId
     ? application.scholarships.find((item) => item.id === editingScholarshipId) ?? null
     : null
@@ -1516,16 +1964,46 @@ export function DossierView({
   useEffect(() => {
     draftRef.current = draft
   }, [draft])
-  const commitDraft = useCallback((nextDraft: ApplicationRecord) => {
+  useEffect(() => {
+    const nextPrimary = normalizeCorrespondenceEmail(draft.professor.email)
+    const previousPrimary = previousProfessorEmailRef.current
+    previousProfessorEmailRef.current = nextPrimary
+    setEmailRecipient((current) => (
+      !current || normalizeCorrespondenceEmail(current) === previousPrimary
+        ? nextPrimary
+        : current
+    ))
+  }, [draft.professor.email])
+  const commitDraft = useCallback((
+    nextDraft: ApplicationRecord,
+    intent: ApplicationDraftSaveIntent = 'settled',
+  ) => {
     if (isReadOnly) return
     draftRef.current = nextDraft
-    onDraft(nextDraft)
+    onDraft(nextDraft, intent)
   }, [isReadOnly, onDraft])
   const professorDisplayName =
     (lang === 'zh' ? draft.professor.chinese : draft.professor.english) ||
     draft.professor.english ||
     draft.professor.chinese ||
     tx('dossier.professor')
+  const professorAvatarName =
+    draft.professor.english ||
+    draft.professor.chinese ||
+    professorDisplayName
+  const replyTargetCommunication = aiReplyToId
+    ? draft.communications.find((item) => item.id === aiReplyToId) ?? null
+    : null
+  const replyTargetTimestamp = replyTargetCommunication
+    ? communicationTimestamp(replyTargetCommunication, lang)
+    : null
+  const replyTargetAvatarIdentity = replyTargetCommunication
+    ? correspondenceAvatarIdentity(
+        replyTargetCommunication,
+        professorAvatarName,
+        draft.professor.email,
+      )
+    : null
   const emailBodyForCommunication = emailBody.trim() || tx('dossier.emptyEmailBody')
   const userSendFrom = session.user.settings.sendFrom || session.user.email
   const receiveEmails = session.user.settings.receiveEmails ?? []
@@ -1534,6 +2012,14 @@ export function DossierView({
     session.user.settings.receiveAt ||
     session.user.email
   const incomingMailbox = session.user.settings.incomingUser || primaryReceiveEmail
+  const trackedRecipientEmails = useMemo(
+    () => applicationCorrespondenceEmails(draft.professor),
+    [draft.professor],
+  )
+  const selectedRecipient = normalizeCorrespondenceEmail(emailRecipient)
+    || trackedRecipientEmails[0]
+    || normalizeCorrespondenceEmail(draft.professor.email)
+  const selectedRecipientIsTracked = trackedRecipientEmails.includes(selectedRecipient)
   const queueDestroyAnimation = (
     ids: string[],
     setRemovingIds: Dispatch<SetStateAction<Set<string>>>,
@@ -1562,28 +2048,32 @@ export function DossierView({
     correspondenceMeta.direction === 'outgoing'
       ? userSendFrom
       : correspondenceMeta.direction === 'incoming'
-        ? draft.professor.email
+        ? selectedRecipient
         : session.user.email
   const correspondenceTo =
     correspondenceMeta.direction === 'outgoing'
-      ? draft.professor.email
+      ? selectedRecipient
       : correspondenceMeta.direction === 'incoming'
         ? incomingMailbox
         : draft.school.name
   const hasComposerContent =
     emailSubject.trim().length > 0 ||
     emailBody.trim().length > 0 ||
-    emailScheduleTime.trim().length > 0 ||
-    emailScheduleDate !== today ||
+    (
+      correspondenceMode !== 'draft-email'
+      && (
+        emailScheduleTime.trim().length > 0
+        || emailScheduleDate !== today
+      )
+    ) ||
     emailAttachments.length > 0
   const emailSubjectReady = emailSubject.trim().length > 0
   const emailBodyReady = emailBody.trim().length > 0
-  const emailHasSchedule = emailScheduleTime.trim().length > 0 || emailScheduleDate !== today
-  const emailScheduleSummary = emailHasSchedule
-    ? format(tx('dossier.emailScheduledFor'), {
-        date: `${formatDate(emailScheduleDate, lang)}${emailScheduleTime.trim() ? ` ${emailScheduleTime.trim()}` : ''}`,
-      })
-    : tx('dossier.emailManualSend')
+  const scheduledSendAt = scheduledEmailIso(scheduledSendDate, scheduledSendTime)
+  const scheduledSendIsFuture = isFutureScheduledEmail(
+    scheduledSendDate,
+    scheduledSendTime,
+  )
   const dossierResourceDefaultValues = useMemo<DossierResourceDefaultValues>(() => ({
     school: { website: draft.school.website },
     program: draft.program,
@@ -1631,7 +2121,7 @@ export function DossierView({
     )
   }, [dossierResourceIconSearch, tx])
 
-  const commitDossierResourceCards = (cards: DossierResourceCard[]) => {
+  const commitDossierResourceCards = useCallback((cards: DossierResourceCard[]) => {
     const currentDraft = draftRef.current
     commitDraft({
       ...currentDraft,
@@ -1650,10 +2140,10 @@ export function DossierView({
           }
         }),
       })),
-    })
-  }
+    }, 'immediate')
+  }, [commitDraft])
 
-  const animateDossierResourceLayout = (update: () => void) => {
+  const animateDossierResourceLayout = useCallback((update: () => void) => {
     const list = dossierResourceListRef.current
     const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
     if (!list || reduceMotion) {
@@ -1684,7 +2174,7 @@ export function DossierView({
         easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
       })
     })
-  }
+  }, [])
 
   const toggleDossierResourceCard = (cardId: string) => {
     setExpandedDossierResourceCards((current) => {
@@ -2025,7 +2515,12 @@ export function DossierView({
       endDossierResourceDrag()
     })
     return true
-  }, [dossierResourceCards])
+  }, [
+    animateDossierResourceLayout,
+    commitDossierResourceCards,
+    dossierResourceCards,
+    endDossierResourceDrag,
+  ])
 
   const startDossierResourceDrag = useCallback((
     event: ReactPointerEvent<HTMLElement>,
@@ -2201,56 +2696,153 @@ export function DossierView({
   const clearEmailInsertAnimation = (resetState = true) => {
     emailInsertTimersRef.current.forEach((timer) => window.clearTimeout(timer))
     emailInsertTimersRef.current = []
+    pendingWriteTargetRef.current = null
     if (resetState) setEmailInsertAnimating(false)
   }
 
-  const insertChunkSize = (length: number) => (length > 180 ? 5 : length > 90 ? 4 : 3)
+  const handleEmailAiGeneratingChange = useCallback((generating: boolean) => {
+    if (emailAiSettleTimerRef.current !== null) {
+      window.clearTimeout(emailAiSettleTimerRef.current)
+      emailAiSettleTimerRef.current = null
+    }
 
-  const insertTextAtCursor = (text: string, animated = false): { start: number; end: number } | null => {
+    setEmailAiGenerating(generating)
+    if (generating) {
+      emailAiWasGeneratingRef.current = true
+      setEmailAiSettling(false)
+      return
+    }
+
+    // AiDraftPanel reports its initial idle state on mount. Only play the
+    // completion handoff after a real generation/stop cycle.
+    if (!emailAiWasGeneratingRef.current) return
+    emailAiWasGeneratingRef.current = false
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      setEmailAiSettling(false)
+      return
+    }
+
+    setEmailAiSettling(true)
+    emailAiSettleTimerRef.current = window.setTimeout(() => {
+      setEmailAiSettling(false)
+      emailAiSettleTimerRef.current = null
+    }, 420)
+  }, [])
+
+  const insertChunkSize = (length: number) => (
+    length > 180 ? 8 : length > 90 ? 5 : length > 42 ? 3 : length > 16 ? 2 : 1
+  )
+
+  const applyComposerTextChange = (
+    text: string,
+    {
+      animated = false,
+      range,
+      sourceOverride,
+    }: {
+      animated?: boolean
+      range?: { start: number; end: number }
+      sourceOverride?: string
+    } = {},
+  ): { start: number; end: number } => {
     clearEmailInsertAnimation(false)
     const node = composerBodyRef.current
     const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
-    if (!node) {
-      setEmailBody((current) => current + (current ? '\n' : '') + text)
-      return null
-    }
-    const start = node.selectionStart ?? node.value.length
-    const end = node.selectionEnd ?? node.value.length
-    const prefix = node.value.slice(0, start)
-    const suffix = node.value.slice(end)
+    const source = sourceOverride ?? node?.value ?? emailBody
+    const requestedStart = range?.start ?? node?.selectionStart ?? source.length
+    const start = Math.max(0, Math.min(requestedStart, source.length))
+    const requestedEnd = range?.end ?? node?.selectionEnd ?? start
+    const end = Math.max(start, Math.min(requestedEnd, source.length))
     const cursor = start + text.length
+    const target = source.slice(0, start) + text + source.slice(end)
     const finish = () => {
+      if (!node) return
       window.requestAnimationFrame(() => {
         node.focus()
         node.setSelectionRange(cursor, cursor)
       })
     }
 
-    if (!animated || reduceMotion || text.length < 8) {
-      pendingWriteTargetRef.current = null
-      setEmailBody(prefix + text + suffix)
+    if (!animated || reduceMotion || target === source) {
+      setEmailInsertAnimating(false)
+      setEmailBody(target)
       finish()
       return { start, end: cursor }
     }
 
-    pendingWriteTargetRef.current = prefix + text + suffix
+    const previous = source.slice(start, end)
+    let sharedPrefixLength = 0
+    while (
+      sharedPrefixLength < previous.length
+      && sharedPrefixLength < text.length
+      && previous[sharedPrefixLength] === text[sharedPrefixLength]
+    ) {
+      sharedPrefixLength += 1
+    }
+
+    let sharedSuffixLength = 0
+    while (
+      sharedSuffixLength < previous.length - sharedPrefixLength
+      && sharedSuffixLength < text.length - sharedPrefixLength
+      && previous[previous.length - 1 - sharedSuffixLength] === text[text.length - 1 - sharedSuffixLength]
+    ) {
+      sharedSuffixLength += 1
+    }
+
+    const oldChange = previous.slice(
+      sharedPrefixLength,
+      previous.length - sharedSuffixLength,
+    )
+    const newChange = text.slice(
+      sharedPrefixLength,
+      text.length - sharedSuffixLength,
+    )
+    const stablePrefix = source.slice(0, start) + text.slice(0, sharedPrefixLength)
+    const stableSuffix = (
+      text.slice(text.length - sharedSuffixLength)
+      + source.slice(end)
+    )
+    const longestChange = Math.max(oldChange.length, newChange.length)
+    const stepDelay = longestChange <= 8 ? 32 : 18
+    const firstStepDelay = longestChange <= 8 ? 48 : 24
+    const settleDelay = longestChange <= 8 ? 120 : 80
+    const oldChunkSize = insertChunkSize(oldChange.length)
+    const newChunkSize = insertChunkSize(newChange.length)
+
+    pendingWriteTargetRef.current = target
     setEmailInsertAnimating(true)
-    let written = 0
-    const chunkSize = insertChunkSize(text.length)
+    let oldRemaining = oldChange.length
+    let newWritten = 0
+
+    const schedule = (callback: () => void, delay = stepDelay) => {
+      const timer = window.setTimeout(callback, delay)
+      emailInsertTimersRef.current.push(timer)
+    }
+
     const writeNext = () => {
-      written = Math.min(text.length, written + chunkSize)
-      setEmailBody(prefix + text.slice(0, written) + suffix)
-      if (written < text.length) {
-        const timer = window.setTimeout(writeNext, 18)
-        emailInsertTimersRef.current.push(timer)
+      if (oldRemaining > 0) {
+        oldRemaining = Math.max(0, oldRemaining - oldChunkSize)
+        setEmailBody(stablePrefix + oldChange.slice(0, oldRemaining) + stableSuffix)
+        schedule(writeNext)
         return
       }
-      emailInsertTimersRef.current = []
-      pendingWriteTargetRef.current = null
-      setEmailInsertAnimating(false)
-      finish()
+
+      if (newWritten < newChange.length) {
+        newWritten = Math.min(newChange.length, newWritten + newChunkSize)
+        setEmailBody(stablePrefix + newChange.slice(0, newWritten) + stableSuffix)
+        schedule(writeNext)
+        return
+      }
+
+      setEmailBody(target)
+      schedule(() => {
+        emailInsertTimersRef.current = []
+        pendingWriteTargetRef.current = null
+        setEmailInsertAnimating(false)
+        finish()
+      }, settleDelay)
     }
-    writeNext()
+    schedule(writeNext, firstStepDelay)
     return { start, end: cursor }
   }
 
@@ -2314,25 +2906,22 @@ export function DossierView({
     const canReplace = priorRange != null && effectiveBody.slice(priorRange.start, priorRange.end) === priorRange.text
 
     if (canReplace && priorRange) {
-      clearEmailInsertAnimation()
-      const start = priorRange.start
-      const end = start + phrase.length
-      setEmailBody(effectiveBody.slice(0, priorRange.start) + phrase + effectiveBody.slice(priorRange.end))
-      window.requestAnimationFrame(() => {
-        composerBodyRef.current?.focus()
-        composerBodyRef.current?.setSelectionRange(end, end)
+      const range = applyComposerTextChange(phrase, {
+        animated: true,
+        range: priorRange,
+        sourceOverride: effectiveBody,
       })
-      lastInsertRangeRef.current = phrase.trim() ? { start, end, text: phrase } : null
+      lastInsertRangeRef.current = phrase.trim() ? { ...range, text: phrase } : null
     } else if (phrase.trim()) {
-      const range = insertTextAtCursor(phrase, true)
-      lastInsertRangeRef.current = range ? { ...range, text: phrase } : null
+      const range = applyComposerTextChange(phrase, { animated: true })
+      lastInsertRangeRef.current = { ...range, text: phrase }
     }
     setLastInsertSelection(selected.length > 0 ? { ids: selected.map((asset) => asset.id), language } : null)
 
-    const existingFileIds = new Set(emailAttachments.map((att) => att.fileId).filter(Boolean))
-    const newAttachments = selected.flatMap((asset) =>
+    const previousAssetIds = new Set(canReplace ? (lastInsertSelection?.ids ?? []) : [])
+    const selectedAssetIds = new Set(selected.map((asset) => asset.id))
+    const selectedAttachments = selected.flatMap((asset) =>
       (asset.attachments ?? [])
-        .filter((attachment) => !existingFileIds.has(attachment.fileId))
         .map((attachment) => ({
           id: createLocalId('att'),
           name: attachment.fileName,
@@ -2343,9 +2932,20 @@ export function DossierView({
           mimeType: attachment.mimeType,
         })),
     )
-    if (newAttachments.length > 0) {
-      setEmailAttachments((current) => [...current, ...newAttachments])
-    }
+    setEmailAttachments((current) => {
+      const retained = current.filter((attachment) => (
+        !attachment.assetId
+        || !previousAssetIds.has(attachment.assetId)
+        || selectedAssetIds.has(attachment.assetId)
+      ))
+      const existingFileIds = new Set(retained.map((attachment) => attachment.fileId).filter(Boolean))
+      const additions = selectedAttachments.filter((attachment) => {
+        if (!attachment.fileId || existingFileIds.has(attachment.fileId)) return false
+        existingFileIds.add(attachment.fileId)
+        return true
+      })
+      return [...retained, ...additions]
+    })
   }
 
   const addEmailAttachmentFiles = (files: File[]) => {
@@ -2376,10 +2976,6 @@ export function DossierView({
     }))
 
   const removeAttachment = (id: string) => {
-    const candidateId = emailAttachments.find((item) => item.id === id)?.aiCandidateId
-    if (candidateId) {
-      setAiOutputAttachmentIds((current) => current.filter((value) => value !== candidateId))
-    }
     setEmailAttachments((current) => current.filter((item) => item.id !== id))
   }
 
@@ -2398,6 +2994,13 @@ export function DossierView({
 
   const clearEmailComposer = () => {
     clearEmailInsertAnimation()
+    if (emailAiSettleTimerRef.current !== null) {
+      window.clearTimeout(emailAiSettleTimerRef.current)
+      emailAiSettleTimerRef.current = null
+    }
+    emailAiWasGeneratingRef.current = false
+    setEmailAiGenerating(false)
+    setEmailAiSettling(false)
     setEmailAiRestoreAnimating(false)
     setAiDraftSessionKey((current) => current + 1)
     pendingWriteTargetRef.current = null
@@ -2407,11 +3010,16 @@ export function DossierView({
     setEmailBody('')
     setEmailScheduleDate(today)
     setEmailScheduleTime('')
+    const nextSchedule = defaultScheduledEmailTime()
+    setScheduledSendDate(nextSchedule.date)
+    setScheduledSendTime(nextSchedule.time)
+    composerDeliveryIdRef.current = createComposerDeliveryId()
     setEmailAttachments([])
-    setAiOutputAttachmentIds([])
+    setPendingMissingAttachmentSend(null)
     setAiPanelOpen(false)
     setAiReplyToId(null)
     setAiDraftMode('compose')
+    setReplyContextExpanded(false)
     setRecordFromOverride(null)
     setRecordToOverride(null)
   }
@@ -2433,6 +3041,51 @@ export function DossierView({
     triggerRouteSwapAnimation('record')
   }
 
+  const addTrackedRecipient = (email: string) => {
+    const normalized = normalizeCorrespondenceEmail(email)
+    const currentDraft = draftRef.current
+    const currentEmails = applicationCorrespondenceEmails(currentDraft.professor)
+    if (
+      !isValidCorrespondenceEmail(normalized)
+      || currentEmails.includes(normalized)
+      || currentEmails.length >= MAX_APPLICATION_CORRESPONDENCE_EMAILS
+    ) return false
+    const correspondenceEmails = additionalCorrespondenceEmails(
+      currentDraft.professor.email,
+      [...(currentDraft.professor.correspondenceEmails ?? []), normalized],
+    )
+    commitDraft({
+      ...currentDraft,
+      professor: {
+        ...currentDraft.professor,
+        correspondenceEmails,
+      },
+    }, 'immediate')
+    setEmailRecipient(normalized)
+    return true
+  }
+
+  const removeTrackedRecipient = (email: string) => {
+    const normalized = normalizeCorrespondenceEmail(email)
+    const currentDraft = draftRef.current
+    if (normalized === normalizeCorrespondenceEmail(currentDraft.professor.email)) return
+    const correspondenceEmails = additionalCorrespondenceEmails(
+      currentDraft.professor.email,
+      (currentDraft.professor.correspondenceEmails ?? [])
+        .filter((candidate) => normalizeCorrespondenceEmail(candidate) !== normalized),
+    )
+    commitDraft({
+      ...currentDraft,
+      professor: {
+        ...currentDraft.professor,
+        correspondenceEmails,
+      },
+    }, 'immediate')
+    if (normalizeCorrespondenceEmail(emailRecipient) === normalized) {
+      setEmailRecipient(normalizeCorrespondenceEmail(currentDraft.professor.email))
+    }
+  }
+
   const buildCommunicationInput = (
     kind: CorrespondenceKind,
     subject: string,
@@ -2443,10 +3096,10 @@ export function DossierView({
     const direction = patch.direction ?? meta.direction
     const from =
       patch.from ??
-      (direction === 'outgoing' ? userSendFrom : direction === 'incoming' ? draft.professor.email : session.user.email)
+      (direction === 'outgoing' ? userSendFrom : direction === 'incoming' ? selectedRecipient : session.user.email)
     const to =
       patch.to ??
-      (direction === 'outgoing' ? draft.professor.email : direction === 'incoming' ? incomingMailbox : draft.school.name)
+      (direction === 'outgoing' ? selectedRecipient : direction === 'incoming' ? incomingMailbox : draft.school.name)
     return {
       subject: subject.trim() || tx('dossier.untitledMessage'),
       summary,
@@ -2514,10 +3167,18 @@ export function DossierView({
       setComposerOpen(true)
       setAiDraftMode(replyTo ? 'reply' : 'compose')
       setAiReplyToId(replyTo?.id ?? null)
+      setReplyContextExpanded(Boolean(replyTo))
       if (replyTo && !emailSubject.trim()) {
         setEmailSubject(replyTo.subject ? `Re: ${replyTo.subject.replace(/^re:\s*/i, '')}` : '')
       }
+      if (replyTo) {
+        const replyAddress = normalizeCorrespondenceEmail(
+          replyTo.direction === 'incoming' ? replyTo.from : replyTo.to,
+        )
+        if (isValidCorrespondenceEmail(replyAddress)) setEmailRecipient(replyAddress)
+      }
       setAiPanelOpen(true)
+      if (replyTo) setReplyComposerNavigationToken((current) => current + 1)
     }
     if (composerOpen && correspondenceMode !== 'draft-email') {
       requestComposerExit(open, { keepOpenAfterSave: true })
@@ -2526,14 +3187,54 @@ export function DossierView({
     open()
   }
 
+  useEffect(() => {
+    if (
+      replyComposerNavigationToken === 0 ||
+      !aiReplyToId ||
+      tab !== 'mail' ||
+      !composerOpen ||
+      correspondenceMode !== 'draft-email'
+    ) {
+      return undefined
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      const scrollTarget = correspondenceModeBarRef.current
+      const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+      if (scrollTarget && typeof scrollTarget.scrollIntoView === 'function') {
+        scrollTarget.scrollIntoView({
+          behavior: reduceMotion ? 'auto' : 'smooth',
+          block: 'start',
+          inline: 'nearest',
+        })
+      }
+
+      const body = composerBodyRef.current
+      if (!body) return
+      body.focus({ preventScroll: true })
+      const end = body.value.length
+      body.setSelectionRange(end, end)
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [
+    aiReplyToId,
+    composerOpen,
+    correspondenceMode,
+    replyComposerNavigationToken,
+    tab,
+  ])
+
   const persistCurrentComposer = async ({ keepComposerOpen = false } = {}) => {
     if (!hasComposerContent) return false
     const sourceApplicationId = application.id
     if (correspondenceMode === 'note') {
       if (!emailBody.trim()) return false
-      await onAddCommunication(buildCommunicationInput('note', formatDate(emailScheduleDate, lang), emailBodyForCommunication))
+      const saved = await onAddCommunication(buildCommunicationInput('note', formatDate(emailScheduleDate, lang), emailBodyForCommunication))
+      if (saved === false) return false
     } else {
-      await onAddCommunication(buildCommunicationInput(correspondenceKind, emailSubject, emailBodyForCommunication))
+      const saved = await onAddCommunication(buildCommunicationInput(correspondenceKind, emailSubject, emailBodyForCommunication))
+      if (saved === false) return false
     }
     if (activeApplicationIdRef.current !== sourceApplicationId) return false
     clearEmailComposer()
@@ -2545,12 +3246,13 @@ export function DossierView({
     if (!canUseDrafts) return false
     if (!hasComposerContent) return false
     const sourceApplicationId = application.id
-    await onAddCommunication(buildCommunicationInput(
+    const saved = await onAddCommunication(buildCommunicationInput(
       'outgoing-email',
       format(tx('dossier.draftEmailSubject'), { subject: emailSubject || tx('dossier.untitledEmail') }),
       emailBodyForCommunication,
       { date: today, time: '', messageType: 'draft-email', channel: 'Email', direction: 'outgoing' },
     ))
+    if (saved === false) return false
     if (activeApplicationIdRef.current !== sourceApplicationId) return false
     clearEmailComposer()
     if (!keepComposerOpen) setComposerOpen(false)
@@ -2571,28 +3273,116 @@ export function DossierView({
     if (saved && !exit?.keepOpenAfterSave) exit?.proceed()
   }
 
-  const sendComposerEmail = async () => {
-    if (!hasComposerContent) return false
-    if (!onSendCommunication) return persistCurrentComposer()
-    const sourceApplicationId = application.id
-    const payload = buildCommunicationInput(correspondenceKind, emailSubject, emailBodyForCommunication)
+  const performComposerSend = async (
+    pending: PendingRecipientSend,
+    trackRecipient: boolean,
+  ) => {
+    if (!onSendCommunication) return false
     const sent = await onSendCommunication({
-      ...payload,
-      subject: payload.subject || tx('dossier.untitledEmail'),
+      ...pending.payload,
+      trackRecipient,
     })
     // Keep the composer available after a failed send so its content is never lost.
     if (!sent) return false
-    if (activeApplicationIdRef.current !== sourceApplicationId) return false
+    if (activeApplicationIdRef.current !== pending.sourceApplicationId) return false
     clearEmailComposer()
     setComposerOpen(false)
+    pending.afterSend?.()
     return true
+  }
+
+  const sendComposerEmail = async (
+    afterSend?: () => void,
+    {
+      skipMissingAttachmentCheck = false,
+      timing,
+    }: {
+      skipMissingAttachmentCheck?: boolean
+      timing?: PendingMissingAttachmentSend['timing']
+    } = {},
+  ): Promise<'sent' | 'failed' | 'prompted'> => {
+    if (!hasComposerContent) return 'failed'
+    if (
+      !skipMissingAttachmentCheck
+      && shouldConfirmMissingEmailAttachment({
+        subject: emailSubject,
+        body: emailBody,
+        attachmentCount: emailAttachments.length,
+      })
+    ) {
+      setPendingMissingAttachmentSend({ afterSend, timing })
+      return 'prompted'
+    }
+    if (!onSendCommunication) {
+      if (timing) {
+        onNotify?.(tx('dossier.emailNotConfigured'), 'error')
+        return 'failed'
+      }
+      const saved = await persistCurrentComposer()
+      if (saved) afterSend?.()
+      return saved ? 'sent' : 'failed'
+    }
+    if (!isValidCorrespondenceEmail(selectedRecipient)) {
+      onNotify?.(tx('dossier.recipientInvalid'), 'error')
+      return 'failed'
+    }
+    const now = new Date()
+    const immediate = localCommunicationDateTime(now)
+    const payload = buildCommunicationInput(
+      correspondenceKind,
+      emailSubject,
+      emailBodyForCommunication,
+      {
+        date: timing?.date ?? immediate.date,
+        time: timing?.time ?? immediate.time,
+        messageType: timing ? 'scheduled-email' : 'outgoing-email',
+      },
+    )
+    const pending = {
+      payload: {
+        ...payload,
+        subject: payload.subject || tx('dossier.untitledEmail'),
+        bodyFormat: detectRichTextFormat(emailBodyForCommunication),
+        sendAt: timing?.sendAt,
+        idempotencyKey: composerDeliveryIdRef.current,
+      },
+      sourceApplicationId: application.id,
+      afterSend,
+    }
+    if (!selectedRecipientIsTracked) {
+      setPendingRecipientSend(pending)
+      return 'prompted'
+    }
+    const primaryRecipient = normalizeCorrespondenceEmail(draft.professor.email)
+    return await performComposerSend(
+      pending,
+      selectedRecipient !== primaryRecipient,
+    ) ? 'sent' : 'failed'
+  }
+
+  const handleMissingAttachmentDecision = (sendWithoutAttachment: boolean) => {
+    const pending = pendingMissingAttachmentSend
+    setPendingMissingAttachmentSend(null)
+    if (!pending || !sendWithoutAttachment) return
+    void sendComposerEmail(pending.afterSend, {
+      skipMissingAttachmentCheck: true,
+      timing: pending.timing,
+    })
   }
 
   const handlePendingComposerSend = async () => {
     const exit = pendingComposerExit
     setPendingComposerExit(null)
-    const sent = await sendComposerEmail()
-    if (sent && !exit?.keepOpenAfterSave) exit?.proceed()
+    await sendComposerEmail(
+      exit && !exit.keepOpenAfterSave ? exit.proceed : undefined,
+    )
+  }
+
+  const handleRecipientTrackingDecision = (decision: 'track' | 'once' | 'cancel') => {
+    const pending = pendingRecipientSend
+    setPendingRecipientSend(null)
+    if (!pending || decision === 'cancel') return
+    void performComposerSend(pending, decision === 'track')
   }
 
   const handlePendingComposerDiscard = () => {
@@ -2606,8 +3396,8 @@ export function DossierView({
   const handlePendingDraftSave = async () => {
     const exit = pendingDraftExit
     setPendingDraftExit(null)
-    await onSave()
-    exit?.proceed()
+    const saved = await onSave()
+    if (saved !== false) exit?.proceed()
   }
 
   const handlePendingDraftDiscard = () => {
@@ -2621,8 +3411,8 @@ export function DossierView({
     const exit = pendingResourceSettingsExit
     setPendingResourceSettingsExit(null)
     saveDossierResourceCardSettings()
-    if (exit?.navigation) await onSave()
-    exit?.proceed?.()
+    const saved = exit?.navigation ? await onSave() : true
+    if (saved !== false) exit?.proceed?.()
   }
 
   const handlePendingResourceSettingsDiscard = () => {
@@ -2630,7 +3420,13 @@ export function DossierView({
     setPendingResourceSettingsExit(null)
     cancelEditingDossierResourceCard()
     if (exit?.navigation && isDirty && exit.proceed) {
-      setPendingDraftExit({ proceed: exit.proceed })
+      if (autoSaveEnabled && onFlushAutoSave) {
+        void onFlushAutoSave().then((saved) => {
+          if (saved) exit.proceed?.()
+        })
+      } else {
+        setPendingDraftExit({ proceed: exit.proceed })
+      }
       return
     }
     exit?.proceed?.()
@@ -2640,20 +3436,35 @@ export function DossierView({
     void sendComposerEmail()
   }
 
-  const handleScheduleEmail = () => {
-    if (!emailSubject.trim() || !emailScheduleDate) return
-    void onAddCommunication(buildCommunicationInput(
-      'outgoing-email',
-      format(tx('dossier.scheduledEmailSubject'), {
-        date: emailScheduleDate,
-        time: emailScheduleTime || tx('dossier.unspecifiedTime'),
-        subject: emailSubject,
-      }),
-      emailBodyForCommunication,
-      { messageType: 'scheduled-email', channel: 'Email', direction: 'outgoing' },
-    ))
+  const handleSchedulePopoverOpen = (open: boolean) => {
+    if (!open || isFutureScheduledEmail(scheduledSendDate, scheduledSendTime)) return
+    const nextSchedule = defaultScheduledEmailTime()
+    setScheduledSendDate(nextSchedule.date)
+    setScheduledSendTime(nextSchedule.time)
+  }
+
+  const handleScheduleEmail = async (closePopover: () => void) => {
+    const sendAt = scheduledEmailIso(scheduledSendDate, scheduledSendTime)
+    if (!emailSubject.trim() || !sendAt || !isFutureScheduledEmail(scheduledSendDate, scheduledSendTime)) {
+      onNotify?.(tx('dossier.scheduleMustBeFuture'), 'error')
+      return
+    }
+    closePopover()
+    await sendComposerEmail(undefined, {
+      timing: {
+        sendAt,
+        date: scheduledSendDate,
+        time: scheduledSendTime,
+      },
+    })
+  }
+
+  const persistRecordedCommunication = async (input: CommunicationInput) => {
+    const sourceApplicationId = application.id
+    const saved = await onAddCommunication(input)
+    if (saved === false || activeApplicationIdRef.current !== sourceApplicationId) return false
     clearEmailComposer()
-    setComposerOpen(false)
+    return true
   }
 
   const handleSaveDraft = () => {
@@ -2681,28 +3492,46 @@ export function DossierView({
         return true
       }
       if (isDirty) {
-        setPendingDraftExit({ proceed })
+        if (autoSaveEnabled && onFlushAutoSave) {
+          void onFlushAutoSave().then((saved) => {
+            if (saved) proceed()
+          })
+        } else {
+          setPendingDraftExit({ proceed })
+        }
         return true
       }
       return false
     })
     return () => onRegisterNavigationGuard(null)
-  }, [communicationEditDirty, composerOpen, hasComposerContent, editingDossierResourceCardId, isDirty, itemEditDirty, onRegisterNavigationGuard, resourceSettingsDirty, scholarshipEditDirty])
+  }, [autoSaveEnabled, communicationEditDirty, composerOpen, hasComposerContent, editingDossierResourceCardId, isDirty, itemEditDirty, onFlushAutoSave, onRegisterNavigationGuard, resourceSettingsDirty, scholarshipEditDirty])
 
   useEffect(() => {
-    if (!(composerOpen && hasComposerContent) && !isDirty && !resourceSettingsDirty && !itemEditDirty) return undefined
+    const manualDecisionPending = (
+      (composerOpen && hasComposerContent)
+      || resourceSettingsDirty
+      || itemEditDirty
+      || (!autoSaveEnabled && isDirty)
+    )
+    if (!manualDecisionPending) return undefined
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault()
       event.returnValue = ''
     }
     window.addEventListener('beforeunload', handleBeforeUnload)
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
-  }, [composerOpen, hasComposerContent, isDirty, itemEditDirty, resourceSettingsDirty])
+  }, [autoSaveEnabled, composerOpen, hasComposerContent, isDirty, itemEditDirty, resourceSettingsDirty])
 
   // App keys this component by application so normal record switches start from
   // fresh state in one render. Keep the reset path for embedders that update the
   // application prop in place, while avoiding a second synchronous mount render.
   const recordStateInitializedRef = useRef(false)
+  const resetScholarshipsRef = useRef(application.scholarships)
+  const resetDossierResourceCardsRef = useRef(dossierResourceCards)
+  const resetTabRef = useRef(tab)
+  resetScholarshipsRef.current = application.scholarships
+  resetDossierResourceCardsRef.current = dossierResourceCards
+  resetTabRef.current = tab
   useLayoutEffect(() => {
     activeApplicationIdRef.current = application.id
     if (!recordStateInitializedRef.current) {
@@ -2712,7 +3541,7 @@ export function DossierView({
     setPendingTaskCreate(false)
     setScholarshipAddOpen(false)
     setScholarshipDraft(createScholarshipDraft(application.school.name))
-    const scholarshipIds = application.scholarships.map((item) => item.id)
+    const scholarshipIds = resetScholarshipsRef.current.map((item) => item.id)
     setExpandedScholarships(new Set(scholarshipIds))
     previousScholarshipIdsRef.current = new Set(scholarshipIds)
     if (scholarshipSaveTimerRef.current !== null) {
@@ -2724,6 +3553,7 @@ export function DossierView({
     setSavingScholarshipId(null)
     setOptimisticScholarships({})
     setScholarshipMaterialPreviousStatuses({})
+    recentScholarshipTimelineEventIdRef.current = null
     setTimelineTitle('')
     setTimelineDate(today)
     setTimelineNote('')
@@ -2734,7 +3564,7 @@ export function DossierView({
     setEditNote('')
     setExpandedNotes(new Set())
     setNewTag('')
-    setExpandedDossierResourceCards(new Set(dossierResourceCards.map((card) => card.id)))
+    setExpandedDossierResourceCards(new Set(resetDossierResourceCardsRef.current.map((card) => card.id)))
     setEditingDossierResourceCardId(null)
     setDossierResourceSettingsDraft(null)
     setRecentDossierResourceCardId(null)
@@ -2763,11 +3593,8 @@ export function DossierView({
     setMaterialPreviousStatuses({})
     setTaskFilter('all')
     setTaskSort('manual')
-    setChecklistDrag(null)
-    setChecklistDropTarget(null)
-    setChecklistDragOffset(null)
+    checklistDragSessionRef.current?.finish?.(false, true)
     checklistDragSessionRef.current = null
-    checklistDropTargetRef.current = null
     document.body.classList.remove('checklist-drag-active')
     setRecentChecklistItem(null)
     setRemovingMaterialIds(new Set())
@@ -2802,6 +3629,9 @@ export function DossierView({
     setCorrespondenceMode(defaultCorrespondenceMode)
     setCorrespondenceKind('outgoing-email')
     setCorrespondenceView('all')
+    setEmailRecipient(normalizeCorrespondenceEmail(draftRef.current.professor.email))
+    setPendingRecipientSend(null)
+    setPendingMissingAttachmentSend(null)
     setRecordDirection('sent')
     setEditingCommunicationId(null)
     setCommunicationEditDraft(null)
@@ -2816,7 +3646,7 @@ export function DossierView({
     setComposerOpen(false)
     setPendingComposerExit(null)
     setPendingDraftExit(null)
-    previousTabRef.current = tab
+    previousTabRef.current = resetTabRef.current
     setTabDirection('forward')
     consumedJumpTokenRef.current = null
   }, [application.id, application.school.name, defaultCorrespondenceMode])
@@ -2937,12 +3767,18 @@ export function DossierView({
       removalTimersRef.current = []
       emailInsertTimersRef.current.forEach((timer) => window.clearTimeout(timer))
       emailInsertTimersRef.current = []
+      if (emailAiSettleTimerRef.current !== null) {
+        window.clearTimeout(emailAiSettleTimerRef.current)
+        emailAiSettleTimerRef.current = null
+      }
       if (routeSwapTimerRef.current !== null) {
         window.clearTimeout(routeSwapTimerRef.current)
       }
       if (scholarshipSaveTimerRef.current !== null) {
         window.clearTimeout(scholarshipSaveTimerRef.current)
       }
+      checklistDragSessionRef.current?.finish?.(false, true)
+      checklistDragSessionRef.current = null
       document.body.classList.remove('checklist-drag-active')
     }
   }, [])
@@ -3025,23 +3861,23 @@ export function DossierView({
     setMaterialFilter('all')
     setMaterialGroupFilter('all')
     setMaterialSort('manual')
-    onDraft({
-      ...draft,
+    commitDraft({
+      ...draftRef.current,
       materials: [
         material,
-        ...draft.materials,
+        ...draftRef.current.materials,
       ],
-    })
+    }, 'immediate')
     setExpandedMaterials(prev => new Set([...prev, newId]))
     setMaterialExpansionSyncVersion((version) => version + 1)
     setRecentChecklistItem({ kind: 'material', id: newId })
   }
 
-  const requestChecklistUpload = (target: ChecklistUploadTarget) => {
+  const openChecklistUpload = (target: ChecklistUploadTarget) => {
     const existingTarget = target?.kind === 'material'
-      ? draft.materials.find((material) => material.id === target.id)
+      ? draftRef.current.materials.find((material) => material.id === target.id)
       : target?.kind === 'task'
-        ? draft.tasks.find((task) => task.id === target.id)
+        ? draftRef.current.tasks.find((task) => task.id === target.id)
         : null
     const { presetIds, customTypes } = getUploadPresetSelection(existingTarget?.allowedFileTypes)
     // Prepare form state first, then open on the next frame so the click paint
@@ -3059,8 +3895,23 @@ export function DossierView({
     })
   }
 
-  const closeChecklistUpload = () => {
-    requestChecklistUploadClose()
+  const requestChecklistUpload = (target: ChecklistUploadTarget) => {
+    if (reminderMenu) {
+      closeReminderMenu(() => openChecklistUpload(target))
+      return
+    }
+    openChecklistUpload(target)
+  }
+
+  const closeChecklistUpload = (afterClose?: () => void) => {
+    if (!afterClose) {
+      requestChecklistUploadClose()
+      return
+    }
+    requestChecklistUploadClose(() => {
+      finalizeChecklistUploadClose()
+      afterClose()
+    })
   }
 
   const uploadAllowedTypes = useMemo(
@@ -3186,12 +4037,11 @@ export function DossierView({
         allowedFileTypes: uploadAllowedTypes,
         attachmentRequired: uploadReservationEnabled,
       }
-      updateTaskDraft(checklistUploadTarget.id, patch)
-      onUpdateTask?.(checklistUploadTarget.id, patch)
+      updateTaskWithServer(checklistUploadTarget.id, patch)
     }
   }
 
-  const submitChecklistUpload = async () => {
+  const submitChecklistUpload = async (afterClose?: () => void) => {
     if (uploadSubmitting || hasUploadNameConflict || hasUploadTypeMismatch) return
     const sourceApplicationId = application.id
     setUploadSubmitting(true)
@@ -3210,7 +4060,7 @@ export function DossierView({
       }
       if (activeApplicationIdRef.current !== sourceApplicationId) return
       if (uploadReservationEnabled && target) saveUploadReservation()
-      closeChecklistUpload()
+      closeChecklistUpload(afterClose)
     } finally {
       if (activeApplicationIdRef.current === sourceApplicationId) setUploadSubmitting(false)
     }
@@ -3232,12 +4082,16 @@ export function DossierView({
     })
   }
 
-  const updateTaskDraft = (id: string, patch: Partial<TaskItem>) => {
+  const updateTaskDraft = (
+    id: string,
+    patch: Partial<TaskItem>,
+    intent: ApplicationDraftSaveIntent = 'settled',
+  ) => {
     const currentDraft = draftRef.current
     commitDraft({
       ...currentDraft,
       tasks: currentDraft.tasks.map((task) => (task.id === id ? { ...task, ...patch } : task)),
-    })
+    }, intent)
   }
 
   const materialStatuses = useMemo(
@@ -3324,7 +4178,7 @@ export function DossierView({
           void onCustomApplicationStatusesChange(nextCustom)
         }
         const currentDraft = draftRef.current
-        commitDraft({ ...currentDraft, status: nextStatus })
+        commitDraft({ ...currentDraft, status: nextStatus }, 'immediate')
       },
     }
   }, [
@@ -3477,9 +4331,20 @@ export function DossierView({
     materialSort !== 'manual' ||
     taskFilter !== 'all' ||
     taskSort !== 'manual'
+  const checklistToolFilterCount =
+    Number(materialFilter !== 'all') +
+    Number(materialGroupFilter !== 'all') +
+    Number(materialSort !== 'manual') +
+    Number(taskFilter !== 'all') +
+    Number(taskSort !== 'manual')
 
   const updateMaterial = (id: string, patch: Partial<MaterialItem>) => {
     const currentDraft = draftRef.current
+    const intent: ApplicationDraftSaveIntent = Object.keys(patch).some(
+      (key) => key === 'name' || key === 'details' || key === 'recommenders',
+    )
+      ? 'settled'
+      : 'immediate'
     commitDraft({
       ...currentDraft,
       materials: currentDraft.materials.map((material) =>
@@ -3487,7 +4352,7 @@ export function DossierView({
           ? { ...material, ...patch, updatedAt: today }
           : material,
       ),
-    })
+    }, intent)
   }
 
   const replaceMaterialTaxonomyValue = (
@@ -3505,7 +4370,7 @@ export function DossierView({
           ? { ...material, [key]: cleanValue, updatedAt: today }
           : material
       )),
-    })
+    }, 'immediate')
   }
 
   const deleteMaterialTaxonomyValue = (key: 'type' | 'group' | 'status', value: string) => {
@@ -3642,12 +4507,12 @@ export function DossierView({
         onRemoveMaterialFile(item.id, fileId)
         return
       }
-      onDraft({
-        ...draft,
-        materials: draft.materials.map((material) =>
+      commitDraft({
+        ...draftRef.current,
+        materials: draftRef.current.materials.map((material) =>
           material.id === item.id ? removeAttachmentFromItem(material, fileId) : material,
         ),
-      })
+      }, 'immediate')
       return
     }
     if (onRemoveTaskFile) {
@@ -3655,7 +4520,7 @@ export function DossierView({
       return
     }
     const nextTask = removeAttachmentFromItem(item as TaskItem, fileId)
-    updateTaskDraft(item.id, nextTask)
+    updateTaskDraft(item.id, nextTask, 'immediate')
   }
 
   const cancelUploadReservation = (kind: 'material' | 'task', item: MaterialItem | TaskItem) => {
@@ -3693,19 +4558,33 @@ export function DossierView({
     ].filter(Boolean).join(' · ')
   }
 
-  const openReminderMenu = (target: Exclude<ReminderMenuTarget, null>) => {
+  const showReminderMenu = (target: Exclude<ReminderMenuTarget, null>) => {
     if (reminderCloseTimerRef.current !== null) {
       window.clearTimeout(reminderCloseTimerRef.current)
       reminderCloseTimerRef.current = null
     }
     reminderPopoverRef.current?.classList.remove('closing')
+    setReminderPopoverStyle(getReminderPopoverStyle(target))
+    setClosingReminderMenu(null)
+    setReminderMenu(target)
+  }
+
+  const openReminderMenu = (target: Exclude<ReminderMenuTarget, null>) => {
+    if (checklistUploadOpen) {
+      if (checklistUploadExiting || uploadSubmitting) return
+      const showAfterUpload = () => showReminderMenu(target)
+      if (uploadDraftFiles.length > 0 || (uploadReservationEnabled && checklistUploadTarget)) {
+        void submitChecklistUpload(showAfterUpload)
+      } else {
+        closeChecklistUpload(showAfterUpload)
+      }
+      return
+    }
     if (sameReminderTarget(reminderMenu, target) && !sameReminderTarget(closingReminderMenu, target)) {
       closeReminderMenu()
       return
     }
-    setReminderPopoverStyle(getReminderPopoverStyle(target))
-    setClosingReminderMenu(null)
-    setReminderMenu(target)
+    showReminderMenu(target)
   }
 
   const closeReminderMenu = (afterClose?: () => void) => {
@@ -3715,16 +4594,21 @@ export function DossierView({
       window.clearTimeout(reminderCloseTimerRef.current)
     }
     reminderPopoverRef.current?.classList.add('closing')
+    setClosingReminderMenu(target)
     reminderCloseTimerRef.current = window.setTimeout(() => {
       afterClose?.()
       setReminderMenu((current) => sameReminderTarget(current, target) ? null : current)
       setClosingReminderMenu((current) => sameReminderTarget(current, target) ? null : current)
       reminderCloseTimerRef.current = null
-    }, 170)
+    }, getMotionDelay(170))
   }
 
   const updateTaskWithServer = (taskId: string, patch: Partial<TaskItem>) => {
-    updateTaskDraft(taskId, patch)
+    if (autoSaveEnabled) {
+      updateTaskDraft(taskId, patch, 'immediate')
+      return
+    }
+    updateTaskDraft(taskId, patch, 'external')
     onUpdateTask?.(taskId, patch)
   }
 
@@ -4178,7 +5062,7 @@ export function DossierView({
     () =>
       tab === 'mail' && tabContentReady
         ? [...draft.communications].sort((a, b) =>
-            `${a.date}T${a.time || '00:00'}`.localeCompare(`${b.date}T${b.time || '00:00'}`),
+            communicationSortStamp(a).localeCompare(communicationSortStamp(b)),
           )
         : [],
     [draft.communications, tab, tabContentReady],
@@ -4280,8 +5164,21 @@ export function DossierView({
     )
     const manualEvents = application.timeline
       .filter((event) => !communicationKeys.has(`${event.date}|${event.title}|${event.note}`))
-      .map((event) => ({ ...event, source: tx('dossier.timelineSourceManual'), manual: true }))
-    type GeneratedTimelineEvent = { id: string; title: string; date: string; note: string; source: string; nav: TimelineNav }
+      .map((event) => ({
+        ...event,
+        source: tx('dossier.timelineSourceManual'),
+        manual: true,
+        plainText: event.id.startsWith('time_mail_'),
+      }))
+    type GeneratedTimelineEvent = {
+      id: string
+      title: string
+      date: string
+      note: string
+      source: string
+      nav: TimelineNav
+      plainText?: boolean
+    }
     const rawGenerated: Array<GeneratedTimelineEvent | null> = [
       {
         id: `auto-deadline-${application.id}`,
@@ -4334,10 +5231,11 @@ export function DossierView({
       ...communications.map((item) => ({
         id: `auto-communication-${item.id}`,
         title: `${tx(`channel.${item.channel || 'Email'}`, item.channel || 'Email')}: ${localize(item.subject || tx('dossier.untitledMessage'))}`,
-        date: item.date || today,
+        date: communicationCalendarDate(item) || today,
         note: item.summary || '',
         source: tx('dossier.timelineSourceMail'),
         nav: { tab: 'mail', id: item.id } as TimelineNav,
+        plainText: item.messageType === 'fetched-email',
       })),
       ...application.scholarships.flatMap((item) => [
         {
@@ -4383,7 +5281,16 @@ export function DossierView({
       ]),
     ]
     const generated = rawGenerated.filter((event): event is GeneratedTimelineEvent => Boolean(event && event.date))
-    const deduped = new Map<string, { id: string; title: string; date: string; note: string; source?: string; manual?: boolean; nav?: TimelineNav }>()
+    const deduped = new Map<string, {
+      id: string
+      title: string
+      date: string
+      note: string
+      source?: string
+      manual?: boolean
+      nav?: TimelineNav
+      plainText?: boolean
+    }>()
     for (const event of [...manualEvents, ...generated]) {
       const key = `${event.date}|${event.title}|${event.note}`
       if (!deduped.has(key)) deduped.set(key, event)
@@ -4581,7 +5488,10 @@ export function DossierView({
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return undefined
     const mobileQuery = window.matchMedia('(max-width: 820px)')
-    const updateDockSurface = () => setTimelineJumpUsesViewportPortal(mobileQuery.matches)
+    const updateDockSurface = () => {
+      setTimelineJumpUsesViewportPortal(mobileQuery.matches)
+      setChecklistToolsCompact(mobileQuery.matches)
+    }
     updateDockSurface()
     mobileQuery.addEventListener?.('change', updateDockSurface)
     return () => mobileQuery.removeEventListener?.('change', updateDockSurface)
@@ -4718,23 +5628,28 @@ export function DossierView({
   const communicationSelection = useExplorerSelection(communicationIds)
   const scholarshipSelection = useExplorerSelection(scholarshipIds)
   const timelineSelection = useExplorerSelection(timelineEventIds)
+  const clearMaterialSelection = materialSelection.clearSelection
+  const clearTaskSelection = taskSelection.clearSelection
+  const clearCommunicationSelection = communicationSelection.clearSelection
+  const clearScholarshipSelection = scholarshipSelection.clearSelection
+  const clearTimelineSelection = timelineSelection.clearSelection
 
   // Item IDs are normally unique, but templates and imported records can reuse
   // them. Scope multi-select state to the active application rather than relying
   // on an ID intersection to prune it after paint.
   useLayoutEffect(() => {
-    materialSelection.clearSelection()
-    taskSelection.clearSelection()
-    communicationSelection.clearSelection()
-    scholarshipSelection.clearSelection()
-    timelineSelection.clearSelection()
+    clearMaterialSelection()
+    clearTaskSelection()
+    clearCommunicationSelection()
+    clearScholarshipSelection()
+    clearTimelineSelection()
   }, [
     application.id,
-    communicationSelection.clearSelection,
-    materialSelection.clearSelection,
-    scholarshipSelection.clearSelection,
-    taskSelection.clearSelection,
-    timelineSelection.clearSelection,
+    clearCommunicationSelection,
+    clearMaterialSelection,
+    clearScholarshipSelection,
+    clearTaskSelection,
+    clearTimelineSelection,
   ])
 
   const closeExplorerMenu = () => setExplorerMenu(null)
@@ -4782,12 +5697,12 @@ export function DossierView({
         return next
       })
     }
-    onDraft({
-      ...draft,
-      materials: draft.materials.map((material) =>
+    commitDraft({
+      ...draftRef.current,
+      materials: draftRef.current.materials.map((material) =>
         targets.has(material.id) ? { ...material, status, updatedAt: today } : material,
       ),
-    })
+    }, 'immediate')
   }
 
   const toggleMaterialCompletion = (material: MaterialItem) => {
@@ -4809,7 +5724,10 @@ export function DossierView({
     const targets = new Set(uniqueIds)
     if (targets.size === 0) return
     queueDestroyAnimation(uniqueIds, setRemovingMaterialIds, () => {
-      onDraft({ ...draft, materials: draft.materials.filter((material) => !targets.has(material.id)) })
+      commitDraft({
+        ...draftRef.current,
+        materials: draftRef.current.materials.filter((material) => !targets.has(material.id)),
+      }, 'immediate')
       setExpandedMaterials((current) => new Set([...current].filter((id) => !targets.has(id))))
     })
     materialSelection.clearSelection()
@@ -4836,11 +5754,12 @@ export function DossierView({
 
   const updateTasksDone = async (ids: string[], done: boolean) => {
     const targets = new Set(ids)
-    // Optimistically update the draft
-    onDraft({
-      ...draft,
-      tasks: draft.tasks.map((task) => (targets.has(task.id) ? { ...task, done } : task)),
-    })
+    commitDraft({
+      ...draftRef.current,
+      tasks: draftRef.current.tasks.map((task) => (targets.has(task.id) ? { ...task, done } : task)),
+    }, autoSaveEnabled ? 'immediate' : 'external')
+    if (autoSaveEnabled) return
+
     // Track which tasks succeeded for potential rollback
     const succeeded: string[] = []
     try {
@@ -4851,10 +5770,10 @@ export function DossierView({
     } catch {
       // Rollback: revert the succeeded tasks
       const rollbackTargets = new Set(succeeded)
-      onDraft({
-        ...draft,
-        tasks: draft.tasks.map((task) => (rollbackTargets.has(task.id) ? { ...task, done: !done } : task)),
-      })
+      commitDraft({
+        ...draftRef.current,
+        tasks: draftRef.current.tasks.map((task) => (rollbackTargets.has(task.id) ? { ...task, done: !done } : task)),
+      }, 'external')
       for (const id of succeeded) {
         onToggleTask(id, !done)
       }
@@ -4903,88 +5822,60 @@ export function DossierView({
     setChecklistFilterAnimKey((key) => key + 1)
   }
 
-  const updateChecklistDropTarget = useCallback((target: ChecklistDropTarget) => {
-    checklistDropTargetRef.current = target
-    setChecklistDropTarget((current) => (sameChecklistDropTarget(current, target) ? current : target))
-  }, [])
-
-  const endChecklistDrag = useCallback(() => {
-    const session = checklistDragSessionRef.current
-    if (session) {
-      if (session.frame) window.cancelAnimationFrame(session.frame)
-      session.item.style.removeProperty('--checklist-drag-y')
-      try {
-        session.handle.releasePointerCapture(session.pointerId)
-      } catch {
-        // Pointer capture may already be released by the browser on pointerup.
-      }
+  const cleanupChecklistDrag = useCallback((session: ChecklistDragSession) => {
+    if (session.status === 'done') return
+    session.status = 'done'
+    if (session.frame) {
+      window.cancelAnimationFrame(session.frame)
+      session.frame = 0
     }
-    checklistDragSessionRef.current = null
-    checklistDropTargetRef.current = null
-    setChecklistDrag(null)
-    setChecklistDropTarget(null)
-    setChecklistDragOffset(null)
+    const animation = session.dropAnimation
+    session.dropAnimation = null
+    animation?.cancel()
+    const cleanupListeners = session.cleanupListeners
+    session.cleanupListeners = null
+    cleanupListeners?.()
+    try {
+      session.handle.releasePointerCapture(session.pointerId)
+    } catch {
+      // Pointer capture may already have ended after pointerup/cancel.
+    }
+    session.rows.forEach(({ element }) => {
+      element.classList.remove('checklist-drag-source', 'checklist-sort-displaced')
+      element.style.removeProperty('--checklist-source-shift')
+      element.style.removeProperty('--checklist-sort-shift')
+    })
+    session.scope.classList.remove('checklist-sort-active')
+    session.overlay?.remove()
+    session.overlay = null
+    session.finish = null
+    session.settleFinalize = null
+    if (checklistDragSessionRef.current === session) {
+      checklistDragSessionRef.current = null
+    }
     document.body.classList.remove('checklist-drag-active')
   }, [])
 
-  const findChecklistDropTarget = useCallback((
-    kind: 'material' | 'task',
-    id: string,
-    clientY: number,
-  ): ChecklistDropTarget => {
-    const rows = Array.from(document.querySelectorAll<HTMLElement>(`[data-checklist-kind="${kind}"]`))
-      .filter((row) => row.dataset.checklistId && row.dataset.checklistId !== id && !row.classList.contains('is-removing'))
-    if (rows.length === 0) return null
-
-    const dropSlot = document.querySelector<HTMLElement>('.checklist-drop-slot')
-    const dropSlotHeight = dropSlot?.getBoundingClientRect().height ?? 0
-    for (const row of rows) {
-      const rect = row.getBoundingClientRect()
-      const slotPrecedesRow = dropSlot
-        ? Boolean(dropSlot.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING)
-        : false
-      const adjustedTop = rect.top - (slotPrecedesRow ? dropSlotHeight : 0)
-      if (clientY <= adjustedTop + rect.height / 2) {
-        return { kind, id: row.dataset.checklistId ?? '', position: 'before' }
+  const commitChecklistDrag = useCallback((session: ChecklistDragSession) => {
+    const target = session.target
+    if (!target || session.kind !== target.kind || session.id === target.id || !target.id) return
+    const currentDraft = draftRef.current
+    if (session.kind === 'material') {
+      const materials = reorderById(currentDraft.materials, session.id, target.id, target.position)
+      if (materials !== currentDraft.materials) {
+        commitDraft({ ...currentDraft, materials }, 'immediate')
       }
-    }
-    const last = rows[rows.length - 1]
-    return { kind, id: last.dataset.checklistId ?? '', position: 'after' }
-  }, [])
-
-  const scrollChecklistDuringDrag = useCallback((clientY: number) => {
-    const scrollParent = checklistDragSessionRef.current?.scrollParent
-    if (!scrollParent) return
-    const viewport = scrollParent === document.scrollingElement
-      ? { top: 0, bottom: window.innerHeight }
-      : scrollParent.getBoundingClientRect()
-    const edge = 58
-    const maxStep = 14
-    if (clientY < viewport.top + edge) {
-      const intensity = Math.min(1, (viewport.top + edge - clientY) / edge)
-      scrollParent.scrollTop -= Math.ceil(maxStep * intensity)
-    } else if (clientY > viewport.bottom - edge) {
-      const intensity = Math.min(1, (clientY - (viewport.bottom - edge)) / edge)
-      scrollParent.scrollTop += Math.ceil(maxStep * intensity)
-    }
-  }, [])
-
-  const commitChecklistDrag = useCallback(() => {
-    const drag = checklistDragSessionRef.current
-    const target = checklistDropTargetRef.current
-    if (!drag || !target || drag.kind !== target.kind || drag.id === target.id || !target.id) return
-    if (drag.kind === 'material') {
-      const materials = reorderById(draft.materials, drag.id, target.id, target.position)
-      if (materials !== draft.materials) onDraft({ ...draft, materials })
       return
     }
-    const tasks = reorderById(draft.tasks, drag.id, target.id, target.position)
-    if (tasks !== draft.tasks) onDraft({ ...draft, tasks })
-  }, [draft, onDraft])
+    const tasks = reorderById(currentDraft.tasks, session.id, target.id, target.position)
+    if (tasks !== currentDraft.tasks) {
+      commitDraft({ ...currentDraft, tasks }, 'immediate')
+    }
+  }, [commitDraft])
 
   const startChecklistDrag = useCallback((
     event: ReactPointerEvent<HTMLElement>,
-    kind: 'material' | 'task',
+    kind: ChecklistDragKind,
     id: string,
   ) => {
     const canDrag = kind === 'material' ? materialSort === 'manual' : taskSort === 'manual'
@@ -4992,161 +5883,359 @@ export function DossierView({
       event.preventDefault()
       return
     }
-    const item = event.currentTarget.closest<HTMLElement>('.checklist-item')
-    if (!item) return
-    const rect = item.getBoundingClientRect()
-    const fixedContainingBlockRect = findFixedContainingBlock(item)?.getBoundingClientRect()
-    const dragLeft = fixedContainingBlockRect ? rect.left - fixedContainingBlockRect.left : rect.left
-    const dragTop = fixedContainingBlockRect ? rect.top - fixedContainingBlockRect.top : rect.top
+
+    checklistDragSessionRef.current?.finish?.(false, true)
+    const handle = event.currentTarget
+    const item = handle.closest<HTMLElement>('.checklist-item')
+    const scope = kind === 'task'
+      ? item?.closest<HTMLElement>('.checklist-task-list')
+      : item?.closest<HTMLElement>('.checklist-group')
+    if (!item || !scope) return
+
+    // Read every piece of geometry once, before the first visual write. During
+    // pointer movement the cached centers are adjusted only by scrollTop.
+    const rowElements = Array.from(scope.querySelectorAll<HTMLElement>(`[data-checklist-kind="${kind}"]`))
+      .filter((row) => row.dataset.checklistId && !row.classList.contains('is-removing'))
+    if (rowElements.length < 2) {
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    const rows: ChecklistDragRowMeasurement[] = rowElements.map((element) => {
+      const rect = element.getBoundingClientRect()
+      return {
+        id: element.dataset.checklistId ?? '',
+        element,
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+        center: rect.top + rect.height / 2,
+      }
+    })
+    const sourceIndex = rows.findIndex((row) => row.id === id)
+    if (sourceIndex < 0) return
+    const source = rows[sourceIndex]
+    const scrollParent = findScrollableAncestor(item)
+    const scrollStart = scrollParent?.scrollTop ?? 0
+    const scrollMax = scrollParent
+      ? Math.max(0, scrollParent.scrollHeight - scrollParent.clientHeight)
+      : 0
+    const pageScroller = scrollParent === document.scrollingElement
+    const scrollViewport = scrollParent && !pageScroller
+      ? scrollParent.getBoundingClientRect()
+      : null
+    const scopeStyle = window.getComputedStyle(scope)
+    const rowGap = Number.parseFloat(scopeStyle.rowGap || scopeStyle.gap) || 0
+
     event.preventDefault()
     event.stopPropagation()
     try {
-      event.currentTarget.setPointerCapture(event.pointerId)
+      handle.setPointerCapture(event.pointerId)
     } catch {
-      // Pointer capture is a progressive enhancement; window listeners still handle the drag.
+      // Window listeners keep the drag functional when capture is unavailable.
     }
-    checklistDragSessionRef.current = {
+
+    const session: ChecklistDragSession = {
       kind,
       id,
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
-      left: dragLeft,
-      top: dragTop,
-      width: rect.width,
-      height: rect.height,
-      hasMoved: false,
-      handle: event.currentTarget,
+      left: source.left,
+      top: source.top,
+      width: source.width,
+      height: source.height,
+      handle,
       item,
-      scrollParent: findScrollableAncestor(item),
+      scope,
+      rows,
+      sourceIndex,
+      rowGap,
+      scrollParent,
+      scrollStart,
+      scrollMax,
+      viewportTop: Math.max(0, scrollViewport?.top ?? 0),
+      viewportBottom: Math.min(window.innerHeight, scrollViewport?.bottom ?? window.innerHeight),
       frame: 0,
       latestClientX: event.clientX,
       latestClientY: event.clientY,
+      target: null,
+      insertionIndex: sourceIndex,
+      sourceShift: 0,
+      overlay: null,
+      dropAnimation: null,
+      status: 'pending',
+      reducedMotion: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false,
+      cleanupListeners: null,
+      finish: null,
+      settleFinalize: null,
     }
-    checklistDropTargetRef.current = null
-    document.body.classList.add('checklist-drag-active')
-    setChecklistDrag({ kind, id })
-    setChecklistDragOffset({ kind, id, x: 0, y: 0, left: dragLeft, top: dragTop, width: rect.width, height: rect.height })
-    updateChecklistDropTarget(null)
-  }, [materialSort, taskSort, updateChecklistDropTarget])
+    checklistDragSessionRef.current = session
 
-  useEffect(() => {
-    if (!checklistDrag) return undefined
+    const activateDrag = () => {
+      if (session.status !== 'pending') return
+      session.status = 'dragging'
 
-    const handlePointerMove = (event: PointerEvent) => {
-      const session = checklistDragSessionRef.current
-      if (!session || event.pointerId !== session.pointerId) return
-      event.preventDefault()
-      session.latestClientX = event.clientX
-      session.latestClientY = event.clientY
-      if (session.frame) return
-      session.frame = window.requestAnimationFrame(() => {
-        const activeSession = checklistDragSessionRef.current
-        if (!activeSession || activeSession.pointerId !== event.pointerId) return
-        activeSession.frame = 0
-        const x = activeSession.latestClientX - activeSession.startX
-        const y = activeSession.latestClientY - activeSession.startY
-        if (!activeSession.hasMoved && Math.hypot(x, y) > 4) activeSession.hasMoved = true
+      const overlay = session.item.cloneNode(true) as HTMLElement
+      overlay.removeAttribute('id')
+      overlay.removeAttribute('data-checklist-kind')
+      overlay.removeAttribute('data-checklist-id')
+      overlay.removeAttribute('data-tour')
+      overlay.removeAttribute('aria-selected')
+      overlay.setAttribute('aria-hidden', 'true')
+      overlay.setAttribute('role', 'presentation')
+      overlay.classList.remove(
+        'checklist-drag-source',
+        'checklist-sort-displaced',
+        'checklist-item-new',
+        'checklist-item-group-arrival',
+        'checklist-filter-enter',
+        'explorer-selected',
+      )
+      overlay.classList.add('checklist-drag-overlay')
+      overlay.querySelectorAll<HTMLElement>('[id]').forEach((element) => element.removeAttribute('id'))
+      overlay.querySelectorAll<HTMLElement>('[data-tour]').forEach((element) => element.removeAttribute('data-tour'))
+      overlay
+        .querySelectorAll<HTMLElement>('a, button, input, select, textarea, [tabindex]')
+        .forEach((element) => element.setAttribute('tabindex', '-1'))
+      overlay.style.left = `${session.left}px`
+      overlay.style.top = `${session.top}px`
+      overlay.style.width = `${session.width}px`
+      overlay.style.height = `${session.height}px`
+      overlay.style.transform = 'translate3d(0, 0, 0) scale(1.008)'
 
-        // Keep pointer-frequency movement off React's render path. The fixed drag
-        // card is already on a composited layer, so one CSS variable per frame is
-        // enough to follow the finger smoothly even in a large dossier.
-        activeSession.item.style.setProperty('--checklist-drag-y', `${y}px`)
-        updateChecklistDropTarget(activeSession.hasMoved
-          ? findChecklistDropTarget(activeSession.kind, activeSession.id, activeSession.latestClientY)
-          : null)
-        scrollChecklistDuringDrag(activeSession.latestClientY)
+      session.overlay = overlay
+      session.scope.classList.add('checklist-sort-active')
+      session.item.classList.add('checklist-drag-source')
+      document.body.appendChild(overlay)
+      document.body.classList.add('checklist-drag-active')
+    }
+
+    const applyPreview = () => {
+      const sourceRow = session.rows[session.sourceIndex]
+      const insertionIndex = session.insertionIndex
+      let sourceShift = 0
+      if (insertionIndex < session.sourceIndex) {
+        sourceShift = session.rows[insertionIndex].top - sourceRow.top
+      } else if (insertionIndex > session.sourceIndex) {
+        const targetRow = session.rows[insertionIndex]
+        sourceShift = targetRow.top + targetRow.height - sourceRow.height - sourceRow.top
+      }
+      session.sourceShift = sourceShift
+      sourceRow.element.style.setProperty('--checklist-source-shift', `${sourceShift}px`)
+
+      const displacement = sourceRow.height + session.rowGap
+      session.rows.forEach((row, index) => {
+        if (index === session.sourceIndex) return
+        const shift = insertionIndex < session.sourceIndex
+          && index >= insertionIndex
+          && index < session.sourceIndex
+          ? displacement
+          : insertionIndex > session.sourceIndex
+            && index > session.sourceIndex
+            && index <= insertionIndex
+            ? -displacement
+            : 0
+        row.element.classList.toggle('checklist-sort-displaced', shift !== 0)
+        if (shift === 0) row.element.style.removeProperty('--checklist-sort-shift')
+        else row.element.style.setProperty('--checklist-sort-shift', `${shift}px`)
       })
     }
 
-    const handlePointerUp = (event: PointerEvent) => {
-      const session = checklistDragSessionRef.current
-      if (!session || event.pointerId !== session.pointerId) return
-      event.preventDefault()
+    const updateDropPreview = () => {
+      const scrollDelta = session.scrollParent
+        ? session.scrollParent.scrollTop - session.scrollStart
+        : 0
+      const resolution = resolveChecklistDrop(
+        session.kind,
+        session.id,
+        session.rows,
+        session.latestClientY,
+        scrollDelta,
+        session.insertionIndex,
+        7,
+      )
+      if (
+        resolution.insertionIndex === session.insertionIndex
+        && sameChecklistDropTarget(resolution.target, session.target)
+      ) {
+        return
+      }
+      session.target = resolution.target
+      session.insertionIndex = resolution.insertionIndex
+      applyPreview()
+    }
+
+    const autoScroll = () => {
+      const scroller = session.scrollParent
+      if (!scroller || session.scrollMax <= 0) return false
+      const viewportHeight = session.viewportBottom - session.viewportTop
+      const edge = Math.min(72, Math.max(44, viewportHeight * 0.18))
+      const pointerY = session.latestClientY
+      let step = 0
+      if (pointerY < session.viewportTop + edge) {
+        const intensity = Math.min(1, (session.viewportTop + edge - pointerY) / edge)
+        step = -Math.max(1, Math.ceil(18 * intensity * intensity))
+      } else if (pointerY > session.viewportBottom - edge) {
+        const intensity = Math.min(1, (pointerY - (session.viewportBottom - edge)) / edge)
+        step = Math.max(1, Math.ceil(18 * intensity * intensity))
+      }
+      if (step === 0) return false
+      const current = scroller.scrollTop
+      const next = Math.max(0, Math.min(session.scrollMax, current + step))
+      if (next === current) return false
+      scroller.scrollTop = next
+      return true
+    }
+
+    const paintFrame = (allowAutoScroll: boolean) => {
+      if (session.status !== 'pending' && session.status !== 'dragging') return false
+      const x = session.latestClientX - session.startX
+      const y = session.latestClientY - session.startY
+      if (session.status === 'pending' && Math.hypot(x, y) > 4) activateDrag()
+      if (session.status !== 'dragging' || !session.overlay) return false
+
+      const keepAutoScrolling = allowAutoScroll && autoScroll()
+      session.overlay.style.transform = `translate3d(0, ${y}px, 0) scale(1.008)`
+      updateDropPreview()
+      return keepAutoScrolling
+    }
+
+    const runFrame = () => {
+      session.frame = 0
+      if (!session.item.isConnected || !session.scope.isConnected) {
+        session.finish?.(false, true)
+        return
+      }
+      const keepAutoScrolling = paintFrame(true)
+      if (keepAutoScrolling && session.status === 'dragging') {
+        session.frame = window.requestAnimationFrame(runFrame)
+      }
+    }
+
+    const scheduleFrame = () => {
+      if (!session.frame && (session.status === 'pending' || session.status === 'dragging')) {
+        session.frame = window.requestAnimationFrame(runFrame)
+      }
+    }
+
+    const finish = (commit: boolean, immediate = false) => {
+      if (session.status === 'done') return
+      if (session.status === 'settling') {
+        if (immediate) session.settleFinalize?.()
+        return
+      }
       if (session.frame) {
         window.cancelAnimationFrame(session.frame)
         session.frame = 0
       }
-      const finalX = event.clientX - session.startX
-      const finalY = event.clientY - session.startY
-      if (!session.hasMoved && Math.hypot(finalX, finalY) > 4) session.hasMoved = true
-      session.item.style.setProperty('--checklist-drag-y', `${finalY}px`)
-      checklistDropTargetRef.current = session.hasMoved
-        ? findChecklistDropTarget(session.kind, session.id, event.clientY)
-        : null
-      commitChecklistDrag()
-      endChecklistDrag()
-    }
+      if (session.status === 'pending') paintFrame(false)
+      if (session.status === 'pending') {
+        cleanupChecklistDrag(session)
+        return
+      }
 
-    const handlePointerCancel = (event: PointerEvent) => {
-      const session = checklistDragSessionRef.current
-      if (!session || event.pointerId !== session.pointerId) return
-      endChecklistDrag()
-    }
+      if (session.status === 'dragging') paintFrame(false)
+      session.status = 'settling'
+      const cleanupListeners = session.cleanupListeners
+      session.cleanupListeners = null
+      cleanupListeners?.()
+      try {
+        session.handle.releasePointerCapture(session.pointerId)
+      } catch {
+        // The browser may have released capture as part of pointerup.
+      }
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      endChecklistDrag()
+      const shouldCommit = commit && session.target !== null
+      if (!shouldCommit) {
+        session.sourceShift = 0
+        session.item.style.setProperty('--checklist-source-shift', '0px')
+        session.rows.forEach(({ element }) => {
+          if (!element.classList.contains('checklist-sort-displaced')) return
+          element.style.setProperty('--checklist-sort-shift', '0px')
+        })
+      }
+      const scrollDelta = session.scrollParent
+        ? session.scrollParent.scrollTop - session.scrollStart
+        : 0
+      const settleY = (shouldCommit ? session.sourceShift : 0) - scrollDelta
+
+      const finalize = () => {
+        if (session.status !== 'settling') return
+        if (shouldCommit) {
+          flushSync(() => commitChecklistDrag(session))
+        }
+        cleanupChecklistDrag(session)
+      }
+      session.settleFinalize = finalize
+
+      if (immediate || session.reducedMotion || !session.overlay || typeof session.overlay.animate !== 'function') {
+        finalize()
+        return
+      }
+      const currentTransform = session.overlay.style.transform
+      const animation = session.overlay.animate(
+        [
+          { transform: currentTransform },
+          { transform: `translate3d(0, ${settleY}px, 0) scale(1)` },
+        ],
+        {
+          duration: 180,
+          easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+          fill: 'forwards',
+        },
+      )
+      session.dropAnimation = animation
+      animation.finished.then(finalize, finalize)
+    }
+    session.finish = finish
+
+    const handlePointerMove = (pointerEvent: PointerEvent) => {
+      if (pointerEvent.pointerId !== session.pointerId) return
+      pointerEvent.preventDefault()
+      session.latestClientX = pointerEvent.clientX
+      session.latestClientY = pointerEvent.clientY
+      scheduleFrame()
+    }
+    const handlePointerUp = (pointerEvent: PointerEvent) => {
+      if (pointerEvent.pointerId !== session.pointerId) return
+      pointerEvent.preventDefault()
+      session.latestClientX = pointerEvent.clientX
+      session.latestClientY = pointerEvent.clientY
+      finish(true)
+    }
+    const handlePointerCancel = (pointerEvent: PointerEvent) => {
+      if (pointerEvent.pointerId === session.pointerId) finish(false)
+    }
+    const handleKeyDown = (keyboardEvent: KeyboardEvent) => {
+      if (keyboardEvent.key !== 'Escape') return
+      keyboardEvent.preventDefault()
+      finish(false)
+    }
+    const handleWindowBlur = () => finish(false)
+    const handleWindowResize = () => finish(false, true)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') finish(false, true)
     }
 
     window.addEventListener('pointermove', handlePointerMove, { passive: false })
     window.addEventListener('pointerup', handlePointerUp, { passive: false })
     window.addEventListener('pointercancel', handlePointerCancel)
     window.addEventListener('keydown', handleKeyDown)
-    return () => {
+    window.addEventListener('blur', handleWindowBlur)
+    window.addEventListener('resize', handleWindowResize)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    session.cleanupListeners = () => {
       window.removeEventListener('pointermove', handlePointerMove)
       window.removeEventListener('pointerup', handlePointerUp)
       window.removeEventListener('pointercancel', handlePointerCancel)
       window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('blur', handleWindowBlur)
+      window.removeEventListener('resize', handleWindowResize)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [
-    checklistDrag,
-    commitChecklistDrag,
-    endChecklistDrag,
-    findChecklistDropTarget,
-    scrollChecklistDuringDrag,
-    updateChecklistDropTarget,
-  ])
-
-  const checklistDragStyle = (
-    kind: 'material' | 'task',
-    id: string,
-  ): CSSProperties | undefined => {
-    if (!checklistDragOffset || checklistDragOffset.kind !== kind || checklistDragOffset.id !== id) return undefined
-    return {
-      '--checklist-drag-x': `${checklistDragOffset.x}px`,
-      '--checklist-drag-y': `${checklistDragOffset.y}px`,
-      '--checklist-drag-left': `${checklistDragOffset.left}px`,
-      '--checklist-drag-top': `${checklistDragOffset.top}px`,
-      '--checklist-drag-width': `${checklistDragOffset.width}px`,
-      '--checklist-drag-height': `${checklistDragOffset.height}px`,
-    } as CSSProperties
-  }
-
-  const renderChecklistDropSlot = (
-    kind: 'material' | 'task',
-    id: string,
-    position: ChecklistDropPosition,
-  ) => {
-    if (
-      !checklistDragOffset ||
-      checklistDragOffset.kind !== kind ||
-      checklistDropTarget?.kind !== kind ||
-      checklistDropTarget.id !== id ||
-      checklistDropTarget.position !== position
-    ) {
-      return null
-    }
-    return (
-      <div
-        key={`${kind}-${id}-drop-${position}`}
-        className={`checklist-drop-slot drop-${position}`}
-        style={{ '--checklist-slot-height': `${checklistDragOffset.height}px` } as CSSProperties}
-        aria-hidden="true"
-      />
-    )
-  }
+  }, [cleanupChecklistDrag, commitChecklistDrag, materialSort, taskSort])
 
   const removeCommunications = (ids: string[]) => {
     const uniqueIds = Array.from(new Set(ids)).filter((id) => !removingCommunicationIds.has(id))
@@ -5168,17 +6257,7 @@ export function DossierView({
       return
     }
     setEditingCommunicationId(item.id)
-    setCommunicationEditDraft({
-      subject: item.subject,
-      channel: item.channel,
-      date: item.date || today,
-      summary: item.summary,
-      direction: item.direction ?? (item.channel === 'Email' ? 'incoming' : 'note'),
-      messageType: item.messageType ?? 'note',
-      from: item.from ?? '',
-      to: item.to ?? '',
-      time: item.time ?? '',
-    })
+    setCommunicationEditDraft(communicationEditDraftFrom(item))
     communicationSelection.selectOnly(item.id)
   }
 
@@ -5205,7 +6284,7 @@ export function DossierView({
     const summary = (communicationEditDraft.summary ?? item.summary).trim()
     if (!subject || !summary) return false
     const sourceApplicationId = application.id
-    await Promise.resolve(onUpdateCommunication(item.id, {
+    const saved = await Promise.resolve(onUpdateCommunication(item.id, {
       subject,
       summary,
       channel: communicationEditDraft.channel ?? item.channel,
@@ -5216,6 +6295,7 @@ export function DossierView({
       from: communicationEditDraft.from ?? item.from ?? '',
       to: communicationEditDraft.to ?? item.to ?? '',
     }))
+    if (saved === false) return false
     if (activeApplicationIdRef.current === sourceApplicationId) cancelEditingCommunication()
     return true
   }
@@ -5239,10 +6319,11 @@ export function DossierView({
     })
   }
 
-  const submitScholarshipDraft = () => {
+  const submitScholarshipDraft = async () => {
     const cleaned = cleanScholarshipDraft(scholarshipDraft)
     if (!cleaned.name) return
-    onAddScholarship(cleaned)
+    const saved = await onAddScholarship(cleaned)
+    if (saved === false) return
     setScholarshipDraft(createScholarshipDraft(application.school.name))
     setScholarshipAddOpen(false)
   }
@@ -5283,17 +6364,20 @@ export function DossierView({
     if (!cleaned.name) return false
     const sourceApplicationId = application.id
     setSavingScholarshipId(id)
-    await Promise.resolve(onUpdateScholarship(id, cleaned)).finally(() => {
+    const saved = await Promise.resolve(onUpdateScholarship(id, cleaned))
+    if (saved === false) {
+      if (activeApplicationIdRef.current === sourceApplicationId) setSavingScholarshipId(null)
+      return false
+    }
+    if (activeApplicationIdRef.current !== sourceApplicationId) return false
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+    scholarshipSaveTimerRef.current = window.setTimeout(() => {
       if (activeApplicationIdRef.current !== sourceApplicationId) return
-      const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
-      scholarshipSaveTimerRef.current = window.setTimeout(() => {
-        if (activeApplicationIdRef.current !== sourceApplicationId) return
-        scholarshipSaveTimerRef.current = null
-        setSavingScholarshipId((current) => current === id ? null : current)
-        setEditingScholarshipId((current) => current === id ? null : current)
-        setScholarshipEditDraft(null)
-      }, reduceMotion ? 0 : 280)
-    })
+      scholarshipSaveTimerRef.current = null
+      setSavingScholarshipId((current) => current === id ? null : current)
+      setEditingScholarshipId((current) => current === id ? null : current)
+      setScholarshipEditDraft(null)
+    }, reduceMotion ? 0 : 280)
     return true
   }
 
@@ -5320,9 +6404,10 @@ export function DossierView({
     setTimelineAddOpen(false)
   }
 
-  const saveTimelineEdit = () => {
+  const saveTimelineEdit = async () => {
     if (!editingEventId || !onUpdateTimelineEvent || !editTitle.trim()) return false
-    onUpdateTimelineEvent(editingEventId, editTitle.trim(), editDate, editNote)
+    const saved = await onUpdateTimelineEvent(editingEventId, editTitle.trim(), editDate, editNote)
+    if (saved === false) return false
     cancelTimelineEdit()
     return true
   }
@@ -5353,7 +6438,13 @@ export function DossierView({
 
   const continueAfterItemEditor = (exit: typeof pendingItemEditExit) => {
     if (exit?.navigation && isDirty && exit.proceed) {
-      setPendingDraftExit({ proceed: exit.proceed })
+      if (autoSaveEnabled && onFlushAutoSave) {
+        void onFlushAutoSave().then((saved) => {
+          if (saved) exit.proceed?.()
+        })
+      } else {
+        setPendingDraftExit({ proceed: exit.proceed })
+      }
       return
     }
     exit?.proceed?.()
@@ -5369,7 +6460,7 @@ export function DossierView({
     } else if (exit.kind === 'scholarship' && editingScholarship) {
       saved = await saveScholarshipEdit(editingScholarship.id)
     } else if (exit.kind === 'timeline') {
-      saved = saveTimelineEdit()
+      saved = await saveTimelineEdit()
     }
     if (saved) continueAfterItemEditor(exit)
   }
@@ -5598,11 +6689,13 @@ export function DossierView({
     form: ScholarshipFormDraft,
     updateForm: (draft: ScholarshipFormDraft) => void,
   ) => {
+    const eventId = createLocalId('scholarship-event')
+    recentScholarshipTimelineEventIdRef.current = eventId
     updateForm({
       ...form,
       timeline: [
+        { id: eventId, title: '', date: form.endDate, note: '' },
         ...form.timeline,
-        { id: createLocalId('scholarship-event'), title: '', date: form.endDate, note: '' },
       ],
     })
   }
@@ -6338,25 +7431,21 @@ export function DossierView({
   }
 
   const communicationDirection = (item: ApplicationRecord['communications'][number]) =>
-    item.direction ?? (item.channel === 'Email' ? 'incoming' : 'note')
-
-  const communicationIcon = (item: ApplicationRecord['communications'][number]) => {
-    const direction = communicationDirection(item)
-    if (direction === 'outgoing') return User
-    if (direction === 'incoming') return GraduationCap
-    if (item.channel === 'Email') return Mail
-    if (item.channel === 'Message') return MessageSquare
-    if (item.channel === 'Meeting') return Users
-    if (item.channel === 'Interview') return Calendar
-    return FileText
-  }
+    communicationDirectionOf(item)
 
   const renderScholarshipForm = (
     form: ScholarshipFormDraft,
     updateForm: (draft: ScholarshipFormDraft) => void,
     formKey: string,
-  ) => (
-    <div className="scholarship-form-body">
+  ) => {
+    const materialRowPrefix = `${formKey}:material:`
+    const taskRowPrefix = `${formKey}:task:`
+    const materialRowIds = form.materials.map((material) => `${materialRowPrefix}${material.id}`)
+    const taskRowIds = form.tasks.map((task) => `${taskRowPrefix}${task.id}`)
+    const timelineEvents = sortScholarshipTimelineNewestFirst(form.timeline)
+
+    return (
+      <div className="scholarship-form-body">
       <div className="scholarship-form-grid">
         <label>
           <span>{tx('dossier.scholarshipName')}</span>
@@ -6431,53 +7520,80 @@ export function DossierView({
               <Plus size={12} /> {tx('dossier.addChecklistItem')}
             </button>
           </div>
-          <div className={`scholarship-mini-list${form.materials.length === 0 ? ' is-empty' : ''}`}>
-            {form.materials.length === 0 ? (
-              <p className="scholarship-mini-empty">{tx('dossier.scholarshipNoMaterials')}</p>
-            ) : form.materials.map((material) => (
-              <div key={`${formKey}:material:${material.id}`} className="scholarship-mini-row material-row">
-                <input
-                  value={material.name}
-                  onChange={(event) => updateForm({
-                    ...form,
-                    materials: form.materials.map((item) =>
-                      item.id === material.id ? { ...item, name: event.target.value } : item,
-                    ),
-                  })}
-                  placeholder={tx('dossier.checklistNewTitle')}
-                />
-                <Select
-                  value={material.status}
-                  options={materialStatusOptions}
-                  onChange={(status) => updateForm({
-                    ...form,
-                    materials: form.materials.map((item) =>
-                      item.id === material.id ? { ...item, status } : item,
-                    ),
-                  })}
-                  size="small"
-                />
-                <DatePicker
-                  value={material.due || form.endDate}
-                  onChange={(dueDate) => updateForm({
-                    ...form,
-                    materials: form.materials.map((item) =>
-                      item.id === material.id ? { ...item, due: dueDate } : item,
-                    ),
-                  })}
-                  placeholder={tx('dossier.dueDate')}
-                />
-                <button
-                  type="button"
-                  className="scholarship-row-remove"
-                  onClick={() => updateForm({ ...form, materials: form.materials.filter((item) => item.id !== material.id) })}
-                  aria-label={tx('dossier.remove')}
-                >
-                  <Trash2 size={12} />
-                </button>
+          <DndContext
+            sensors={dossierResourceFieldSensors}
+            collisionDetection={closestCenter}
+            onDragEnd={(event) => {
+              const materials = reorderScholarshipRows(form.materials, event, materialRowPrefix)
+              if (materials !== form.materials) updateForm({ ...form, materials })
+            }}
+          >
+            <SortableContext items={materialRowIds} strategy={verticalListSortingStrategy}>
+              <div className={`scholarship-mini-list${form.materials.length === 0 ? ' is-empty' : ''}`}>
+                {form.materials.length === 0 ? (
+                  <p className="scholarship-mini-empty">{tx('dossier.scholarshipNoMaterials')}</p>
+                ) : form.materials.map((material) => (
+                  <SortableScholarshipRow
+                    key={`${materialRowPrefix}${material.id}`}
+                    id={`${materialRowPrefix}${material.id}`}
+                    className="material-row"
+                    handleLabel={`${tx('dossier.dragToReorder')}: ${material.name || tx('dossier.checklistNewTitle')}`}
+                  >
+                    <ScholarshipRowTitleEditor
+                      value={material.name}
+                      onChange={(name) => updateForm({
+                        ...form,
+                        materials: form.materials.map((item) =>
+                          item.id === material.id ? { ...item, name } : item,
+                        ),
+                      })}
+                      placeholder={tx('dossier.checklistNewTitle')}
+                      label={`${tx('dossier.edit')}: ${material.name || tx('dossier.checklistNewTitle')}`}
+                    />
+                    <div className="scholarship-row-meta material-meta">
+                      <label className="scholarship-row-field">
+                        <span>{tx('dossier.status')}</span>
+                        <Select
+                          value={material.status}
+                          options={materialStatusOptions}
+                          onChange={(status) => updateForm({
+                            ...form,
+                            materials: form.materials.map((item) =>
+                              item.id === material.id ? { ...item, status } : item,
+                            ),
+                          })}
+                          ariaLabel={tx('dossier.status')}
+                          size="small"
+                        />
+                      </label>
+                      <label className="scholarship-row-field">
+                        <span>{tx('dossier.dueDate')}</span>
+                        <DatePicker
+                          value={material.due || form.endDate}
+                          onChange={(dueDate) => updateForm({
+                            ...form,
+                            materials: form.materials.map((item) =>
+                              item.id === material.id ? { ...item, due: dueDate } : item,
+                            ),
+                          })}
+                          placeholder={tx('dossier.dueDate')}
+                        />
+                      </label>
+                    </div>
+                    <button
+                      type="button"
+                      className="scholarship-row-remove"
+                      onClick={() => updateForm({ ...form, materials: form.materials.filter((item) => item.id !== material.id) })}
+                      title={tx('dossier.remove')}
+                      aria-label={tx('dossier.remove')}
+                    >
+                      <Trash2 size={14} aria-hidden="true" />
+                    </button>
+                  </SortableScholarshipRow>
+                ))}
               </div>
-            ))}
-          </div>
+            </SortableContext>
+          </DndContext>
         </section>
 
         <section className="scholarship-subsection">
@@ -6487,55 +7603,80 @@ export function DossierView({
               <Plus size={12} /> {tx('dossier.addTask')}
             </button>
           </div>
-          <div className={`scholarship-mini-list${form.tasks.length === 0 ? ' is-empty' : ''}`}>
-            {form.tasks.length === 0 ? (
-              <p className="scholarship-mini-empty">{tx('dossier.scholarshipNoTasks')}</p>
-            ) : form.tasks.map((task) => (
-              <div key={`${formKey}:task:${task.id}`} className="scholarship-mini-row task-row">
-                <button
-                  type="button"
-                  className={`scholarship-check-btn ${task.done ? 'on' : ''}`}
-                  onClick={() => updateForm({
-                    ...form,
-                    tasks: form.tasks.map((item) =>
-                      item.id === task.id ? { ...item, done: !item.done } : item,
-                    ),
-                  })}
-                  aria-label={task.done ? tx('dossier.markIncomplete') : tx('dossier.markComplete')}
-                >
-                  {task.done ? <CheckCircle2 size={16} /> : <Circle size={16} />}
-                </button>
-                <input
-                  value={task.title}
-                  onChange={(event) => updateForm({
-                    ...form,
-                    tasks: form.tasks.map((item) =>
-                      item.id === task.id ? { ...item, title: event.target.value } : item,
-                    ),
-                  })}
-                  placeholder={tx('dossier.taskPlaceholder')}
-                />
-                <DatePicker
-                  value={task.due || form.endDate}
-                  onChange={(dueDate) => updateForm({
-                    ...form,
-                    tasks: form.tasks.map((item) =>
-                      item.id === task.id ? { ...item, due: dueDate } : item,
-                    ),
-                  })}
-                  placeholder={tx('dossier.dueDate')}
-                />
-                <button
-                  type="button"
-                  className="scholarship-row-remove"
-                  onClick={() => updateForm({ ...form, tasks: form.tasks.filter((item) => item.id !== task.id) })}
-                  aria-label={tx('dossier.remove')}
-                >
-                  <Trash2 size={12} />
-                </button>
+          <DndContext
+            sensors={dossierResourceFieldSensors}
+            collisionDetection={closestCenter}
+            onDragEnd={(event) => {
+              const tasks = reorderScholarshipRows(form.tasks, event, taskRowPrefix)
+              if (tasks !== form.tasks) updateForm({ ...form, tasks })
+            }}
+          >
+            <SortableContext items={taskRowIds} strategy={verticalListSortingStrategy}>
+              <div className={`scholarship-mini-list${form.tasks.length === 0 ? ' is-empty' : ''}`}>
+                {form.tasks.length === 0 ? (
+                  <p className="scholarship-mini-empty">{tx('dossier.scholarshipNoTasks')}</p>
+                ) : form.tasks.map((task) => (
+                  <SortableScholarshipRow
+                    key={`${taskRowPrefix}${task.id}`}
+                    id={`${taskRowPrefix}${task.id}`}
+                    className="task-row"
+                    handleLabel={`${tx('dossier.dragToReorder')}: ${task.title || tx('dossier.taskPlaceholder')}`}
+                  >
+                    <button
+                      type="button"
+                      className={`scholarship-check-btn${task.done ? ' on' : ''}`}
+                      onClick={() => updateForm({
+                        ...form,
+                        tasks: form.tasks.map((item) =>
+                          item.id === task.id ? { ...item, done: !item.done } : item,
+                        ),
+                      })}
+                      aria-pressed={task.done}
+                      aria-label={task.done ? tx('dossier.markIncomplete') : tx('dossier.markComplete')}
+                    >
+                      <AnimatedCheckmark checked={task.done} size={18} />
+                    </button>
+                    <ScholarshipRowTitleEditor
+                      value={task.title}
+                      onChange={(title) => updateForm({
+                        ...form,
+                        tasks: form.tasks.map((item) =>
+                          item.id === task.id ? { ...item, title } : item,
+                        ),
+                      })}
+                      placeholder={tx('dossier.taskPlaceholder')}
+                      label={`${tx('dossier.edit')}: ${task.title || tx('dossier.taskPlaceholder')}`}
+                      completed={task.done}
+                    />
+                    <div className="scholarship-row-meta task-meta">
+                      <label className="scholarship-row-field">
+                        <span>{tx('dossier.dueDate')}</span>
+                        <DatePicker
+                          value={task.due || form.endDate}
+                          onChange={(dueDate) => updateForm({
+                            ...form,
+                            tasks: form.tasks.map((item) =>
+                              item.id === task.id ? { ...item, due: dueDate } : item,
+                            ),
+                          })}
+                          placeholder={tx('dossier.dueDate')}
+                        />
+                      </label>
+                    </div>
+                    <button
+                      type="button"
+                      className="scholarship-row-remove"
+                      onClick={() => updateForm({ ...form, tasks: form.tasks.filter((item) => item.id !== task.id) })}
+                      title={tx('dossier.remove')}
+                      aria-label={tx('dossier.remove')}
+                    >
+                      <Trash2 size={14} aria-hidden="true" />
+                    </button>
+                  </SortableScholarshipRow>
+                ))}
               </div>
-            ))}
-          </div>
+            </SortableContext>
+          </DndContext>
         </section>
 
         <section className="scholarship-subsection">
@@ -6545,56 +7686,88 @@ export function DossierView({
               <Plus size={12} /> {tx('dossier.addEvent')}
             </button>
           </div>
-          <div className={`scholarship-mini-list${form.timeline.length === 0 ? ' is-empty' : ''}`}>
+          <div
+            className={`scholarship-mini-list scholarship-timeline-editor-list${form.timeline.length === 0 ? ' is-empty' : ''}`}
+            role={form.timeline.length > 0 ? 'list' : undefined}
+          >
             {form.timeline.length === 0 ? (
               <p className="scholarship-mini-empty">{tx('dossier.scholarshipNoTimeline')}</p>
-            ) : form.timeline.map((event) => (
-              <div key={`${formKey}:timeline:${event.id}`} className="scholarship-mini-row timeline-row">
-                <input
-                  value={event.title}
-                  onChange={(inputEvent) => updateForm({
-                    ...form,
-                    timeline: form.timeline.map((item) =>
-                      item.id === event.id ? { ...item, title: inputEvent.target.value } : item,
-                    ),
-                  })}
-                  placeholder={tx('dossier.eventTitle')}
-                />
-                <DatePicker
-                  value={event.date || form.endDate}
-                  onChange={(eventDate) => updateForm({
-                    ...form,
-                    timeline: form.timeline.map((item) =>
-                      item.id === event.id ? { ...item, date: eventDate } : item,
-                    ),
-                  })}
-                  placeholder={tx('dossier.eventDate')}
-                />
-                <input
-                  value={event.note ?? ''}
-                  onChange={(inputEvent) => updateForm({
-                    ...form,
-                    timeline: form.timeline.map((item) =>
-                      item.id === event.id ? { ...item, note: inputEvent.target.value } : item,
-                    ),
-                  })}
-                  placeholder={tx('dossier.eventNote')}
-                />
-                <button
-                  type="button"
-                  className="scholarship-row-remove"
-                  onClick={() => updateForm({ ...form, timeline: form.timeline.filter((item) => item.id !== event.id) })}
-                  aria-label={tx('dossier.remove')}
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
+            ) : timelineEvents.map((event) => (
+              <ScholarshipTimelineEditorRow
+                key={`${formKey}:timeline:${event.id}`}
+                eventId={event.id}
+                entering={recentScholarshipTimelineEventIdRef.current === event.id}
+                onEntered={() => {
+                  if (recentScholarshipTimelineEventIdRef.current === event.id) {
+                    recentScholarshipTimelineEventIdRef.current = null
+                  }
+                }}
+              >
+                <div className="scholarship-mini-row timeline-row">
+                  <label className="scholarship-timeline-field scholarship-timeline-title-field">
+                    <span className="scholarship-timeline-field-label">{tx('dossier.eventTitle')}</span>
+                    <span className="scholarship-timeline-text-control">
+                      <PencilLine size={12} aria-hidden="true" />
+                      <input
+                        data-timeline-title-input="true"
+                        value={event.title}
+                        onChange={(inputEvent) => updateForm({
+                          ...form,
+                          timeline: form.timeline.map((item) =>
+                            item.id === event.id ? { ...item, title: inputEvent.target.value } : item,
+                          ),
+                        })}
+                        placeholder={tx('dossier.eventTitle')}
+                      />
+                    </span>
+                  </label>
+                  <label className="scholarship-timeline-field scholarship-timeline-date-field">
+                    <span className="scholarship-timeline-field-label">{tx('dossier.eventDate')}</span>
+                    <DatePicker
+                      value={event.date || form.endDate}
+                      onChange={(eventDate) => updateForm({
+                        ...form,
+                        timeline: form.timeline.map((item) =>
+                          item.id === event.id ? { ...item, date: eventDate } : item,
+                        ),
+                      })}
+                      placeholder={tx('dossier.eventDate')}
+                    />
+                  </label>
+                  <label className="scholarship-timeline-field scholarship-timeline-note-field">
+                    <span className="scholarship-timeline-field-label">{tx('dossier.eventNote')}</span>
+                    <span className="scholarship-timeline-text-control">
+                      <PencilLine size={12} aria-hidden="true" />
+                      <input
+                        value={event.note ?? ''}
+                        onChange={(inputEvent) => updateForm({
+                          ...form,
+                          timeline: form.timeline.map((item) =>
+                            item.id === event.id ? { ...item, note: inputEvent.target.value } : item,
+                          ),
+                        })}
+                        placeholder={tx('dossier.eventNote')}
+                      />
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    className="scholarship-row-remove"
+                    onClick={() => updateForm({ ...form, timeline: form.timeline.filter((item) => item.id !== event.id) })}
+                    title={tx('dossier.remove')}
+                    aria-label={tx('dossier.remove')}
+                  >
+                    <Trash2 size={12} aria-hidden="true" />
+                  </button>
+                </div>
+              </ScholarshipTimelineEditorRow>
             ))}
           </div>
         </section>
       </div>
-    </div>
-  )
+      </div>
+    )
+  }
 
   const renderDossierResourceFieldInput = (
     field: DossierResourceField,
@@ -7193,45 +8366,70 @@ export function DossierView({
     [application, profileAssets],
   )
 
-  const updateAiOutputAttachmentIds = (
-    ids: string[],
-    options?: { byAi?: boolean },
-  ) => {
+  const applyAiAttachmentPlan = (selections: AiDraftAttachmentSelection[]) => {
     const candidateById = new Map(aiAttachmentCandidates.map((candidate) => [candidate.id, candidate]))
-    const nextIds = Array.from(new Set(ids)).filter((id) => candidateById.has(id))
-    const nextCandidates = nextIds.map((id) => candidateById.get(id)!).filter(Boolean)
-    const nextFileIds = new Set(nextCandidates.map((candidate) => candidate.fileId))
-    setAiOutputAttachmentIds(nextIds)
+    const nextSelections = Array.from(new Map(selections.map((selection) => [
+      selection.attachmentId,
+      selection,
+    ])).values()).flatMap((selection) => {
+      const candidate = candidateById.get(selection.attachmentId)
+      if (!candidate) return []
+      return [{
+        candidate,
+        fileName: selection.fileName.trim() || candidate.name,
+      }]
+    })
     setEmailAttachments((current) => {
-      const existingByCandidateId = new Map(current
+      const manualAttachments = current.filter((attachment) => !attachment.aiCandidateId)
+      const manualFileIds = new Set(manualAttachments.flatMap((attachment) => (
+        attachment.fileId ? [attachment.fileId] : []
+      )))
+      const existingAiByCandidateId = new Map(current
         .filter((attachment) => attachment.aiCandidateId)
         .map((attachment) => [attachment.aiCandidateId!, attachment]))
-      const existingByFileId = new Map(current
-        .filter((attachment) => attachment.fileId)
-        .map((attachment) => [attachment.fileId!, attachment]))
-      const manualAttachments = current.filter((attachment) => (
-        !attachment.aiCandidateId && !nextFileIds.has(attachment.fileId ?? '')
-      ))
-      const plannedAttachments = nextCandidates.map((candidate) => {
-        const existing = existingByCandidateId.get(candidate.id) ?? existingByFileId.get(candidate.fileId)
+      const plannedAttachments = nextSelections.flatMap(({ candidate, fileName }) => {
+        // A user's manually attached copy remains authoritative and is never
+        // replaced merely because the model selected the same saved file.
+        if (manualFileIds.has(candidate.fileId)) return []
+        const existing = existingAiByCandidateId.get(candidate.id)
         if (existing) {
-          return {
+          const assetId = candidate.source === 'profile' ? candidate.sourceId : undefined
+          const changed = (
+            existing.name !== fileName
+            || existing.fileName !== fileName
+            || existing.fileId !== candidate.fileId
+            || existing.fileSize !== candidate.fileSize
+            || existing.mimeType !== candidate.mimeType
+            || existing.assetId !== assetId
+          )
+          if (!changed) return [existing]
+          return [{
             ...existing,
+            name: fileName,
+            fileName,
+            fileId: candidate.fileId,
+            fileSize: candidate.fileSize,
+            mimeType: candidate.mimeType,
+            assetId,
             aiCandidateId: candidate.id,
-            aiAttachedByTool: Boolean(options?.byAi || existing.aiAttachedByTool),
-          }
+            aiAttachedByTool: true,
+            aiMotionRevision: (existing.aiMotionRevision ?? 0) + 1,
+            aiMotionKind: 'update' as const,
+          }]
         }
-        return {
+        return [{
           id: createLocalId('att'),
-          name: candidate.name,
-          fileName: candidate.name,
+          name: fileName,
+          fileName,
           fileId: candidate.fileId,
           fileSize: candidate.fileSize,
           mimeType: candidate.mimeType,
           assetId: candidate.source === 'profile' ? candidate.sourceId : undefined,
           aiCandidateId: candidate.id,
-          aiAttachedByTool: Boolean(options?.byAi),
-        }
+          aiAttachedByTool: true,
+          aiMotionRevision: 1,
+          aiMotionKind: 'enter' as const,
+        }]
       })
       return [...manualAttachments, ...plannedAttachments]
     })
@@ -7245,9 +8443,6 @@ export function DossierView({
       aiKeys={aiKeys}
       mode={aiDraftMode}
       replyToId={aiReplyToId}
-      profileAssets={profileAssets}
-      attachmentCandidates={aiAttachmentCandidates}
-      outputAttachmentIds={aiOutputAttachmentIds}
       currentDraft={{ subject: emailSubject, body: emailBody }}
       draftSessionKey={aiDraftSessionKey}
       onClose={() => setAiPanelOpen(false)}
@@ -7256,8 +8451,8 @@ export function DossierView({
         if (subject) setEmailSubject(subject)
         if (body !== undefined) setEmailBody(body)
       }}
-      onOutputAttachmentIdsChange={updateAiOutputAttachmentIds}
-      onGeneratingChange={setEmailInsertAnimating}
+      onAttachmentPlanChange={applyAiAttachmentPlan}
+      onGeneratingChange={handleEmailAiGeneratingChange}
       onDraftRestoreChange={setEmailAiRestoreAnimating}
       onNotify={onNotify}
     />
@@ -7450,30 +8645,30 @@ export function DossierView({
                   keepMounted
                 >
                 <div className="field-stack">
-                  <label><span>{tx('dossier.schoolName')}</span>
+                  <label><span>{tx('dossier.schoolName')} <span className="field-required-mark">*</span></span>
                     <div className="input-with-copy">
-                      <input value={draft.school.name} onChange={(e) => onDraft({ ...draft, school: { ...draft.school, name: e.target.value } })} />
+                      <input required value={draft.school.name} onChange={(e) => commitDraft({ ...draftRef.current, school: { ...draftRef.current.school, name: e.target.value } })} />
                       <CopyButton value={draft.school.name} label={tx('inspector.copySchool')} className="copy-inside" onNotify={onNotify} />
                     </div>
                   </label>
-                  <label><span>{tx('dossier.program')}</span>
+                  <label><span>{tx('dossier.program')} <span className="field-required-mark">*</span></span>
                     <div className="input-with-copy">
-                      <input value={draft.program} onChange={(e) => onDraft({ ...draft, program: e.target.value })} />
+                      <input required value={draft.program} onChange={(e) => commitDraft({ ...draftRef.current, program: e.target.value })} />
                       <CopyButton value={draft.program} label={tx('inspector.copyProgram')} className="copy-inside" onNotify={onNotify} />
                     </div>
                   </label>
                   <label><span>{tx('dossier.country')}</span>
                     <CountrySelect
                       value={draft.school.country}
-                      onChange={(country) => onDraft({ ...draft, school: { ...draft.school, country } })}
+                      onChange={(country) => commitDraft({ ...draftRef.current, school: { ...draftRef.current.school, country } }, 'immediate')}
                       ariaLabel={tx('dossier.country')}
                       placeholder={tx('dossier.countryPlaceholder')}
                     />
                   </label>
                   <label><span>{tx('dossier.schoolWebsite')}</span>
                     <div className="dossier-link-field">
-                      <input value={draft.school.website} onChange={(e) => onDraft({ ...draft, school: { ...draft.school, website: e.target.value } })} />
-                      {normalizedExternalHref(draft.school.website) && <a href={normalizedExternalHref(draft.school.website)} target="_blank" rel="noopener noreferrer" className="icon-action" title={tx('dossier.openLink')}><ExternalLink size={14} /></a>}
+                      <input value={draft.school.website} onChange={(e) => commitDraft({ ...draftRef.current, school: { ...draftRef.current.school, website: e.target.value } })} />
+                      <DossierExternalLinkAction value={draft.school.website} label={tx('dossier.openLink')} />
                       <CopyButton value={draft.school.website} label={tx('dossier.schoolWebsite')} onNotify={onNotify} />
                     </div>
                   </label>
@@ -7493,37 +8688,37 @@ export function DossierView({
                   keepMounted
                 >
                 <div className="field-stack">
-                  <label><span>{tx('dossier.professor')}</span>
+                  <label><span>{tx('dossier.professor')} <span className="field-required-mark">*</span></span>
                     <div className="input-with-copy">
-                      <input value={draft.professor.english} onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, english: e.target.value } })}
+                      <input required value={draft.professor.english} onChange={(e) => commitDraft({ ...draftRef.current, professor: { ...draftRef.current.professor, english: e.target.value } })}
                         placeholder={tx('dossier.professorNamePlaceholder')} />
                       <CopyButton value={draft.professor.english} label={tx('inspector.copyProfessor')} className="copy-inside" onNotify={onNotify} />
                     </div>
                   </label>
-                  <label><span>{tx('dossier.email')}</span>
+                  <label><span>{tx('dossier.email')} <span className="field-required-mark">*</span></span>
                     <div className="input-with-copy">
-                      <input value={draft.professor.email} onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, email: e.target.value } })} />
+                      <input required type="email" value={draft.professor.email} onChange={(e) => commitDraft({ ...draftRef.current, professor: { ...draftRef.current.professor, email: e.target.value } })} />
                       <CopyButton value={draft.professor.email} label={tx('inspector.copyEmail')} className="copy-inside" onNotify={onNotify} />
                     </div>
                   </label>
                   <div className="field-grid field-grid-pair">
                     <label><span>{tx('dossier.phone')}</span>
                       <div className="input-with-copy">
-                        <input value={draft.professor.phone} onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, phone: e.target.value } })} />
+                        <input value={draft.professor.phone} onChange={(e) => commitDraft({ ...draftRef.current, professor: { ...draftRef.current.professor, phone: e.target.value } })} />
                         <CopyButton value={draft.professor.phone} label={tx('dossier.phone')} className="copy-inside" onNotify={onNotify} />
                       </div>
                     </label>
                     <label><span>{tx('dossier.social')}</span>
                       <div className="input-with-copy">
-                        <input value={draft.professor.social} onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, social: e.target.value } })} />
+                        <input value={draft.professor.social} onChange={(e) => commitDraft({ ...draftRef.current, professor: { ...draftRef.current.professor, social: e.target.value } })} />
                         <CopyButton value={draft.professor.social} label={tx('dossier.social')} className="copy-inside" onNotify={onNotify} />
                       </div>
                     </label>
                   </div>
                   <label><span>{tx('dossier.homepage')}</span>
                     <div className="dossier-link-field">
-                      <input value={draft.professor.homepage} onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, homepage: e.target.value } })} />
-                      {normalizedExternalHref(draft.professor.homepage) && <a href={normalizedExternalHref(draft.professor.homepage)} target="_blank" rel="noopener noreferrer" className="icon-action" title={tx('dossier.openLink')}><ExternalLink size={14} /></a>}
+                      <input value={draft.professor.homepage} onChange={(e) => commitDraft({ ...draftRef.current, professor: { ...draftRef.current.professor, homepage: e.target.value } })} />
+                      <DossierExternalLinkAction value={draft.professor.homepage} label={tx('dossier.openLink')} />
                       <CopyButton value={draft.professor.homepage} label={tx('dossier.homepage')} onNotify={onNotify} />
                     </div>
                   </label>
@@ -7544,11 +8739,11 @@ export function DossierView({
                   innerClassName="dossier-core-collapse-inner"
                   keepMounted
                 >
-                  <label className="textarea-field"><span>{tx('dossier.researchDirection')}</span>
-                    <MarkdownTextarea value={localize(draft.professor.research)} onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, research: e.target.value } })} rows={3} />
+                  <label className="textarea-field dossier-research-direction-field"><span>{tx('dossier.researchDirection')} <span className="field-required-mark">*</span></span>
+                    <MarkdownTextarea required value={localize(draft.professor.research)} onChange={(e) => commitDraft({ ...draftRef.current, professor: { ...draftRef.current.professor, research: e.target.value } })} rows={3} />
                   </label>
                   <label className="textarea-field"><span>{tx('dossier.labGroup')}</span>
-                    <MarkdownTextarea value={localize(draft.professor.lab)} onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, lab: e.target.value } })} rows={2} />
+                    <MarkdownTextarea value={localize(draft.professor.lab)} onChange={(e) => commitDraft({ ...draftRef.current, professor: { ...draftRef.current.professor, lab: e.target.value } })} rows={2} />
                   </label>
                   <div className="field-stack">
                     <label><span>{tx('dossier.labLink')}</span>
@@ -7557,9 +8752,9 @@ export function DossierView({
                           type="url"
                           inputMode="url"
                           value={draft.professor.labUrl ?? ''}
-                          onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, labUrl: e.target.value } })}
+                          onChange={(e) => commitDraft({ ...draftRef.current, professor: { ...draftRef.current.professor, labUrl: e.target.value } })}
                         />
-                        {normalizedExternalHref(draft.professor.labUrl ?? '') && <a href={normalizedExternalHref(draft.professor.labUrl ?? '')} target="_blank" rel="noopener noreferrer" className="icon-action" title={tx('dossier.openLink')}><ExternalLink size={14} /></a>}
+                        <DossierExternalLinkAction value={draft.professor.labUrl ?? ''} label={tx('dossier.openLink')} />
                         <CopyButton value={draft.professor.labUrl ?? ''} label={tx('dossier.labLink')} onNotify={onNotify} />
                       </div>
                     </label>
@@ -7569,9 +8764,9 @@ export function DossierView({
                           type="url"
                           inputMode="url"
                           value={draft.professor.projectUrl ?? ''}
-                          onChange={(e) => onDraft({ ...draft, professor: { ...draft.professor, projectUrl: e.target.value } })}
+                          onChange={(e) => commitDraft({ ...draftRef.current, professor: { ...draftRef.current.professor, projectUrl: e.target.value } })}
                         />
-                        {normalizedExternalHref(draft.professor.projectUrl ?? '') && <a href={normalizedExternalHref(draft.professor.projectUrl ?? '')} target="_blank" rel="noopener noreferrer" className="icon-action" title={tx('dossier.openLink')}><ExternalLink size={14} /></a>}
+                        <DossierExternalLinkAction value={draft.professor.projectUrl ?? ''} label={tx('dossier.openLink')} />
                         <CopyButton value={draft.professor.projectUrl ?? ''} label={tx('dossier.projectLink')} onNotify={onNotify} />
                       </div>
                     </label>
@@ -7592,13 +8787,13 @@ export function DossierView({
                 >
                 <div className="field-stack">
                   <label><span>{tx('dossier.deadline')}</span>
-                    <DatePicker value={draft.deadline} onChange={(v) => onDraft({ ...draft, deadline: v })} placeholder={tx('dossier.selectDeadline')} />
+                    <DatePicker value={draft.deadline} onChange={(v) => commitDraft({ ...draftRef.current, deadline: v }, 'immediate')} placeholder={tx('dossier.selectDeadline')} />
                   </label>
                   <label><span>{tx('dossier.status')}</span>
                     <Select
                       value={draft.status}
                       options={applicationStatusOptions}
-                      onChange={(value) => commitDraft({ ...draftRef.current, status: value })}
+                      onChange={(value) => commitDraft({ ...draftRef.current, status: value }, 'immediate')}
                       create={applicationStatusCreateConfig}
                       ariaLabel={tx('dossier.status')}
                     />
@@ -7606,17 +8801,17 @@ export function DossierView({
                   <label><span>{tx('dossier.priority')}</span>
                     <PrioritySlider
                       value={draft.priority}
-                      onChange={(v) => onDraft({ ...draft, priority: v })}
+                      onChange={(v) => commitDraft({ ...draftRef.current, priority: v }, 'immediate')}
                     />
                   </label>
                   <label><span>{tx('dossier.tags')}</span>
                     <input value={newTag} onChange={(e) => setNewTag(e.target.value)} placeholder={tx('dossier.addTag')}
-                      onKeyDown={(e) => { if (e.key === 'Enter' && newTag.trim()) { e.preventDefault(); onDraft({ ...draft, tags: [...draft.tags, newTag.trim()] }); setNewTag('') } }} />
+                      onKeyDown={(e) => { if (e.key === 'Enter' && newTag.trim()) { e.preventDefault(); commitDraft({ ...draftRef.current, tags: [...draftRef.current.tags, newTag.trim()] }, 'immediate'); setNewTag('') } }} />
                     {draft.tags.length > 0 && (
                       <div className="tag-list">
                         {draft.tags.map((tag) => (
                           <span key={tag} className="tag-chip">{localize(tag)}
-                            <button type="button" onClick={() => onDraft({ ...draft, tags: draft.tags.filter((t) => t !== tag) })} aria-label={`${tx('dossier.removeTag')} ${localize(tag)}`}><X size={10} /></button>
+                            <button type="button" onClick={() => commitDraft({ ...draftRef.current, tags: draftRef.current.tags.filter((t) => t !== tag) }, 'immediate')} aria-label={`${tx('dossier.removeTag')} ${localize(tag)}`}><X size={10} /></button>
                           </span>
                         ))}
                       </div>
@@ -7629,7 +8824,7 @@ export function DossierView({
               <section className="section-card wide">
                 <div className="section-title"><MessageSquare size={15} /><h3>{tx('dossier.notes')}</h3></div>
                 <MarkdownTextarea className="plain-textarea" value={localize(draft.result)}
-                  onChange={(e) => onDraft({ ...draft, result: e.target.value })}
+                  onChange={(e) => commitDraft({ ...draftRef.current, result: e.target.value })}
                   placeholder={tx('dossier.notesPlaceholder')} />
               </section>
               </>
@@ -7698,26 +8893,17 @@ export function DossierView({
                   <span>{completedChecklistCount}/{draft.materials.length}</span>
                 </div>
                 {(reminderChecklistCount > 0 || reminderFilterActive) && (
-                  <button
-                    type="button"
-                    className={`checklist-hero-stat checklist-reminder-filter-btn${reminderFilterActive ? ' active' : ''}`}
-                    onClick={toggleReminderFilter}
-                    aria-pressed={reminderFilterActive}
-                    title={reminderFilterActive
+                  <ChecklistReminderFilterButton
+                    active={reminderFilterActive}
+                    count={reminderChecklistCount}
+                    label={reminderFilterActive
+                      ? tx('dossier.reminderFilterOn', 'Reminders')
+                      : tx('dossier.withReminder')}
+                    actionLabel={reminderFilterActive
                       ? tx('dossier.reminderFilterClear', 'Show all checklist items')
                       : tx('dossier.reminderFilterApply', 'Show only items with reminders')}
-                    aria-label={reminderFilterActive
-                      ? tx('dossier.reminderFilterClear', 'Show all checklist items')
-                      : tx('dossier.reminderFilterApply', 'Show only items with reminders')}
-                  >
-                    {reminderFilterActive ? <BellRing size={13} aria-hidden="true" /> : <Bell size={13} aria-hidden="true" />}
-                    <strong>{reminderChecklistCount}</strong>
-                    <span className="checklist-reminder-filter-label">
-                      {reminderFilterActive
-                        ? tx('dossier.reminderFilterOn', 'Reminders')
-                        : tx('dossier.withReminder')}
-                    </span>
-                  </button>
+                    onToggle={toggleReminderFilter}
+                  />
                 )}
                 <button type="button" className="quiet-action checklist-hero-add-btn" onClick={createChecklistItem}>
                   <Plus size={14} /> {tx('dossier.addChecklistItem')}
@@ -7745,7 +8931,7 @@ export function DossierView({
                       <span className="eyebrow">{tx('dossier.attachment')}</span>
                       <h4>{tx('dossier.uploadDialogTitle')}</h4>
                     </div>
-                    <button type="button" className="checklist-icon-control" onClick={closeChecklistUpload} aria-label={tx('close')} disabled={checklistUploadExiting}>
+                    <button type="button" className="checklist-icon-control" onClick={() => closeChecklistUpload()} aria-label={tx('close')} disabled={checklistUploadExiting}>
                       <X size={14} />
                     </button>
                   </div>
@@ -7916,12 +9102,17 @@ export function DossierView({
                     <button
                       type="button"
                       className={`primary-action ${hasUploadNameConflict || hasUploadTypeMismatch ? 'blocked' : ''}`}
-                      onClick={submitChecklistUpload}
+                      onClick={() => { void submitChecklistUpload() }}
                       disabled={uploadSubmitting || hasUploadNameConflict || hasUploadTypeMismatch || (uploadDraftFiles.length === 0 && !(uploadReservationEnabled && checklistUploadTarget))}
                       aria-disabled={hasUploadNameConflict || hasUploadTypeMismatch}
+                      aria-busy={uploadSubmitting || undefined}
                       title={hasUploadNameConflict ? tx('dossier.uploadNameConflict') : hasUploadTypeMismatch ? uploadTypeMessage : undefined}
                     >
-                      <UploadCloud size={13} /> {uploadSubmitting ? tx('working') : uploadDraftFiles.length > 0 ? tx('dossier.uploadNow') : tx('dossier.saveUploadPlan')}
+                      {uploadSubmitting ? (
+                        <PendingLabel label={tx('working')} />
+                      ) : (
+                        <><UploadCloud size={13} /> {uploadDraftFiles.length > 0 ? tx('dossier.uploadNow') : tx('dossier.saveUploadPlan')}</>
+                      )}
                     </button>
                   </div>
                 </div>
@@ -7950,81 +9141,113 @@ export function DossierView({
                 ) : null}
               </div>
 
-              <div className="checklist-tool-grid">
-                <div className="checklist-tool-group">
-                  <div className="checklist-tool-label">
-                    <FileText size={13} aria-hidden="true" />
-                    <span>{tx('dossier.materialTools')}</span>
-                    <em>{format(tx('dossier.visibleCount'), {
-                      visible: tabContentReady ? visibleMaterials.length : draft.materials.length,
-                      total: draft.materials.length,
-                    })}</em>
-                  </div>
-                  <Select<MaterialFilter>
-                    value={materialFilter}
-                    options={materialFilterOptions}
-                    onChange={(value) => {
-                      setMaterialFilter(value)
-                      if (value === 'with-reminder' || materialFilter === 'with-reminder') {
-                        setTaskFilter(value === 'with-reminder' ? 'with-reminder' : (taskFilter === 'with-reminder' ? 'all' : taskFilter))
-                        setChecklistFilterAnimKey((key) => key + 1)
-                      }
-                    }}
-                    ariaLabel={tx('dossier.materialFilter')}
-                    size="small"
-                  />
-                  <Select
-                    value={materialGroupFilter}
-                    options={materialGroupOptions}
-                    onChange={setMaterialGroupFilter}
-                    ariaLabel={tx('dossier.materialGroupFilter')}
-                    size="small"
-                  />
-                  <Select<MaterialSort>
-                    value={materialSort}
-                    options={materialSortOptions}
-                    onChange={setMaterialSort}
-                    ariaLabel={tx('dossier.materialSort')}
-                    size="small"
-                  />
-                </div>
+              <button
+                type="button"
+                className={`checklist-mobile-tools-toggle${checklistToolsOpen ? ' open' : ''}`}
+                aria-expanded={checklistToolsOpen}
+                aria-controls="checklist-tool-panel"
+                onClick={() => setChecklistToolsOpen((current) => !current)}
+              >
+                <SlidersHorizontal size={14} aria-hidden="true" />
+                <span>{tx('dossier.checklistTools')}</span>
+                {checklistToolFilterCount > 0 ? (
+                  <strong className="checklist-mobile-tools-count">{checklistToolFilterCount}</strong>
+                ) : null}
+                <ChevronDown className="checklist-mobile-tools-chevron" size={14} aria-hidden="true" />
+              </button>
 
-                <div className="checklist-tool-group">
-                  <div className="checklist-tool-label">
-                    <CheckCircle2 size={13} aria-hidden="true" />
-                    <span>{tx('dossier.taskTools')}</span>
-                    <em>{format(tx('dossier.visibleCount'), {
-                      visible: tabContentReady ? visibleTasks.length : draft.tasks.length,
-                      total: draft.tasks.length,
-                    })}</em>
+              <CollapsiblePanel
+                id="checklist-tool-panel"
+                open={!checklistToolsCompact || checklistToolsOpen}
+                className="checklist-tool-collapse"
+                innerClassName="checklist-tool-collapse-inner"
+                openMs={260}
+                closeMs={220}
+                keepMounted
+              >
+                <div className="checklist-tool-grid">
+                  <div className="checklist-tool-group">
+                    <div className="checklist-tool-label">
+                      <FileText size={13} aria-hidden="true" />
+                      <span>{tx('dossier.materialTools')}</span>
+                      <em>{format(tx('dossier.visibleCount'), {
+                        visible: tabContentReady ? visibleMaterials.length : draft.materials.length,
+                        total: draft.materials.length,
+                      })}</em>
+                    </div>
+                    <Select<MaterialFilter>
+                      value={materialFilter}
+                      options={materialFilterOptions}
+                      onChange={(value) => {
+                        setMaterialFilter(value)
+                        if (value === 'with-reminder' || materialFilter === 'with-reminder') {
+                          setTaskFilter(value === 'with-reminder' ? 'with-reminder' : (taskFilter === 'with-reminder' ? 'all' : taskFilter))
+                          setChecklistFilterAnimKey((key) => key + 1)
+                        }
+                      }}
+                      ariaLabel={tx('dossier.materialFilter')}
+                      size="small"
+                    />
+                    <Select
+                      value={materialGroupFilter}
+                      options={materialGroupOptions}
+                      onChange={setMaterialGroupFilter}
+                      ariaLabel={tx('dossier.materialGroupFilter')}
+                      size="small"
+                    />
+                    <Select<MaterialSort>
+                      value={materialSort}
+                      options={materialSortOptions}
+                      onChange={setMaterialSort}
+                      ariaLabel={tx('dossier.materialSort')}
+                      size="small"
+                    />
                   </div>
-                  <Select<TaskFilter>
-                    value={taskFilter}
-                    options={taskFilterOptions}
-                    onChange={(value) => {
-                      setTaskFilter(value)
-                      if (value === 'with-reminder' || taskFilter === 'with-reminder') {
-                        setMaterialFilter(value === 'with-reminder' ? 'with-reminder' : (materialFilter === 'with-reminder' ? 'all' : materialFilter))
-                        setChecklistFilterAnimKey((key) => key + 1)
-                      }
-                    }}
-                    ariaLabel={tx('dossier.taskFilter')}
-                    size="small"
-                  />
-                  <Select<TaskSort>
-                    value={taskSort}
-                    options={taskSortOptions}
-                    onChange={setTaskSort}
-                    ariaLabel={tx('dossier.taskSort')}
-                    size="small"
-                  />
-                  {hasChecklistFilters ? (
-                    <button type="button" className="quiet-action compact-action" onClick={clearChecklistFilters}>
-                      <X size={13} aria-hidden="true" /> {tx('dossier.clearChecklistFilters')}
-                    </button>
-                  ) : null}
+
+                  <div className="checklist-tool-group">
+                    <div className="checklist-tool-label">
+                      <CheckCircle2 size={13} aria-hidden="true" />
+                      <span>{tx('dossier.taskTools')}</span>
+                      <em>{format(tx('dossier.visibleCount'), {
+                        visible: tabContentReady ? visibleTasks.length : draft.tasks.length,
+                        total: draft.tasks.length,
+                      })}</em>
+                    </div>
+                    <Select<TaskFilter>
+                      value={taskFilter}
+                      options={taskFilterOptions}
+                      onChange={(value) => {
+                        setTaskFilter(value)
+                        if (value === 'with-reminder' || taskFilter === 'with-reminder') {
+                          setMaterialFilter(value === 'with-reminder' ? 'with-reminder' : (materialFilter === 'with-reminder' ? 'all' : materialFilter))
+                          setChecklistFilterAnimKey((key) => key + 1)
+                        }
+                      }}
+                      ariaLabel={tx('dossier.taskFilter')}
+                      size="small"
+                    />
+                    <Select<TaskSort>
+                      value={taskSort}
+                      options={taskSortOptions}
+                      onChange={setTaskSort}
+                      ariaLabel={tx('dossier.taskSort')}
+                      size="small"
+                    />
+                    {hasChecklistFilters ? (
+                      <button
+                        type="button"
+                        className="quiet-action compact-action"
+                        onClick={() => {
+                          clearChecklistFilters()
+                          if (checklistToolsCompact) setChecklistToolsOpen(false)
+                        }}
+                      >
+                        <X size={13} aria-hidden="true" /> {tx('dossier.clearChecklistFilters')}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
+              </CollapsiblePanel>
             </div>
 
             <ExplorerSelectionBar
@@ -8086,25 +9309,21 @@ export function DossierView({
                       ? format(tx('dossier.attachmentCount'), { count: materialAttachments.length })
                       : materialAttachments[0]?.file
                     const materialDownloadTarget = materialAttachments.find((row) => row.current) ?? materialAttachments[0]
-                    const materialDragStyle = checklistDragStyle('material', mat.id)
                     const materialFilterStyle = checklistFilterAnimKey > 0
                       ? ({ '--filter-stagger': materialIndex } as CSSProperties)
                       : undefined
 
                     return (
-                      <Fragment key={mat.id}>
-                        {renderChecklistDropSlot('material', mat.id, 'before')}
                         <ChecklistDisclosureItem
+                        key={mat.id}
                         id={`material-${mat.id}`}
                         kind="material"
                         itemId={mat.id}
                         tour={mat.id === 'tour-cv' ? 'checklist-material' : undefined}
                         externalOpen={externallyExpanded}
                         syncVersion={materialExpansionSyncVersion}
-                        className={(isExpanded) => `checklist-item ${submitted ? 'done' : ''} ${isExpanded ? 'expanded' : ''} ${isRemoving ? 'is-removing' : ''} ${materialSelection.selectedCount > 1 && materialSelection.selectedIds.has(mat.id) ? 'explorer-selected' : ''} ${recentChecklistItem?.kind === 'material' && recentChecklistItem.id === mat.id ? 'checklist-item-new' : ''} ${materialGroupArrivalIds.has(mat.id) ? 'checklist-item-group-arrival' : ''} ${checklistFilterAnimKey > 0 ? 'checklist-filter-enter' : ''} ${checklistDrag?.kind === 'material' && checklistDrag.id === mat.id ? 'dragging' : ''} ${checklistDropTarget?.kind === 'material' && checklistDropTarget.id === mat.id ? `drop-target drop-${checklistDropTarget.position}` : ''}`}
-                        style={materialDragStyle || materialFilterStyle
-                          ? { ...(materialDragStyle ?? {}), ...(materialFilterStyle ?? {}) }
-                          : undefined}
+                        className={(isExpanded) => `checklist-item ${submitted ? 'done' : ''} ${isExpanded ? 'expanded' : ''} ${isRemoving ? 'is-removing' : ''} ${materialSelection.selectedCount > 1 && materialSelection.selectedIds.has(mat.id) ? 'explorer-selected' : ''} ${recentChecklistItem?.kind === 'material' && recentChecklistItem.id === mat.id ? 'checklist-item-new' : ''} ${materialGroupArrivalIds.has(mat.id) ? 'checklist-item-group-arrival' : ''} ${checklistFilterAnimKey > 0 ? 'checklist-filter-enter' : ''}`}
+                        style={materialFilterStyle}
                         ariaSelected={materialSelection.selectedIds.has(mat.id)}
                         onContextMenu={(event) => openMaterialContextMenu(event, mat)}
                         onOpenChange={(open) => {
@@ -8132,7 +9351,7 @@ export function DossierView({
                               toggleMaterialCompletion(mat)
                             }}
                             title={submitted ? tx('dossier.markIncomplete') : tx('dossier.markComplete')}>
-                            {submitted ? <CheckCircle2 size={19} /> : mat.status === 'Missing' ? <AlertCircle size={19} /> : <Circle size={19} />}
+                            <AnimatedCheckmark checked={submitted} size={19} />
                           </button>
                           <div
                             className="checklist-item-body"
@@ -8202,7 +9421,11 @@ export function DossierView({
                             <button type="button" className={`checklist-expand-btn ${isExpanded ? 'open' : ''}`}
                               onClick={(e) => { e.stopPropagation(); toggleExpanded(); }}
                               aria-label={isExpanded ? tx('dossier.collapse') : tx('dossier.expand')}
-                              aria-expanded={isExpanded}><ChevronDown size={15} /></button>
+                              aria-expanded={isExpanded}>
+                              <span className="checklist-expand-glyph" aria-hidden="true">
+                                <ChevronDown size={15} />
+                              </span>
+                            </button>
                           </div>
                         </div>
                         <CollapsiblePanel open={isExpanded} className="checklist-item-detail" innerClassName="checklist-item-detail-inner">
@@ -8282,8 +9505,6 @@ export function DossierView({
                         </>
                         )}
                         </ChecklistDisclosureItem>
-                        {renderChecklistDropSlot('material', mat.id, 'after')}
-                      </Fragment>
                     )
                   })}
                 </div>
@@ -8356,23 +9577,19 @@ export function DossierView({
                       ? format(tx('dossier.attachmentCount'), { count: taskAttachments.length })
                       : taskAttachments[0]?.file
                     const taskDownloadTarget = taskAttachments.find((row) => row.current) ?? taskAttachments[0]
-                    const taskDragStyle = checklistDragStyle('task', task.id)
                     const taskFilterStyle = checklistFilterAnimKey > 0
                       ? ({ '--filter-stagger': taskIndex } as CSSProperties)
                       : undefined
                     return (
-                      <Fragment key={task.id}>
-                        {renderChecklistDropSlot('task', task.id, 'before')}
                         <ChecklistDisclosureItem
+                        key={task.id}
                         id={`task-${task.id}`}
                         kind="task"
                         itemId={task.id}
                         externalOpen={externallyExpanded}
                         syncVersion={taskExpansionSyncVersion}
-                        className={(isExpanded) => `checklist-item checklist-task-item ${task.done ? 'done' : ''} ${isExpanded ? 'expanded' : ''} ${isRemoving ? 'is-removing' : ''} ${taskSelection.selectedCount > 1 && taskSelection.selectedIds.has(task.id) ? 'explorer-selected' : ''} ${recentChecklistItem?.kind === 'task' && recentChecklistItem.id === task.id ? 'checklist-item-new' : ''} ${checklistFilterAnimKey > 0 ? 'checklist-filter-enter' : ''} ${checklistDrag?.kind === 'task' && checklistDrag.id === task.id ? 'dragging' : ''} ${checklistDropTarget?.kind === 'task' && checklistDropTarget.id === task.id ? `drop-target drop-${checklistDropTarget.position}` : ''}`}
-                        style={taskDragStyle || taskFilterStyle
-                          ? { ...(taskDragStyle ?? {}), ...(taskFilterStyle ?? {}) }
-                          : undefined}
+                        className={(isExpanded) => `checklist-item checklist-task-item ${task.done ? 'done' : ''} ${isExpanded ? 'expanded' : ''} ${isRemoving ? 'is-removing' : ''} ${taskSelection.selectedCount > 1 && taskSelection.selectedIds.has(task.id) ? 'explorer-selected' : ''} ${recentChecklistItem?.kind === 'task' && recentChecklistItem.id === task.id ? 'checklist-item-new' : ''} ${checklistFilterAnimKey > 0 ? 'checklist-filter-enter' : ''}`}
+                        style={taskFilterStyle}
                         ariaSelected={taskSelection.selectedIds.has(task.id)}
                         onContextMenu={(event) => openTaskContextMenu(event, task)}
                       >
@@ -8394,12 +9611,16 @@ export function DossierView({
                             type="button"
                             className={`checklist-check-btn ${task.done ? 'on' : ''}`}
                             onClick={() => {
-                              updateTaskDraft(task.id, { done: !task.done })
-                              onToggleTask(task.id, !task.done)
+                              if (autoSaveEnabled) {
+                                updateTaskDraft(task.id, { done: !task.done }, 'immediate')
+                              } else {
+                                updateTaskDraft(task.id, { done: !task.done }, 'external')
+                                onToggleTask(task.id, !task.done)
+                              }
                             }}
                             title={task.done ? tx('dossier.markIncomplete') : tx('dossier.markComplete')}
                           >
-                            {task.done ? <CheckCircle2 size={19} /> : <Circle size={19} />}
+                            <AnimatedCheckmark checked={task.done} size={19} />
                           </button>
                           <div
                             className="checklist-item-body"
@@ -8423,7 +9644,9 @@ export function DossierView({
                                 className="checklist-item-title"
                                 value={localize(task.title)}
                                 onChange={(e) => updateTaskDraft(task.id, { title: e.target.value })}
-                                onBlur={() => onUpdateTask?.(task.id, { title: task.title })}
+                                onBlur={() => {
+                                  if (!autoSaveEnabled) onUpdateTask?.(task.id, { title: task.title })
+                                }}
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   if (hasExplorerSelectionModifier(e)) taskSelection.applyGesture(task.id, e)
@@ -8494,7 +9717,9 @@ export function DossierView({
                               aria-label={isExpanded ? tx('dossier.collapse') : tx('dossier.expand')}
                               aria-expanded={isExpanded}
                             >
-                              <ChevronDown size={15} />
+                              <span className="checklist-expand-glyph" aria-hidden="true">
+                                <ChevronDown size={15} />
+                              </span>
                             </button>
                           </div>
                         </div>
@@ -8505,8 +9730,12 @@ export function DossierView({
                                 <DatePicker
                                   value={task.due}
                                   onChange={(value) => {
-                                    updateTaskDraft(task.id, { due: value })
-                                    onUpdateTask?.(task.id, { due: value })
+                                    if (autoSaveEnabled) {
+                                      updateTaskDraft(task.id, { due: value }, 'immediate')
+                                    } else {
+                                      updateTaskDraft(task.id, { due: value }, 'external')
+                                      onUpdateTask?.(task.id, { due: value })
+                                    }
                                   }}
                                   placeholder={tx('dossier.dueDate')}
                                 />
@@ -8522,7 +9751,9 @@ export function DossierView({
                               <MarkdownTextarea
                                 value={localize(task.details ?? '')}
                                 onChange={(e) => updateTaskDraft(task.id, { details: e.target.value })}
-                                onBlur={() => onUpdateTask?.(task.id, { details: task.details ?? '' })}
+                                onBlur={() => {
+                                  if (!autoSaveEnabled) onUpdateTask?.(task.id, { details: task.details ?? '' })
+                                }}
                                 placeholder={tx('dossier.taskDetailsPlaceholder')}
                                 rows={3}
                               />
@@ -8531,8 +9762,6 @@ export function DossierView({
                         </>
                         )}
                         </ChecklistDisclosureItem>
-                        {renderChecklistDropSlot('task', task.id, 'after')}
-                      </Fragment>
                     )
                   })
                 )}
@@ -8628,25 +9857,37 @@ export function DossierView({
               </div>
             )}
 
-            <div ref={correspondenceModeBarRef} className="correspondence-mode-bar" role="tablist" aria-label={tx('dossier.messageType')} data-tour="correspondence-modes">
-              {([
-                { mode: 'draft-email' as const, icon: PenLine, labelKey: 'dossier.correspondenceModes.draftEmail' },
-                { mode: 'record-email' as const, icon: Mail, labelKey: 'dossier.correspondenceModes.recordEmail' },
-                { mode: 'record-message' as const, icon: MessageCircle, labelKey: 'dossier.correspondenceModes.recordMessage' },
-                { mode: 'note' as const, icon: StickyNote, labelKey: 'dossier.correspondenceModes.note' },
-              ]).map(({ mode, icon: ModeIcon, labelKey }) => (
-                <button key={mode} type="button" role="tab"
-                  aria-selected={composerOpen && correspondenceMode === mode}
-                  aria-expanded={composerOpen && correspondenceMode === mode}
-                  data-tour={mode === 'draft-email' ? 'correspondence-draft-mode' : undefined}
-                  className={composerOpen && correspondenceMode === mode ? 'active' : ''}
-                  onClick={() => openCorrespondenceMode(mode)}
-                  ref={(node) => {
-                    correspondenceModeButtonRefs.current[mode] = node
-                  }}>
-                  <ModeIcon size={14} /><span>{tx(labelKey)}</span>
-                </button>
-              ))}
+            <div className="correspondence-mode-toolbar">
+              <div ref={correspondenceModeBarRef} className="correspondence-mode-bar" role="tablist" aria-label={tx('dossier.messageType')} data-tour="correspondence-modes">
+                {([
+                  { mode: 'draft-email' as const, icon: PenLine, labelKey: 'dossier.correspondenceModes.draftEmail' },
+                  { mode: 'record-email' as const, icon: Mail, labelKey: 'dossier.correspondenceModes.recordEmail' },
+                  { mode: 'record-message' as const, icon: MessageCircle, labelKey: 'dossier.correspondenceModes.recordMessage' },
+                  { mode: 'note' as const, icon: StickyNote, labelKey: 'dossier.correspondenceModes.note' },
+                ]).map(({ mode, icon: ModeIcon, labelKey }) => (
+                  <button key={mode} type="button" role="tab"
+                    aria-selected={composerOpen && correspondenceMode === mode}
+                    aria-expanded={composerOpen && correspondenceMode === mode}
+                    data-tour={mode === 'draft-email' ? 'correspondence-draft-mode' : undefined}
+                    className={composerOpen && correspondenceMode === mode ? 'active' : ''}
+                    onClick={() => openCorrespondenceMode(mode)}
+                    ref={(node) => {
+                      correspondenceModeButtonRefs.current[mode] = node
+                    }}>
+                    <ModeIcon size={14} /><span>{tx(labelKey)}</span>
+                  </button>
+                ))}
+              </div>
+              {!isReadOnly ? (
+                <CorrespondenceRecipientSettings
+                  emails={trackedRecipientEmails}
+                  primaryEmail={draft.professor.email}
+                  activeEmail={selectedRecipient}
+                  onSelect={setEmailRecipient}
+                  onAdd={addTrackedRecipient}
+                  onRemove={removeTrackedRecipient}
+                />
+              ) : null}
             </div>
 
             <CollapsiblePanel
@@ -8682,12 +9923,16 @@ export function DossierView({
                         <strong>{correspondenceFrom || tx('dossier.emailNotConfigured')}</strong>
                       </div>
                       <span className="composer-route-connector" aria-hidden="true">
-                        <ArrowUpRight size={14} />
+                        <span className="composer-route-flight">
+                          <Mail size={12} strokeWidth={2} />
+                        </span>
                       </span>
-                      <div>
-                        <span>{tx('dossier.emailTo')}</span>
-                        <strong>{correspondenceTo || tx('dossier.emailNotConfigured')}</strong>
-                      </div>
+                      <ComposerRecipientControl
+                        value={correspondenceTo}
+                        trackedEmails={trackedRecipientEmails}
+                        primaryEmail={draft.professor.email}
+                        onChange={setEmailRecipient}
+                      />
                     </div>
                     <div className="composer-status-row" aria-label={tx('dossier.emailComposerStatus')}>
                       <span className={`composer-status-chip ${emailSubjectReady ? 'ready' : 'warning'}`}>
@@ -8704,32 +9949,153 @@ export function DossierView({
                           ? format(tx('dossier.attachmentCount'), { count: emailAttachments.length })
                           : tx('dossier.emailNoAttachments')}
                       </span>
-                      <span className={`composer-status-chip ${emailHasSchedule ? 'scheduled' : 'muted'}`}>
-                        <Clock size={12} aria-hidden="true" />
-                        {emailScheduleSummary}
-                      </span>
                     </div>
                   </div>
-                  <div className="composer-field"><label>{tx('dossier.emailSubject')}</label><input value={emailSubject} onChange={(e) => setEmailSubject(e.target.value)} placeholder={tx('dossier.emailSubjectPlaceholder')} /></div>
-                  <div className="composer-field">
-                    <label>{tx('dossier.messageTime')}</label>
-                    <div className="composer-time-row">
-                      <DatePicker value={emailScheduleDate} onChange={setEmailScheduleDate} placeholder={tx('dossier.emailScheduleDate')} />
-                      <TimePicker value={emailScheduleTime} onChange={setEmailScheduleTime} ariaLabel={tx('dossier.messageClock')} />
+                  <div
+                    className={`composer-field composer-subject-field ${
+                      emailAiGenerating
+                        ? 'ai-writing'
+                        : emailAiRestoreAnimating
+                          ? 'ai-restoring'
+                          : emailAiSettling
+                            ? 'ai-settling'
+                            : ''
+                    }`.trim()}
+                  >
+                    <label>{tx('dossier.emailSubject')}</label>
+                    <div className="composer-subject-control">
+                      <input
+                        value={emailSubject}
+                        onChange={(event) => setEmailSubject(event.target.value)}
+                        placeholder={tx('dossier.emailSubjectPlaceholder')}
+                        aria-label={tx('dossier.emailSubject')}
+                        aria-busy={emailAiGenerating}
+                      />
+                      <Sparkles className="composer-subject-ai-mark" size={13} aria-hidden="true" />
                     </div>
                   </div>
-                  <InlinePresence present={emailInsertAnimating} className="composer-ai-writing-slot">
+                  <InlinePresence present={emailAiGenerating} className="composer-ai-writing-slot">
                     <span className="composer-ai-writing-status" role="status" aria-live="polite">
                       <Sparkles size={12} aria-hidden="true" />
                       <span>{tx('dossier.aiDrafting')}</span>
                       <i aria-hidden="true"><i /><i /><i /></i>
                     </span>
                   </InlinePresence>
-                  <MarkdownTextarea ref={composerBodyRef} defaultMode="source" className={`composer-body ${emailInsertAnimating ? 'ai-writing' : emailAiRestoreAnimating ? 'ai-restoring' : ''}`} value={emailBody} onChange={(e) => setEmailBody(e.target.value)} placeholder={tx('dossier.emailBodyPlaceholder')} rows={10} />
+                  <MarkdownTextarea
+                    ref={composerBodyRef}
+                    defaultMode="source"
+                    className={`composer-body ${
+                      emailAiGenerating || emailInsertAnimating
+                        ? 'ai-writing'
+                        : emailAiRestoreAnimating
+                          ? 'ai-restoring'
+                          : emailAiSettling
+                            ? 'ai-settling'
+                            : ''
+                    }`.trim()}
+                    value={emailBody}
+                    onChange={(event) => {
+                      if (emailInsertAnimating) clearEmailInsertAnimation()
+                      setEmailBody(event.target.value)
+                    }}
+                    placeholder={tx('dossier.emailBodyPlaceholder')}
+                    aria-busy={emailAiGenerating || emailInsertAnimating}
+                    rows={10}
+                  />
+                  {replyTargetCommunication ? (
+                    <section
+                      key={replyTargetCommunication.id}
+                      className={`composer-reply-context${replyContextExpanded ? ' expanded' : ''}`}
+                      aria-labelledby={`reply-context-subject-${replyTargetCommunication.id}`}
+                      data-reply-context-id={replyTargetCommunication.id}
+                    >
+                      <button
+                        type="button"
+                        className="composer-reply-context-toggle"
+                        aria-expanded={replyContextExpanded}
+                        aria-controls={`reply-context-detail-${replyTargetCommunication.id}`}
+                        onClick={() => setReplyContextExpanded((current) => !current)}
+                      >
+                        <UserAvatar
+                          name={replyTargetAvatarIdentity?.name ?? professorAvatarName}
+                          email={replyTargetAvatarIdentity?.email ?? draft.professor.email}
+                          className="composer-reply-context-avatar"
+                        />
+                        <span className="composer-reply-context-copy">
+                          <span className="composer-reply-context-meta">
+                            <span className="composer-reply-context-eyebrow">
+                              <Reply size={11} aria-hidden="true" />
+                              {tx('dossier.replyContextEyebrow')}
+                            </span>
+                            <span className="composer-reply-context-professor">
+                              {replyTargetAvatarIdentity?.displayEmail || professorDisplayName}
+                            </span>
+                            <time dateTime={replyTargetTimestamp?.dateTime}>
+                              {replyTargetTimestamp?.label}
+                            </time>
+                          </span>
+                          <span className="composer-reply-context-subject-row">
+                            <span>{tx('dossier.replyContextOriginalEmail')}</span>
+                            <strong id={`reply-context-subject-${replyTargetCommunication.id}`}>
+                              {localize(replyTargetCommunication.subject) || tx('dossier.untitledMessage')}
+                            </strong>
+                          </span>
+                        </span>
+                        <ChevronDown className="composer-reply-context-chevron" size={15} aria-hidden="true" />
+                      </button>
+                      <CollapsiblePanel
+                        id={`reply-context-detail-${replyTargetCommunication.id}`}
+                        open={replyContextExpanded}
+                        className="composer-reply-context-collapse"
+                        openMs={320}
+                        closeMs={240}
+                      >
+                        <div className="composer-reply-context-detail">
+                          {(replyTargetCommunication.from || replyTargetCommunication.to) ? (
+                            <p className="composer-reply-context-route">
+                              {replyTargetCommunication.from || tx('dossier.emailNotConfigured')}
+                              <ArrowUpRight size={12} aria-hidden="true" />
+                              {replyTargetCommunication.to || tx('dossier.emailNotConfigured')}
+                            </p>
+                          ) : null}
+                          <MarkdownContent
+                            value={
+                              replyTargetCommunication.messageType !== 'fetched-email'
+                              && replyTargetCommunication.bodyHtml
+                                ? replyTargetCommunication.bodyHtml
+                                : localize(replyTargetCommunication.summary)
+                            }
+                            className="composer-reply-context-message"
+                            format={
+                              replyTargetCommunication.messageType === 'fetched-email'
+                                ? 'plain'
+                                : replyTargetCommunication.bodyHtml
+                                  ? 'html'
+                                  : replyTargetCommunication.bodyFormat
+                            }
+                          />
+                          {(replyTargetCommunication.attachments ?? []).length > 0 ? (
+                            <div className="composer-reply-context-attachments" aria-label={tx('dossier.attachments')}>
+                              {(replyTargetCommunication.attachments ?? []).map((attachment, index) => (
+                                <span key={attachment.id ?? `${attachment.fileName}-${index}`}>
+                                  <Paperclip size={10} aria-hidden="true" />
+                                  {attachment.fileName}
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      </CollapsiblePanel>
+                    </section>
+                  ) : null}
                   <div className="composer-attachments">
                     <div className="composer-attachment-list">
                       {emailAttachments.map((att) => (
-                        <span key={att.id} className={`tag-chip${att.aiAttachedByTool ? ' ai-tool-attached' : ''}`}>
+                        <span
+                          key={`${att.id}:${att.aiMotionRevision ?? 0}`}
+                          className={`tag-chip${att.aiAttachedByTool ? ' ai-tool-attached' : ''}${att.aiMotionKind === 'update' ? ' ai-tool-updated' : ''}`}
+                          data-ai-motion={att.aiMotionKind}
+                        >
                           <Paperclip size={10} />
                           {renamingAttachmentId === att.id ? (
                             <input
@@ -8780,7 +10146,71 @@ export function DossierView({
                     <button type="button" className="primary-action" onClick={handleSendEmail} disabled={!hasComposerContent}><Send size={13} /> {tx('dossier.sendEmailNow')}</button>
                     {canUseDrafts ? (
                       <>
-                        <button type="button" className="quiet-action" onClick={handleScheduleEmail} disabled={!emailSubjectReady || !emailScheduleDate}><Clock size={13} /> {tx('dossier.scheduleSend')}</button>
+                        {emailSubjectReady ? (
+                          <AnchoredPopover
+                            trigger={<><Clock size={13} aria-hidden="true" /> {tx('dossier.scheduleSend')}</>}
+                            triggerAriaLabel={tx('dossier.scheduleSend')}
+                            popoverAriaLabel={tx('dossier.emailSchedule')}
+                            triggerClassName="quiet-action composer-schedule-trigger"
+                            popoverClassName="composer-schedule-popover"
+                            width={300}
+                            estimatedHeight={250}
+                            align="end"
+                            onOpenChange={handleSchedulePopoverOpen}
+                          >
+                            {(close) => (
+                              <div className="composer-schedule-sheet">
+                                <div className="composer-schedule-head">
+                                  <span className="composer-schedule-mark"><Clock size={14} aria-hidden="true" /></span>
+                                  <span>
+                                    <strong>{tx('dossier.scheduleSend')}</strong>
+                                    <small>{tx('dossier.scheduleSendHint')}</small>
+                                  </span>
+                                </div>
+                                <div className="composer-schedule-fields">
+                                  <label>
+                                    <span>{tx('dossier.emailScheduleDate')}</span>
+                                    <DatePicker
+                                      value={scheduledSendDate}
+                                      onChange={setScheduledSendDate}
+                                      min={today}
+                                      placeholder={tx('dossier.emailScheduleDate')}
+                                    />
+                                  </label>
+                                  <label>
+                                    <span>{tx('dossier.messageClock')}</span>
+                                    <TimePicker
+                                      value={scheduledSendTime}
+                                      onChange={setScheduledSendTime}
+                                      allowClear={false}
+                                      ariaLabel={tx('dossier.messageClock')}
+                                    />
+                                  </label>
+                                </div>
+                                <p className={`composer-schedule-summary${scheduledSendIsFuture ? '' : ' invalid'}`}>
+                                  {scheduledSendIsFuture
+                                    ? format(tx('dossier.emailScheduledFor'), {
+                                        date: `${formatDate(scheduledSendDate, lang)} ${scheduledSendTime}`,
+                                      })
+                                    : tx('dossier.scheduleMustBeFuture')}
+                                </p>
+                                <button
+                                  type="button"
+                                  className="primary-action composer-schedule-confirm"
+                                  onClick={() => { void handleScheduleEmail(close) }}
+                                  disabled={!scheduledSendAt || !scheduledSendIsFuture}
+                                >
+                                  <Clock size={13} aria-hidden="true" />
+                                  {tx('dossier.scheduleSend')}
+                                </button>
+                              </div>
+                            )}
+                          </AnchoredPopover>
+                        ) : (
+                          <button type="button" className="quiet-action" disabled>
+                            <Clock size={13} aria-hidden="true" /> {tx('dossier.scheduleSend')}
+                          </button>
+                        )}
                         <button type="button" className="quiet-action save-action" onClick={handleSaveDraft} disabled={!hasComposerContent}><Save size={13} /> {tx('dossier.saveDraft')}</button>
                       </>
                     ) : (
@@ -8820,7 +10250,7 @@ export function DossierView({
                       onClick={() => { setRecordDirection('received'); setCorrespondenceKind('incoming-email'); setRecordFromOverride(null); setRecordToOverride(null) }}><Mail size={13} /> {tx('dossier.direction.received')}</button>
                   </div>
                   <div className="composer-field">
-                    <label>{tx('dossier.messageTime')}</label>
+                    <label>{tx(recordDirection === 'sent' ? 'dossier.messageSentTime' : 'dossier.messageReceivedTime')}</label>
                     <div className="composer-time-row">
                       <DatePicker value={emailScheduleDate} onChange={setEmailScheduleDate} placeholder={tx('dossier.emailScheduleDate')} />
                       <TimePicker value={emailScheduleTime} onChange={setEmailScheduleTime} ariaLabel={tx('dossier.messageClock')} />
@@ -8848,11 +10278,10 @@ export function DossierView({
                   <div className="composer-actions">
                     <button type="button" className="primary-action" onClick={() => {
                       if (!emailSubject.trim() && !emailBody.trim()) return
-                      onAddCommunication(buildCommunicationInput(correspondenceKind, emailSubject, emailBodyForCommunication, {
+                      void persistRecordedCommunication(buildCommunicationInput(correspondenceKind, emailSubject, emailBodyForCommunication, {
                         from: recordFromOverride ?? correspondenceFrom,
                         to: recordToOverride ?? correspondenceTo,
                       }))
-                      clearEmailComposer()
                     }}><Plus size={14} /> {tx('dossier.addCorrespondence')}</button>
                   </div>
                 </div>
@@ -8874,7 +10303,7 @@ export function DossierView({
                       onClick={() => { setRecordDirection('received'); setCorrespondenceKind('incoming-message') }}><MessageSquare size={13} /> {tx('dossier.direction.received')}</button>
                   </div>
                   <div className="composer-field">
-                    <label>{tx('dossier.messageTime')}</label>
+                    <label>{tx(recordDirection === 'sent' ? 'dossier.messageSentTime' : 'dossier.messageReceivedTime')}</label>
                     <div className="composer-time-row">
                       <DatePicker value={emailScheduleDate} onChange={setEmailScheduleDate} placeholder={tx('dossier.emailScheduleDate')} />
                       <TimePicker value={emailScheduleTime} onChange={setEmailScheduleTime} ariaLabel={tx('dossier.messageClock')} />
@@ -8885,8 +10314,7 @@ export function DossierView({
                   <div className="composer-actions">
                     <button type="button" className="primary-action" onClick={() => {
                       if (!emailSubject.trim() && !emailBody.trim()) return
-                      onAddCommunication(buildCommunicationInput(correspondenceKind, emailSubject, emailBodyForCommunication))
-                      clearEmailComposer()
+                      void persistRecordedCommunication(buildCommunicationInput(correspondenceKind, emailSubject, emailBodyForCommunication))
                     }}><Plus size={14} /> {tx('dossier.addCorrespondence')}</button>
                   </div>
                 </div>
@@ -8912,13 +10340,19 @@ export function DossierView({
                   <div className="composer-actions">
                     <button type="button" className="primary-action" onClick={() => {
                       if (!emailBody.trim()) return
-                      onAddCommunication(buildCommunicationInput('note', formatDate(emailScheduleDate, lang), emailBodyForCommunication))
-                      clearEmailComposer()
+                      void persistRecordedCommunication(buildCommunicationInput('note', formatDate(emailScheduleDate, lang), emailBodyForCommunication))
                     }}><Plus size={14} /> {tx('dossier.saveNote')}</button>
                   </div>
                 </div>
               )}
             </CollapsiblePanel>
+
+            {pendingRecipientSend ? (
+              <RecipientTrackingDialog
+                recipient={normalizeCorrespondenceEmail(pendingRecipientSend.payload.to)}
+                onDecision={handleRecipientTrackingDecision}
+              />
+            ) : null}
 
             {pendingComposerExit && (
               <ModalPortal>
@@ -9008,22 +10442,37 @@ export function DossierView({
                   <div className="correspondence-timeline">
                   {visibleCommunications.map((item) => {
                     const dir = communicationDirection(item)
-                    const TimIcon = communicationIcon(item)
-                    const timestamp = `${formatDate(item.date, lang)}${item.time ? ` ${item.time}` : ''}`
+                    const timestamp = communicationTimestamp(item, lang)
                     const isNote = item.messageType === 'note' || item.channel === 'Note'
                     const isDraft = item.messageType === 'draft-email'
+                    const isImportedEmail = item.messageType === 'fetched-email'
+                    const mailSecurity = item.mailSecurity
+                    const dangerousMail = mailSecurity?.level === 'danger'
                     const isRemoving = removingCommunicationIds.has(item.id)
                     const isEditing = editingCommunicationId === item.id
-                    const editDraft = isEditing ? communicationEditDraft : null
+                    const editDraft = isEditing && communicationEditDraft
+                      ? communicationEditDraft
+                      : communicationEditDraftFrom(item)
+                    const avatarIdentity = correspondenceAvatarIdentity(
+                      item,
+                      professorAvatarName,
+                      draft.professor.email,
+                    )
                     const senderLabel = dir === 'outgoing'
                       ? tx('dossier.messageSenderMe')
                       : dir === 'incoming'
-                        ? professorDisplayName
-                        : correspondenceTypeLabel(item)
+                        ? avatarIdentity.displayEmail || professorDisplayName
+                        : tx('dossier.messageSenderMe')
                     return (
                       <div key={item.id} className={`correspondence-event ${dir} ${isNote ? 'is-note' : ''} ${isDraft ? 'is-draft' : ''} ${isRemoving ? 'is-removing' : ''}`}>
                         <div className="correspondence-event-rail">
-                          <span className={`correspondence-event-dot ${dir} ${isNote ? 'note' : ''}`}><TimIcon size={10} /></span>
+                          <span className={`correspondence-event-dot ${dir} ${isNote ? 'note' : ''}`}>
+                            <UserAvatar
+                              name={avatarIdentity.name}
+                              email={avatarIdentity.email}
+                              className="correspondence-event-avatar"
+                            />
+                          </span>
                         </div>
                         <article
                           id={`communication-${item.id}`}
@@ -9040,15 +10489,36 @@ export function DossierView({
                               <span className="correspondence-event-sender">{senderLabel}</span>
                               <span>{correspondenceTypeLabel(item)}</span>
                             </span>
-                            <span className="correspondence-event-time">{timestamp}</span>
+                            <time className="correspondence-event-time" dateTime={timestamp.dateTime}>{timestamp.label}</time>
                           </div>
                           <strong>{localize(item.subject)}</strong>
                           {(item.from || item.to) && !isNote ? (
                             <p className="correspondence-event-route">{item.from || tx('dossier.emailNotConfigured')} → {item.to || tx('dossier.emailNotConfigured')}</p>
                           ) : null}
-                          <MarkdownContent value={localize(item.summary)} className="correspondence-event-body" />
+                          {mailSecurity ? (
+                            <div
+                              className={`correspondence-mail-security ${mailSecurity.level}`}
+                              role={dangerousMail ? 'alert' : 'status'}
+                            >
+                              <ShieldAlert size={15} aria-hidden="true" />
+                              <span>
+                                <b>{tx(dangerousMail ? 'dossier.mailThreatDangerTitle' : 'dossier.mailThreatCautionTitle')}</b>
+                                <span>{tx(dangerousMail ? 'dossier.mailThreatDangerMessage' : 'dossier.mailThreatCautionMessage')}</span>
+                                {mailSecurity.quarantinedAttachmentCount > 0 ? (
+                                  <em>{format(tx('dossier.mailThreatAttachmentsQuarantined'), {
+                                    count: mailSecurity.quarantinedAttachmentCount,
+                                  })}</em>
+                                ) : null}
+                              </span>
+                            </div>
+                          ) : null}
+                          <MarkdownContent
+                            value={!isImportedEmail && item.bodyHtml ? item.bodyHtml : localize(item.summary)}
+                            className="correspondence-event-body"
+                            format={isImportedEmail ? 'plain' : item.bodyHtml ? 'html' : item.bodyFormat}
+                          />
                           {(item.attachments ?? []).length > 0 ? (
-                            <div className="correspondence-event-attachments" aria-label={tx('profile.attachments')}>
+                            <div className="correspondence-event-attachments" aria-label={tx('dossier.attachments')}>
                               {(item.attachments ?? []).map((attachment, index) => (
                                 <span key={attachment.id ?? `${attachment.fileName}-${index}`}>
                                   <Paperclip size={10} aria-hidden="true" />
@@ -9058,20 +10528,36 @@ export function DossierView({
                             </div>
                           ) : null}
                           <div className="correspondence-event-actions" onClick={(event) => event.stopPropagation()}>
-                            {onAiDraft && dir === 'incoming' && item.channel === 'Email' ? (
-                              <button type="button" className="correspondence-ai-reply-btn" onClick={() => openAiDraft(item)} title={tx('dossier.aiReply')} aria-label={tx('dossier.aiReply')}>
+                            {onAiDraft && dir === 'incoming' && item.channel === 'Email' && !mailSecurity ? (
+                              <button
+                                type="button"
+                                className="correspondence-ai-reply-btn"
+                                onClick={() => openAiDraft(item)}
+                                title={format(tx('dossier.replyToMessage'), { subject: localize(item.subject) || tx('dossier.untitledMessage') })}
+                                aria-label={format(tx('dossier.replyToMessage'), { subject: localize(item.subject) || tx('dossier.untitledMessage') })}
+                              >
                                 <Reply size={13} aria-hidden="true" />
                               </button>
                             ) : null}
-                            <CopyButton value={item.summary} label={tx('copySummary')} size={12} onNotify={onNotify} />
-                            <button type="button" className={`correspondence-edit-btn${isEditing ? ' active' : ''}`}
-                              onClick={() => startEditingCommunication(item)} title={isEditing ? tx('dossier.cancelEdit') : tx('explorer.edit')} aria-label={isEditing ? tx('dossier.cancelEdit') : tx('explorer.edit')} aria-expanded={isEditing} disabled={!onUpdateCommunication}>
-                              {isEditing ? <X size={12} /> : <Pencil size={12} />}
-                            </button>
+                            <CopyButton value={item.bodyText || item.summary} label={tx('copySummary')} size={12} onNotify={onNotify} />
+                            {!item.bodyHtml ? (
+                              <button type="button" className={`correspondence-edit-btn${isEditing ? ' active' : ''}`}
+                                onClick={() => startEditingCommunication(item)} title={isEditing ? tx('dossier.cancelEdit') : tx('explorer.edit')} aria-label={isEditing ? tx('dossier.cancelEdit') : tx('explorer.edit')} aria-expanded={isEditing} disabled={!onUpdateCommunication}>
+                                <span className="correspondence-edit-icon-stage" aria-hidden="true">
+                                  <Pencil className="edit-icon" size={12} />
+                                  <X className="collapse-icon" size={13} />
+                                </span>
+                              </button>
+                            ) : null}
                             <button type="button" className="correspondence-delete-btn"
                               onClick={() => setConfirmRemoveCommunicationId(item.id)} title={tx('dossier.delete')} aria-label={tx('dossier.delete')}><Trash2 size={12} /></button>
                           </div>
-                          {isEditing && editDraft && (
+                          <CollapsiblePanel
+                            open={isEditing && !item.bodyHtml}
+                            className="correspondence-edit-collapse"
+                            openMs={360}
+                            closeMs={280}
+                          >
                             <div className="correspondence-edit-panel" onClick={(event) => event.stopPropagation()}>
                               <div className="composer-field">
                                 <label>{tx('dossier.emailSubject')}</label>
@@ -9079,22 +10565,33 @@ export function DossierView({
                                   value={editDraft.subject ?? item.subject}
                                   onChange={(event) => updateCommunicationEditDraft({ subject: event.target.value })}
                                   placeholder={tx('dossier.emailSubjectPlaceholder')}
+                                  readOnly={Boolean(item.bodyHtml)}
                                 />
                               </div>
                               <div className="composer-field">
-                                <label>{tx('dossier.messageTime')}</label>
-                                <div className="composer-time-row">
-                                  <DatePicker
-                                    value={editDraft.date ?? item.date}
-                                    onChange={(date) => updateCommunicationEditDraft({ date })}
-                                    placeholder={tx('dossier.emailScheduleDate')}
-                                  />
-                                  <TimePicker
-                                    value={editDraft.time ?? item.time ?? ''}
-                                    onChange={(time) => updateCommunicationEditDraft({ time })}
-                                    ariaLabel={tx('dossier.messageClock')}
-                                  />
-                                </div>
+                                <label>{tx(
+                                  dir === 'outgoing'
+                                    ? 'dossier.messageSentTime'
+                                    : dir === 'incoming'
+                                      ? 'dossier.messageReceivedTime'
+                                      : 'dossier.messageTime',
+                                )}</label>
+                                {communicationAbsoluteTime(item) ? (
+                                  <span className="composer-value">{timestamp.label}</span>
+                                ) : (
+                                  <div className="composer-time-row">
+                                    <DatePicker
+                                      value={editDraft.date ?? item.date}
+                                      onChange={(date) => updateCommunicationEditDraft({ date })}
+                                      placeholder={tx('dossier.emailScheduleDate')}
+                                    />
+                                    <TimePicker
+                                      value={editDraft.time ?? item.time ?? ''}
+                                      onChange={(time) => updateCommunicationEditDraft({ time })}
+                                      ariaLabel={tx('dossier.messageClock')}
+                                    />
+                                  </div>
+                                )}
                               </div>
                               {!isNote && (
                                 <div className={`composer-route-info editable ${activeRouteSwap === `communication-${item.id}` ? 'route-swapping' : ''}`}>
@@ -9127,6 +10624,7 @@ export function DossierView({
                                 onChange={(event) => updateCommunicationEditDraft({ summary: event.target.value })}
                                 placeholder={tx('dossier.messageSummaryPlaceholder')}
                                 rows={5}
+                                readOnly={Boolean(item.bodyHtml)}
                               />
                               <div className="correspondence-edit-actions">
                                 <button type="button" className="primary-action save-action" onClick={() => { void saveCommunicationEdit(item) }}>
@@ -9137,7 +10635,7 @@ export function DossierView({
                                 </button>
                               </div>
                             </div>
-                          )}
+                          </CollapsiblePanel>
                         </article>
                       </div>
                     )
@@ -9186,7 +10684,7 @@ export function DossierView({
                 className="scholarship-add-panel"
                 onSubmit={(event) => {
                   event.preventDefault()
-                  submitScholarshipDraft()
+                  void submitScholarshipDraft()
                 }}
               >
                 {renderScholarshipForm(scholarshipDraft, setScholarshipDraft, 'new')}
@@ -9447,8 +10945,7 @@ export function DossierView({
                                 <p className="scholarship-mini-empty">{tx('dossier.scholarshipNoTimeline')}</p>
                               ) : (
                                 <div className="funding-scholarship-timeline" role="list">
-                                  {[...events]
-                                    .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+                                  {sortScholarshipTimelineNewestFirst(events)
                                     .map((event, eventIndex, sorted) => {
                                       const status = timelineDateStatus(event.date)
                                       const isLast = eventIndex === sorted.length - 1
@@ -9566,12 +11063,13 @@ export function DossierView({
                 className="timeline-add-panel"
                 onSubmit={(e) => {
                   e.preventDefault()
-                  if (timelineTitle.trim()) {
-                    onAddTimelineEvent(timelineTitle, timelineDate, timelineNote)
+                  if (timelineTitle.trim()) void (async () => {
+                    const saved = await onAddTimelineEvent(timelineTitle, timelineDate, timelineNote)
+                    if (saved === false) return
                     setTimelineTitle('')
                     setTimelineNote('')
                     setTimelineAddOpen(false)
-                  }
+                  })()
                 }}
               >
                 <div className="timeline-add-panel-fields">
@@ -9663,7 +11161,7 @@ export function DossierView({
                                   data-timeline-date={event.date}
                                     onSubmit={(e) => {
                                       e.preventDefault()
-                                      saveTimelineEdit()
+                                      void saveTimelineEdit()
                                   }}
                                 >
                                   <div className="timeline-event-rail">
@@ -9764,7 +11262,7 @@ export function DossierView({
                                   {event.source ? <span className="timeline-source-chip">{event.source}</span> : null}
                                   {event.note && (
                                     <div className={`timeline-event-note ${noteLong && !noteExpanded ? 'collapsed' : ''}`}>
-                                      <MarkdownContent value={localize(event.note)} />
+                                      <MarkdownContent value={localize(event.note)} format={event.plainText ? 'plain' : undefined} />
                                       {noteLong && (
                                         <button
                                           type="button"
@@ -9909,9 +11407,10 @@ export function DossierView({
                   type="button"
                   className="secondary-action compact-action"
                   disabled={feedbackBusy}
+                  aria-busy={feedbackBusy || undefined}
                   onClick={() => void handleRequestFeedback()}
                 >
-                  {feedbackBusy ? tx('team.requestFeedbackWorking') : tx('team.requestFeedback')}
+                  {feedbackBusy ? <PendingLabel label={tx('team.requestFeedbackWorking')} /> : tx('team.requestFeedback')}
                 </button>
                 {feedbackStatus ? <p className="review-request-feedback-ok" role="status">{feedbackStatus}</p> : null}
               </section>
@@ -9939,10 +11438,14 @@ export function DossierView({
                     type="button"
                     className="primary-action compact-action"
                     disabled={reviewCommentBusy || !reviewCommentText.trim()}
+                    aria-busy={reviewCommentBusy || undefined}
                     onClick={handleSubmitComment}
                   >
-                    <MessageSquare size={13} aria-hidden="true" />
-                    {reviewCommentBusy ? tx('working') : tx('dossier.reviewSubmit')}
+                    {reviewCommentBusy ? (
+                      <PendingLabel label={tx('working')} />
+                    ) : (
+                      <><MessageSquare size={13} aria-hidden="true" /> {tx('dossier.reviewSubmit')}</>
+                    )}
                   </button>
                 </div>
               </div>
@@ -10048,10 +11551,14 @@ export function DossierView({
                               type="button"
                               className="primary-action compact-action"
                               disabled={reviewCommentBusy || !reviewReplyText.trim()}
+                              aria-busy={reviewCommentBusy || undefined}
                               onClick={() => void handleSubmitReply(comment.id, replyTarget.authorId)}
                             >
-                              <Reply size={12} aria-hidden="true" />
-                              {reviewCommentBusy ? tx('working') : tx('dossier.reviewReplySubmit')}
+                              {reviewCommentBusy ? (
+                                <PendingLabel label={tx('working')} iconSize={12} />
+                              ) : (
+                                <><Reply size={12} aria-hidden="true" /> {tx('dossier.reviewReplySubmit')}</>
+                              )}
                             </button>
                           </div>
                         </div>
@@ -10066,6 +11573,7 @@ export function DossierView({
         })()}
 
       </div>
+      <ProjectFooter />
       {pendingDraftExit && (
         <ModalPortal>
           <div className={`dialog-layer composer-exit-layer${draftExitExiting ? ' exiting' : ''}`} onClick={(event) => {
@@ -10087,8 +11595,8 @@ export function DossierView({
                 <p id="draft-exit-message">{tx('dossier.unsavedChangesMessage')}</p>
               </div>
               <div className="composer-exit-actions">
-                <button type="button" className="primary-action save-action" onClick={() => requestDraftExitClose(() => { void handlePendingDraftSave() })} disabled={saving}>
-                  <Save size={14} aria-hidden="true" /> {saving ? tx('dossier.saving') : tx('dossier.save')}
+                <button type="button" className="primary-action save-action" onClick={() => requestDraftExitClose(() => { void handlePendingDraftSave() })} disabled={saving} aria-busy={saving || undefined}>
+                  {saving ? <PendingLabel label={tx('dossier.saving')} iconSize={14} /> : <><Save size={14} aria-hidden="true" /> {tx('dossier.save')}</>}
                 </button>
                 <button type="button" className="warning-action" onClick={() => requestDraftExitClose(handlePendingDraftDiscard)}>
                   <Undo2 size={14} aria-hidden="true" /> {tx('dossier.discardChanges')}
@@ -10122,8 +11630,8 @@ export function DossierView({
                 <p id="resource-settings-exit-message">{tx('dossier.unsavedChangesMessage')}</p>
               </div>
               <div className="composer-exit-actions">
-                <button type="button" className="primary-action save-action" onClick={() => requestResourceSettingsExitClose(() => { void handlePendingResourceSettingsSave() })} disabled={saving}>
-                  <Save size={14} aria-hidden="true" /> {saving ? tx('dossier.saving') : tx('dossier.save')}
+                <button type="button" className="primary-action save-action" onClick={() => requestResourceSettingsExitClose(() => { void handlePendingResourceSettingsSave() })} disabled={saving} aria-busy={saving || undefined}>
+                  {saving ? <PendingLabel label={tx('dossier.saving')} iconSize={14} /> : <><Save size={14} aria-hidden="true" /> {tx('dossier.save')}</>}
                 </button>
                 <button type="button" className="warning-action" onClick={() => requestResourceSettingsExitClose(handlePendingResourceSettingsDiscard)}>
                   <Undo2 size={14} aria-hidden="true" /> {tx('dossier.discardChanges')}
@@ -10179,6 +11687,15 @@ export function DossierView({
         />
       ) : null}
       <ExplorerContextMenu menu={explorerMenu} onClose={closeExplorerMenu} />
+      <ConfirmDialog
+        open={pendingMissingAttachmentSend !== null}
+        title={tx('dossier.missingAttachmentTitle')}
+        message={tx('dossier.missingAttachmentMessage')}
+        confirmLabel={tx('dossier.sendWithoutAttachment')}
+        cancelLabel={tx('cancel')}
+        onConfirm={() => handleMissingAttachmentDecision(true)}
+        onCancel={() => handleMissingAttachmentDecision(false)}
+      />
       <ConfirmDialog
         open={confirmRemoveAttachment !== null}
         title={tx('dossier.removeAttachment')}

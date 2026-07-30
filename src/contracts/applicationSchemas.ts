@@ -53,6 +53,23 @@ const CommunicationChannelSchema = z.enum([
 ])
 
 const CommunicationDirectionSchema = z.enum(['incoming', 'outgoing', 'note'])
+const MailSecuritySignalSchema = z.enum([
+  'authentication-failed',
+  'reply-to-mismatch',
+  'deceptive-link',
+  'unsafe-link',
+  'credential-request',
+  'financial-request',
+  'prompt-injection',
+  'active-content',
+  'unsafe-attachment',
+])
+const MailSecuritySchema = z.object({
+  level: z.enum(['caution', 'danger']),
+  signals: z.array(MailSecuritySignalSchema).max(12),
+  linksDisabled: z.literal(true),
+  quarantinedAttachmentCount: z.number().int().nonnegative().max(100_000),
+})
 const BackupFrequencySchema = z.enum(['1m', '5m', '15m', '30m', '1h', '3h', '6h', '12h', 'daily', '3d', '7d', 'weekly', 'monthly'])
 const SharePermissionSchema = z.enum(['view', 'upload', 'edit'])
 const ShareSectionSchema = z.enum([
@@ -110,6 +127,9 @@ export const CommunicationSchema = z.object({
   channel: CommunicationChannelSchema,
   date: z.iso.date(),
   summary: z.string().min(1),
+  bodyFormat: z.enum(['plain', 'markdown', 'html']).optional(),
+  bodyHtml: z.string().optional(),
+  bodyText: z.string().optional(),
   direction: CommunicationDirectionSchema.default('note'),
   messageType: z.string().default('note'),
   from: z.string().default(''),
@@ -125,10 +145,20 @@ export const CommunicationSchema = z.object({
     storageName: z.string().optional(),
     source: z.string().optional(),
   })).default([]),
-  deliveryStatus: z.enum(['sent', 'log-only']).optional(),
+  deliveryStatus: z.enum(['queued', 'sending', 'sent', 'log-only']).optional(),
+  scheduledAt: z.iso.datetime().optional(),
+  sentAt: z.iso.datetime().optional(),
+  deliveryId: z.string().optional(),
+  deliveryUserId: z.string().optional(),
+  deliveryStartedAt: z.iso.datetime().optional(),
+  nextDeliveryAttemptAt: z.iso.datetime().optional(),
+  deliveryAttemptCount: z.number().int().nonnegative().optional(),
+  deliveryLastErrorCode: z.string().optional(),
+  deliveryLastErrorAt: z.iso.datetime().optional(),
   sourceMessageKey: z.string().optional(),
   sourceMailbox: z.string().optional(),
   importedAt: z.string().optional(),
+  mailSecurity: MailSecuritySchema.optional(),
 })
 
 export const CommunicationPatchSchema = z.object({
@@ -250,17 +280,18 @@ export const ApplicationSchema = z.object({
     english: z.string().min(1),
     chinese: z.string(),
     email: z.email(),
+    correspondenceEmails: z.array(z.email().max(254)).max(9).optional(),
     phone: z.string(),
     social: z.string(),
     homepage: OptionalUrlSchema,
     research: z.string().min(1),
-    lab: z.string().min(1),
+    lab: z.string(),
     labUrl: OptionalUrlSchema.optional(),
     projectUrl: OptionalUrlSchema.optional(),
   }),
   school: z.object({
     name: z.string().min(1),
-    country: z.string().min(1),
+    country: z.string(),
     website: OptionalUrlSchema,
     logo: SchoolLogoSchema.optional(),
     logoAutoDetect: z.boolean().optional(),

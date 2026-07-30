@@ -17,7 +17,6 @@ import { normalizeErrorMessage } from '../../errorMessages'
 import { useI18n } from '../hooks/useI18n'
 import { CollapsiblePanel } from './CollapsiblePanel'
 import { Select } from './Select'
-import { SwitchControl } from './SwitchControl'
 
 const TARGET_LABELS: Record<string, [string, string]> = {
   'school.website': ['discover.enrichFieldWebsite', 'School website'],
@@ -28,8 +27,12 @@ const TARGET_LABELS: Record<string, [string, string]> = {
   'professor.research': ['discover.enrichFieldAdvisorResearch', 'Advisor research'],
   tags: ['discover.enrichFieldTags', 'Research tags'],
   'dossier.discover': ['discover.enrichFieldDossier', 'Discover research card'],
+  'materials.ai': ['discover.enrichFieldChecklist', 'Checklist requirement'],
+  'fee.ai': ['discover.enrichFieldFee', 'Application fee'],
   'scholarship.discover': ['discover.enrichFieldFunding', 'Funding snapshot'],
+  'scholarship.ai': ['discover.enrichFieldScholarship', 'Scholarship'],
   'timeline.discover': ['discover.enrichFieldTimeline', 'Research timeline event'],
+  'timeline.ai': ['discover.enrichFieldTimeline', 'Research timeline event'],
 }
 
 function EnrichmentChangeRow({
@@ -94,6 +97,7 @@ export function DiscoverApplicationEnrichment({
   applications,
   aiKeys,
   preferredKeyId,
+  onConfigureAiKeys,
   onApplied,
   onNotify,
 }: {
@@ -101,13 +105,14 @@ export function DiscoverApplicationEnrichment({
   applications: ApplicationRecord[]
   aiKeys: AiKey[]
   preferredKeyId?: string | null
+  onConfigureAiKeys?: () => void
   onApplied: (application: ApplicationRecord) => void
   onNotify: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
 }) {
   const { tx, format, lang } = useI18n()
+  const usableAiKeys = useMemo(() => aiKeys.filter((key) => key.secretSet), [aiKeys])
   const [applicationId, setApplicationId] = useState(applications[0]?.id ?? '')
-  const [useAi, setUseAi] = useState(aiKeys.length > 0)
-  const [keyId, setKeyId] = useState(preferredKeyId || aiKeys[0]?.id || '')
+  const [keyId, setKeyId] = useState(preferredKeyId || usableAiKeys[0]?.id || '')
   const [busy, setBusy] = useState<'preview' | 'apply' | null>(null)
   const [proposal, setProposal] = useState<DiscoverApplicationEnrichmentProposal | null>(null)
   const [accepted, setAccepted] = useState<Set<string>>(new Set())
@@ -119,31 +124,35 @@ export function DiscoverApplicationEnrichment({
   }, [applicationId, applications])
 
   useEffect(() => {
-    if (!keyId && aiKeys[0]) setKeyId(preferredKeyId || aiKeys[0].id)
-    if (!aiKeys.length) setUseAi(false)
-  }, [aiKeys, keyId, preferredKeyId])
+    if (usableAiKeys.some((key) => key.id === keyId)) return
+    const preferred = usableAiKeys.find((key) => key.id === preferredKeyId)
+    setKeyId(preferred?.id || usableAiKeys[0]?.id || '')
+  }, [keyId, preferredKeyId, usableAiKeys])
 
   const applicationOptions = useMemo(() => applications.map((item) => ({
     value: item.id,
     label: item.school.name || item.program,
     description: [item.program, item.professor.english].filter(Boolean).join(' · '),
   })), [applications])
-  const keyOptions = useMemo(() => aiKeys.map((key) => ({
+  const keyOptions = useMemo(() => usableAiKeys.map((key) => ({
     value: key.id,
     label: key.label,
     description: `${key.provider} · ${key.model}`,
-  })), [aiKeys])
+  })), [usableAiKeys])
 
   const preview = async () => {
-    if (!applicationId) return
+    if (!applicationId || !keyId) {
+      onNotify(tx('discover.useAiNoKeys', 'Add an AI API key in Profile / Settings before starting research.'), 'warning')
+      return
+    }
     setBusy('preview')
     setProposal(null)
     setDetailsOpen(false)
     setReplacementsOpen(false)
     try {
       const next = await phdApi.previewDiscoverApplicationEnrichment(token, applicationId, {
-        useAi,
-        keyId: useAi ? keyId : undefined,
+        useAi: true,
+        keyId,
       })
       setProposal(next)
       setAccepted(new Set(next.changes.filter((change) => change.recommended).map((change) => change.id)))
@@ -232,32 +241,33 @@ export function DiscoverApplicationEnrichment({
         <div className="discover-enrich-ai-control">
           <div>
             <strong>{tx('discover.enrichUseAi', 'Use intelligent research')}</strong>
-            <small>{aiKeys.length
-              ? tx('discover.enrichUseAiHint', 'Uses only the application and catalog evidence shown here.')
+            <small>{usableAiKeys.length
+              ? tx('discover.enrichUseAiHint', 'Researches your dossier, checklist, funding, timeline, profile and linked sources.')
               : tx('discover.useAiNoKeys', 'Add a research model key in Profile / Settings first.')}</small>
           </div>
-          <SwitchControl
-            checked={useAi}
-            disabled={!aiKeys.length}
-            label={tx('discover.enrichUseAi', 'Use intelligent research')}
-            onChange={setUseAi}
-          />
+          <ShieldCheck size={17} aria-hidden="true" />
         </div>
-        {useAi && keyOptions.length ? (
+        {keyOptions.length ? (
           <label>
             <span>{tx('discover.aiKey', 'Research model')}</span>
             <Select value={keyId} options={keyOptions} onChange={setKeyId} ariaLabel={tx('discover.aiKey', 'Research model')} />
           </label>
         ) : null}
-        <button
-          type="button"
-          className="primary-action discover-enrich-preview-btn"
-          disabled={busy !== null || (useAi && !keyId)}
-          onClick={() => void preview()}
-        >
-          {busy === 'preview' ? <Loader2 size={15} className="spin-icon" /> : <FileSearch size={15} />}
-          {busy === 'preview' ? tx('discover.enrichPreviewing', 'Building preview…') : tx('discover.enrichPreview', 'Preview changes')}
-        </button>
+        {!usableAiKeys.length && onConfigureAiKeys ? (
+          <button type="button" className="quiet-action discover-enrich-preview-btn" onClick={onConfigureAiKeys}>
+            {tx('discover.configureAiKey', 'Configure AI key')}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="primary-action discover-enrich-preview-btn"
+            disabled={busy !== null || !keyId}
+            onClick={() => void preview()}
+          >
+            {busy === 'preview' ? <Loader2 size={15} className="spin-icon" /> : <FileSearch size={15} />}
+            {busy === 'preview' ? tx('discover.enrichPreviewing', 'Building preview…') : tx('discover.enrichPreview', 'Preview changes')}
+          </button>
+        )}
       </div>
 
       {proposal ? (
@@ -276,6 +286,24 @@ export function DiscoverApplicationEnrichment({
             </div>
             {proposal.matchedProgram ? <span className="discover-enrich-match-score">{proposal.matchedProgram.matchScore}%</span> : null}
           </header>
+
+          {proposal.research ? (
+            <div className="discover-enrich-research-audit">
+              <ScanSearch size={15} aria-hidden="true" />
+              <span>{format(
+                tx(
+                  'discover.enrichResearchAudit',
+                  'Reviewed {links} supplied links, fetched {pages} pages from {sources} sources, and quarantined {quarantined} unsafe pages.',
+                ),
+                {
+                  links: proposal.research.suppliedLinkCount,
+                  pages: proposal.research.fetchedPageCount,
+                  sources: proposal.research.sourceCount,
+                  quarantined: proposal.research.quarantinedPageCount,
+                },
+              )}</span>
+            </div>
+          ) : null}
 
           {proposal.changes.length ? (
             <div className="discover-enrich-change-list">

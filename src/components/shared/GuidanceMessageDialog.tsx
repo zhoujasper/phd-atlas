@@ -5,6 +5,7 @@ import { useI18n } from '../hooks/useI18n'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { useModalA11y } from '../hooks/useModalA11y'
 import { ModalPortal } from './ModalPortal'
+import { PendingLabel } from './PendingLabel'
 
 export function GuidanceMessageDialog({
   open,
@@ -27,7 +28,7 @@ export function GuidanceMessageDialog({
   const descriptionId = useId()
   const { exiting, requestClose } = useAnimatedClose(open, onClose, 150, recipientName)
   const dialogRef = useModalA11y<HTMLFormElement>({
-    open: open && !exiting,
+    open,
     onClose: () => requestClose(onClose),
     initialFocusRef: titleInputRef,
   })
@@ -134,9 +135,13 @@ export function GuidanceMessageDialog({
                 type="submit"
                 className="primary-action compact-action"
                 disabled={sending || !title.trim() || !body.trim()}
+                aria-busy={sending || undefined}
               >
-                <Send size={13} aria-hidden="true" />
-                {sending ? tx('working') : tx('notificationPublisher.send')}
+                {sending ? (
+                  <PendingLabel label={tx('working')} />
+                ) : (
+                  <><Send size={13} aria-hidden="true" /> {tx('notificationPublisher.send')}</>
+                )}
               </button>
             </div>
           </div>

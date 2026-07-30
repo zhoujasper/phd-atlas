@@ -5,6 +5,7 @@ const fakeImap = vi.hoisted(() => ({
   folders: {},
   list: [],
   searchSupported: true,
+  deniedFolders: new Set(),
 }))
 
 vi.mock('imapflow', () => ({
@@ -23,6 +24,11 @@ vi.mock('imapflow', () => ({
     }
 
     async getMailboxLock(path) {
+      if (fakeImap.deniedFolders.has(path)) {
+        const error = new Error(`Permission denied for ${path}`)
+        error.responseCode = 'NOPERM'
+        throw error
+      }
       this.currentPath = path
       const folder = fakeImap.folders[path] ?? { uidValidity: '1', messages: [] }
       const maxUid = Math.max(0, ...folder.messages.map((message) => message.uid))
@@ -147,6 +153,7 @@ const settings = {
 beforeEach(() => {
   fakeImap.calls.length = 0
   fakeImap.searchSupported = true
+  fakeImap.deniedFolders.clear()
   fakeImap.list = [
     { path: 'INBOX', flags: new Set(), specialUse: '\\Inbox' },
     { path: 'Sent', flags: new Set() },
@@ -255,6 +262,54 @@ describe('fetchImapMessages', () => {
     expect(sourceFetchUids).not.toContain(3)
     expect(fakeImap.calls.find((call) => call.type === 'search' && call.path === 'Sent')?.query.or).toBeUndefined()
     expect(fakeImap.calls.some((call) => ['Trash', 'Spam', 'Drafts'].includes(call.path))).toBe(false)
+  })
+
+  it('recognizes localized nested sent folders and continues past an inaccessible custom folder', async () => {
+    fakeImap.list = [
+      { path: 'INBOX', name: 'INBOX', delimiter: '.', flags: new Set(), specialUse: '\\Inbox' },
+      { path: 'INBOX.Отправленные', name: 'Отправленные', delimiter: '.', flags: new Set() },
+      { path: 'INBOX.Private', name: 'Private', delimiter: '.', flags: new Set() },
+    ]
+    fakeImap.folders = {
+      INBOX: {
+        uidValidity: '10',
+        messages: [rawMessage(1, {
+          from: 'professor@example.edu',
+          to: 'student@example.com',
+          subject: 'Incoming from inbox',
+          date: '2026-07-10T09:00:00.000Z',
+        })],
+      },
+      'INBOX.Отправленные': {
+        uidValidity: '11',
+        messages: [rawMessage(2, {
+          from: 'unconfigured-alias@example.com',
+          to: 'professor@example.edu',
+          subject: 'Sent from another client',
+          date: '2026-07-10T10:00:00.000Z',
+        })],
+      },
+      'INBOX.Private': {
+        uidValidity: '12',
+        messages: [],
+      },
+    }
+    fakeImap.deniedFolders.add('INBOX.Private')
+
+    const result = await fetchImapMessages(settings, {}, {
+      mode: 'history',
+      trackedAddresses: ['professor@example.edu'],
+      ownerAddresses: ['student@example.com'],
+    })
+
+    expect(result.messages.map((message) => [message.subject, message.direction])).toEqual([
+      ['Incoming from inbox', 'incoming'],
+      ['Sent from another client', 'outgoing'],
+    ])
+    expect(result.folderStates).toEqual({
+      INBOX: { uidValidity: '10', lastUid: 1 },
+      'INBOX.Отправленные': { uidValidity: '11', lastUid: 2 },
+    })
   })
 
   it('on first automatic sync keeps mail received after enablement without backfilling earlier mail', async () => {

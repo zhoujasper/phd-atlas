@@ -11,8 +11,22 @@ describe('Vite workspace isolation', () => {
   })
 
   it('uses one deterministic development port', () => {
+    expect(viteConfig.server?.host).toBe('::')
     expect(viteConfig.server?.port).toBe(5173)
     expect(viteConfig.server?.strictPort).toBe(true)
+  })
+
+  it('accepts bounded local development host aliases without disabling host checks', () => {
+    const allowedHosts = viteConfig.server?.allowedHosts
+    expect(Array.isArray(allowedHosts)).toBe(true)
+    expect(allowedHosts).toEqual(expect.arrayContaining([
+      'localhost',
+      'phd-atlas.local',
+      'phd-atlas-dev',
+    ]))
+    if (process.env.COMPUTERNAME) {
+      expect(allowedHosts).toContain(process.env.COMPUTERNAME.toLocaleLowerCase())
+    }
   })
 
   it('bounds full-suite workers for back-to-back source/public release checks', () => {

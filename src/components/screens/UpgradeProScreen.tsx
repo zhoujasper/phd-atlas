@@ -13,7 +13,7 @@ import {
 import { useMemo, useRef, useState } from 'react'
 import englishUpgrade from '../../i18n/en/upgrade.json'
 import chineseUpgrade from '../../i18n/zh/upgrade.json'
-import { registerLanguage } from '../../i18n'
+import { localeForLanguage, registerLanguage } from '../../i18n'
 import { PUBLIC_EDITION } from '../../edition'
 import { useI18n } from '../hooks/useI18n'
 import { useMarketingReveal, usePointerTilt } from '../hooks/useMarketingMotion'
@@ -39,10 +39,18 @@ function returnToSettings() {
 }
 
 export function UpgradeProScreen() {
-  const { tx, format } = useI18n()
+  const { tx, format, lang } = useI18n()
   const pageRef = useRef<HTMLElement | null>(null)
   const capabilityStageRef = useRef<HTMLDivElement | null>(null)
   const [activeBenefit, setActiveBenefit] = useState(0)
+  const numberFormatter = useMemo(
+    () => new Intl.NumberFormat(localeForLanguage(lang), { maximumFractionDigits: 1 }),
+    [lang],
+  )
+  const formatStorage = (value: number) => format(
+    tx('upgrade.storageValue'),
+    { size: numberFormatter.format(value) },
+  )
   useMarketingReveal(pageRef)
   usePointerTilt(capabilityStageRef, 1.8)
   const params = useMemo(() => new URLSearchParams(window.location.search), [])
@@ -98,8 +106,8 @@ export function UpgradeProScreen() {
     },
     {
       label: tx('upgrade.benefitMemberTitle'),
-      current: '25 MB',
-      unlocked: '100 MB',
+      current: formatStorage(25),
+      unlocked: formatStorage(100),
     },
   ]
 

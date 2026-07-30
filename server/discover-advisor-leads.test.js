@@ -42,4 +42,34 @@ describe('Discover advisor profile leads', () => {
     }] }
     expect(deriveOfficialAdvisorProfileLeads([program], sourceIndex)).toEqual([])
   })
+
+  it('matches diacritics, scholarly initials, and exact CJK profile names', () => {
+    const program = {
+      id: 'example-materials',
+      school: 'Example University',
+      website: 'https://example.edu/phd',
+      sources: ['https://example.edu/phd'],
+    }
+    const sourceIndex = { schools: [{
+      school: 'Example University',
+      officialUrl: 'https://example.edu/',
+      allowedHosts: ['example.edu'],
+      advisorPages: [
+        { url: 'https://example.edu/people/jose-garcia', label: 'José García', types: ['advisor'] },
+        { url: 'https://example.edu/people/jane-smith', label: 'Professor Jane Smith', types: ['advisor'] },
+        { url: 'https://example.edu/people/%E7%8E%8B%E4%BC%9F', label: '王伟', types: ['advisor'] },
+      ],
+      scholarlyEvidence: {
+        candidateResearchers: [
+          { name: 'Jose Garcia', providers: ['openalex'] },
+          { name: 'J. Smith', providers: ['crossref'] },
+          { name: '王伟', providers: ['openalex', 'crossref'] },
+        ],
+      },
+    }] }
+
+    const leads = deriveOfficialAdvisorProfileLeads([program], sourceIndex, { maxProfilesPerSchool: 40 })
+    expect(leads[0].pis.map((pi) => pi.name)).toEqual(['Jose Garcia', 'J. Smith', '王伟'])
+    expect(leads[0].pis[2].scholarlyProviders).toEqual(['openalex', 'crossref'])
+  })
 })

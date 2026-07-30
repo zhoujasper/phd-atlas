@@ -48,6 +48,33 @@ describe('notification localization', () => {
     expect(shouldEmailNotifications(user)).toBe(false)
   })
 
+  it('emits one stable overdue reminder after a restart that crossed the deadline', () => {
+    const [candidate] = evaluateNotificationsForUser([{
+      id: 'app_overdue',
+      school: { name: 'Oxford' },
+      program: 'DPhil',
+      status: 'Draft',
+      deadline: '2026-07-27',
+      tasks: [],
+      materials: [],
+    }], '2026-07-29')
+
+    expect(candidate).toMatchObject({
+      type: 'deadline_passed',
+      triggerDate: '2026-07-27',
+      targetTab: 'dossier',
+    })
+    expect(evaluateNotificationsForUser([{
+      id: 'app_overdue',
+      school: { name: 'Oxford' },
+      program: 'DPhil',
+      status: 'Draft',
+      deadline: '2026-07-27',
+      tasks: [],
+      materials: [],
+    }], '2026-07-30')[0].dedupeKey).toBe(candidate.dedupeKey)
+  })
+
   it('builds one digest containing every notification instead of one message per event', () => {
     const digest = notificationDigestTemplate([
       { id: 'one', title: 'New professor email', body: 'Professor Chen replied.' },

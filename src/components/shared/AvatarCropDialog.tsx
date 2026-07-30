@@ -1,6 +1,5 @@
 import {
   ImagePlus,
-  LoaderCircle,
   RotateCcw,
   RotateCw,
   Scan,
@@ -26,6 +25,7 @@ import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { useI18n } from '../hooks/useI18n'
 import { useModalA11y } from '../hooks/useModalA11y'
 import { ModalPortal } from './ModalPortal'
+import { PendingLabel } from './PendingLabel'
 import { UserAvatar } from './UserAvatar'
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024
@@ -94,7 +94,7 @@ export function AvatarCropDialog({
   const [error, setError] = useState('')
   const { exiting, requestClose } = useAnimatedClose(open, onClose)
   const dialogRef = useModalA11y<HTMLDivElement>({
-    open: open && !exiting,
+    open,
     onClose: () => {
       if (!busy) requestClose(onClose)
     },
@@ -197,11 +197,11 @@ export function AvatarCropDialog({
     event.target.value = ''
   }
 
-  const updateZoom = (nextZoom: number) => {
+  const updateZoom = useCallback((nextZoom: number) => {
     const resolved = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM)
     setOffset((current) => clampOffset(current, resolved, rotation))
     setZoom(resolved)
-  }
+  }, [clampOffset, rotation])
 
   const rotate = (delta: number) => {
     const nextRotation = (rotation + delta + 360) % 360
@@ -241,11 +241,11 @@ export function AvatarCropDialog({
     setDragging(false)
   }
 
-  const handleWheel = (event: WheelEvent) => {
+  const handleWheel = useCallback((event: WheelEvent) => {
     if (!source) return
     event.preventDefault()
     updateZoom(zoom + (event.deltaY > 0 ? -0.08 : 0.08))
-  }
+  }, [source, updateZoom, zoom])
 
   useEffect(() => {
     if (!open) return undefined
@@ -256,7 +256,7 @@ export function AvatarCropDialog({
     // non-passive listener instead of calling preventDefault through React.
     stage.addEventListener('wheel', handleWheel, { passive: false })
     return () => stage.removeEventListener('wheel', handleWheel)
-  }, [open, source, zoom, rotation, imageSize, stageSize])
+  }, [handleWheel, open])
 
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -477,9 +477,8 @@ export function AvatarCropDialog({
               <button type="button" className="quiet-action" onClick={() => requestClose(onClose)} disabled={busy}>
                 {tx('cancel')}
               </button>
-              <button type="button" className="primary-action" onClick={save} disabled={!source || busy}>
-                {busy ? <LoaderCircle className="spin" size={15} aria-hidden="true" /> : null}
-                {busy ? tx('settings.avatarSaving') : tx('settings.avatarSave')}
+              <button type="button" className="primary-action" onClick={save} disabled={!source || busy} aria-busy={busy || undefined}>
+                {busy ? <PendingLabel label={tx('settings.avatarSaving')} iconSize={15} /> : tx('settings.avatarSave')}
               </button>
             </div>
           </footer>

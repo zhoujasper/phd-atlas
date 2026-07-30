@@ -75,6 +75,8 @@
     "editShareQuota": "Modifier la limite du lien de partage",
     "editShareCreateQuota": "Modifier la limite de lien de partage à vie",
     "editStorageQuota": "Modifier le quota de stockage",
+    "quotaUsageHelpLabel": "Fonctionnement des limites d’utilisation",
+    "quotaUsageHelp": "Survolez une ligne d’utilisation et sélectionnez le crayon pour modifier sa limite. Saisissez -1 pour rendre cette limite illimitée (∞).",
     "recordUsage": "Enregistrements {count}/{limit}",
     "recordUsageLabel": "Utilisation des enregistrements d'candidature",
     "recordCreateUsage": "{count}/{limit} créé",

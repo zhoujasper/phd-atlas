@@ -12,7 +12,11 @@ import {
 import { createPortal } from 'react-dom'
 import { copyToClipboard } from './clipboard'
 import { useI18n } from '../hooks/useI18n'
-import { OVERFLOW_REVEAL_HOVER_DELAY_MS } from './overflowRevealModel'
+import {
+  hasVisualTextTruncation,
+  OVERFLOW_REVEAL_HOVER_DELAY_MS,
+  OVERFLOW_REVEAL_POINTER_FOCUS_SUPPRESSION_MS,
+} from './overflowRevealModel'
 
 type OverflowRevealProps = {
   text: string
@@ -60,6 +64,8 @@ export function OverflowReveal({
   const [anchor, setAnchor] = useState<TooltipRect | null>(null)
   const resetTimerRef = useRef<number | null>(null)
   const hoverOpenTimerRef = useRef<number | null>(null)
+  const lastPointerDownAtRef = useRef(0)
+  const pointerRevealBlockedRef = useRef(false)
   const rootRef = useRef<HTMLElement | null>(null)
   const Tag = as as ElementType
   const value = (copyValue ?? text).trim()
@@ -87,7 +93,7 @@ export function OverflowReveal({
 
   const measure = useCallback(() => {
     const el = rootRef.current
-    if (!el) return null
+    if (!el || !hasVisualTextTruncation(el)) return null
     const rect = el.getBoundingClientRect()
     return {
       top: rect.top,
@@ -111,9 +117,11 @@ export function OverflowReveal({
   }, [clearHoverOpenTimer])
 
   const scheduleShow = useCallback(() => {
+    if (pointerRevealBlockedRef.current) return
     clearHoverOpenTimer()
     hoverOpenTimerRef.current = window.setTimeout(() => {
       hoverOpenTimerRef.current = null
+      if (pointerRevealBlockedRef.current) return
       show()
     }, OVERFLOW_REVEAL_HOVER_DELAY_MS)
   }, [clearHoverOpenTimer, show])
@@ -163,6 +171,10 @@ export function OverflowReveal({
   }, [handleCopy])
 
   const handleKeyDown = useCallback((event: KeyboardEvent) => {
+    if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+      lastPointerDownAtRef.current = 0
+      pointerRevealBlockedRef.current = false
+    }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && !event.shiftKey && !event.altKey) {
       const selection = window.getSelection()?.toString() ?? ''
       if (selection.trim()) return
@@ -170,6 +182,17 @@ export function OverflowReveal({
       void handleCopy()
     }
   }, [handleCopy])
+
+  const handleFocus = useCallback(() => {
+    if (
+      pointerRevealBlockedRef.current
+      || Date.now() - lastPointerDownAtRef.current
+        < OVERFLOW_REVEAL_POINTER_FOCUS_SUPPRESSION_MS
+    ) {
+      return
+    }
+    show()
+  }, [show])
 
   const hint = format(tx('doubleClickToCopy'), { label: actionLabel })
   const title = !onCopyResult && status === 'copied'
@@ -216,14 +239,21 @@ export function OverflowReveal({
         className={`overflow-reveal${status !== 'idle' ? ` is-${status}` : ''}${open ? ' is-open' : ''}${className ? ` ${className}` : ''}`}
         data-overflow-reveal="off"
         tabIndex={tabIndex}
-        title={title}
         aria-label={status === 'idle' ? `${text}. ${hint}` : title}
         aria-describedby={open ? tooltipId : undefined}
         onDoubleClick={handleDoubleClick}
         onKeyDown={handleKeyDown}
         onMouseEnter={scheduleShow}
-        onMouseLeave={hide}
-        onFocus={show}
+        onMouseLeave={() => {
+          pointerRevealBlockedRef.current = false
+          hide()
+        }}
+        onPointerDown={() => {
+          lastPointerDownAtRef.current = Date.now()
+          pointerRevealBlockedRef.current = true
+          hide()
+        }}
+        onFocus={handleFocus}
         onBlur={hide}
       >
         {display}

@@ -75,6 +75,8 @@
     "editShareQuota": "共有リンク制限を編集する",
     "editShareCreateQuota": "生涯共有リンク制限を編集する",
     "editStorageQuota": "ストレージ割り当ての編集",
+    "quotaUsageHelpLabel": "使用量上限の使い方",
+    "quotaUsageHelp": "使用量の行にカーソルを合わせ、鉛筆を選択すると上限を編集できます。-1 を入力すると、その上限は無制限（∞）になります。",
     "recordUsage": "{count}/{limit} レコード",
     "recordUsageLabel": "出願レコードの使用状況",
     "recordCreateUsage": "{count}/{limit} が作成されました",

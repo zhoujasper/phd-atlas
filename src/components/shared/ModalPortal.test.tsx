@@ -1,11 +1,12 @@
 import '@testing-library/jest-dom/vitest'
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { act, cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ModalPortal } from './ModalPortal'
 
 describe('ModalPortal', () => {
   afterEach(() => {
     cleanup()
+    vi.restoreAllMocks()
     document.querySelectorAll('.atlas-shell, .admin-shell').forEach((node) => node.remove())
   })
 
@@ -57,5 +58,25 @@ describe('ModalPortal', () => {
     )
 
     expect(screen.getByTestId('signed-in-modal-layer').parentElement).toBe(host)
+  })
+
+  it('seals the first portal frame before releasing the entrance animation', () => {
+    let releaseFrame: FrameRequestCallback | null = null
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      releaseFrame = callback
+      return 17
+    })
+
+    render(
+      <ModalPortal>
+        <div data-testid="animated-modal-layer" />
+      </ModalPortal>,
+    )
+
+    const layer = screen.getByTestId('animated-modal-layer')
+    expect(layer).toHaveAttribute('data-modal-portal-state', 'preparing')
+
+    act(() => releaseFrame?.(16))
+    expect(layer).toHaveAttribute('data-modal-portal-state', 'ready')
   })
 })

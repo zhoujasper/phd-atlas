@@ -111,6 +111,92 @@ describe('MarkdownTextarea rich editor', () => {
     })
   })
 
+  it('highlights and automatically formats HTML source', async () => {
+    render(<EditorHarness initial="<section><h2>Plan</h2><p>Ready</p></section>" />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit source · HTML/ }))
+    const source = screen.getByRole('textbox', { name: 'Notes' })
+
+    await waitFor(() => {
+      expect(source).toHaveValue('<section>\n  <h2>Plan</h2>\n  <p>Ready</p>\n</section>')
+    })
+    expect(document.querySelector('.markdown-source-highlight .token.tag')).toBeInTheDocument()
+    expect(document.querySelector('.markdown-source-language')).toHaveTextContent('HTML')
+    expect(screen.getByRole('button', { name: /Format source · HTML/ })).toBeInTheDocument()
+  })
+
+  it('visibly highlights GFM task, table, and footnote syntax', async () => {
+    render(<EditorHarness initial={'- [x] Ready\n\n| Stage | Status |\n| --- | --- |\n| Draft | Ready |\n\nSee [^1].\n\n[^1]: Note'} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit source · Markdown/ }))
+
+    await waitFor(() => {
+      expect(document.querySelector('.markdown-source-highlight .token.atlas-task')).toBeInTheDocument()
+      expect(document.querySelector('.markdown-source-highlight .token.atlas-table')).toBeInTheDocument()
+      expect(document.querySelector('.markdown-source-highlight .token.atlas-footnote')).toBeInTheDocument()
+    })
+    expect(document.querySelector('.markdown-source-language')).toHaveTextContent('MD')
+  })
+
+  it('offers keyboard HTML completions at the source caret', async () => {
+    render(<EditorHarness initial="<p></p>" />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit source · HTML/ }))
+    const source = screen.getByRole('textbox', { name: 'Notes' }) as HTMLTextAreaElement
+    await waitFor(() => expect(source).toHaveValue('<p></p>'))
+
+    fireEvent.change(source, { target: { value: '<se' } })
+    source.setSelectionRange(3, 3)
+    fireEvent.keyUp(source, { key: 'e' })
+
+    expect(await screen.findByRole('listbox', { name: 'Code suggestions' })).toBeInTheDocument()
+    await waitFor(() => {
+      expect(document.querySelector('.markdown-source-language')).toHaveTextContent('HTML')
+    })
+    expect(source).toHaveAttribute('aria-autocomplete', 'list')
+    expect(source).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('option', { name: /section/ })).toHaveAttribute('aria-selected', 'true')
+
+    fireEvent.keyDown(source, { key: 'Tab' })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('value').textContent).toBe('<section></section>')
+      expect(source.selectionStart).toBe(9)
+      expect(source.selectionEnd).toBe(9)
+    })
+    expect(screen.queryByRole('listbox', { name: 'Code suggestions' })).not.toBeInTheDocument()
+  })
+
+  it('automatically closes a typed HTML element', async () => {
+    render(<EditorHarness initial="<p></p>" />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit source · HTML/ }))
+    const source = screen.getByRole('textbox', { name: 'Notes' }) as HTMLTextAreaElement
+    fireEvent.change(source, { target: { value: '<section' } })
+    source.setSelectionRange(8, 8)
+    fireEvent.keyDown(source, { key: '>', shiftKey: true })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('value').textContent).toBe('<section></section>')
+      expect(source.selectionStart).toBe(9)
+    })
+  })
+
+  it('keeps complex GFM structures in a fidelity preview', () => {
+    render(<EditorHarness initial={'| Stage | Status |\n| --- | --- |\n| Draft | Ready |'} />)
+
+    const preview = document.querySelector<HTMLElement>('.markdown-fidelity-layer')
+    expect(preview).toBeInTheDocument()
+    if (!preview) return
+    expect(preview.querySelector('table')).toBeInTheDocument()
+    expect(document.querySelector('.markdown-lexical-layer')).toHaveClass('is-fidelity-hidden')
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit source · Markdown/ }))
+    expect(screen.getByRole('textbox', { name: 'Notes' })).toHaveValue(
+      '| Stage | Status |\n| --- | --- |\n| Draft | Ready |',
+    )
+  })
+
   it('preserves casing through a visual and source round-trip', () => {
     render(<EditorHarness initial="Mixed Case: PhD Atlas" />)
 

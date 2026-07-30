@@ -39,7 +39,9 @@ import { useI18n } from '../hooks/useI18n'
 import { LaunchScreen } from '../shared/LaunchScreen'
 import { FileDropzone } from '../shared/FileDropzone'
 import { AttachmentPreviewDialog, type AttachmentPreviewFile } from '../shared/AttachmentPreviewDialog'
+import { PendingLabel } from '../shared/PendingLabel'
 import { StandalonePreferences } from '../shared/StandalonePreferences'
+import { ProjectFooter } from '../shared/ProjectFooter'
 import { DossierView } from './DossierView'
 import { Inspector } from './Inspector'
 import { shareSectionsToDetailTabs, sharedPayloadToApplication } from './shareViewerModel'
@@ -541,10 +543,12 @@ export function ShareViewer({ token }: { token: string }) {
               <h1>{data.school.name}</h1>
               <p>{data.program} · {data.professor.english}</p>
             </div>
-            <div className="share-project-location">
-              <MapPin size={14} aria-hidden="true" />
-              <span>{data.school.country}</span>
-            </div>
+            {data.school.country.trim() ? (
+              <div className="share-project-location">
+                <MapPin size={14} aria-hidden="true" />
+                <span>{data.school.country}</span>
+              </div>
+            ) : null}
           </div>
           <div className="share-upload-progress-bar" aria-label={format(tx('shareViewer.uploadHubProgress'), { done: uploadDoneCount, total: uploadTargets.length })}>
             <div className="share-upload-progress-meta">
@@ -678,6 +682,7 @@ export function ShareViewer({ token }: { token: string }) {
             </div>
           )}
         </section>
+        <ProjectFooter />
         <AttachmentPreviewDialog
           file={uploadPreview}
           loadFile={(fileId) => phdApi.downloadSharedFile(token, fileId)}
@@ -721,9 +726,8 @@ export function ShareViewer({ token }: { token: string }) {
               <Undo2 size={13} aria-hidden="true" />
               {tx('dossier.discardChanges')}
             </button>
-            <button type="button" className="primary-action" onClick={() => void saveSharedDraft()} disabled={!isDirty || saving} tabIndex={isDirty ? 0 : -1}>
-              <Save size={13} aria-hidden="true" />
-              {saving ? tx('dossier.saving') : tx('dossier.save')}
+            <button type="button" className="primary-action" onClick={() => void saveSharedDraft()} disabled={!isDirty || saving} aria-busy={saving || undefined} tabIndex={isDirty ? 0 : -1}>
+              {saving ? <PendingLabel label={tx('dossier.saving')} /> : <><Save size={13} aria-hidden="true" /> {tx('dossier.save')}</>}
             </button>
           </div>
         ) : null}

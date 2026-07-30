@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import net from 'node:net'
+import { withAbortDeadline } from './abortDeadline.js'
 
 const DEFAULT_ALIAS_DOMAINS = new Set(['gmail.com', 'googlemail.com'])
 
@@ -193,32 +194,30 @@ export async function verifyTurnstileToken(options) {
     idempotency_key: randomUUID(),
   })
   if (options.remoteIp && options.remoteIp !== 'unknown') body.set('remoteip', options.remoteIp)
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), Number(options.timeoutMs ?? 5_000))
   try {
-    const response = await (options.fetchImpl ?? fetch)(
-      'https://challenges.cloudflare.com/turnstile/v0/siteverify',
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body,
-        signal: controller.signal,
-      },
-    )
-    if (!response.ok) return { ok: false, reason: 'provider-error' }
-    const result = await response.json()
-    if (!result?.success) return { ok: false, reason: 'rejected', errorCodes: result?.['error-codes'] ?? [] }
-    if (options.expectedAction && result.action !== options.expectedAction) {
-      return { ok: false, reason: 'action-mismatch' }
-    }
-    if (options.expectedHostname && result.hostname !== options.expectedHostname) {
-      return { ok: false, reason: 'hostname-mismatch' }
-    }
-    return { ok: true }
+    return await withAbortDeadline(async (signal) => {
+      const response = await (options.fetchImpl ?? fetch)(
+        'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body,
+          signal,
+        },
+      )
+      if (!response.ok) return { ok: false, reason: 'provider-error' }
+      const result = await response.json()
+      if (!result?.success) return { ok: false, reason: 'rejected', errorCodes: result?.['error-codes'] ?? [] }
+      if (options.expectedAction && result.action !== options.expectedAction) {
+        return { ok: false, reason: 'action-mismatch' }
+      }
+      if (options.expectedHostname && result.hostname !== options.expectedHostname) {
+        return { ok: false, reason: 'hostname-mismatch' }
+      }
+      return { ok: true }
+    }, { timeoutMs: options.timeoutMs ?? 5_000 })
   } catch {
     return { ok: false, reason: 'provider-unavailable' }
-  } finally {
-    clearTimeout(timeout)
   }
 }
 

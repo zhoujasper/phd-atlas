@@ -7,7 +7,16 @@ import type {
   SharePermission,
   ShareSection,
 } from '../data/applications'
-import { reportApiReachable, reportApiUnavailable } from '../connectivity'
+import {
+  apiRequestBlockReason,
+  getConnectivityGeneration,
+  reportApiReachable,
+  reportApiUnavailable,
+} from '../connectivity'
+import {
+  SharedReadCoordinator,
+  SharedReadInvalidatedError,
+} from './sharedReadCoordinator'
 
 export type UserRole = 'admin' | 'user'
 export type MembershipPlan = 'free' | 'pro' | 'team'
@@ -76,7 +85,13 @@ export type AiDraftGrants = {
   scholarships: boolean
   tasks: boolean
   correspondence: boolean
-  attachments: boolean
+}
+
+export type AiDraftAttachmentSelection = {
+  /** Server-issued id for a readable file from an enabled source. */
+  attachmentId: string
+  /** AI-proposed, server-sanitized name shown to the email recipient. */
+  fileName: string
 }
 
 export type AiDraftInput = {
@@ -88,16 +103,12 @@ export type AiDraftInput = {
   /** The editable email being refined. It is sent only with this draft request. */
   currentDraft?: { subject: string; body: string }
   grants: AiDraftGrants
-  /** Profile-library cards explicitly selected for this draft's background. */
-  profileAssetIds?: string[]
-  /** Browser-local, one-off reference files. Saved workspace files resolve server-side. */
-  attachments?: Array<{ name: string; mimeType: string; contentBase64: string }>
 }
 
 export type AiDraftEvent =
   | { type: 'status'; phase: string }
-  /** A provider function call selected files for the editable outgoing-email draft. */
-  | { type: 'attachment-selection'; attachmentIds: string[] }
+  /** A provider function call produced the complete attachment plan for the editable draft. */
+  | { type: 'attachment-selection'; attachments: AiDraftAttachmentSelection[] }
   | { type: 'token'; text: string }
   | { type: 'done'; draftOnly: boolean }
   | { type: 'error'; message: string }
@@ -252,6 +263,8 @@ export type MailSyncJob = {
   result: MailSyncResult | null
   errorCode: string | null
   errorMessage: string | null
+  attemptCount?: number
+  nextAttemptAt?: string | null
 }
 
 export type MailSyncEnqueueResult = {
@@ -550,6 +563,11 @@ export type TeamTeacherPermissions = {
   manageStudentShares: boolean
 }
 
+export type TeamPermissionDefaults = {
+  student: TeamStudentPermissions
+  teacher: TeamTeacherPermissions
+}
+
 export type TeamMemberUsage = {
   applicationsCreated: number
   sharesCreated: number
@@ -559,18 +577,10 @@ export type TeamMemberRelationships = {
   /**
    * User ids of every teacher/institution admin jointly responsible for this
    * student. Missing keeps the legacy `invitedBy` fallback; [] is unassigned.
-   */
+  */
   teacherIds?: string[]
-  /**
-   * Team-funded feature entitlement. Missing is intentionally Pro-compatible
-   * so existing Team accounts keep the full productivity toolset.
-   */
-  accessLevel?: 'pro' | 'standard'
-  /**
-   * Teachers only: maximum number of assigned students who may receive the
-   * Team Pro entitlement from this teacher.
-   */
-  studentProLimit?: number
+  /** Internal migration marker: personal settings are sparse overrides of Team defaults. */
+  permissionOverridesVersion?: 1
   studentPermissions?: Partial<TeamStudentPermissions>
   teacherPermissions?: Partial<TeamTeacherPermissions>
   usage?: TeamMemberUsage
@@ -616,6 +626,8 @@ export type Team = {
     admin?: string
     member?: string
   }
+  /** Role defaults inherited by members until a personal setting overrides them. */
+  permissionDefaults?: TeamPermissionDefaults
   /** Organization-only templates, already filtered to the current member's role and reporting line. */
   profilePresets?: TeamProfilePreset[]
   /** Functional teacher groups such as writing, external affairs, or interview preparation. */
@@ -821,46 +833,6 @@ export type SystemLogPage = {
   page: number
   pageSize: number
   scopes: string[]
-}
-
-export type TeamEventRestoreResult = {
-  restored: boolean
-  eventId: string
-  application: TeamApplicationRecord
-}
-
-export type TeamMergeFieldStatus = 'clean' | 'conflict' | 'same'
-
-export type TeamMergeField = {
-  field: string
-  status: TeamMergeFieldStatus
-  baseValue: unknown
-  eventValue: unknown
-  currentValue: unknown
-}
-
-export type TeamMergePreview = {
-  eventId: string
-  application: TeamApplicationRecord
-  fields: TeamMergeField[]
-  cleanCount: number
-  conflictCount: number
-  sameCount: number
-}
-
-export type TeamMergeResult = {
-  merged: boolean
-  eventId: string
-  changedFields: string[]
-  application: TeamApplicationRecord
-  conflicts: TeamMergeField[]
-}
-
-export type TeamMergeConflictFlagResult = {
-  flagged: boolean
-  eventId: string
-  conflictCount: number
-  application: TeamApplicationRecord
 }
 
 export type BootstrapSecrets = {
@@ -1190,6 +1162,7 @@ export type CreateApplicationInput = {
 export type SchoolLogoResolveInput = {
   website?: string
   imageUrl?: string
+  auto?: true
   refresh?: boolean
 }
 
@@ -1201,6 +1174,8 @@ export type SchoolLogoResolveResult = {
   cacheKey?: string
   websiteUrl?: string
   cacheHit?: boolean
+  catalogHit?: boolean
+  catalogId?: string
   reason?: 'invalid-url' | 'unavailable' | 'unreachable' | 'not-found'
 }
 
@@ -1250,14 +1225,17 @@ export type CommunicationAttachmentInput = {
 export type CommunicationSendInput = {
   subject: string
   summary: string
+  bodyFormat?: 'plain' | 'markdown' | 'html'
   date: string
   time?: string
+  sendAt?: string
+  idempotencyKey?: string
   channel?: string
   direction?: 'incoming' | 'outgoing' | 'note'
   messageType?: string
   from?: string
   to?: string
-  bodyHtml?: string
+  trackRecipient?: boolean
   attachments?: CommunicationAttachmentInput[]
 }
 
@@ -1279,6 +1257,10 @@ type ApiEnvelope<T> = {
 
 type SessionTokenHandler = (token: string, sourceToken?: string) => boolean | void
 type UnauthorizedHandler = (error: ApiError, sourceToken?: string) => void
+
+export type ApiReadOptions = {
+  signal?: AbortSignal
+}
 
 let sessionTokenHandler: SessionTokenHandler | null = null
 let unauthorizedHandler: UnauthorizedHandler | null = null
@@ -1308,8 +1290,9 @@ export type RealtimeInvalidationEvent = {
 }
 
 const conditionalResponseCache = new Map<string, ConditionalCacheEntry>()
-const conditionalRequestInFlight = new Map<string, Promise<unknown>>()
+const sharedReadCoordinator = new SharedReadCoordinator()
 const readCacheRevisionByPartition = new Map<string, number>()
+const MAX_CONDITIONAL_READ_CACHE_ENTRIES = 64
 /** Bumped on every login/logout/identity handoff so late 401s from a previous
  *  same-account session never call the unauthorized handler or share in-flight
  *  conditional GETs with the fresh session (re-login "session expired" loop). */
@@ -1343,7 +1326,7 @@ function resetClientSessionState() {
   latestSessionTokenBySource.clear()
   sessionCachePartitionByToken.clear()
   conditionalResponseCache.clear()
-  conditionalRequestInFlight.clear()
+  sharedReadCoordinator.clear()
   readCacheRevisionByPartition.clear()
 }
 
@@ -1511,8 +1494,24 @@ export function invalidateClientReadCache(token?: string) {
   for (const key of conditionalResponseCache.keys()) {
     if (key.startsWith(prefix)) conditionalResponseCache.delete(key)
   }
-  for (const key of conditionalRequestInFlight.keys()) {
-    if (key.startsWith(prefix)) conditionalRequestInFlight.delete(key)
+  sharedReadCoordinator.invalidatePrefix(prefix)
+}
+
+function readConditionalResponse(key: string) {
+  const entry = conditionalResponseCache.get(key)
+  if (!entry) return undefined
+  conditionalResponseCache.delete(key)
+  conditionalResponseCache.set(key, entry)
+  return entry
+}
+
+function rememberConditionalResponse(key: string, entry: ConditionalCacheEntry) {
+  conditionalResponseCache.delete(key)
+  conditionalResponseCache.set(key, entry)
+  while (conditionalResponseCache.size > MAX_CONDITIONAL_READ_CACHE_ENTRIES) {
+    const oldestKey = conditionalResponseCache.keys().next().value
+    if (oldestKey === undefined) break
+    conditionalResponseCache.delete(oldestKey)
   }
 }
 
@@ -1714,6 +1713,7 @@ function syncSessionFromEnvelope<T>(envelope: ApiEnvelope<T>, sourceToken?: stri
 function requestHeaders(token?: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers)
   headers.set('X-Phd-Client-Id', getClientInstanceId())
+  if (!headers.has('Accept')) headers.set('Accept', 'application/json')
   if (init.body !== undefined && init.body !== null && !(init.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json')
   }
@@ -1731,21 +1731,68 @@ function timeoutError() {
   return new ApiError('Request timed out. Check your connection and try again.', 'REQUEST_TIMEOUT', 408)
 }
 
+function serverUnavailableError() {
+  return new ApiError(
+    'The PhD Atlas server is unavailable.',
+    'SERVER_UNAVAILABLE',
+    503,
+  )
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) return
+  if (typeof signal.throwIfAborted === 'function') signal.throwIfAborted()
+  const error = new Error('The operation was aborted.')
+  error.name = 'AbortError'
+  throw error
+}
+
+function sharedReadKey(
+  kind: 'plain' | 'conditional',
+  path: string,
+  token: string | undefined,
+  generation: number,
+  headers: Headers,
+  init: RequestInit,
+  timeoutMs: number,
+) {
+  const headerSignature = Array.from(headers.entries())
+    .filter(([name]) => name !== 'authorization')
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+  const requestProfile = JSON.stringify({
+    cache: init.cache ?? '',
+    credentials: init.credentials ?? '',
+    headers: headerSignature,
+    method: String(init.method ?? 'GET').toUpperCase(),
+    mode: init.mode ?? '',
+    redirect: init.redirect ?? '',
+    referrerPolicy: init.referrerPolicy ?? '',
+    timeoutMs,
+  })
+  return `g${generation}:${readCachePartition(token)}:r${readCacheRevision(token)} ${kind} ${path} ${requestProfile}`
+}
+
 async function fetchWithTimeout(
   path: string,
   init: RequestInit = {},
   timeoutMs = timeoutForRequest(init),
 ) {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    return fetch(path, { ...init, cache: 'no-store' })
+  throwIfAborted(init.signal ?? undefined)
+  const method = String(init.method ?? 'GET').toUpperCase()
+  if (path.startsWith('/api/') && apiRequestBlockReason(method)) {
+    throw serverUnavailableError()
   }
 
+  const observedConnectivityGeneration = getConnectivityGeneration()
   const controller = new AbortController()
   let timedOut = false
-  const timeoutId = setTimeout(() => {
-    timedOut = true
-    controller.abort()
-  }, timeoutMs)
+  const hasDeadline = Number.isFinite(timeoutMs) && timeoutMs > 0
+  const timeoutId = hasDeadline
+    ? setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, timeoutMs)
+    : null
   const externalSignal = init.signal
   const abortFromExternalSignal = () => controller.abort(externalSignal?.reason)
 
@@ -1768,10 +1815,15 @@ async function fetchWithTimeout(
     if (path.startsWith('/api/')) {
       const contentType = response.headers.get('content-type') ?? ''
       const isAtlasEnvelope = contentType.toLowerCase().includes('json')
-      if ([502, 503, 504].includes(response.status) && !isAtlasEnvelope) reportApiUnavailable()
-      else reportApiReachable()
+      if ([502, 503, 504].includes(response.status) && !isAtlasEnvelope) {
+        reportApiUnavailable({ observedGeneration: observedConnectivityGeneration })
+      }
+      else {
+        reportApiReachable(undefined, {
+          observedGeneration: observedConnectivityGeneration,
+        })
+      }
     }
-    const method = String(init.method ?? 'GET').toUpperCase()
     if (response.ok && method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
       const authorization = new Headers(init.headers).get('Authorization') ?? ''
       const [, mutationToken] = authorization.match(/^Bearer\s+(.+)$/i) ?? []
@@ -1780,13 +1832,26 @@ async function fetchWithTimeout(
     return response
   } catch (error) {
     if (timedOut) {
-      if (path.startsWith('/api/')) reportApiUnavailable()
+      if (path.startsWith('/api/')) {
+        reportApiUnavailable({
+          evidence: 'timeout',
+          observedGeneration: observedConnectivityGeneration,
+        })
+      }
       throw timeoutError()
     }
-    if (path.startsWith('/api/') && error instanceof TypeError) reportApiUnavailable()
+    if (
+      externalSignal?.aborted
+      && externalSignal.reason instanceof SharedReadInvalidatedError
+    ) {
+      throw externalSignal.reason
+    }
+    if (path.startsWith('/api/') && error instanceof TypeError) {
+      reportApiUnavailable({ observedGeneration: observedConnectivityGeneration })
+    }
     throw error
   } finally {
-    clearTimeout(timeoutId)
+    if (timeoutId !== null) clearTimeout(timeoutId)
     externalSignal?.removeEventListener('abort', abortFromExternalSignal)
   }
 }
@@ -1799,11 +1864,37 @@ async function request<T>(
 ): Promise<T> {
   const requestGeneration = clientSessionGeneration
   const activeToken = token ? getLatestSessionToken(token) : undefined
-  const response = await fetchWithTimeout(path, {
-    ...init,
-    headers: requestHeaders(activeToken, init),
-  }, timeoutMs)
-  return parseEnvelope<T>(response, token, false, requestGeneration)
+  const requestRevision = readCacheRevision(activeToken)
+  const headers = requestHeaders(activeToken, init)
+  const execute = async (signal?: AbortSignal) => {
+    const response = await fetchWithTimeout(path, {
+      ...init,
+      headers,
+      signal,
+    }, timeoutMs)
+    return parseEnvelope<T>(response, token, false, requestGeneration)
+  }
+  const method = String(init.method ?? 'GET').toUpperCase()
+  if (method === 'GET' && init.body === undefined) {
+    try {
+      return await sharedReadCoordinator.run(
+        sharedReadKey('plain', path, activeToken, requestGeneration, headers, init, timeoutMs),
+        execute,
+        init.signal ?? undefined,
+      )
+    } catch (error) {
+      if (
+        error instanceof SharedReadInvalidatedError
+        && !init.signal?.aborted
+        && requestGeneration === clientSessionGeneration
+        && requestRevision !== readCacheRevision(activeToken)
+      ) {
+        return request<T>(path, token, init, timeoutMs)
+      }
+      throw error
+    }
+  }
+  return execute(init.signal ?? undefined)
 }
 
 async function streamAiDraftRequest(
@@ -1817,7 +1908,10 @@ async function streamAiDraftRequest(
   const response = await fetchWithTimeout('/api/ai/draft', {
     method: 'POST',
     body: JSON.stringify(input),
-    headers: requestHeaders(activeToken, { body: JSON.stringify(input) }),
+    headers: requestHeaders(activeToken, {
+      body: JSON.stringify(input),
+      headers: { Accept: 'text/event-stream' },
+    }),
     signal,
   }, 120_000)
   if (!response.ok) {
@@ -1884,75 +1978,89 @@ async function conditionalRequest<T>(
   // this call never joins a previous session's in-flight TOKEN_EXPIRED promise.
   const requestGeneration = clientSessionGeneration
   const requestToken = resolveActiveRequestToken(token)
+  const requestRevision = readCacheRevision(requestToken)
   const cacheKey = conditionalCacheKey(path, requestToken, requestGeneration)
-  const cached = conditionalResponseCache.get(cacheKey)
+  const cached = readConditionalResponse(cacheKey)
   const freshForMs = Math.max(0, Number(options.freshForMs ?? 0))
   if (cached && freshForMs > 0 && Date.now() - cached.storedAt < freshForMs) {
+    throwIfAborted(init.signal ?? undefined)
     return cached.data as T
   }
-  const existing = conditionalRequestInFlight.get(cacheKey)
-  if (existing) return existing as Promise<T>
+  const headers = requestHeaders(requestToken, init)
+  if (cached?.etag) {
+    headers.set('If-None-Match', cached.etag)
+  }
+  const coordinatorKey = sharedReadKey(
+    'conditional',
+    path,
+    requestToken,
+    requestGeneration,
+    headers,
+    init,
+    timeoutForRequest(init),
+  )
 
-  const promise = (async () => {
-    const headers = requestHeaders(requestToken, init)
-    if (cached?.etag) {
-      headers.set('If-None-Match', cached.etag)
-    }
-
-    const response = await fetchWithTimeout(path, {
-      ...init,
-      headers,
-    })
-
-    if (response.status === 304 && cached) {
-      if (path === '/api/auth/me') {
-        const cachedUserId = mePayloadUserId(cached.data)
-        const requestSubject = readSessionTokenSubject(requestToken)
-        if (cachedUserId && requestSubject && cachedUserId !== requestSubject) {
-          conditionalResponseCache.delete(cacheKey)
-          // Identity mismatch: re-fetch without validators instead of serving
-          // another account's body.
-          const freshHeaders = requestHeaders(resolveActiveRequestToken(token), init)
-          const freshResponse = await fetchWithTimeout(path, {
-            ...init,
-            headers: freshHeaders,
-          })
-          const etag = freshResponse.headers.get('ETag')
-          const data = await parseEnvelope<T>(freshResponse, token, false, requestGeneration)
-          if (etag && requestGeneration === clientSessionGeneration) {
-            conditionalResponseCache.set(
-              conditionalCacheKey(path, resolveActiveRequestToken(token), requestGeneration),
-              { etag, data, storedAt: Date.now() },
-            )
-          }
-          return data
-        }
-      }
-      if (requestGeneration === clientSessionGeneration) {
-        syncSessionFromResponse(response, token)
-      }
-      return cached.data as T
-    }
-
-    const etag = response.headers.get('ETag')
-    const data = await parseEnvelope<T>(
-      response,
-      token,
-      path === '/api/applications' || path.startsWith('/api/workspace/bootstrap'),
-      requestGeneration,
-    )
-    if (requestGeneration === clientSessionGeneration) {
-      conditionalResponseCache.set(cacheKey, { etag: etag ?? undefined, data, storedAt: Date.now() })
-    }
-    return data
-  })()
-  conditionalRequestInFlight.set(cacheKey, promise)
   try {
-    return await promise
-  } finally {
-    if (conditionalRequestInFlight.get(cacheKey) === promise) {
-      conditionalRequestInFlight.delete(cacheKey)
+    return await sharedReadCoordinator.run(coordinatorKey, async (signal) => {
+      const response = await fetchWithTimeout(path, {
+        ...init,
+        headers,
+        signal,
+      })
+
+      if (response.status === 304 && cached) {
+        if (path === '/api/auth/me') {
+          const cachedUserId = mePayloadUserId(cached.data)
+          const requestSubject = readSessionTokenSubject(requestToken)
+          if (cachedUserId && requestSubject && cachedUserId !== requestSubject) {
+            conditionalResponseCache.delete(cacheKey)
+            // Identity mismatch: re-fetch without validators instead of serving
+            // another account's body.
+            const freshHeaders = requestHeaders(resolveActiveRequestToken(token), init)
+            const freshResponse = await fetchWithTimeout(path, {
+              ...init,
+              headers: freshHeaders,
+              signal,
+            })
+            const etag = freshResponse.headers.get('ETag')
+            const data = await parseEnvelope<T>(freshResponse, token, false, requestGeneration)
+            if (etag && requestGeneration === clientSessionGeneration) {
+              rememberConditionalResponse(
+                conditionalCacheKey(path, resolveActiveRequestToken(token), requestGeneration),
+                { etag, data, storedAt: Date.now() },
+              )
+            }
+            return data
+          }
+        }
+        if (requestGeneration === clientSessionGeneration) {
+          syncSessionFromResponse(response, token)
+        }
+        return cached.data as T
+      }
+
+      const etag = response.headers.get('ETag')
+      const data = await parseEnvelope<T>(
+        response,
+        token,
+        path === '/api/applications' || path.startsWith('/api/workspace/bootstrap'),
+        requestGeneration,
+      )
+      if (requestGeneration === clientSessionGeneration) {
+        rememberConditionalResponse(cacheKey, { etag: etag ?? undefined, data, storedAt: Date.now() })
+      }
+      return data
+    }, init.signal ?? undefined)
+  } catch (error) {
+    if (
+      error instanceof SharedReadInvalidatedError
+      && !init.signal?.aborted
+      && requestGeneration === clientSessionGeneration
+      && requestRevision !== readCacheRevision(requestToken)
+    ) {
+      return conditionalRequest<T>(path, token, init, options)
     }
+    throw error
   }
 }
 
@@ -1964,7 +2072,9 @@ async function streamRealtimeUpdatesRequest(
   const requestGeneration = clientSessionGeneration
   const activeToken = getLatestSessionToken(token)
   const response = await fetchWithTimeout('/api/events', {
-    headers: requestHeaders(activeToken),
+    headers: requestHeaders(activeToken, {
+      headers: { Accept: 'text/event-stream' },
+    }),
     signal,
   }, 0)
   if (!response.ok) {
@@ -1976,6 +2086,7 @@ async function streamRealtimeUpdatesRequest(
   const decoder = new TextDecoder()
   let buffer = ''
   const dispatch = (block: string) => {
+    if (signal?.aborted || requestGeneration !== clientSessionGeneration) return
     const data = block
       .split(/\r?\n/)
       .filter((line) => line.startsWith('data:'))
@@ -2003,20 +2114,36 @@ async function streamRealtimeUpdatesRequest(
 
 function primeConditionalRead(path: string, token: string, data: unknown) {
   const requestToken = resolveActiveRequestToken(token)
-  conditionalResponseCache.set(
+  rememberConditionalResponse(
     conditionalCacheKey(path, requestToken, clientSessionGeneration),
     { data, storedAt: Date.now() },
   )
 }
 
-async function workspaceBootstrapRequest(token: string, teamId?: string | null) {
+async function workspaceBootstrapRequest(
+  token: string,
+  teamId?: string | null,
+  options: ApiReadOptions = {},
+) {
   const path = `/api/workspace/bootstrap${teamId ? `?teamId=${encodeURIComponent(teamId)}` : ''}`
   const data = await conditionalRequest<WorkspaceBootstrapPayload>(
     path,
     token,
-    {},
+    { signal: options.signal },
     { freshForMs: 1_000 },
   )
+  if (
+    !data
+    || typeof data !== 'object'
+    || !Array.isArray(data.applications)
+    || !Array.isArray(data.teamWorkspaces)
+  ) {
+    throw new ApiError(
+      'Workspace bootstrap payload is unavailable.',
+      'WORKSPACE_BOOTSTRAP_UNAVAILABLE',
+      502,
+    )
+  }
   primeConditionalRead('/api/applications', token, data.applications)
   primeConditionalRead('/api/profile-assets', token, data.profileAssets)
   primeConditionalRead('/api/backups', token, data.backups)
@@ -2039,9 +2166,11 @@ async function blobRequest(
 ) {
   const requestGeneration = clientSessionGeneration
   const activeToken = token ? getLatestSessionToken(token) : undefined
+  const headers = new Headers(init.headers)
+  if (!headers.has('Accept')) headers.set('Accept', 'application/octet-stream')
   const response = await fetchWithTimeout(path, {
     ...init,
-    headers: requestHeaders(activeToken, init),
+    headers: requestHeaders(activeToken, { ...init, headers }),
   }, timeoutMs)
   if (!response.ok) {
     await parseEnvelope<never>(response, token, false, requestGeneration)
@@ -2105,8 +2234,17 @@ export const phdApi = {
       method: 'POST',
     }, 10_000),
 
-  initialSetupStatus: () =>
-    request<InitialSetupStatus>('/api/setup/status', undefined, {}, 10_000),
+  initialSetupStatus: (options: ApiReadOptions = {}) =>
+    request<InitialSetupStatus>('/api/setup/status', undefined, { signal: options.signal }, 10_000),
+
+  initialSetupSecrets: (options: ApiReadOptions = {}) =>
+    request<BootstrapSecrets>('/api/setup/secrets', undefined, { signal: options.signal }, 10_000),
+
+  regenerateInitialSetupSecrets: () =>
+    request<BootstrapSecrets>('/api/setup/secrets/regenerate', undefined, {
+      method: 'POST',
+      body: JSON.stringify({ confirm: 'REGENERATE' }),
+    }, 10_000),
 
   completeInitialSetup: (input: InitialAdminSetupInput) =>
     request<AuthSession>('/api/setup', undefined, {
@@ -2221,14 +2359,26 @@ export const phdApi = {
     })
   },
 
-  me: (token: string) =>
-    conditionalRequest<{ user: PublicUser; settings: AdminSettings; mailFetchStatus: MailFetchStatus; usage?: AccountUsage }>('/api/auth/me', token),
+  me: (token: string, options: ApiReadOptions = {}) =>
+    conditionalRequest<{ user: PublicUser; settings: AdminSettings; mailFetchStatus: MailFetchStatus; usage?: AccountUsage }>(
+      '/api/auth/me',
+      token,
+      { signal: options.signal },
+    ),
 
-  workspaceBootstrap: (token: string, teamId?: string | null) =>
-    workspaceBootstrapRequest(token, teamId),
+  workspaceBootstrap: (
+    token: string,
+    teamId?: string | null,
+    options: ApiReadOptions = {},
+  ) => workspaceBootstrapRequest(token, teamId, options),
 
-  listAiKeys: (token: string) =>
-    conditionalRequest<AiKey[]>('/api/ai/keys', token, {}, { freshForMs: 5_000 }),
+  listAiKeys: (token: string, options: ApiReadOptions = {}) =>
+    conditionalRequest<AiKey[]>(
+      '/api/ai/keys',
+      token,
+      { signal: options.signal },
+      { freshForMs: 5_000 },
+    ),
 
   createAiKey: (token: string, input: AiKeyInput) =>
     request<AiKey>('/api/ai/keys', token, { method: 'POST', body: JSON.stringify(input) }),
@@ -2260,8 +2410,13 @@ export const phdApi = {
     signal?: AbortSignal,
   ) => streamRealtimeUpdatesRequest(token, onEvent, signal),
 
-  listApplications: (token: string) =>
-    conditionalRequest<ApplicationRecord[]>('/api/applications', token, {}, { freshForMs: 1_000 }),
+  listApplications: (token: string, options: ApiReadOptions = {}) =>
+    conditionalRequest<ApplicationRecord[]>(
+      '/api/applications',
+      token,
+      { signal: options.signal },
+      { freshForMs: 1_000 },
+    ),
 
   createApplication: (token: string, input: CreateApplicationInput) =>
     request<ApplicationRecord>('/api/applications', token, {
@@ -2339,8 +2494,13 @@ export const phdApi = {
       method: 'DELETE',
     }),
 
-  listApplicationTrash: (token: string) =>
-    conditionalRequest<ApplicationTrashItem[]>('/api/applications/trash', token, {}, { freshForMs: DEFAULT_READ_FRESHNESS_MS }),
+  listApplicationTrash: (token: string, options: ApiReadOptions = {}) =>
+    conditionalRequest<ApplicationTrashItem[]>(
+      '/api/applications/trash',
+      token,
+      { signal: options.signal },
+      { freshForMs: DEFAULT_READ_FRESHNESS_MS },
+    ),
 
   restoreApplicationFromTrash: (token: string, trashId: string) =>
     request<ApplicationRecord>(`/api/applications/trash/${trashId}/restore`, token, {
@@ -2443,6 +2603,7 @@ export const phdApi = {
       return request<{
         communication: ApplicationRecord['communications'][number]
         delivery: { sent: boolean; delivery: string; errorCode?: string }
+        correspondenceEmails: string[]
       }>(
         sendPath,
         token,
@@ -2455,6 +2616,7 @@ export const phdApi = {
     return request<{
       communication: ApplicationRecord['communications'][number]
       delivery: { sent: boolean; delivery: string; errorCode?: string }
+      correspondenceEmails: string[]
     }>(
       sendPath,
       token,
@@ -2780,8 +2942,13 @@ export const phdApi = {
       { method: 'POST' },
     ),
 
-  listProfileAssets: (token: string) =>
-    conditionalRequest<ProfileAsset[]>('/api/profile-assets', token, {}, { freshForMs: DEFAULT_READ_FRESHNESS_MS }),
+  listProfileAssets: (token: string, options: ApiReadOptions = {}) =>
+    conditionalRequest<ProfileAsset[]>(
+      '/api/profile-assets',
+      token,
+      { signal: options.signal },
+      { freshForMs: DEFAULT_READ_FRESHNESS_MS },
+    ),
 
   listTeamMemberProfileAssets: (token: string, teamId: string, userId: string) =>
     conditionalRequest<ProfileAsset[]>(
@@ -2895,27 +3062,39 @@ export const phdApi = {
       body: JSON.stringify(input),
     }),
 
-  getDiscoverCatalog: (token: string, scope?: DiscoverResearchScope) =>
+  getDiscoverCatalog: (
+    token: string,
+    scope?: DiscoverResearchScope,
+    options: ApiReadOptions = {},
+  ) =>
     conditionalRequest<import('../data/discover').DiscoverCatalogPayload>(
       discoverScopePath('/api/discover/catalog', scope),
       token,
-      {},
+      { signal: options.signal },
       { freshForMs: 5_000 },
     ),
 
-  getDiscoverState: (token: string, scope?: DiscoverResearchScope) =>
+  getDiscoverState: (
+    token: string,
+    scope?: DiscoverResearchScope,
+    options: ApiReadOptions = {},
+  ) =>
     conditionalRequest<import('../data/discover').DiscoverUserState>(
       discoverScopePath('/api/discover/state', scope),
       token,
-      {},
+      { signal: options.signal },
       { freshForMs: 5_000 },
     ),
 
-  getDiscoverSourceIndex: (token: string, scope?: DiscoverResearchScope) =>
+  getDiscoverSourceIndex: (
+    token: string,
+    scope?: DiscoverResearchScope,
+    options: ApiReadOptions = {},
+  ) =>
     conditionalRequest<import('../data/discover').DiscoverSourceIndex>(
       discoverScopePath('/api/discover/source-index', scope),
       token,
-      {},
+      { signal: options.signal },
       { freshForMs: 5_000 },
     ),
 
@@ -2961,7 +3140,7 @@ export const phdApi = {
   previewDiscoverApplicationEnrichment: (
     token: string,
     applicationId: string,
-    input?: { useAi?: boolean; keyId?: string },
+    input: { keyId: string; useAi?: true },
   ) =>
     request<import('../data/discover').DiscoverApplicationEnrichmentProposal>(
       `/api/discover/applications/${encodeURIComponent(applicationId)}/enrichment/preview`,
@@ -2970,7 +3149,7 @@ export const phdApi = {
         method: 'POST',
         body: JSON.stringify(input ?? {}),
       },
-      120_000,
+      360_000,
     ),
 
   applyDiscoverApplicationEnrichment: (
@@ -3055,11 +3234,11 @@ export const phdApi = {
     )
   },
 
-  unreadNotificationCount: (token: string) =>
+  unreadNotificationCount: (token: string, options: ApiReadOptions = {}) =>
     conditionalRequest<{ count: number }>(
       '/api/notifications/unread-count',
       token,
-      {},
+      { signal: options.signal },
       { freshForMs: 15_000 },
     ),
 
@@ -3125,11 +3304,15 @@ export const phdApi = {
       body: JSON.stringify(input),
     }),
 
-  listBackups: (token: string, applicationId?: string) =>
+  listBackups: (
+    token: string,
+    applicationId?: string,
+    options: ApiReadOptions = {},
+  ) =>
     conditionalRequest<BackupRecord[]>(
       `/api/backups${applicationId ? `?applicationId=${encodeURIComponent(applicationId)}` : ''}`,
       token,
-      {},
+      { signal: options.signal },
       { freshForMs: 5_000 },
     ),
 
@@ -3278,16 +3461,17 @@ export const phdApi = {
     return parseEnvelope<SystemUpdateResult>(response, token, false, requestGeneration)
   },
 
-  checkSystemUpdate: (token: string) =>
-    request<ReleaseUpdateCheck>('/api/admin/system-update/check', token),
+  checkSystemUpdate: (token: string, options: ApiReadOptions = {}) =>
+    request<ReleaseUpdateCheck>('/api/admin/system-update/check', token, { signal: options.signal }),
 
-  systemUpdateStatus: (token: string) =>
-    request<SystemUpdateStatus>('/api/admin/system-update/status', token),
+  systemUpdateStatus: (token: string, options: ApiReadOptions = {}) =>
+    request<SystemUpdateStatus>('/api/admin/system-update/status', token, { signal: options.signal }),
 
-  systemUpdateLogs: (token: string, limit = 80) =>
+  systemUpdateLogs: (token: string, limit = 80, options: ApiReadOptions = {}) =>
     request<SystemUpdateLogs>(
       `/api/admin/system-update/logs?limit=${encodeURIComponent(String(limit))}`,
       token,
+      { signal: options.signal },
     ),
 
   installReleaseUpdate: (token: string, tagName: string) =>
@@ -3303,22 +3487,35 @@ export const phdApi = {
       { method: 'DELETE' },
     ),
 
-  myTeamWorkspaces: (token: string) =>
-    conditionalRequest<TeamWorkspaceOption[]>('/api/teams/mine/workspaces', token, {}, { freshForMs: DEFAULT_READ_FRESHNESS_MS }),
-
-  myTeam: (token: string, teamId?: string | null) =>
-    conditionalRequest<TeamSummary | null>(
-      `/api/teams/mine${teamId ? `?teamId=${encodeURIComponent(teamId)}` : ''}`,
+  myTeamWorkspaces: (token: string, options: ApiReadOptions = {}) =>
+    conditionalRequest<TeamWorkspaceOption[]>(
+      '/api/teams/mine/workspaces',
       token,
-      {},
+      { signal: options.signal },
       { freshForMs: DEFAULT_READ_FRESHNESS_MS },
     ),
 
-  listTeamApplications: (token: string, teamId?: string | null) =>
+  myTeam: (
+    token: string,
+    teamId?: string | null,
+    options: ApiReadOptions = {},
+  ) =>
+    conditionalRequest<TeamSummary | null>(
+      `/api/teams/mine${teamId ? `?teamId=${encodeURIComponent(teamId)}` : ''}`,
+      token,
+      { signal: options.signal },
+      { freshForMs: DEFAULT_READ_FRESHNESS_MS },
+    ),
+
+  listTeamApplications: (
+    token: string,
+    teamId?: string | null,
+    options: ApiReadOptions = {},
+  ) =>
     conditionalRequest<TeamApplicationRecord[]>(
       `/api/teams/mine/applications${teamId ? `?teamId=${encodeURIComponent(teamId)}` : ''}`,
       token,
-      {},
+      { signal: options.signal },
       { freshForMs: DEFAULT_READ_FRESHNESS_MS },
     ),
 
@@ -3327,6 +3524,10 @@ export const phdApi = {
     seatLimit?: number
     logoDataUrl?: string
     roleLabels?: { admin?: string; member?: string }
+    permissionDefaults?: {
+      student?: Partial<TeamStudentPermissions>
+      teacher?: Partial<TeamTeacherPermissions>
+    }
   }) =>
     request<Team>(`/api/teams/${teamId}`, token, {
       method: 'PATCH',
@@ -3349,6 +3550,19 @@ export const phdApi = {
     request<Team>(`/api/teams/${teamId}`, token, {
       method: 'PATCH',
       body: JSON.stringify({ roleLabels }),
+    }),
+
+  updateTeamPermissionDefaults: (
+    token: string,
+    teamId: string,
+    permissionDefaults: {
+      student?: Partial<TeamStudentPermissions>
+      teacher?: Partial<TeamTeacherPermissions>
+    },
+  ) =>
+    request<Team>(`/api/teams/${teamId}`, token, {
+      method: 'PATCH',
+      body: JSON.stringify({ permissionDefaults }),
     }),
 
   createTeamProfilePreset: (token: string, teamId: string, input: TeamProfilePresetInput) =>
@@ -3450,10 +3664,8 @@ export const phdApi = {
       role?: Exclude<TeamRole, 'owner'>
       invitedBy?: string
       teacherIds?: string[]
-      accessLevel?: 'pro' | 'standard'
-      studentProLimit?: number
-      studentPermissions?: Partial<TeamStudentPermissions>
-      teacherPermissions?: Partial<TeamTeacherPermissions>
+      studentPermissions?: Partial<TeamStudentPermissions> | null
+      teacherPermissions?: Partial<TeamTeacherPermissions> | null
     },
   ) =>
     request<TeamMember>(`/api/teams/${teamId}/members/${memberId}`, token, {
@@ -3497,36 +3709,6 @@ export const phdApi = {
     request<{ id: string; deleted: boolean }>(`/api/teams/${teamId}/teacher-groups/${groupId}`, token, {
       method: 'DELETE',
     }),
-
-  restoreTeamEvent: (token: string, teamId: string, eventId: string) =>
-    request<TeamEventRestoreResult>(
-      `/api/teams/${teamId}/events/${eventId}/restore`,
-      token,
-      { method: 'POST' },
-    ),
-
-  previewTeamEventMerge: (token: string, teamId: string, eventId: string) =>
-    request<TeamMergePreview>(
-      `/api/teams/${teamId}/events/${eventId}/merge-preview`,
-      token,
-    ),
-
-  applyTeamEventMerge: (token: string, teamId: string, eventId: string, fields?: string[]) =>
-    request<TeamMergeResult>(
-      `/api/teams/${teamId}/events/${eventId}/apply-merge`,
-      token,
-      {
-        method: 'POST',
-        body: JSON.stringify({ fields }),
-      },
-    ),
-
-  flagTeamEventMergeConflict: (token: string, teamId: string, eventId: string) =>
-    request<TeamMergeConflictFlagResult>(
-      `/api/teams/${teamId}/events/${eventId}/flag-conflict`,
-      token,
-      { method: 'POST' },
-    ),
 
   getTeamInvite: (inviteToken: string) =>
     request<TeamInvitePreview>(`/api/teams/invites/${encodeURIComponent(inviteToken)}`),

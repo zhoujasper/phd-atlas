@@ -75,6 +75,8 @@
     "editShareQuota": "Bearbeiten Sie das Limit für Freigabelinks",
     "editShareCreateQuota": "Bearbeiten Sie das Limit für lebenslange Freigabelinks",
     "editStorageQuota": "Speicherkontingent bearbeiten",
+    "quotaUsageHelpLabel": "So funktionieren Nutzungslimits",
+    "quotaUsageHelp": "Bewegen Sie den Mauszeiger über eine Nutzungszeile und wählen Sie den Stift, um das Limit zu bearbeiten. Mit -1 wird das Limit unbegrenzt (∞).",
     "recordUsage": "{count}/{limit} Datensätze",
     "recordUsageLabel": "Verwendung von Bewerbungsdatensätzen",
     "recordCreateUsage": "{count}/{limit} erstellt",

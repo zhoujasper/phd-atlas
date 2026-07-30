@@ -48,6 +48,35 @@ describe('Discover access policy', () => {
     })).toBe(false)
   })
 
+  it('inherits Team Discover defaults until a personal override wins', () => {
+    const defaults = {
+      student: {
+        editApplications: true,
+        createApplications: true,
+        useDiscover: true,
+        createShareLinks: true,
+        requestTeamTransfers: true,
+        activeApplicationLimit: null,
+        lifetimeApplicationLimit: null,
+        activeShareLimit: null,
+        lifetimeShareLimit: null,
+      },
+      teacher: {
+        inviteStudents: true,
+        manageStudentPermissions: true,
+        useDiscover: false,
+        createStudentApplications: true,
+        editStudentApplications: true,
+        manageStudentShares: true,
+      },
+    }
+    expect(hasTeamDiscoverAccess('member', undefined, defaults)).toBe(true)
+    expect(hasTeamDiscoverAccess('member', {
+      studentPermissions: { useDiscover: false },
+    }, defaults)).toBe(false)
+    expect(hasTeamDiscoverAccess('admin', undefined, defaults)).toBe(false)
+  })
+
   it('limits a teacher target picker to assigned students while an owner sees the organization', () => {
     const members = [
       { id: 'student-a', userId: 'user-a', status: 'active', role: 'member', invitedBy: 'teacher-a' },

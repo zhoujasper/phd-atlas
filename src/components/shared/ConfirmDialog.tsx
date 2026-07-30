@@ -1,5 +1,5 @@
 import { AlertTriangle } from 'lucide-react'
-import { useEffect, useId, useRef } from 'react'
+import { useId, useRef } from 'react'
 import { useI18n } from '../hooks/useI18n'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { useModalA11y } from '../hooks/useModalA11y'
@@ -33,35 +33,13 @@ export function ConfirmDialog({
   const cancelBtnRef = useRef<HTMLButtonElement>(null)
   const { exiting, requestClose } = useAnimatedClose(open, onCancel)
   const dialogRef = useModalA11y<HTMLDivElement>({
-    open: open && !exiting,
+    open,
     onClose: () => requestClose(onCancel),
     onConfirm: () => requestClose(onConfirm),
-    initialFocusRef: confirmBtnRef,
+    initialFocusRef: variant === 'danger' ? cancelBtnRef : confirmBtnRef,
   })
   const resolvedConfirmLabel = confirmLabel ?? tx('confirm')
   const resolvedCancelLabel = cancelLabel ?? tx('cancel')
-
-  useEffect(() => {
-    if (!open) return
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        requestClose(onCancel)
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [open, onCancel, requestClose])
-
-  useEffect(() => {
-    if (!open) return
-    // Focus the confirm button by default, or cancel button if confirm is danger variant
-    if (variant === 'danger' && cancelBtnRef.current) {
-      cancelBtnRef.current.focus()
-    } else {
-      confirmBtnRef.current?.focus()
-    }
-  }, [open, variant])
 
   if (!open) return null
 

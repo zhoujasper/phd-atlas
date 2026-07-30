@@ -289,6 +289,7 @@ export function LoadingCurtain({
   message,
   detail,
   variant,
+  preserveMobileRail = false,
   /** Delay showing the curtain so instant handoffs never flash. */
   delayMs = 0,
   minimumVisibleMs = 220,
@@ -298,12 +299,16 @@ export function LoadingCurtain({
   message?: string
   detail?: string
   variant?: LoadingVariant
+  preserveMobileRail?: boolean
   delayMs?: number
   minimumVisibleMs?: number
   exitDurationMs?: number
 }) {
   const [visible, setVisible] = useState(() => loading && delayMs <= 0)
   const [exiting, setExiting] = useState(false)
+  const [preserveMobileRailDuringExit, setPreserveMobileRailDuringExit] = useState(
+    () => loading && preserveMobileRail,
+  )
   const shownAtRef = useRef(loading && delayMs <= 0 ? Date.now() : 0)
 
   useEffect(() => {
@@ -313,6 +318,7 @@ export function LoadingCurtain({
 
     if (loading) {
       setExiting(false)
+      if (preserveMobileRail) setPreserveMobileRailDuringExit(true)
       if (delayMs <= 0) {
         shownAtRef.current = Date.now()
         setVisible(true)
@@ -343,6 +349,7 @@ export function LoadingCurtain({
     hideTimer = window.setTimeout(() => {
       setVisible(false)
       setExiting(false)
+      setPreserveMobileRailDuringExit(false)
     }, wait + exitDuration)
 
     return () => {
@@ -350,9 +357,11 @@ export function LoadingCurtain({
       if (exitTimer !== undefined) window.clearTimeout(exitTimer)
       if (hideTimer !== undefined) window.clearTimeout(hideTimer)
     }
-  }, [delayMs, exitDurationMs, loading, minimumVisibleMs, visible])
+  }, [delayMs, exitDurationMs, loading, minimumVisibleMs, preserveMobileRail, visible])
 
   if (!loading && !visible) return null
+
+  const shouldPreserveMobileRail = (loading && preserveMobileRail) || preserveMobileRailDuringExit
 
   return (
     <LaunchScreen
@@ -362,6 +371,7 @@ export function LoadingCurtain({
       overlay
       exiting={exiting && !loading}
       contentReady={!loading}
+      className={shouldPreserveMobileRail ? 'preserve-mobile-rail' : ''}
     />
   )
 }

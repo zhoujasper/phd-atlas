@@ -212,6 +212,9 @@ describe('TeamScreen role-aware overview', () => {
 
     expect(screen.getByRole('heading', { name: 'Handle the items that actually need action first' })).toBeInTheDocument()
     expect(view.container.querySelector('.team-overview-queue-slider')).toBeInTheDocument()
+    const ownerQueue = view.container.querySelector('.role-owner .team-overview-queue-list')
+    expect(ownerQueue).toHaveAttribute('data-item-count')
+    expect(ownerQueue?.querySelectorAll('.team-overview-queue-mobile-label').length).toBeGreaterThan(0)
     expect(screen.getByRole('heading', { name: 'Northbridge University' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /1 transfer approvals/i }))
@@ -232,6 +235,7 @@ describe('TeamScreen role-aware overview', () => {
 
     expect(screen.getByRole('heading', { name: 'Sorted by what needs action' })).toBeInTheDocument()
     expect(view.container.querySelector('.team-overview-queue-slider')).toBeInTheDocument()
+    expect(view.container.querySelector('.role-teacher .team-overview-queue-list')).toHaveAttribute('data-item-count', '2')
 
     fireEvent.click(screen.getByRole('button', { name: /Lina Zhao/i }))
     expect(screen.getByRole('heading', { name: 'Lina Zhao' })).toBeInTheDocument()

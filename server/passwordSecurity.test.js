@@ -22,6 +22,18 @@ describe('account password storage', () => {
     await expect(verifyAccountPassword('legacy password value', encoded))
       .resolves.toEqual({ valid: true, needsRehash: true })
   })
+
+  it('rejects stored hashes whose parameters request excessive work', async () => {
+    const nonce = Buffer.alloc(16, 1).toString('base64url')
+    const tag = Buffer.alloc(32, 2).toString('base64url')
+    const excessiveArgon = `$argon2id$v=19$m=4294967295,t=99,p=32$${nonce}$${tag}`
+    const excessiveBcrypt = `$2b$31$${'a'.repeat(53)}`
+
+    await expect(verifyAccountPassword('irrelevant password', excessiveArgon))
+      .resolves.toEqual({ valid: false, needsRehash: false })
+    await expect(verifyAccountPassword('irrelevant password', excessiveBcrypt))
+      .resolves.toEqual({ valid: false, needsRehash: false })
+  })
 })
 
 describe('password policy', () => {

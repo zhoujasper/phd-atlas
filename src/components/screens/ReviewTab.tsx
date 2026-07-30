@@ -7,6 +7,7 @@ import { useI18n } from '../hooks/useI18n'
 import { CollapsiblePanel } from '../shared/CollapsiblePanel'
 import { MarkdownContent } from '../shared/MarkdownContent'
 import { MarkdownTextarea } from '../shared/MarkdownTextarea'
+import { PendingLabel } from '../shared/PendingLabel'
 
 interface ReviewComment {
   id: string
@@ -110,8 +111,8 @@ export default function ReviewTab({ application, token, currentUserId, onComment
             />
             <div className="review-reply-actions">
               <button type="button" className="quiet-action" onClick={function () { setReplyTo(null) }}>{tx('review.cancel', 'Cancel')}</button>
-              <button type="button" className="primary-action" disabled={sending || !replyBody.trim()} onClick={function () { handleSubmit(comment.id) }}>
-                {sending ? tx('review.sending', 'Sending...') : tx('review.reply', 'Reply')}
+              <button type="button" className="primary-action" disabled={sending || !replyBody.trim()} aria-busy={sending || undefined} onClick={function () { handleSubmit(comment.id) }}>
+                {sending ? <PendingLabel label={tx('review.sending', 'Sending...')} /> : tx('review.reply', 'Reply')}
               </button>
             </div>
         </CollapsiblePanel>
@@ -141,9 +142,10 @@ export default function ReviewTab({ application, token, currentUserId, onComment
             type="button"
             className="secondary-action"
             disabled={feedbackBusy}
+            aria-busy={feedbackBusy || undefined}
             onClick={() => void handleRequestFeedback()}
           >
-            {feedbackBusy ? tx('team.requestFeedbackWorking') : tx('team.requestFeedback')}
+            {feedbackBusy ? <PendingLabel label={tx('team.requestFeedbackWorking')} /> : tx('team.requestFeedback')}
           </button>
           {feedbackMessage ? <p className="review-request-feedback-ok" role="status">{feedbackMessage}</p> : null}
           {feedbackError ? <p className="settings-inline-error" role="alert">{feedbackError}</p> : null}
@@ -162,9 +164,10 @@ export default function ReviewTab({ application, token, currentUserId, onComment
             type="button"
             className="primary-action"
             disabled={sending || !body.trim()}
+            aria-busy={sending || undefined}
             onClick={function () { handleSubmit() }}
           >
-            {sending ? tx('review.posting', 'Posting...') : tx('review.postComment', 'Post Comment')}
+            {sending ? <PendingLabel label={tx('review.posting', 'Posting...')} /> : tx('review.postComment', 'Post Comment')}
           </button>
         </div>
       </div>
