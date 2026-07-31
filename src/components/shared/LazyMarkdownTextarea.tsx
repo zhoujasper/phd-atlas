@@ -1,9 +1,10 @@
 import { forwardRef, lazy, Suspense } from 'react'
 import type { MarkdownTextareaProps } from './MarkdownTextarea'
+import { createRecoverableModuleLoader } from '../../lazyModuleRecovery'
 
-const MarkdownEditor = lazy(() => import('./MarkdownTextarea').then((module) => ({
+const MarkdownEditor = lazy(createRecoverableModuleLoader(() => import('./MarkdownTextarea').then((module) => ({
   default: module.MarkdownTextarea,
-})))
+}))))
 
 /**
  * Keeps text entry interactive while the Lexical editor bundle loads. The native

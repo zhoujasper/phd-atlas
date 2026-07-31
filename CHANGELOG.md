@@ -8,6 +8,44 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0-beta.8] - 2026-07-31
+
+### Added
+
+- Added one recoverable lazy-module loader across routes, workspace screens,
+  dialogs, profile editors, the rich-text editor, and language namespaces,
+  with bounded retries, shared in-flight work, and stale-preload recovery.
+- Added a localized application-level recovery screen so persistent module or
+  render failures retain an explicit reload path instead of leaving a white
+  page.
+- Added 288 real product captures covering six signed-in workflows across all
+  12 languages, light and dark themes, and true desktop and mobile layouts.
+- Added an atomic cross-process upload-vault migration lock with live-owner
+  waiting, terminated-owner cleanup, and token-checked release.
+
+### Changed
+
+- Replaced the signed-out homepage's hand-built product replicas with the real
+  Checklist, Correspondence, Funding, Timeline, Discover, and Profile
+  interfaces, while retaining the previous image until the next capture has
+  decoded successfully.
+- Updated the public English and Chinese READMEs with responsive light/dark
+  galleries sourced from the same real product captures.
+- Kept `react-simple-code-editor` lazy while normalizing Vite's CommonJS/ESM
+  wrapper at one typed runtime boundary.
+
+### Fixed
+
+- Fixed white-page failures when opening an application, creating an
+  application, or adding a profile snippet after a stale dynamic chunk or
+  wrapped editor export reached React.
+- Fixed concurrent watched API processes sharing the upload-vault migration
+  journal and destabilizing the development server.
+- Fixed signed-out workflow articles that could remain transparent after an
+  observer race, along with broken-image flashes during product-scene changes.
+- Fixed the signed-out product gallery in browser-like environments that do
+  not expose `matchMedia`, retaining a desktop capture instead of crashing.
+
 ## [0.1.0-beta.7] - 2026-07-29
 
 ### Added

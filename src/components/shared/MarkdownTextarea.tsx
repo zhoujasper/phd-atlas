@@ -32,7 +32,7 @@ import { ListPlugin } from '@lexical/react/LexicalListPlugin'
 import { MarkdownShortcutPlugin } from '@lexical/react/LexicalMarkdownShortcutPlugin'
 import { OnChangePlugin } from '@lexical/react/LexicalOnChangePlugin'
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin'
-import Editor from 'react-simple-code-editor'
+import CodeEditorExport from 'react-simple-code-editor'
 import { highlight, languages } from 'prismjs'
 import 'prismjs/components/prism-markup'
 import 'prismjs/components/prism-markdown'
@@ -106,6 +106,7 @@ import {
 } from './richText'
 import { formatRichTextSource } from './formatRichTextSource'
 import { MarkdownContent } from './MarkdownContent'
+import { resolveCodeEditorExport } from './codeEditorInterop'
 import {
   getHtmlAutoCloseEdit,
   getSourceCompletions,
@@ -123,6 +124,12 @@ export type MarkdownTextareaProps = Omit<TextareaHTMLAttributes<HTMLTextAreaElem
   previewClassName?: string
   defaultMode?: EditorMode
 }
+
+// Vite 8 can preserve react-simple-code-editor's CommonJS `exports.default`
+// wrapper in development even when dependency interop is explicitly enabled.
+const Editor = resolveCodeEditorExport<typeof CodeEditorExport>(
+  CodeEditorExport as typeof CodeEditorExport | { default: typeof CodeEditorExport },
+)
 
 type ContextMenuState = {
   x: number

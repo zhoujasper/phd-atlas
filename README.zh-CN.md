@@ -24,6 +24,69 @@ PhD Atlas 把申请项目、潜在导师、材料、截止日期、通信、奖�
 教师与学生角色，邀请，范围受控的工作空间，共享申请与资料，审计历史，以及与
 私有源码版一致的权限校验。
 
+## 真实界面
+
+下面所有图片均直接截取自真实运行的系统，不是手绘的营销示意图。GitHub 会根据
+当前浅色/深色主题自动选图；窄屏设备会加载真正的 390 x 844 手机布局，而不是
+把桌面截图缩小。
+
+<picture>
+  <source media="(prefers-color-scheme: dark) and (max-width: 700px)" srcset="public/assets/product-tour/workspace-zh-dark-mobile.webp">
+  <source media="(max-width: 700px)" srcset="public/assets/product-tour/workspace-zh-light-mobile.webp">
+  <source media="(prefers-color-scheme: dark)" srcset="public/assets/product-tour/workspace-zh-dark.webp">
+  <img src="public/assets/product-tour/workspace-zh-light.webp" alt="PhD Atlas 真实申请工作空间，展示 ETH Zurich 清单、申请 Explorer、档案和检查器" width="1600">
+</picture>
+
+<details>
+<summary><strong>展开查看另外五个真实系统页面</strong></summary>
+
+### 往来消息
+
+<picture>
+  <source media="(prefers-color-scheme: dark) and (max-width: 700px)" srcset="public/assets/product-tour/correspondence-zh-dark-mobile.webp">
+  <source media="(max-width: 700px)" srcset="public/assets/product-tour/correspondence-zh-light-mobile.webp">
+  <source media="(prefers-color-scheme: dark)" srcset="public/assets/product-tour/correspondence-zh-dark.webp">
+  <img src="public/assets/product-tour/correspondence-zh-light.webp" alt="PhD Atlas 往来消息时间线与邮件编辑器" width="1600">
+</picture>
+
+### 学费与奖学金
+
+<picture>
+  <source media="(prefers-color-scheme: dark) and (max-width: 700px)" srcset="public/assets/product-tour/funding-zh-dark-mobile.webp">
+  <source media="(max-width: 700px)" srcset="public/assets/product-tour/funding-zh-light-mobile.webp">
+  <source media="(prefers-color-scheme: dark)" srcset="public/assets/product-tour/funding-zh-dark.webp">
+  <img src="public/assets/product-tour/funding-zh-light.webp" alt="PhD Atlas 学费、奖学金与资助管理页面" width="1600">
+</picture>
+
+### 时间线
+
+<picture>
+  <source media="(prefers-color-scheme: dark) and (max-width: 700px)" srcset="public/assets/product-tour/timeline-zh-dark-mobile.webp">
+  <source media="(max-width: 700px)" srcset="public/assets/product-tour/timeline-zh-light-mobile.webp">
+  <source media="(prefers-color-scheme: dark)" srcset="public/assets/product-tour/timeline-zh-dark.webp">
+  <img src="public/assets/product-tour/timeline-zh-light.webp" alt="PhD Atlas 申请事件时间线" width="1600">
+</picture>
+
+### 发现
+
+<picture>
+  <source media="(prefers-color-scheme: dark) and (max-width: 700px)" srcset="public/assets/product-tour/discover-zh-dark-mobile.webp">
+  <source media="(max-width: 700px)" srcset="public/assets/product-tour/discover-zh-light-mobile.webp">
+  <source media="(prefers-color-scheme: dark)" srcset="public/assets/product-tour/discover-zh-dark.webp">
+  <img src="public/assets/product-tour/discover-zh-light.webp" alt="PhD Atlas 发现页面，包含项目筛选、已验证结果区和证据检查器" width="1600">
+</picture>
+
+### 可复用个人画像
+
+<picture>
+  <source media="(prefers-color-scheme: dark) and (max-width: 700px)" srcset="public/assets/product-tour/profile-zh-dark-mobile.webp">
+  <source media="(max-width: 700px)" srcset="public/assets/product-tour/profile-zh-light-mobile.webp">
+  <source media="(prefers-color-scheme: dark)" srcset="public/assets/product-tour/profile-zh-dark.webp">
+  <img src="public/assets/product-tour/profile-zh-light.webp" alt="PhD Atlas 可复用个人画像与申请资料库" width="1600">
+</picture>
+
+</details>
+
 ## 功能总览
 
 ### 申请指挥中心

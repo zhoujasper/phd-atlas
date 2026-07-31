@@ -2,6 +2,7 @@ import fallbackEnglish from './i18n/en/core.json'
 import fallbackEnglishShared from './i18n/en/shared.json'
 import fallbackChinese from './i18n/zh/core.json'
 import fallbackChineseShared from './i18n/zh/shared.json'
+import { loadLazyModule } from './lazyModuleRecovery'
 
 export type Language = string
 export type I18nNamespace = string
@@ -296,7 +297,7 @@ export async function loadLanguageNamespace(
   const load = (async () => {
     const moduleLoader = namespaceModule(normalized, normalizedNamespace)
     if (moduleLoader) {
-      const module = await moduleLoader()
+      const module = await loadLazyModule(moduleLoader)
       registerLanguage(normalized, readJsonModule(module), normalizedNamespace)
       return getDict(normalized)
     }
@@ -304,7 +305,7 @@ export async function loadLanguageNamespace(
     if (normalizedNamespace === defaultNamespace) {
       const rootLoader = rootLanguageModule(normalized)
       if (rootLoader) {
-        const module = await rootLoader()
+        const module = await loadLazyModule(rootLoader)
         registerLanguage(normalized, readJsonModule(module), defaultNamespace)
         return getDict(normalized)
       }

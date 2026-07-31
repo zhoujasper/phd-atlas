@@ -153,10 +153,11 @@ import {
   type TeamStudentProfileAsset,
 } from './teamStudentProfileStorage'
 import { normalizeTeamLogoFile, TEAM_LOGO_ACCEPT, TeamLogoError } from './teamLogo'
+import { createRecoverableModuleLoader } from '../../lazyModuleRecovery'
 
-const loadTeamSnippetEditorDialog = () => import('../shared/SnippetEditorDialog').then((module) => ({
+const loadTeamSnippetEditorDialog = createRecoverableModuleLoader(() => import('../shared/SnippetEditorDialog').then((module) => ({
   default: module.SnippetEditorDialog,
-}))
+})))
 const TeamSnippetEditorDialog = lazy(loadTeamSnippetEditorDialog)
 
 registerLanguage('en', englishTeam as LangDict, 'team')

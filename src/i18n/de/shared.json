@@ -4,6 +4,12 @@
   "confirm": "Bestätigen",
   "cancel": "Abbrechen",
   "done": "Fertig",
+  "appRecovery": {
+    "brand": "PhD Atlas",
+    "title": "Diese Ansicht konnte nicht geladen werden",
+    "description": "Ihre gespeicherte Arbeit bleibt erhalten. Laden Sie PhD Atlas neu, um die Anwendungsdateien wieder zu verbinden.",
+    "reload": "PhD Atlas neu laden"
+  },
   "filePreview": {
     "preview": "Dateivorschau",
     "document": "Dokument",

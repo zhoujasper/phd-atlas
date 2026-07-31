@@ -387,6 +387,64 @@ describe('upload vault', () => {
     expect((await names(root)).filter((name) => name.startsWith('.'))).toEqual([])
   })
 
+  it('serializes migrations from separate vault instances that share one root', async () => {
+    const root = await testRoot('concurrent-migration')
+    await fs.writeFile(path.join(root, 'document.pdf'), Buffer.from('shared migration input'))
+
+    let releaseFirstMigration
+    const firstMigrationBlocked = new Promise((resolve) => {
+      releaseFirstMigration = resolve
+    })
+    let firstMigrationEntered
+    const firstMigrationReady = new Promise((resolve) => {
+      firstMigrationEntered = resolve
+    })
+    const firstVault = createUploadVault({
+      root,
+      policyProvider: () => aesPolicy,
+      async migrationHook(phase) {
+        if (phase !== 'after-next-written') return
+        firstMigrationEntered()
+        await firstMigrationBlocked
+      },
+    })
+    const secondVault = createUploadVault({ root, policyProvider: () => aesPolicy })
+
+    const first = firstVault.migrate(aesPolicy)
+    await firstMigrationReady
+    let secondFinished = false
+    const second = secondVault.migrate(aesPolicy).then((result) => {
+      secondFinished = true
+      return result
+    })
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(secondFinished).toBe(false)
+
+    releaseFirstMigration()
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2)
+    await expect(secondVault.readBuffer('document.pdf')).resolves.toEqual(Buffer.from('shared migration input'))
+    expect((await names(root)).filter((name) => name.startsWith('.'))).toEqual([])
+  })
+
+  it('removes a migration lock left by a terminated process before startup recovery', async () => {
+    const root = await testRoot('abandoned-migration-lock')
+    await fs.writeFile(path.join(root, 'document.pdf'), Buffer.from('recover after terminated migration'))
+    const lockDirectory = path.join(root, '.upload-vault-migration.lock')
+    await fs.mkdir(lockDirectory)
+    await fs.writeFile(path.join(lockDirectory, 'owner.json'), JSON.stringify({
+      processId: 2_147_483_647,
+      token: 'terminated-owner',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }))
+
+    const recovered = createUploadVault({ root, policyProvider: () => aesPolicy })
+    await expect(recovered.migrate(aesPolicy)).resolves.toMatchObject({
+      encryptionAlgorithm: 'aes-256-gcm',
+    })
+    await expect(recovered.readBuffer('document.pdf')).resolves.toEqual(Buffer.from('recover after terminated migration'))
+    expect(await names(root)).toEqual(['document.pdf'])
+  })
+
   it('promotes an authenticated orphan .vault-next from a brand-new upload and re-keys it', async () => {
     const root = await testRoot('new-upload-orphan')
     const plain = Buffer.from('brand-new upload survives before its first target promotion')

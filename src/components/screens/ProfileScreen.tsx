@@ -70,9 +70,10 @@ import {
 } from '../shared/stackedCardWheel'
 import type { ShareExpiry } from '../shared/shareOptions'
 import { AiProfilePanel } from '../shared/AiProfilePanel'
+import { createRecoverableModuleLoader } from '../../lazyModuleRecovery'
 
-const loadSnippetEditorDialog = () => import('../shared/SnippetEditorDialog').then((module) => ({ default: module.SnippetEditorDialog }))
-const loadSnippetPhraseSettingsDialog = () => import('../shared/SnippetPhraseSettingsDialog').then((module) => ({ default: module.SnippetPhraseSettingsDialog }))
+const loadSnippetEditorDialog = createRecoverableModuleLoader(() => import('../shared/SnippetEditorDialog').then((module) => ({ default: module.SnippetEditorDialog })))
+const loadSnippetPhraseSettingsDialog = createRecoverableModuleLoader(() => import('../shared/SnippetPhraseSettingsDialog').then((module) => ({ default: module.SnippetPhraseSettingsDialog })))
 const SnippetEditorDialog = lazy(loadSnippetEditorDialog)
 const SnippetPhraseSettingsDialog = lazy(loadSnippetPhraseSettingsDialog)
 

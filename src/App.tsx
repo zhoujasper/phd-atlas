@@ -163,6 +163,7 @@ import { downloadBlob } from './downloadBlob'
 import { connectivityUnavailable, probeServerConnectivity, setManualOfflineMode } from './connectivity'
 import { activatePwaUpdate, PWA_OFFLINE_SYNC_EVENT, requestOfflineSync } from './serviceWorker'
 import { passkeyLoginEmailHint } from './passkeyClient'
+import { createRecoverableModuleLoader, loadLazyModule } from './lazyModuleRecovery'
 import {
   blockedOfflineQueueSize,
   canQueueApplicationUpdate,
@@ -305,7 +306,7 @@ function createPreloadedScreen<TComponent extends ComponentType<any>>(
   const preload = (): Promise<{ default: TComponent }> => {
     if (resolved) return Promise.resolve({ default: resolved })
     if (!pending) {
-      pending = loader().then((module) => {
+      pending = loadLazyModule(loader).then((module) => {
         resolved = module.default
         return module
       })
@@ -342,13 +343,13 @@ const loadProfileScreen = profileScreen.preload
 const loadDiscoverScreen = discoverScreen.preload
 const loadSettingsScreen = settingsScreen.preload
 const loadTeamScreen = teamScreen.preload
-const loadNewApplicationDialog = () => import('./components/shared/NewApplicationDialog').then((module) => ({ default: module.NewApplicationDialog }))
-const loadShareDialog = () => import('./components/shared/ShareDialog').then((module) => ({ default: module.ShareDialog }))
-const loadDiscoverApplicationEnrichmentDialog = () => import('./components/shared/DiscoverApplicationEnrichmentDialog').then((module) => ({ default: module.DiscoverApplicationEnrichmentDialog }))
-const loadNotificationCenter = () => import('./components/shared/NotificationCenter').then((module) => ({ default: module.NotificationCenter }))
-const loadKeyboardShortcuts = () => import('./components/shared/KeyboardShortcuts')
-const loadOnboardingTour = () => import('./components/shared/OnboardingTour')
-const loadCommandPalette = () => import('./components/shared/CommandPalette')
+const loadNewApplicationDialog = createRecoverableModuleLoader(() => import('./components/shared/NewApplicationDialog').then((module) => ({ default: module.NewApplicationDialog })))
+const loadShareDialog = createRecoverableModuleLoader(() => import('./components/shared/ShareDialog').then((module) => ({ default: module.ShareDialog })))
+const loadDiscoverApplicationEnrichmentDialog = createRecoverableModuleLoader(() => import('./components/shared/DiscoverApplicationEnrichmentDialog').then((module) => ({ default: module.DiscoverApplicationEnrichmentDialog })))
+const loadNotificationCenter = createRecoverableModuleLoader(() => import('./components/shared/NotificationCenter').then((module) => ({ default: module.NotificationCenter })))
+const loadKeyboardShortcuts = createRecoverableModuleLoader(() => import('./components/shared/KeyboardShortcuts'))
+const loadOnboardingTour = createRecoverableModuleLoader(() => import('./components/shared/OnboardingTour'))
+const loadCommandPalette = createRecoverableModuleLoader(() => import('./components/shared/CommandPalette'))
 
 function shallowEqualViewProps<T extends object>(
   previous: T,

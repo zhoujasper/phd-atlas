@@ -1,89 +1,85 @@
+/// <reference types="node" />
+
+import { readdirSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import authSource from './AuthScreen.tsx?raw'
 import dossierSource from './DossierView.tsx?raw'
-import productDemoSource from './MarketingProductDemo.tsx?raw'
-import workspaceDemoSource from './MarketingWorkspaceDemo.tsx?raw'
+import featureTourSource from './MarketingFeatureTour.tsx?raw'
+import screenshotSource from './MarketingProductScreenshot.tsx?raw'
 import upgradeSource from './UpgradeProScreen.tsx?raw'
 import motionSource from '../hooks/useMarketingMotion.ts?raw'
 import indexStyles from '../../index.css?raw'
+import homepageStyles from '../../styles/homepage.css?raw'
 import marketingStyles from '../../styles/marketing.css?raw'
+import captureSource from '../../../tools/capture-product-tour-screenshots.mjs?raw'
+
+const screenshotDirectory = join(process.cwd(), 'public', 'assets', 'product-tour')
 
 describe('signed-out and Pro marketing experiences', () => {
   it('keeps product storytelling connected to the real authentication surface', () => {
     expect(authSource).toContain('className="auth-marketing-hero"')
-    expect(authSource).toContain('className="auth-story"')
     expect(authSource).toContain('className="auth-access-section"')
     expect(authSource).toContain('className="auth-sheet"')
-    expect(authSource).toContain('<MarketingWorkspaceDemo className="auth-real-workspace"')
-    expect(authSource).toContain('<MarketingProductDemo')
-    expect(authSource).toContain("type AuthStory = 'applications' | 'discover' | 'profile'")
-    expect(authSource).toContain('surface={activeStory}')
+    expect(authSource).toContain('<MarketingProductScreenshot')
+    expect(authSource).toContain('language={lang}')
+    expect(authSource).toContain('theme={theme}')
+    expect(authSource).toContain('const MarketingFeatureTour = lazy(createRecoverableModuleLoader(')
+    expect(authSource).toContain('<MarketingFeatureTour />')
+    expect(authSource).not.toContain('MarketingWorkspaceDemo')
+    expect(authSource).not.toContain('MarketingProductDemo')
+    expect(featureTourSource).not.toContain('MarketingDashboardDemo')
+    expect(featureTourSource).not.toContain('MarketingTeamDemo')
+    expect(featureTourSource).not.toContain('MarketingContinuityDemo')
+    expect(featureTourSource).not.toContain('MarketingProductDemo')
+    expect(featureTourSource).not.toContain('MarketingWorkspaceDemo')
+    expect(featureTourSource).toContain('const workflows = [')
+    for (const surface of ['workspace', 'correspondence', 'funding', 'timeline', 'discover', 'profile']) {
+      expect(featureTourSource).toContain(`key: '${surface}'`)
+    }
+    expect(featureTourSource).toContain('aria-pressed={activeScene === key}')
+    expect(featureTourSource).toContain('surface={activeScene}')
+    expect(featureTourSource).toContain('className="auth-workflow-directory" data-marketing-reveal')
+    expect(featureTourSource).not.toMatch(/<article[^>]*data-marketing-reveal/)
+    expect(featureTourSource).not.toContain('auth-capability-index')
+    expect(featureTourSource).not.toContain('>03</span>')
+    expect(screenshotSource).toContain("${surface}-${language}-${theme}${mobile ? '-mobile' : ''}.webp")
+    expect(screenshotSource).toContain("loading: imageLoading = 'eager'")
+    expect(screenshotSource).toContain("const fallbackSource = screenshotUrl('workspace'")
+    expect(screenshotSource).toContain('const image = new Image()')
+    expect(screenshotSource).toContain('await image.decode()')
+    expect(screenshotSource).toContain('setDisplayedSource(requestedSource)')
     expect(authSource).toContain("marketingHeroTitleLines(tx('authMarketingHeroTitle'))")
     expect(authSource).toContain('auth-marketing-title-line')
-    expect(marketingStyles).toMatch(/\.auth-marketing-title-line\s*\{[\s\S]*?display: block;/)
-    expect(marketingStyles).toMatch(/\.auth-marketing-title-line\.is-accent\s*\{[\s\S]*?color: var\(--accent\);/)
-    expect(marketingStyles).toMatch(/linear-gradient\([\s\S]*?var\(--accent-hover\)/)
-    expect(authSource).toMatch(/aria-pressed=\{activeStory === key\}/)
+    expect(homepageStyles).toMatch(/\.auth-marketing-title-line\.is-accent\s*\{[\s\S]*?color: var\(--accent\);/)
+    expect(homepageStyles).not.toContain('linear-gradient(')
+    expect(homepageStyles).toContain('@media (max-width: 700px)')
+    expect(homepageStyles).toContain('@media (max-width: 430px)')
     expect(authSource).toContain("scrollIntoView({ behavior: reduced ? 'auto' : 'smooth'")
   })
 
-  it('uses the real workspace anatomy and keeps the demo genuinely interactive', () => {
-    expect(workspaceDemoSource).toContain("applications as seedApplications")
-    expect(workspaceDemoSource).toContain("application.id === 'eth-data-wang'")
-    expect(workspaceDemoSource).toContain("useState<MarketingWorkspaceTab>('materials')")
-    expect(workspaceDemoSource).toContain('className="mwd-applications"')
-    expect(workspaceDemoSource).toContain('className="mwd-dossier"')
-    expect(workspaceDemoSource).toContain('className="mwd-inspector"')
-    expect(workspaceDemoSource).toContain('onChange={(event) => updateQuery(event.target.value)}')
-    expect(workspaceDemoSource).toContain('onClick={() => setSelectedId(application.id)}')
-    expect(workspaceDemoSource).toContain('onClick={createBackup}')
-    expect(workspaceDemoSource).toContain('onClick={() => restoreTrashItem(item)}')
-    expect(workspaceDemoSource).toContain('toggleCheckedRow')
-    expect(workspaceDemoSource).toContain('localize(application.program)')
-    expect(workspaceDemoSource).toContain('countryDisplayName(selected.school.country, lang)')
-    expect(workspaceDemoSource).toContain("tx('explorer.statusOpen', 'Open')")
-    expect(workspaceDemoSource).toContain("tx('upgrade.manualBackupBadge')")
-    expect(workspaceDemoSource).toContain('formatStorage(storageUsage.used)')
-    expect(workspaceDemoSource).toContain("key: 'mail'")
-    expect(workspaceDemoSource).toContain("key: 'funding'")
-    expect(workspaceDemoSource).toContain('className="mwd-dossier-overview"')
-    expect(workspaceDemoSource).toContain('className="mwd-checklist-tools"')
-    expect(workspaceDemoSource).toContain('className="mwd-checklist-group"')
-    expect(workspaceDemoSource).toContain('className="mwd-correspondence-mode-bar"')
-    expect(workspaceDemoSource).toContain('className="mwd-correspondence-timeline"')
-    expect(workspaceDemoSource).toContain('className="mwd-message-composer"')
-    expect(workspaceDemoSource).toContain('className="mwd-funding-progress"')
-    expect(workspaceDemoSource).toContain('className="mwd-timeline-tasks"')
-    expect(workspaceDemoSource).toContain('<SchoolLogoMark')
-    expect(workspaceDemoSource).toContain('<StatusPill')
-    expect(workspaceDemoSource).toContain('<ProgressRing')
-    expect(workspaceDemoSource).toContain('className="mwd-fee-panel"')
-    expect(workspaceDemoSource).toContain('className="mwd-inspector-deadlines"')
-    expect(workspaceDemoSource).toContain('<AnimatedCheckmark checked={isDone}')
-    expect(marketingStyles).toMatch(
-      /\.mwd-checklist-list > article\.is-complete \.mwd-checklist-row-body > strong::after\s*\{[\s\S]*?scaleX\(1\)/,
-    )
-    expect(marketingStyles).toContain('@keyframes mwd-checklist-complete-flash')
-  })
+  it('ships a complete high-density capture set for every supported language and theme', () => {
+    const languages = ['de', 'en', 'es', 'fr', 'it', 'ja', 'ko', 'pt', 'ru', 'th', 'vi', 'zh']
+    const surfaces = ['correspondence', 'discover', 'funding', 'profile', 'timeline', 'workspace']
+    const expectedFiles = surfaces.flatMap((surface) => languages.flatMap((language) => (
+      ['dark', 'light'].flatMap((theme) => [
+        `${surface}-${language}-${theme}.webp`,
+        `${surface}-${language}-${theme}-mobile.webp`,
+      ])
+    ))).sort()
+    const actualFiles = readdirSync(screenshotDirectory).filter((file) => file.endsWith('.webp')).sort()
 
-  it('introduces Discover and Profile through realistic, interactive product surfaces', () => {
-    expect(productDemoSource).toContain("type DiscoverPreviewMode = 'programs' | 'advisors' | 'compare'")
-    expect(productDemoSource).toContain('className="mpd-discover-search"')
-    expect(productDemoSource).toContain('onChange={(event) => setQuery(event.target.value)}')
-    expect(productDemoSource).toContain('onClick={() => toggleCompare(program.id)}')
-    expect(productDemoSource).toContain('className="mpd-compare-grid"')
-    expect(productDemoSource).toContain("type ProfilePreviewView = 'cards' | 'list'")
-    expect(productDemoSource).toContain('`mpd-profile-preset-sheet${presetOpen ?')
-    expect(productDemoSource).toContain('onClick={() => setSelectedAssetId(asset.id)}')
-    expect(productDemoSource).toContain('setSelectedVersionByAsset((current) =>')
-    expect(marketingStyles).toContain('.mpd-discover-workspace')
-    expect(marketingStyles).toContain('.mpd-profile-card-grid')
-    expect(marketingStyles).toMatch(
-      /@container \(max-width: 650px\)[\s\S]*?\.mpd-discover-workspace\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/,
-    )
-    expect(marketingStyles).toMatch(
-      /@container \(max-width: 430px\)[\s\S]*?\.mpd-profile-add span,[\s\S]*?display: none;/,
-    )
+    expect(actualFiles).toEqual(expectedFiles)
+    expect(actualFiles).toHaveLength(288)
+    expect(captureSource).toContain('deviceScaleFactor: 2')
+    expect(captureSource).toContain('quality: 100')
+    expect(captureSource).toContain("mobile: { width: 390, height: 844")
+    expect(captureSource).toContain("type: 'team-discover'")
+    expect(captureSource).toContain("localStorage.setItem('phd-atlas-session'")
+    for (const file of actualFiles) {
+      const minimumBytes = file.includes('-mobile.webp') ? 80_000 : 200_000
+      expect(statSync(join(screenshotDirectory, file)).size, file).toBeGreaterThan(minimumBytes)
+    }
   })
 
   it('draws mounted checklist checkmarks without an inward press transform', () => {

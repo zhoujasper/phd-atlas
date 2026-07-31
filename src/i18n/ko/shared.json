@@ -4,6 +4,12 @@
   "confirm": "확인",
   "cancel": "취소",
   "done": "완료",
+  "appRecovery": {
+    "brand": "PhD Atlas",
+    "title": "이 화면을 불러오지 못했습니다",
+    "description": "저장된 작업은 그대로 유지됩니다. PhD Atlas를 새로 고쳐 애플리케이션 파일에 다시 연결하세요.",
+    "reload": "PhD Atlas 새로 고침"
+  },
   "filePreview": {
     "preview": "파일 미리보기",
     "document": "문서",

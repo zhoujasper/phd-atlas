@@ -6,6 +6,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { getDict, t, tpl, type Language } from '../../i18n'
 import { I18nContext } from '../hooks/useI18n'
 import { MarkdownTextarea } from './MarkdownTextarea'
+import { resolveCodeEditorExport } from './codeEditorInterop'
 
 function EditorHarness({ initial = '', lang = 'en' }: { initial?: string; lang?: Language }) {
   const [value, setValue] = useState(initial)
@@ -67,6 +68,12 @@ afterEach(() => {
 })
 
 describe('MarkdownTextarea rich editor', () => {
+  it('unwraps the CommonJS editor export before passing it to React', () => {
+    const component = () => null
+    expect(resolveCodeEditorExport({ default: component })).toBe(component)
+    expect(resolveCodeEditorExport(component)).toBe(component)
+  })
+
   it('renders Markdown in place without adding a separate preview panel', () => {
     render(<EditorHarness initial="Needs **portfolio polish**" />)
 

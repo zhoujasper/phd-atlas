@@ -3,27 +3,28 @@ import { StandaloneProviders } from './components/StandaloneProviders'
 import { LaunchScreen } from './components/shared/LaunchScreen'
 import { PUBLIC_EDITION } from './edition'
 import { AdminAccessGate } from './admin/AdminAccessGate'
+import { createRecoverableModuleLoader } from './lazyModuleRecovery'
 
-const App = lazy(() => import('./App'))
-const AdminApp = lazy(() => import('./admin/AdminApp').then((m) => ({ default: m.AdminApp })))
-const ResetPassword = lazy(() =>
+const App = lazy(createRecoverableModuleLoader(() => import('./App')))
+const AdminApp = lazy(createRecoverableModuleLoader(() => import('./admin/AdminApp').then((m) => ({ default: m.AdminApp }))))
+const ResetPassword = lazy(createRecoverableModuleLoader(() =>
   import('./components/screens/ResetPassword').then((m) => ({ default: m.ResetPassword })),
-)
-const ShareViewer = lazy(() =>
+))
+const ShareViewer = lazy(createRecoverableModuleLoader(() =>
   import('./components/screens/ShareViewer').then((m) => ({ default: m.ShareViewer })),
-)
-const AssetUploadViewer = lazy(() =>
+))
+const AssetUploadViewer = lazy(createRecoverableModuleLoader(() =>
   import('./components/screens/AssetUploadViewer').then((m) => ({ default: m.AssetUploadViewer })),
-)
-const UpgradeProScreen = lazy(() =>
+))
+const UpgradeProScreen = lazy(createRecoverableModuleLoader(() =>
   import('./components/screens/UpgradeProScreen').then((m) => ({ default: m.UpgradeProScreen })),
-)
-const TeamInviteScreen = lazy(() =>
+))
+const TeamInviteScreen = lazy(createRecoverableModuleLoader(() =>
   import('./components/screens/TeamInviteScreen').then((m) => ({ default: m.TeamInviteScreen })),
-)
-const TeamJoinScreen = lazy(() =>
+))
+const TeamJoinScreen = lazy(createRecoverableModuleLoader(() =>
   import('./components/screens/TeamJoinScreen').then((m) => ({ default: m.TeamJoinScreen })),
-)
+))
 
 function RouteFallback() {
   // Route-shaped skeleton while the main app chunk loads — message is language-agnostic

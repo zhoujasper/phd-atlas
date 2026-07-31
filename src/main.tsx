@@ -16,20 +16,27 @@ import './styles/project-footer.css'
 import './styles/application-pipeline.css'
 import './styles/mobile.css'
 import './styles/marketing.css'
+import './styles/homepage.css'
 import { RootRoutes } from './RootRoutes'
 import { startConnectivityMonitoring } from './connectivity'
 import { registerServiceWorker } from './serviceWorker'
+import { installLazyModuleRecovery } from './lazyModuleRecovery'
+import { AppErrorBoundary } from './components/shared/AppErrorBoundary'
 // Capture beforeinstallprompt before the lazy App chunk loads — browsers may
 // fire it during SW activation while the main shell is still hydrating.
 import { capturePwaInstallPrompt } from './components/hooks/usePwaInstall'
 
 capturePwaInstallPrompt()
+const stopLazyModuleRecovery = installLazyModuleRecovery()
 const stopConnectivityMonitoring = startConnectivityMonitoring()
 import.meta.hot?.dispose(stopConnectivityMonitoring)
+import.meta.hot?.dispose(stopLazyModuleRecovery)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <RootRoutes />
+    <AppErrorBoundary>
+      <RootRoutes />
+    </AppErrorBoundary>
   </StrictMode>,
 )
 

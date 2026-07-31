@@ -5,6 +5,66 @@ section per version using the exact heading `## v<package.json version>`.
 Automation extracts only the matching section, so older notes remain immutable
 history while the next version can be prepared in the same file.
 
+## v0.1.0-beta.8
+
+**Prerelease - Beta / 预发布版本。** Back up the complete workspace before
+upgrading.
+
+> **Upgrade path:** Beta.6 and Beta.7 installations can use the automatic
+> update flow in Admin. Beta.5 and earlier installations must first complete
+> the documented manual transition to Beta.6, then update to Beta.8.
+>
+> **升级路径：** Beta.6 与 Beta.7 可直接在管理后台使用自动更新。Beta.5 及更早
+> 版本必须先按 Beta.6 Release 中的说明手动过渡到 Beta.6，再升级到 Beta.8。
+
+### Highlights
+
+- **Navigation recovers instead of becoming a white page.** Routes, workspace
+  screens, dialogs, profile editors, the rich-text editor, and language packs
+  now share one bounded lazy-module recovery path. Recognized stale chunk and
+  network failures retry safely, and persistent failures retain a localized
+  reload surface without exposing raw exceptions.
+- **The editor opens reliably in Vite development.** The lazy Markdown source
+  editor now normalizes `react-simple-code-editor`'s CommonJS/ESM wrapper at a
+  single typed boundary, fixing the application, New application, and profile
+  snippet paths that could otherwise pass a module object to React.
+- **Concurrent API startup no longer races the upload vault.** Migration uses
+  an atomic PID/token lock with live-owner waiting, terminated-owner cleanup,
+  owner-checked release, and the existing journal/rollback guarantees.
+- **The public homepage shows the real product.** Hand-built replicas have
+  been replaced by actual Checklist, Correspondence, Funding, Timeline,
+  Discover, and Profile screens. The tour preserves the previous successful
+  image while the next source decodes and falls back to Checklist if an asset
+  cannot load.
+- **A complete responsive product gallery.** The release includes 288 sharp
+  captures: six workflows across 12 languages, light and dark themes, and
+  native 1600x900 desktop plus 390x844 phone layouts at DPR 2. The public
+  English and Chinese READMEs use the same responsive image set. Environments
+  without `matchMedia` safely retain the desktop capture.
+
+### 中文摘要
+
+- **页面异常可恢复，不再直接白屏。** 路由、工作区页面、弹窗、个人与 Team 资料
+  编辑器、富文本编辑器和语言包共用一套有界懒加载恢复机制；可识别的旧资源或网络
+  失败会安全重试，持续失败则保留本地化重新加载页面，不向界面暴露原始异常。
+- **Vite 开发环境中的编辑器可稳定打开。** Markdown 源码编辑器仍按需加载，并在
+  单一带类型边界处理 `react-simple-code-editor` 的 CommonJS/ESM 包装，修复打开
+  申请、新建申请和新增资料片段时把模块对象传给 React 的问题。
+- **多个 API 进程启动时不再争用上传保险库。** 迁移使用带 PID 与令牌的原子锁，
+  等待存活所有者、清理已终止所有者，并保留原有迁移日志和回滚保障。
+- **公开首页展示真实产品。** 手工产品替身已替换为真实 Checklist、通信、Funding、
+  Timeline、Discover 和 Profile 界面；下一张截图完成解码前保留上一张成功图片，
+  资源失败时回退到对应 Checklist 截图。
+- **完整响应式产品图集。** 本版本包含 288 张清晰截图：6 个工作流 x 12 种语言 x
+  亮色/暗色 x 桌面/手机。桌面为 1600x900、手机为真实 390x844 布局，均以 DPR 2
+  采集；公开版中英文 README 使用同一套响应式图片。未提供 `matchMedia` 的环境会安全
+  保留桌面截图。
+
+Full details / 完整记录:
+[English changelog](https://github.com/zhoujasper/phd-atlas/blob/v0.1.0-beta.8/CHANGELOG.md)
+·
+[简体中文更新日志](https://github.com/zhoujasper/phd-atlas/blob/v0.1.0-beta.8/CHANGELOG.zh-CN.md)
+
 ## v0.1.0-beta.7
 
 **Prerelease — Beta / 预发布版本。** Back up the complete workspace before

@@ -6,6 +6,11 @@ describe('Vite workspace isolation', () => {
     expect(viteConfig.optimizeDeps?.entries).toEqual(['index.html'])
   })
 
+  it('unwraps the CommonJS source editor before React renders it', () => {
+    expect(viteConfig.optimizeDeps?.include).toContain('react-simple-code-editor')
+    expect(viteConfig.optimizeDeps?.needsInterop).toContain('react-simple-code-editor')
+  })
+
   it('does not watch disposable browser and test artifacts', () => {
     expect(viteConfig.server?.watch?.ignored).toContain('**/logs/tmp/**')
   })

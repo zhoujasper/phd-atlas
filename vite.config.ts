@@ -19,7 +19,10 @@ export default defineConfig({
     // entry. Browser QA profiles live under logs/tmp and contain extension
     // pages with Chrome-only imports that are not application dependencies.
     entries: ['index.html'],
-    include: ['react', 'react-dom/client', 'lucide-react', 'clsx'],
+    include: ['react', 'react-dom/client', 'lucide-react', 'clsx', 'react-simple-code-editor'],
+    // react-simple-code-editor advertises __esModule from CommonJS. Vite 8's
+    // on-demand optimizer otherwise hands React the wrapping exports object.
+    needsInterop: ['react-simple-code-editor'],
   },
   build: {
     sourcemap: false,

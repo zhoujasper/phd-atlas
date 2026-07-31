@@ -4,6 +4,12 @@
   "confirm": "Confirm",
   "cancel": "Cancel",
   "done": "Done",
+  "appRecovery": {
+    "brand": "PhD Atlas",
+    "title": "This view could not be loaded",
+    "description": "Your saved work is still available. Reload PhD Atlas to reconnect the application files.",
+    "reload": "Reload PhD Atlas"
+  },
   "filePreview": {
     "preview": "File preview",
     "document": "Document",

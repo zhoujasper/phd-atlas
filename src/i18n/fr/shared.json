@@ -4,6 +4,12 @@
   "confirm": "Confirmer",
   "cancel": "Annuler",
   "done": "Terminé",
+  "appRecovery": {
+    "brand": "PhD Atlas",
+    "title": "Impossible de charger cette vue",
+    "description": "Votre travail enregistré reste disponible. Rechargez PhD Atlas pour reconnecter les fichiers de l’application.",
+    "reload": "Recharger PhD Atlas"
+  },
   "filePreview": {
     "preview": "Aperçu du fichier",
     "document": "Document",

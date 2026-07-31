@@ -4,6 +4,12 @@
   "confirm": "Xác nhận",
   "cancel": "Hủy",
   "done": "Xong",
+  "appRecovery": {
+    "brand": "PhD Atlas",
+    "title": "Không thể tải màn hình này",
+    "description": "Nội dung đã lưu của bạn vẫn còn nguyên. Hãy tải lại PhD Atlas để kết nối lại các tệp ứng dụng.",
+    "reload": "Tải lại PhD Atlas"
+  },
   "filePreview": {
     "preview": "Xem trước tệp",
     "document": "Tài liệu",

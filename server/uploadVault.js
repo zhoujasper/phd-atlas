@@ -19,6 +19,10 @@ const MAX_HEADER_BYTES = 64 * 1024
 const JOURNAL_NAME = '.upload-vault-migration.json'
 const JOURNAL_PREVIOUS_NAME = '.upload-vault-migration.previous.json'
 const JOURNAL_TEMP_NAME = '.upload-vault-migration.next.json'
+const MIGRATION_LOCK_DIRECTORY = '.upload-vault-migration.lock'
+const MIGRATION_LOCK_OWNER = 'owner.json'
+const MIGRATION_LOCK_RETRY_MS = 60
+const MIGRATION_LOCK_OWNER_GRACE_MS = 2_000
 const NEXT_SUFFIX = '.vault-next'
 const PREVIOUS_SUFFIX = '.vault-previous'
 
@@ -299,6 +303,75 @@ async function durableJsonWrite(root, value) {
   }
 }
 
+function delay(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs))
+}
+
+function processIsAlive(processId) {
+  if (!Number.isInteger(processId) || processId <= 0) return false
+  try {
+    process.kill(processId, 0)
+    return true
+  } catch (error) {
+    return error?.code !== 'ESRCH'
+  }
+}
+
+async function abandonedMigrationLock(lockDirectory) {
+  try {
+    const owner = JSON.parse(await fs.readFile(path.join(lockDirectory, MIGRATION_LOCK_OWNER), 'utf8'))
+    return !processIsAlive(Number(owner?.processId))
+  } catch (error) {
+    if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error
+    try {
+      const stat = await fs.stat(lockDirectory)
+      return Date.now() - stat.mtimeMs >= MIGRATION_LOCK_OWNER_GRACE_MS
+    } catch (statError) {
+      if (statError?.code === 'ENOENT') return false
+      throw statError
+    }
+  }
+}
+
+async function acquireMigrationLock(root) {
+  const lockDirectory = path.join(root, MIGRATION_LOCK_DIRECTORY)
+  const token = randomUUID()
+
+  while (true) {
+    try {
+      await fs.mkdir(lockDirectory)
+      try {
+        await fs.writeFile(
+          path.join(lockDirectory, MIGRATION_LOCK_OWNER),
+          JSON.stringify({ processId: process.pid, token, createdAt: new Date().toISOString() }),
+          { encoding: 'utf8', flag: 'wx', mode: 0o600 },
+        )
+      } catch (error) {
+        await fs.rm(lockDirectory, { recursive: true, force: true }).catch(() => undefined)
+        throw error
+      }
+
+      return async () => {
+        try {
+          const owner = JSON.parse(await fs.readFile(path.join(lockDirectory, MIGRATION_LOCK_OWNER), 'utf8'))
+          if (owner?.token !== token) return
+        } catch (error) {
+          if (error?.code === 'ENOENT') return
+          throw error
+        }
+        await fs.rm(lockDirectory, { recursive: true, force: true })
+      }
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+      if (await abandonedMigrationLock(lockDirectory)) {
+        await fs.rm(lockDirectory, { recursive: true, force: true }).catch(() => undefined)
+        continue
+      }
+      await delay(MIGRATION_LOCK_RETRY_MS)
+    }
+  }
+}
+
 async function readJournal(root) {
   for (const name of [JOURNAL_NAME, JOURNAL_PREVIOUS_NAME]) {
     try {
@@ -547,8 +620,7 @@ export function createUploadVault({ root, policyProvider = () => ({}), migration
     return { path: paths.target, size, encrypted: selected.encryptionAtRest }
   }
 
-  async function migrateUnlocked(policy = policyProvider()) {
-    await ensureReady()
+  async function migrateWithFileLock(policy) {
     const targetPolicy = normalizedPolicy(policy)
     const priorJournal = await readJournal(absoluteRoot)
     const recoveryNames = new Set([
@@ -624,6 +696,16 @@ export function createUploadVault({ root, policyProvider = () => ({}), migration
       migrated: journal.completed.length,
       encryptionAtRest: targetPolicy.encryptionAtRest,
       encryptionAlgorithm: targetPolicy.encryptionAlgorithm,
+    }
+  }
+
+  async function migrateUnlocked(policy) {
+    await ensureReady()
+    const releaseMigrationLock = await acquireMigrationLock(absoluteRoot)
+    try {
+      return await migrateWithFileLock(policy === undefined ? policyProvider() : policy)
+    } finally {
+      await releaseMigrationLock()
     }
   }
 

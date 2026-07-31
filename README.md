@@ -30,6 +30,70 @@ complete Team collaboration workspace: owner, teacher, and student roles,
 invitations, scoped workspaces, shared applications and resources, audit
 history, and the same permission checks used by the private source build.
 
+## Real interface
+
+Every image below is captured from the running product, not a hand-drawn
+marketing mockup. GitHub automatically selects the matching light or dark
+capture, and narrow screens receive the real 390 x 844 mobile layout instead of
+a scaled-down desktop image.
+
+<picture>
+  <source media="(prefers-color-scheme: dark) and (max-width: 700px)" srcset="public/assets/product-tour/workspace-en-dark-mobile.webp">
+  <source media="(max-width: 700px)" srcset="public/assets/product-tour/workspace-en-light-mobile.webp">
+  <source media="(prefers-color-scheme: dark)" srcset="public/assets/product-tour/workspace-en-dark.webp">
+  <img src="public/assets/product-tour/workspace-en-light.webp" alt="PhD Atlas Applications workspace showing the ETH Zurich checklist, application Explorer, Dossier, and Inspector" width="1600">
+</picture>
+
+<details>
+<summary><strong>Open five more real product views</strong></summary>
+
+### Correspondence
+
+<picture>
+  <source media="(prefers-color-scheme: dark) and (max-width: 700px)" srcset="public/assets/product-tour/correspondence-en-dark-mobile.webp">
+  <source media="(max-width: 700px)" srcset="public/assets/product-tour/correspondence-en-light-mobile.webp">
+  <source media="(prefers-color-scheme: dark)" srcset="public/assets/product-tour/correspondence-en-dark.webp">
+  <img src="public/assets/product-tour/correspondence-en-light.webp" alt="PhD Atlas correspondence timeline and email composer" width="1600">
+</picture>
+
+### Tuition and scholarships
+
+<picture>
+  <source media="(prefers-color-scheme: dark) and (max-width: 700px)" srcset="public/assets/product-tour/funding-en-dark-mobile.webp">
+  <source media="(max-width: 700px)" srcset="public/assets/product-tour/funding-en-light-mobile.webp">
+  <source media="(prefers-color-scheme: dark)" srcset="public/assets/product-tour/funding-en-dark.webp">
+  <img src="public/assets/product-tour/funding-en-light.webp" alt="PhD Atlas tuition, scholarships, and funding workspace" width="1600">
+</picture>
+
+### Timeline
+
+<picture>
+  <source media="(prefers-color-scheme: dark) and (max-width: 700px)" srcset="public/assets/product-tour/timeline-en-dark-mobile.webp">
+  <source media="(max-width: 700px)" srcset="public/assets/product-tour/timeline-en-light-mobile.webp">
+  <source media="(prefers-color-scheme: dark)" srcset="public/assets/product-tour/timeline-en-dark.webp">
+  <img src="public/assets/product-tour/timeline-en-light.webp" alt="PhD Atlas application event timeline" width="1600">
+</picture>
+
+### Discover
+
+<picture>
+  <source media="(prefers-color-scheme: dark) and (max-width: 700px)" srcset="public/assets/product-tour/discover-en-dark-mobile.webp">
+  <source media="(max-width: 700px)" srcset="public/assets/product-tour/discover-en-light-mobile.webp">
+  <source media="(prefers-color-scheme: dark)" srcset="public/assets/product-tour/discover-en-dark.webp">
+  <img src="public/assets/product-tour/discover-en-light.webp" alt="PhD Atlas Discover workspace with program filters, verified-result area, and evidence inspector" width="1600">
+</picture>
+
+### Reusable profile
+
+<picture>
+  <source media="(prefers-color-scheme: dark) and (max-width: 700px)" srcset="public/assets/product-tour/profile-en-dark-mobile.webp">
+  <source media="(max-width: 700px)" srcset="public/assets/product-tour/profile-en-light-mobile.webp">
+  <source media="(prefers-color-scheme: dark)" srcset="public/assets/product-tour/profile-en-dark.webp">
+  <img src="public/assets/product-tour/profile-en-light.webp" alt="PhD Atlas reusable profile and application-material library" width="1600">
+</picture>
+
+</details>
+
 ## Product tour
 
 ### Application command center

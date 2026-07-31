@@ -755,12 +755,6 @@ export function MarketingProductDemo({
       className={`marketing-workspace-demo marketing-product-demo is-${surface}${className ? ` ${className}` : ''}`}
       aria-label={surface === 'discover' ? tx('discover.subtitle') : tx('profile.subtitle')}
     >
-      <header className="mwd-window-bar mpd-window-bar">
-        <span className="mwd-window-dots" aria-hidden="true"><i /><i /><i /></span>
-        <strong><GraduationCap size={12} aria-hidden="true" /> {tx('appTitle')}</strong>
-        <span className="mwd-global-search" aria-hidden="true"><Search size={10} /><i /></span>
-        <span className="mwd-window-actions" aria-hidden="true"><i /><i /><i /></span>
-      </header>
       <div className="mpd-shell">
         <MarketingDemoRail active={surface} i18n={i18n} />
         {surface === 'discover' ? (

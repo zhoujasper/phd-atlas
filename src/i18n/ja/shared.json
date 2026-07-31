@@ -4,6 +4,12 @@
   "confirm": "確認する",
   "cancel": "キャンセル",
   "done": "完了",
+  "appRecovery": {
+    "brand": "PhD Atlas",
+    "title": "この画面を読み込めませんでした",
+    "description": "保存済みの内容は保持されています。PhD Atlas を再読み込みしてアプリケーションファイルに再接続してください。",
+    "reload": "PhD Atlas を再読み込み"
+  },
   "filePreview": {
     "preview": "ファイルプレビュー",
     "document": "文書",

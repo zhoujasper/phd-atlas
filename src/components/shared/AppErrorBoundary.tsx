@@ -1,0 +1,66 @@
+import {
+  Component,
+  type ErrorInfo,
+  type ReactNode,
+} from 'react'
+import { GraduationCap, RefreshCw } from 'lucide-react'
+import { StandaloneProviders } from '../StandaloneProviders'
+import { useI18n } from '../hooks/useI18n'
+
+function AppRecoveryScreen({ onReload }: { onReload: () => void }) {
+  const { tx } = useI18n()
+
+  return (
+    <main className="app-recovery-screen" role="alert">
+      <span className="app-recovery-mark" aria-hidden="true">
+        <GraduationCap size={24} strokeWidth={2} />
+      </span>
+      <p className="app-recovery-brand">{tx('appRecovery.brand')}</p>
+      <h1>{tx('appRecovery.title')}</h1>
+      <p>{tx('appRecovery.description')}</p>
+      <button type="button" onClick={onReload}>
+        <RefreshCw size={16} aria-hidden="true" />
+        <span>{tx('appRecovery.reload')}</span>
+      </button>
+    </main>
+  )
+}
+
+type AppErrorBoundaryProps = {
+  children: ReactNode
+  onReload?: () => void
+}
+
+type AppErrorBoundaryState = {
+  failed: boolean
+}
+
+export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundaryState> {
+  state: AppErrorBoundaryState = { failed: false }
+
+  static getDerivedStateFromError(): AppErrorBoundaryState {
+    return { failed: true }
+  }
+
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    console.error('[PhD Atlas] The application render tree was recovered.', error, info)
+  }
+
+  private reload = () => {
+    if (this.props.onReload) {
+      this.props.onReload()
+      return
+    }
+    window.location.reload()
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children
+
+    return (
+      <StandaloneProviders>
+        <AppRecoveryScreen onReload={this.reload} />
+      </StandaloneProviders>
+    )
+  }
+}

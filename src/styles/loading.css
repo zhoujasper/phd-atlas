@@ -68,6 +68,85 @@ button[aria-busy="true"]:disabled {
   filter: none;
 }
 
+.app-recovery-screen {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: max(32px, env(safe-area-inset-top)) 24px max(32px, env(safe-area-inset-bottom));
+  color: var(--text);
+  text-align: center;
+  background: var(--canvas);
+}
+
+.app-recovery-mark {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 14px;
+  color: var(--accent);
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--surface);
+}
+
+.app-recovery-brand {
+  margin: 0 0 18px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.app-recovery-screen h1 {
+  max-width: 560px;
+  margin: 0;
+  font-size: clamp(24px, 4vw, 34px);
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.app-recovery-screen > p:not(.app-recovery-brand) {
+  max-width: 560px;
+  margin: 12px 0 24px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.app-recovery-screen button {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 16px;
+  color: var(--text-inverse);
+  font: inherit;
+  font-weight: 700;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--accent);
+  cursor: pointer;
+  transition: transform 140ms var(--ease-fluid), filter 140ms var(--ease-fluid);
+}
+
+.app-recovery-screen button:hover {
+  filter: brightness(0.96);
+  transform: translateY(-1px);
+}
+
+.app-recovery-screen button:active {
+  transform: scale(0.98);
+}
+
+.app-recovery-screen button:focus-visible {
+  outline: 3px solid var(--accent-ring);
+  outline-offset: 3px;
+}
+
 @keyframes page-flow-in {
   from {
     opacity: 0.76;
@@ -904,6 +983,15 @@ button[aria-busy="true"]:disabled {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .app-recovery-screen button {
+    transition: none;
+  }
+
+  .app-recovery-screen button:hover,
+  .app-recovery-screen button:active {
+    transform: none;
+  }
+
   .pending-label-spinner,
   .pending-label-dots {
     animation: none;
@@ -919,5 +1007,17 @@ button[aria-busy="true"]:disabled {
   .content-flow-enter,
   .launch-screen.is-exiting {
     transform: none !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .app-recovery-mark,
+  .app-recovery-screen button {
+    border: 1px solid ButtonText;
+  }
+
+  .app-recovery-screen button {
+    color: ButtonText;
+    background: ButtonFace;
   }
 }

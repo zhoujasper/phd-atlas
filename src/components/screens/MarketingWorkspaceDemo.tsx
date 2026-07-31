@@ -43,6 +43,10 @@ import { AnimatedCheckmark } from '../shared/AnimatedCheckmark'
 import { ProgressRing } from '../shared/ProgressRing'
 import { SchoolLogoMark } from '../shared/SchoolLogo'
 import { StatusPill } from '../shared/StatusPill'
+import cambridgeLogoUrl from '../../../server/school-logo-catalog/assets/university-of-cambridge-e92e8268f8.png'
+import ethLogoUrl from '../../../server/school-logo-catalog/assets/eth-zurich-bdcc94a0fb.png'
+import mitLogoUrl from '../../../server/school-logo-catalog/assets/massachusetts-institute-of-technology-18dd08a7f9.png'
+import stanfordLogoUrl from '../../../server/school-logo-catalog/assets/stanford-university-27faf32e46.png'
 
 export type MarketingWorkspaceTab = 'dossier' | 'materials' | 'mail' | 'funding' | 'timeline'
 export type MarketingProFeature = 'capacity' | 'backup' | 'recovery' | 'storage'
@@ -59,23 +63,11 @@ const previewApplicationIds = [
   'cambridge-nlp-chen',
 ]
 
-function previewLogoDataUrl(mark: string, background: string, width = 64) {
-  const fontSize = mark.length === 1 ? 38 : mark.length === 3 ? 23 : 19
-  const svg = [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} 64">`,
-    `<rect width="${width}" height="64" rx="11" fill="${background}"/>`,
-    `<path d="M12 49h${width - 24}" stroke="rgba(255,255,255,.32)" stroke-width="2" stroke-linecap="round"/>`,
-    `<text x="${width / 2}" y="39" text-anchor="middle" fill="#fff" font-family="Arial,Helvetica,sans-serif" font-size="${fontSize}" font-weight="800" letter-spacing="-1">${mark}</text>`,
-    '</svg>',
-  ].join('')
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
-}
-
 const previewSchoolLogos: Record<string, string> = {
-  'stanford-hci-lee': previewLogoDataUrl('S', '#8c1515'),
-  'mit-robotics-kim': previewLogoDataUrl('MIT', '#a31f34', 88),
-  'eth-data-wang': previewLogoDataUrl('ETH', '#1f407a', 96),
-  'cambridge-nlp-chen': previewLogoDataUrl('CAM', '#0e4a79', 96),
+  'stanford-hci-lee': stanfordLogoUrl,
+  'mit-robotics-kim': mitLogoUrl,
+  'eth-data-wang': ethLogoUrl,
+  'cambridge-nlp-chen': cambridgeLogoUrl,
 }
 
 const previewApplications = previewApplicationIds
@@ -443,16 +435,6 @@ export function MarketingWorkspaceDemo({
       data-feature={feature}
       aria-label={tx('appDesc')}
     >
-      <header className="mwd-window-bar">
-        <span className="mwd-window-dots" aria-hidden="true"><i /><i /><i /></span>
-        <strong><GraduationCap size={12} aria-hidden="true" /> {tx('appTitle')}</strong>
-        <span className="mwd-global-search" aria-hidden="true">
-          <Search size={10} />
-          <i />
-        </span>
-        <span className="mwd-window-actions" aria-hidden="true"><i /><i /><i /></span>
-      </header>
-
       <div className="mwd-shell">
         <nav className="mwd-rail" aria-label={tx('primaryNavigation')}>
           <span className="mwd-rail-brand" aria-hidden="true"><GraduationCap size={14} /></span>

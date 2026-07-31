@@ -2,6 +2,7 @@ import {
   ArrowDown,
   ArrowRight,
   Check,
+  ClipboardList,
   Compass,
   Copy,
   Eye,
@@ -13,15 +14,17 @@ import {
   Mail,
   Moon,
   RefreshCw,
+  Settings,
   ShieldCheck,
   Sun,
   UserRound,
   Users,
 } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { normalizeErrorMessage } from '../../errorMessages'
 import { PUBLIC_DISTRIBUTION } from '../../edition'
 import type { Language } from '../../i18n'
+import { createRecoverableModuleLoader } from '../../lazyModuleRecovery'
 import { useDeadlineCountdown } from '../hooks/useDeadlineCountdown'
 import { useI18n, useI18nValue } from '../hooks/useI18n'
 import { useMarketingReveal, usePointerTilt } from '../hooks/useMarketingMotion'
@@ -29,16 +32,18 @@ import { useTheme } from '../hooks/useTheme'
 import { PendingLabel } from '../shared/PendingLabel'
 import { ProjectFooter } from '../shared/ProjectFooter'
 import { Select } from '../shared/Select'
-import { MarketingProductDemo } from './MarketingProductDemo'
-import { MarketingWorkspaceDemo, type MarketingWorkspaceTab } from './MarketingWorkspaceDemo'
+import { MarketingProductScreenshot } from './MarketingProductScreenshot'
 import { TurnstileChallenge } from '../shared/TurnstileChallenge'
+
+const MarketingFeatureTour = lazy(createRecoverableModuleLoader(() => import('./MarketingFeatureTour').then((module) => ({
+  default: module.MarketingFeatureTour,
+}))))
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const EMAIL_CODE_COOLDOWN_SECONDS = 45
 
 type AuthMode = 'login' | 'register' | 'forgot'
 type AuthModeDirection = 'forward' | 'back'
-type AuthStory = 'applications' | 'discover' | 'profile'
 type HumanChallenge =
   | { provider?: 'math'; question: string; token: string }
   | { provider: 'turnstile'; siteKey: string; action: string }
@@ -88,15 +93,13 @@ export function AuthScreen({
   const parentI18n = useI18n()
   const { tx, format, lang } = useI18nValue(
     parentI18n.lang,
-    ['core', 'shared', 'settings', 'workspace', 'discover', 'profile'],
+    ['core', 'shared', 'dashboard', 'workspace', 'dossier', 'discover', 'profile', 'settings', 'team'],
   )
   const { theme, toggleTheme } = useTheme()
   const heroTitleLines = marketingHeroTitleLines(tx('authMarketingHeroTitle'))
   const pageRef = useRef<HTMLElement | null>(null)
   const productStageRef = useRef<HTMLDivElement | null>(null)
   const [mode, setMode] = useState<AuthMode>('login')
-  const [activeStory, setActiveStory] = useState<AuthStory>('applications')
-  const [activeStoryTab, setActiveStoryTab] = useState<MarketingWorkspaceTab>('materials')
   const [modeDirection, setModeDirection] = useState<AuthModeDirection>('forward')
   const [modeAnimKey, setModeAnimKey] = useState(0)
   const modeStageRef = useRef<HTMLDivElement | null>(null)
@@ -295,29 +298,40 @@ export function AuthScreen({
     target.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' })
   }
 
-  const stories: Array<{
-    key: AuthStory
+  const accessFeatures: Array<{
+    key: string
     title: string
-    body: string
     Icon: typeof LayoutList
   }> = [
     {
+      key: 'dashboard',
+      title: tx('nav.dashboard'),
+      Icon: ClipboardList,
+    },
+    {
       key: 'applications',
       title: tx('nav.applications'),
-      body: tx('authMarketingTrackBody'),
       Icon: LayoutList,
     },
     {
       key: 'discover',
       title: tx('discover.title'),
-      body: tx('discover.subtitle'),
       Icon: Compass,
     },
     {
       key: 'profile',
       title: tx('profile.title'),
-      body: tx('profile.subtitle'),
       Icon: UserRound,
+    },
+    {
+      key: 'team',
+      title: tx('nav.team'),
+      Icon: Users,
+    },
+    {
+      key: 'settings',
+      title: tx('authMarketingContinuityTitle'),
+      Icon: Settings,
     },
   ]
 
@@ -405,7 +419,14 @@ export function AuthScreen({
           data-marketing-visible="true"
         >
           <div className="auth-product-stage-light" aria-hidden="true" />
-          <MarketingWorkspaceDemo className="auth-real-workspace" />
+          <MarketingProductScreenshot
+            language={lang}
+            theme={theme}
+            alt={tx('authMarketingScreenshotAlt')}
+            caption={tx('authMarketingScreenshotCaption')}
+            className="auth-real-workspace"
+            priority
+          />
         </div>
 
         <a className="auth-marketing-scroll-cue" href="#auth-story">
@@ -414,54 +435,16 @@ export function AuthScreen({
         </a>
       </section>
 
-      <section className="auth-story" id="auth-story" aria-labelledby="auth-story-title">
-        <div className="auth-story-heading" data-marketing-reveal>
-          <h2 id="auth-story-title">{tx('authMarketingStoryTitle')}</h2>
-          <p>{tx('authMarketingStoryBody')}</p>
-        </div>
-        <div className="auth-story-layout">
-          <div className="auth-story-selector" data-marketing-reveal>
-            {stories.map(({ key, title, body, Icon }, index) => (
-              <button
-                key={key}
-                type="button"
-                className={activeStory === key ? 'is-active' : ''}
-                aria-pressed={activeStory === key}
-                onClick={() => setActiveStory(key)}
-              >
-                <span className="auth-story-index">0{index + 1}</span>
-                <span className="auth-story-icon"><Icon size={17} aria-hidden="true" /></span>
-                <span>
-                  <strong>{title}</strong>
-                  <small>{body}</small>
-                </span>
-              </button>
-            ))}
-          </div>
-
-          <div className="auth-story-preview" data-story={activeStory} data-marketing-reveal aria-live="polite">
-            {activeStory === 'applications' ? (
-              <MarketingWorkspaceDemo
-                className="auth-story-real-workspace"
-                activeTab={activeStoryTab}
-                onTabChange={setActiveStoryTab}
-              />
-            ) : (
-              <MarketingProductDemo
-                className="auth-story-product-workspace"
-                surface={activeStory}
-              />
-            )}
-          </div>
-        </div>
-      </section>
+      <Suspense fallback={<div className="auth-tour-loading" aria-hidden="true" />}>
+        <MarketingFeatureTour />
+      </Suspense>
 
       <section className="auth-access-section" id="auth-access" aria-labelledby="auth-access-title">
         <div className="auth-access-copy" data-marketing-reveal>
           <h2 id="auth-access-title">{tx('authMarketingAccessTitle')}</h2>
           <p>{tx('authMarketingAccessBody')}</p>
           <ul>
-            {stories.map(({ key, title, Icon }) => (
+            {accessFeatures.map(({ key, title, Icon }) => (
               <li key={key}><Icon size={14} aria-hidden="true" /><span>{title}</span></li>
             ))}
           </ul>

@@ -4,6 +4,12 @@
   "confirm": "ยืนยัน",
   "cancel": "ยกเลิก",
   "done": "เสร็จแล้ว",
+  "appRecovery": {
+    "brand": "PhD Atlas",
+    "title": "ไม่สามารถโหลดหน้าจอนี้ได้",
+    "description": "งานที่บันทึกไว้ของคุณยังคงอยู่ โปรดโหลด PhD Atlas ใหม่เพื่อเชื่อมต่อไฟล์แอปพลิเคชันอีกครั้ง",
+    "reload": "โหลด PhD Atlas ใหม่"
+  },
   "filePreview": {
     "preview": "ตัวอย่างไฟล์",
     "document": "เอกสาร",

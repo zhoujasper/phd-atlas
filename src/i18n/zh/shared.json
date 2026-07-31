@@ -4,6 +4,12 @@
   "confirm": "确认",
   "cancel": "取消",
   "done": "完成",
+  "appRecovery": {
+    "brand": "PhD Atlas",
+    "title": "当前页面未能加载",
+    "description": "你已保存的内容仍然保留。请重新加载 PhD Atlas 以重新连接应用文件。",
+    "reload": "重新加载 PhD Atlas"
+  },
   "filePreview": {
     "preview": "文件预览",
     "document": "文档",
