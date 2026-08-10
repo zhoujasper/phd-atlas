@@ -13,7 +13,7 @@ export type MarketingScreenshotSurface =
 const MOBILE_SCREENSHOT_QUERY = '(max-width: 700px)'
 
 function screenshotUrl(surface: MarketingScreenshotSurface, language: Language, theme: Theme, mobile: boolean) {
-  return `/assets/product-tour/${surface}-${language}-${theme}${mobile ? '-mobile' : ''}.webp?v=2x-20260731c`
+  return `/assets/product-tour/${surface}-${language}-${theme}${mobile ? '-mobile' : ''}.webp?v=2x-q82-20260801`
 }
 
 function usesMobileScreenshotCapture() {

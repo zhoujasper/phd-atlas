@@ -1,6 +1,8 @@
+import { memo } from 'react'
+
 export type AnimatedCheckmarkVariant = 'circle' | 'square'
 
-export function AnimatedCheckmark({
+export const AnimatedCheckmark = memo(function AnimatedCheckmark({
   checked,
   variant = 'circle',
   size = 20,
@@ -33,4 +35,4 @@ export function AnimatedCheckmark({
       />
     </svg>
   )
-}
+})

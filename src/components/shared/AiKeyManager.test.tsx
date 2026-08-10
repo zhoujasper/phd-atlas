@@ -19,6 +19,10 @@ const key: AiKey = {
   label: 'Research key',
   model: 'gpt-4.1-mini',
   baseUrl: 'https://api.openai.com/v1',
+  maxConcurrency: 4,
+  requestMode: 'auto',
+  weight: 50,
+  enabled: true,
   createdAt: '2026-07-13T00:00:00.000Z',
   updatedAt: '2026-07-13T00:00:00.000Z',
   lastUsedAt: '2026-07-17T00:00:00.000Z',
@@ -67,7 +71,9 @@ describe('AiKeyManager usage metadata', () => {
     )
 
     await user.click(screen.getByRole('button', { name: 'Add key' }))
-    await user.type(screen.getByLabelText('API key'), 'sk-test-123456789')
+    const apiKeyInput = screen.getByLabelText('API key')
+    expect(apiKeyInput).toHaveAttribute('aria-required', 'true')
+    await user.type(apiKeyInput, 'sk-test-123456789')
     const addButton = screen.getAllByRole('button', { name: 'Add key' })
       .find((button) => !button.hasAttribute('disabled'))
     await user.click(addButton!)
@@ -76,7 +82,91 @@ describe('AiKeyManager usage metadata', () => {
       scope: 'personal',
       provider: 'openai',
       apiKey: 'sk-test-123456789',
+      maxConcurrency: 4,
+      requestMode: 'auto',
+      weight: 50,
+      enabled: true,
     })))
+  })
+
+  it('edits the saved per-key concurrency up to 2500', async () => {
+    const user = userEvent.setup()
+    const onUpdate = vi.fn().mockResolvedValue(undefined)
+    render(
+      <I18nContext.Provider value={{
+        lang: 'en',
+        t: getDict('en'),
+        format: tpl,
+        tx: (path, fallback) => translate('en', path, fallback),
+      }}>
+        <AiKeyManager
+          keys={[key]}
+          scope="personal"
+          copyPrefix="settings"
+          onUpdate={onUpdate}
+        />
+      </I18nContext.Provider>,
+    )
+
+    await user.click(screen.getByRole('button', { name: /research key/i }))
+    const concurrency = screen.getByRole('spinbutton', { name: /^Maximum concurrency/ })
+    expect(screen.queryByText('1–2,500 simultaneous requests for this key. Do not exceed the provider\'s actual limit.', { selector: 'small' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'About concurrency limits' })).toBeInTheDocument()
+    await user.clear(concurrency)
+    await user.type(concurrency, '2500')
+    await user.click(screen.getByRole('button', { name: /^save changes$/i }))
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith('key_1', expect.objectContaining({
+      maxConcurrency: 2_500,
+    })))
+  })
+
+  it('saves request mode and independent routing weight', async () => {
+    const user = userEvent.setup()
+    const onUpdate = vi.fn().mockResolvedValue(undefined)
+    render(
+      <I18nContext.Provider value={{
+        lang: 'en',
+        t: getDict('en'),
+        format: tpl,
+        tx: (path, fallback) => translate('en', path, fallback),
+      }}>
+        <AiKeyManager keys={[key]} scope="personal" copyPrefix="settings" onUpdate={onUpdate} />
+      </I18nContext.Provider>,
+    )
+
+    await user.click(screen.getByRole('button', { name: /research key/i }))
+    await user.click(screen.getByRole('button', { name: 'Request mode' }))
+    await user.click(screen.getByRole('option', { name: 'Responses API' }))
+    const weight = screen.getByRole('spinbutton', { name: /^Weight/ })
+    await user.clear(weight)
+    await user.type(weight, '80')
+    await user.click(screen.getByRole('button', { name: /^save changes$/i }))
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith('key_1', expect.objectContaining({
+      requestMode: 'responses',
+      weight: 80,
+    })))
+  })
+
+  it('toggles a saved key out of request routing from the form footer', async () => {
+    const user = userEvent.setup()
+    const onUpdate = vi.fn().mockResolvedValue(undefined)
+    render(
+      <I18nContext.Provider value={{
+        lang: 'en',
+        t: getDict('en'),
+        format: tpl,
+        tx: (path, fallback) => translate('en', path, fallback),
+      }}>
+        <AiKeyManager keys={[key]} scope="personal" copyPrefix="settings" onUpdate={onUpdate} />
+      </I18nContext.Provider>,
+    )
+
+    await user.click(screen.getByRole('button', { name: /research key/i }))
+    await user.click(screen.getByRole('switch', { name: 'Enable this AI key' }))
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith('key_1', { enabled: false }))
   })
 
   it('shows calls and tokens without the attachment capability label', async () => {
@@ -134,6 +224,7 @@ describe('AiKeyManager usage metadata', () => {
     const { onDelete, view } = renderManager()
     const item = view.container.querySelector('.ai-key-item') as HTMLElement
 
+    await user.click(screen.getByRole('button', { name: /research key/i }))
     await user.click(view.container.querySelector('.ai-key-delete-inline .inline-confirm-idle') as HTMLButtonElement)
     await user.click(view.container.querySelector('.ai-key-delete-inline .inline-confirm-commit') as HTMLButtonElement)
 
@@ -148,6 +239,7 @@ describe('AiKeyManager usage metadata', () => {
     const item = view.container.querySelector('.ai-key-item') as HTMLElement
     const actions = view.container.querySelector('.ai-key-delete-inline .inline-confirm-actions') as HTMLElement
 
+    await user.click(screen.getByRole('button', { name: /research key/i }))
     await user.click(view.container.querySelector('.ai-key-delete-inline .inline-confirm-idle') as HTMLButtonElement)
     await user.click(view.container.querySelector('.ai-key-delete-inline .inline-confirm-cancel') as HTMLButtonElement)
 

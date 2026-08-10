@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { getDict, t, tpl, type Language } from '../../i18n'
 import { I18nContext } from '../hooks/useI18n'
@@ -71,10 +71,11 @@ describe('Rail i18n', () => {
     )
 
     const nav = screen.getByRole('navigation')
-    expect(nav.querySelectorAll('button')).toHaveLength(3)
+    expect(nav.querySelectorAll('button')).toHaveLength(4)
     expect(screen.getByRole('button', { name: 'Dashboard' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Applications' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Profile' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Interview prep' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Members' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Audit' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
@@ -104,8 +105,9 @@ describe('Rail i18n', () => {
     )
 
     const nav = screen.getByRole('navigation')
-    expect(nav.querySelectorAll('button')).toHaveLength(5)
+    expect(nav.querySelectorAll('button')).toHaveLength(6)
     expect(screen.getByRole('button', { name: 'Discover' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Interview prep' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Audit' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
   })
@@ -188,7 +190,8 @@ describe('Rail i18n', () => {
     )
 
     const nav = screen.getByRole('navigation')
-    expect(nav.querySelectorAll('button')).toHaveLength(7)
+    expect(nav.querySelectorAll('button')).toHaveLength(8)
+    expect(screen.getByRole('button', { name: '面试准备' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Audit' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
     expect(document.querySelector('.rail-mobile-overflow-trigger')).not.toBeInTheDocument()
@@ -221,5 +224,38 @@ describe('Rail i18n', () => {
     expect(screen.getByRole('navigation')).toHaveStyle({
       '--rail-active-index': '4',
     })
+  })
+
+  it('keeps intent prefetch and click navigation available independently of background warmup', () => {
+    const onPrefetchScreen = vi.fn()
+    const onScreen = vi.fn()
+    render(
+      <I18nContext.Provider value={{
+        lang: 'en',
+        t: getDict('en'),
+        format: tpl,
+        tx: (path, fallback) => t('en', path, fallback),
+      }}>
+        <Rail
+          screen="dashboard"
+          theme="light"
+          interfaceMode="personal"
+          teamViewerRole={null}
+          teamSection="overview"
+          onScreen={onScreen}
+          onTeamSection={vi.fn()}
+          onModeChange={vi.fn()}
+          onToggleTheme={vi.fn()}
+          onLogout={vi.fn()}
+          onPrefetchScreen={onPrefetchScreen}
+        />
+      </I18nContext.Provider>,
+    )
+
+    const interview = screen.getByRole('button', { name: 'Interview prep' })
+    fireEvent.pointerEnter(interview)
+    expect(onPrefetchScreen).toHaveBeenCalledWith('interview')
+    fireEvent.click(interview)
+    expect(onScreen).toHaveBeenCalledWith('interview')
   })
 })

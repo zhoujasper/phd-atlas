@@ -117,6 +117,25 @@ Contact <team@example.edu>.`)
     expect(rendered.text).not.toContain('**proposal**')
   })
 
+  it.each([
+    {
+      format: 'plain',
+      source: 'Dear Professor,\nThank you for your time.',
+      visibleBreak: /Dear Professor,<br>Thank you for your time\./,
+    },
+    {
+      format: 'markdown',
+      source: 'Dear **Professor**,\nThank you for your time.',
+      visibleBreak: /Dear <strong(?: style="[^"]+")?>Professor<\/strong>,<br>\s*Thank you for your time\./,
+    },
+  ])('preserves a single $format line break in sent HTML', ({ format, source, visibleBreak }) => {
+    const rendered = renderRichTextEmail(source, format)
+
+    expect(rendered.contentHtml).toMatch(visibleBreak)
+    expect(rendered.html).toMatch(visibleBreak)
+    expect(rendered.text).toBe('Dear Professor,\nThank you for your time.')
+  })
+
   it('reuses the immutable stored snapshot for delayed delivery and retries', () => {
     const rendered = renderStoredRichTextEmail({
       summary: '## A later local edit',

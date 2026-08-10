@@ -25,7 +25,9 @@ export type DiscoverRegionKey = 'US' | 'UK' | 'EU' | 'CA' | 'SG' | 'CN' | 'AU' |
 
 export type PiCategory = 'rising_star' | 'direction_fit' | 'interesting' | 'famous_but_fits'
 
-export type WetDry = 'dry' | 'wet' | 'both' | 'unknown'
+export const WET_DRY_VALUES = ['dry', 'wet', 'both', 'unknown'] as const
+
+export type WetDry = (typeof WET_DRY_VALUES)[number]
 
 export type RisingStarBias = 'strong' | 'moderate' | 'neutral'
 
@@ -53,6 +55,40 @@ export type DiscoverPi = {
   recruiting: string
   url: string
   email?: string
+  /** Deterministic applicant-profile overlap backed by the fetched official person page. */
+  profileMatch?: {
+    score: number
+    confidence: 'high' | 'medium' | 'low' | 'unknown'
+    matchedInterests: string[]
+    matchedMethods: string[]
+    matchedResearchTerms: string[]
+    evidenceUrl: string
+    checkedAt: string | null
+    basis: 'applicant-profile+official-individual-profile'
+  }
+  /** Institution-scoped publication record joined to the fetched official person page. */
+  scholarly?: {
+    openAlexId: string | null
+    orcid: string | null
+    profileUrl: string | null
+    providers: string[]
+    matchedQueries: string[]
+    recentWorks: Array<{
+      title: string
+      year: number | null
+      citedByCount: number
+      source: string
+      matchedQuery: string
+      matchedTopic: string | null
+    }>
+    match: {
+      basis: 'institution-scoped-scholarly-record+official-individual-profile'
+      nameMatch: 'exact' | 'initial'
+      officialProfileUrl: string
+      institutionId: string | null
+      checkedAt: string | null
+    }
+  }
 }
 
 export type DiscoverProgram = {
@@ -210,6 +246,109 @@ export type DiscoverSourcePage = {
   individualAdvisor: boolean
   declaredKinds: string[]
   promptInjectionSuspected: boolean
+  /** Bounded, sanitized text used for deterministic field/fit verification. */
+  excerpt?: string
+}
+
+export type DiscoverScholarlyProvider = 'openalex' | 'ror' | 'europepmc' | 'mesh' | 'crossref' | (string & {})
+
+export type DiscoverScholarlyTaxonomyNode = {
+  id: string
+  displayName: string
+}
+
+export type DiscoverScholarlyEvidence = {
+  provider:
+    | 'openalex+ror'
+    | 'openalex+ror+crossref'
+    | 'openalex+ror+europepmc+crossref'
+    | (string & {})
+  providers: DiscoverScholarlyProvider[]
+  queriedAt: string | null
+  query: string
+  status: 'ok' | 'partial' | 'unavailable'
+  error: string | null
+  institution: {
+    openAlexId: string | null
+    rorId: string | null
+    displayName: string
+    homepageUrl: string | null
+    domains: string[]
+  } | null
+  sourceStatus: {
+    openalex: string
+    openalexTopics: string
+    ror: string
+    europepmc: string
+    mesh: string
+    crossref: string
+  } | null
+  sourceCounts: {
+    openalex: number
+    openalexTopics: number
+    ror: number
+    europepmc: number
+    mesh: number
+    crossref: number
+    merged: number
+  } | null
+  topicResolution: {
+    status: string
+    searchedTerms: string[]
+    failures: number
+    topics: Array<{
+      query: string
+      id: string
+      displayName: string
+      confidence: number
+      primaryForQuery: boolean
+      domain: DiscoverScholarlyTaxonomyNode | null
+      field: DiscoverScholarlyTaxonomyNode | null
+      subfield: DiscoverScholarlyTaxonomyNode | null
+    }>
+  } | null
+  disciplinePlan: {
+    taxonomyVersion: string
+    broadDomains: Array<{
+      id: string
+      label: string
+    }>
+    disciplines: Array<{
+      id: string
+      label: string
+      broadDomain: string
+      canonicalTerm: string
+      providers: DiscoverScholarlyProvider[]
+      vocabularies: string[]
+    }>
+    providerHints: DiscoverScholarlyProvider[]
+    vocabularies: string[]
+  } | null
+  candidateResearchers: Array<{
+    openAlexId: string | null
+    name: string
+    orcid: string | null
+    profileUrl: string | null
+    providers: DiscoverScholarlyProvider[]
+    score: number
+    matchedQueries: string[]
+    matchedTopics: Array<{
+      id: string
+      name: string
+      domain: DiscoverScholarlyTaxonomyNode | null
+      field: DiscoverScholarlyTaxonomyNode | null
+      confidence: number
+    }>
+    recentWorks: Array<{
+      title: string
+      year: number | null
+      citedByCount: number
+      source: string
+      matchedQuery: string
+      matchedTopic: string | null
+      meshHeadings: string[]
+    }>
+  }>
 }
 
 export type DiscoverSourceIndexSchool = {
@@ -236,35 +375,7 @@ export type DiscoverSourceIndexSchool = {
   admissionsPages: DiscoverSourcePage[]
   fundingPages: DiscoverSourcePage[]
   researchPages: DiscoverSourcePage[]
-  scholarlyEvidence: {
-    provider: 'openalex+ror'
-    queriedAt: string | null
-    query: string
-    status: 'ok' | 'unavailable'
-    error: string | null
-    institution: {
-      openAlexId: string | null
-      rorId: string | null
-      displayName: string
-      homepageUrl: string | null
-      domains: string[]
-    } | null
-    candidateResearchers: Array<{
-      openAlexId: string
-      name: string
-      orcid: string | null
-      profileUrl: string
-      score: number
-      matchedQueries: string[]
-      recentWorks: Array<{
-        title: string
-        year: number | null
-        citedByCount: number
-        source: string
-        matchedQuery: string
-      }>
-    }>
-  } | null
+  scholarlyEvidence: DiscoverScholarlyEvidence | null
 }
 
 export type DiscoverSourceIndex = {
@@ -290,6 +401,23 @@ export type DiscoverSourceIndex = {
     candidatePageCount: number
     httpFailures: number[]
   }>
+  /** Auditable breadth-to-depth counts for the multi-round research funnel. */
+  funnel?: {
+    registrySchools: number
+    scopedSchools: number
+    dynamicallyDiscoveredSchools: number
+    selectedOfficialSchools: number
+    readableOfficialSchools: number
+    indexedDoctoralLinks: number
+    hydratedCandidateSchools: number
+    officialProgramLeads: number
+    groundedProgramCandidates: number
+    deepAdvisorPrograms: number
+    scholarlyCandidateResearchers: number
+    matchedOfficialAdvisorLeads: number
+    hydratedOfficialAdvisorPages: number
+    independentlyVerifiedPrograms: number
+  }
   quality: {
     passed: boolean
     coveragePassed: boolean
@@ -304,6 +432,8 @@ export type DiscoverSourceIndex = {
     crossSchoolSourceViolations: number
     genericProgramRows: number
     verifiedAdvisorProfiles: number
+    profileMatchedAdvisorProfiles?: number
+    unsupportedAdvisorFitClaims?: number
     scholarlyInstitutionsResolved: number
   } | null
 }
@@ -589,8 +719,8 @@ export const DEFAULT_INTAKE: DiscoverIntake = {
   regions: ['US', 'UK', 'EU', 'CA', 'SG', 'HK', 'CN', 'AU', 'OTHER'],
   stipendFloor: 35000,
   currency: 'USD',
-  nPrograms: 20,
-  nPisPerProgram: 6,
+  nPrograms: 30,
+  nPisPerProgram: 8,
   piPreferences: ['rising_star', 'direction_fit'],
   risingStarBias: 'moderate',
   notes: '',

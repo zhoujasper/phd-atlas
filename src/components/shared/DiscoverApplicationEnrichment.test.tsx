@@ -62,6 +62,7 @@ const aiKey: AiKey = {
   label: 'Research key',
   model: 'gpt-5',
   baseUrl: 'https://api.openai.com/v1',
+  maxConcurrency: 1,
   createdAt: '2026-07-18T12:00:00.000Z',
   updatedAt: '2026-07-18T12:00:00.000Z',
   lastUsedAt: null,
@@ -102,7 +103,7 @@ describe('DiscoverApplicationEnrichment', () => {
     await waitFor(() => expect(onApplied).toHaveBeenCalledWith(applications[0]))
     expect(phdApi.applyDiscoverApplicationEnrichment).toHaveBeenCalledWith(
       'token',
-      applications[0].id,
+      applications[0],
       proposal,
       ['discover-dossier'],
     )

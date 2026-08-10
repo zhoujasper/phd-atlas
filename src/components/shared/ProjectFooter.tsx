@@ -1,3 +1,4 @@
+import '../../styles/project-footer.css'
 import { GitFork, GraduationCap, Heart, LoaderCircle, QrCode, X } from 'lucide-react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'

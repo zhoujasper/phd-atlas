@@ -2,7 +2,14 @@ import '@testing-library/jest-dom/vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AuthSession, ProfileAsset, ProfilePreset, UserSettingsPatch } from '../../api/phdApi'
+import type {
+  AuthSession,
+  ProfileAsset,
+  ProfilePreset,
+  ProfileRecommender,
+  UserSettingsPatch,
+} from '../../api/phdApi'
+import { applications as applicationFixtures, type ApplicationRecord } from '../../data/applications'
 import { getDict, registerLanguage, t, tpl, type LangDict } from '../../i18n'
 import englishProfile from '../../i18n/en/profile.json'
 import { I18nContext } from '../hooks/useI18n'
@@ -38,6 +45,11 @@ function renderProfile(
   profilePresets?: ProfilePreset[],
   assets: ProfileAsset[] = [],
   removingAssetIds?: ReadonlySet<string>,
+  applications: ApplicationRecord[] = [],
+  onUpdateProfileRecommenders?: (
+    nextProfiles: ProfileRecommender[],
+    baseProfiles: ProfileRecommender[],
+  ) => void | Promise<void>,
 ) {
   const nextSession: AuthSession = {
     ...session,
@@ -47,6 +59,7 @@ function renderProfile(
     <I18nContext.Provider value={{ lang: 'en', t: getDict('en'), format: tpl, tx: (path, fallback) => t('en', path, fallback) }}>
       <ProfileScreen
         assets={assets}
+        applications={applications}
         session={nextSession}
         onCreateSnippet={vi.fn()}
         onUpdateAsset={vi.fn()}
@@ -60,12 +73,99 @@ function renderProfile(
         onCreateShare={vi.fn()}
         onRevokeShare={vi.fn()}
         onUpdateSettings={onUpdateSettings}
+        onUpdateProfileRecommenders={onUpdateProfileRecommenders}
       />
     </I18nContext.Provider>,
   )
 }
 
 describe('ProfileScreen presets', () => {
+  it('keeps the profile explanation behind the title info control', () => {
+    renderProfile(vi.fn())
+
+    const description = 'Build one reliable source for your academic story, reusable materials, and writing preferences. Keep versions here, then reuse them deliberately in applications, email, and AI drafts.'
+    const trigger = screen.getByRole('button', { name: description })
+    const title = screen.getByRole('heading', { name: 'My Profile' })
+    expect(title.parentElement).toHaveClass('profile-heading-title-row')
+    expect(title.parentElement).toContainElement(trigger)
+    const tooltip = document.querySelector('.info-tooltip-portal')!
+    expect(tooltip).not.toHaveClass('is-open')
+
+    fireEvent.click(trigger)
+    expect(tooltip).toHaveClass('is-open')
+    expect(tooltip).toHaveTextContent(description)
+
+    fireEvent.click(trigger)
+    expect(tooltip).not.toHaveClass('is-open')
+  })
+
+  it('switches between application materials and the private recommender workspace', async () => {
+    const user = userEvent.setup()
+    const view = renderProfile(vi.fn())
+
+    await user.click(screen.getByRole('tab', { name: 'Recommenders' }))
+    expect(screen.getByRole('heading', { name: 'Recommenders' })).toBeInTheDocument()
+    expect(screen.getByText('No recommenders yet')).toBeInTheDocument()
+    expect(view.container.querySelector('.profile-domain-pane.is-recommenders')).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('Search snippets…')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: 'Application materials' }))
+    expect(view.container.querySelector('.profile-domain-pane.is-materials')).toBeInTheDocument()
+  })
+
+  it('automatically includes a saved application teacher even when a legacy personal record has no owner id', async () => {
+    const user = userEvent.setup()
+    const application = structuredClone(applicationFixtures[0])
+    delete application.ownerId
+    application.recommenders = [{
+      id: 'application-teacher',
+      name: 'Professor Jim Wright',
+      contact: 'jim.wright@example.edu',
+    }]
+    renderProfile(vi.fn(), undefined, [], undefined, [application])
+
+    await user.click(screen.getByRole('tab', { name: 'Recommenders' }))
+
+    expect(screen.getByText('Professor Jim Wright')).toBeInTheDocument()
+    expect(screen.getByText('jim.wright@example.edu')).toBeInTheDocument()
+  })
+
+  it('routes recommender edits through the atomic directory callback with the resident base snapshot', async () => {
+    const user = userEvent.setup()
+    const onUpdateSettings = vi.fn()
+    let settleSave!: () => void
+    const onUpdateProfileRecommenders = vi.fn(
+      (_nextProfiles: ProfileRecommender[], _baseProfiles: ProfileRecommender[]) => new Promise<void>((resolve) => {
+        settleSave = resolve
+      }),
+    )
+    renderProfile(onUpdateSettings, undefined, [], undefined, [], onUpdateProfileRecommenders)
+
+    await user.click(screen.getByRole('tab', { name: 'Recommenders' }))
+    await user.click(screen.getAllByRole('button', { name: 'Add recommender' })[0])
+    const dialog = screen.getByRole('dialog', { name: 'Add recommender' })
+    await user.type(within(dialog).getByLabelText('Name'), 'Professor Grace Hopper')
+    await user.type(within(dialog).getByLabelText('Email'), 'grace.hopper@example.edu')
+    await user.type(within(dialog).getByLabelText('Phone'), '+1 202 555 0180')
+    await user.click(within(dialog).getByRole('button', { name: 'Save recommender' }))
+
+    expect(onUpdateSettings).not.toHaveBeenCalled()
+    expect(onUpdateProfileRecommenders).toHaveBeenCalledTimes(1)
+    const [nextProfiles, baseProfiles] = onUpdateProfileRecommenders.mock.calls[0]
+    expect(baseProfiles).toEqual([])
+    expect(nextProfiles).toEqual([
+      expect.objectContaining({
+        name: 'Professor Grace Hopper',
+        email: 'grace.hopper@example.edu',
+        phone: '+1 202 555 0180',
+      }),
+    ])
+    expect(within(dialog).getByRole('button', { name: 'Saving…' })).toBeDisabled()
+
+    settleSave()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add recommender' })).not.toBeInTheDocument())
+  })
+
   it('switches smoothly between grouped cards and the compact snippet list', async () => {
     const user = userEvent.setup()
     const assets: ProfileAsset[] = [
@@ -141,6 +241,32 @@ describe('ProfileScreen presets', () => {
     view.unmount()
     renderProfile(vi.fn(), savedPresets)
     expect(screen.getByText('My project portfolio pack', { selector: '.profile-preset-card strong' })).toBeInTheDocument()
+  })
+
+  it('keeps a custom preset editor open until its settings write settles', async () => {
+    const user = userEvent.setup()
+    let resolveSave!: () => void
+    const onUpdateSettings = vi.fn(() => new Promise<void>((resolve) => {
+      resolveSave = resolve
+    }))
+    renderProfile(onUpdateSettings)
+
+    await user.click(screen.getByRole('button', { name: /add custom preset/i }))
+    const dialog = screen.getByRole('dialog', { name: /create preset/i })
+    await user.type(screen.getByLabelText('Name'), 'Durable preset')
+    const guides = screen.getAllByLabelText(/guide$/i)
+    await user.type(guides[0], 'Primary guide')
+    await user.type(guides[1], 'Secondary guide')
+    await user.click(screen.getByRole('button', { name: /save preset/i }))
+
+    expect(onUpdateSettings).toHaveBeenCalledTimes(1)
+    expect(dialog).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: /working/i })).toBeDisabled()
+
+    resolveSave()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /create preset/i })).not.toBeInTheDocument(), {
+      timeout: 1000,
+    })
   })
 
   it('offers custom presets from the Add snippet template picker', async () => {

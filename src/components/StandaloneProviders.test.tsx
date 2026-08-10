@@ -8,14 +8,16 @@ import { StandalonePreferences } from './shared/StandalonePreferences'
 import { StandaloneProviders } from './StandaloneProviders'
 
 const originalMatchMedia = window.matchMedia
+const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')
+const originalCancelAnimationFrame = Object.getOwnPropertyDescriptor(window, 'cancelAnimationFrame')
 const originalLanguage = Object.getOwnPropertyDescriptor(navigator, 'language')
 const originalLanguages = Object.getOwnPropertyDescriptor(navigator, 'languages')
 
-function mockBrowserPreferences({ dark, language }: { dark: boolean; language: string }) {
+function mockBrowserPreferences({ dark, language, phone = false }: { dark: boolean; language: string; phone?: boolean }) {
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
     value: vi.fn().mockImplementation((query: string) => ({
-      matches: query === '(prefers-color-scheme: dark)' ? dark : false,
+      matches: query === '(prefers-color-scheme: dark)' ? dark : phone && query === '(max-width: 820px)',
       media: query,
       onchange: null,
       addEventListener: vi.fn(),
@@ -44,11 +46,19 @@ function Probe({ controls = false }: { controls?: boolean }) {
 beforeEach(() => {
   localStorage.clear()
   document.documentElement.removeAttribute('data-theme')
+  document.documentElement.classList.remove('theme-transitioning')
+  document.documentElement.removeAttribute('data-theme-transition-target')
   document.documentElement.removeAttribute('lang')
 })
 
 afterEach(() => {
   Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia })
+  if (originalRequestAnimationFrame) Object.defineProperty(window, 'requestAnimationFrame', originalRequestAnimationFrame)
+  else Reflect.deleteProperty(window, 'requestAnimationFrame')
+  if (originalCancelAnimationFrame) Object.defineProperty(window, 'cancelAnimationFrame', originalCancelAnimationFrame)
+  else Reflect.deleteProperty(window, 'cancelAnimationFrame')
+  document.documentElement.classList.remove('theme-transitioning')
+  document.documentElement.removeAttribute('data-theme-transition-target')
   if (originalLanguage) Object.defineProperty(navigator, 'language', originalLanguage)
   else Reflect.deleteProperty(navigator, 'language')
   if (originalLanguages) Object.defineProperty(navigator, 'languages', originalLanguages)
@@ -96,6 +106,37 @@ describe('StandaloneProviders', () => {
       expect(screen.getByTestId('language')).toHaveTextContent('zh')
       expect(localStorage.getItem('phd-atlas-language')).toBe('zh')
       expect(document.documentElement).toHaveAttribute('lang', 'zh-CN')
+    })
+  })
+
+  it('keeps the phone theme handoff mounted until the new colors settle', async () => {
+    mockBrowserPreferences({ dark: false, language: 'en-US', phone: true })
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      value: (callback: FrameRequestCallback) => window.setTimeout(() => callback(performance.now()), 0),
+    })
+    Object.defineProperty(window, 'cancelAnimationFrame', {
+      configurable: true,
+      value: (frame: number) => window.clearTimeout(frame),
+    })
+    const user = userEvent.setup()
+
+    render(
+      <StandaloneProviders>
+        <Probe controls />
+      </StandaloneProviders>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Dark' }))
+
+    expect(screen.getByTestId('theme')).toHaveTextContent('dark')
+    expect(document.documentElement).toHaveClass('theme-transitioning')
+    expect(document.documentElement.dataset.themeTransitionTarget).toBe('dark')
+    await waitFor(() => {
+      expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
+    })
+    await waitFor(() => {
+      expect(document.documentElement).not.toHaveClass('theme-transitioning')
     })
   })
 })

@@ -10,6 +10,7 @@ import {
   trackedProfessorAddresses,
   trackedProfessorAddressUpdate,
 } from './mailSync.js'
+import { createCommunicationMailClassificationFingerprint } from './mailClassificationContext.js'
 
 function application(id, professorEmail, overrides = {}) {
   return {
@@ -150,6 +151,134 @@ describe('mail sync application matching', () => {
     expect(applicationEdit.communications[1]).not.toHaveProperty('bodyHtml')
     expect(applicationEdit.communications[1]).not.toHaveProperty('bodyText')
     expect(applicationEdit.communications[1].messageType).toBe('note')
+  })
+
+  it('keeps communications added after a personal full-update baseline without blocking intentional removal', () => {
+    const knownDraft = {
+      id: 'comm-known-draft',
+      subject: '[DRAFT] Known draft',
+      messageType: 'draft-email',
+    }
+    const importedAfterBaseline = {
+      id: 'comm-imported-after-baseline',
+      subject: 'New professor reply',
+      channel: 'Email',
+      direction: 'incoming',
+      messageType: 'fetched-email',
+      sourceMessageKey: 'mail-new-after-baseline',
+      importedAt: '2026-08-02T09:00:00.000Z',
+    }
+    const existingApplication = {
+      communications: [importedAfterBaseline, knownDraft],
+    }
+    const clientBaseApplication = {
+      communications: [knownDraft],
+    }
+
+    const staleEdit = preserveApplicationCommunicationAuthority(
+      existingApplication,
+      { communications: [{ ...knownDraft, subject: '[DRAFT] Edited locally' }] },
+      clientBaseApplication,
+    )
+
+    expect(staleEdit.communications.map((communication) => communication.id)).toEqual([
+      importedAfterBaseline.id,
+      knownDraft.id,
+    ])
+    expect(staleEdit.communications[1].subject).toBe('[DRAFT] Edited locally')
+
+    const intentionalRemoval = preserveApplicationCommunicationAuthority(
+      existingApplication,
+      { communications: [importedAfterBaseline] },
+      { communications: [importedAfterBaseline, knownDraft] },
+    )
+    expect(intentionalRemoval.communications.map((communication) => communication.id)).toEqual([
+      importedAfterBaseline.id,
+    ])
+
+    const legacyStaleEdit = preserveApplicationCommunicationAuthority(
+      existingApplication,
+      { communications: [knownDraft] },
+    )
+    expect(legacyStaleEdit.communications.map((communication) => communication.id)).toEqual([
+      importedAfterBaseline.id,
+      knownDraft.id,
+    ])
+  })
+
+  it('preserves a current thread-aware AI result and invalidates real content or thread changes', () => {
+    const prior = {
+      id: 'mail-thread-prior',
+      subject: 'Research fit',
+      channel: 'Email',
+      date: '2026-07-08',
+      summary: 'The lab expects to recruit one student.',
+      direction: 'outgoing',
+      messageType: 'outgoing-email',
+      from: 'student@example.com',
+      to: 'professor@example.edu',
+    }
+    const target = {
+      id: 'mail-thread-target',
+      subject: 'Re: Research fit',
+      channel: 'Email',
+      date: '2026-07-09',
+      summary: 'Please choose an interview time.',
+      direction: 'incoming',
+      messageType: 'incoming-email',
+      from: 'professor@example.edu',
+      to: 'student@example.com',
+      mailCategoryOverride: 'funding',
+    }
+    const existing = application('app-thread', 'professor@example.edu', {
+      communications: [target, prior],
+    })
+    target.mailClassification = {
+      category: 'interview_invite',
+      confidence: 0.94,
+      summary: 'The professor invited the applicant to interview.',
+      evidence: ['Choose an interview time.'],
+      actions: ['schedule_interview'],
+      source: 'ai',
+      classifiedAt: '2026-07-09T10:00:00.000Z',
+      inputHash: createCommunicationMailClassificationFingerprint(existing, target),
+      version: 1,
+    }
+
+    const unchanged = preserveApplicationCommunicationAuthority(
+      existing,
+      { ...structuredClone(existing), notes: 'Ordinary resident save.' },
+      structuredClone(existing),
+    )
+    expect(unchanged.communications.find((item) => item.id === target.id)?.mailClassification)
+      .toEqual(target.mailClassification)
+    expect(unchanged.communications.find((item) => item.id === target.id)?.mailCategoryOverride)
+      .toBe('funding')
+
+    // Since correspondence categories became a manual, multi-valued choice,
+    // this field has a legitimate author. Reverting a submitted value here made
+    // every save that carried a manual selection fail its persistence
+    // acknowledgement, which the person saw as a refused save with no way out.
+    const manualOverride = structuredClone(existing)
+    manualOverride.communications.find((item) => item.id === target.id).mailCategoryOverride = 'rejection'
+    const overrideKept = preserveApplicationCommunicationAuthority(existing, manualOverride, existing)
+    expect(overrideKept.communications.find((item) => item.id === target.id)?.mailCategoryOverride)
+      .toBe('rejection')
+    // The classifier's own result is still the server's, and survives the same save.
+    expect(overrideKept.communications.find((item) => item.id === target.id)?.mailClassification)
+      .toEqual(target.mailClassification)
+
+    const changedTarget = structuredClone(existing)
+    changedTarget.communications.find((item) => item.id === target.id).summary = 'The interview was cancelled.'
+    const targetInvalidated = preserveApplicationCommunicationAuthority(existing, changedTarget, existing)
+    expect(targetInvalidated.communications.find((item) => item.id === target.id))
+      .not.toHaveProperty('mailClassification')
+
+    const changedThread = structuredClone(existing)
+    changedThread.communications.find((item) => item.id === prior.id).summary = 'The lab has no openings.'
+    const threadInvalidated = preserveApplicationCommunicationAuthority(existing, changedThread, existing)
+    expect(threadInvalidated.communications.find((item) => item.id === target.id))
+      .not.toHaveProperty('mailClassification')
   })
 
   it('tracks every configured recipient address and files exact alias matches', () => {

@@ -66,12 +66,22 @@ export const SCHOOL_ADAPTERS_BATCH_04 = [
   {
     school: 'University of Oxford',
     region: 'UK',
-    allowedHosts: ['www.mpls.ox.ac.uk', 'www.cs.ox.ac.uk'],
+    allowedHosts: [
+      'www.mpls.ox.ac.uk',
+      'www.cs.ox.ac.uk',
+      'www.ox.ac.uk',
+      'www.win.ox.ac.uk',
+      'www.ndcn.ox.ac.uk',
+      'www.neuroscience.ox.ac.uk',
+    ],
     seeds: [
       { kind: 'departments', url: 'https://www.mpls.ox.ac.uk/departments' },
       { kind: 'faculty', url: 'https://www.cs.ox.ac.uk/people/faculty.html' },
+      { kind: 'faculty', url: 'https://www.win.ox.ac.uk/people' },
       { kind: 'research', url: 'https://www.cs.ox.ac.uk/research/' },
+      { kind: 'research', url: 'https://www.ndcn.ox.ac.uk/research' },
       { kind: 'doctoral', url: 'https://www.cs.ox.ac.uk/admissions/graduate/' },
+      { kind: 'doctoral', url: 'https://www.neuroscience.ox.ac.uk/1-plus-3-Doctoral-Programme-in-Neuroscience' },
     ],
     pathHints: UK_PATH_HINTS,
     verifiedAt: VERIFIED_AT,

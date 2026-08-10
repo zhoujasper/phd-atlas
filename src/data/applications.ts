@@ -1,4 +1,5 @@
 import type { DetailTab } from '../appModel'
+import type { MailCategory, MailClassification } from '../mailClassification'
 
 export const builtInApplicationStatuses = [
   'Draft',
@@ -10,7 +11,7 @@ export const builtInApplicationStatuses = [
   'Waitlist',
 ] as const
 
-export type BuiltInApplicationStatus = typeof builtInApplicationStatuses[number]
+export type BuiltInApplicationStatus = (typeof builtInApplicationStatuses)[number]
 
 /**
  * Built-in statuses keep editor autocomplete, while account-scoped custom
@@ -41,8 +42,7 @@ export function applicationStatusOrder(
 export type MaterialStatus = string
 export type BackupFrequency = '1m' | '5m' | '15m' | '30m' | '1h' | '3h' | '6h' | '12h' | 'daily' | '3d' | '7d' | 'weekly' | 'monthly'
 export type SharePermission = 'view' | 'upload' | 'edit'
-export type ShareSection =
-  | 'overview'
+export type ShareSection = 'overview'
   | 'materials'
   | 'tasks'
   | 'communications'
@@ -74,7 +74,7 @@ export const shareSections: readonly ShareSection[] = [
 
 export function normalizeSharePermission(value: unknown): SharePermission {
   return typeof value === 'string' && sharePermissions.includes(value as SharePermission)
-    ? value as SharePermission
+    ? (value as SharePermission)
     : 'view'
 }
 
@@ -93,11 +93,28 @@ export function normalizeShareSections(value: unknown): ShareSection[] {
 export type MaterialRecommender = {
   id: string
   name: string
+  /** Explicit application snapshot of the recommender's email address. */
+  email?: string
+  /** Explicit application snapshot of the recommender's phone number. */
+  phone?: string
+  /**
+   * Legacy preferred-contact projection retained for older data/export clients.
+   * New editors persist email and phone independently.
+   */
   contact: string
+  /** Stable link to the owner's personal recommender library; identity fields remain a snapshot. */
+  profileId?: string
+  /** Application-specific private context; it is not part of the personal recommender profile. */
+  notes?: string
+  /** Letter deadline for this recommender, which may differ from the application deadline. */
+  deadline?: string
+  /** Optional local-time deadline, captured alongside the date in the calendar footer. */
+  deadlineTime?: string
+  reminderDate?: string
+  reminderTime?: string
 }
 
-export type DossierCardFieldType =
-  | 'url'
+export type DossierCardFieldType = 'url'
   | 'text'
   | 'textarea'
   | 'email'
@@ -193,6 +210,12 @@ export type ApplicationRecord = {
   tags: string[]
   nextReminder: string
   result: string
+  /**
+   * Application-level recommendation contacts. These are deliberately kept
+   * outside the checklist: a recommender is a person assigned to the whole
+   * application, not a file or checklist deliverable.
+   */
+  recommenders?: MaterialRecommender[]
   dossierCards?: DossierCard[]
   materials: Array<{
     id: string
@@ -264,6 +287,12 @@ export type ApplicationRecord = {
     sourceMessageKey?: string
     sourceMailbox?: string
     importedAt?: string
+    /** Explicit manual categories; a message may carry several. */
+    mailCategories?: readonly string[] | null
+    /** Explicit user choice. Null/undefined clears the override and reveals the AI result. */
+    mailCategoryOverride?: MailCategory | null
+    /** Server-authored, auditable classification result. Never treat provider/model as display copy. */
+    mailClassification?: MailClassification
     mailSecurity?: {
       level: 'caution' | 'danger'
       signals: MailSecuritySignal[]
@@ -293,6 +322,7 @@ export type ApplicationRecord = {
       title: string
       due: string
       done: boolean
+      status?: string
       details?: string
     }>
     timeline?: Array<{
@@ -316,6 +346,7 @@ export type ApplicationRecord = {
     title: string
     due: string
     done: boolean
+    status?: string
     details?: string
     reminderEnabled?: boolean
     reminderOffsets?: string[]
@@ -376,6 +407,99 @@ export type ApplicationRecord = {
   }
   createdAt?: string
   updatedAt?: string
+}
+
+/**
+ * Keep legacy/offline records renderable before they have gone through the
+ * current server schema. In particular, the rich-text editor expects
+ * `result` to always be a string; old concurrency fixtures and pre-schema
+ * snapshots may omit it entirely.
+ */
+export function normalizeApplicationRecord(application: ApplicationRecord): ApplicationRecord {
+  const raw = application as ApplicationRecord & {
+    professor?: Partial<ApplicationRecord['professor']>
+    school?: Partial<ApplicationRecord['school']>
+  }
+  const professor = raw.professor ?? {}
+  const school = raw.school ?? {}
+  const arrayOrEmpty = <T>(value: T[] | undefined): T[] => (Array.isArray(value) ? value : [])
+  const alreadyNormalized = [
+    professor.english,
+    professor.chinese,
+    professor.email,
+    professor.phone,
+    professor.social,
+    professor.homepage,
+    professor.research,
+    professor.lab,
+    school.name,
+    school.country,
+    school.website,
+    raw.program,
+    raw.deadline,
+    raw.status,
+    raw.nextReminder,
+    raw.result,
+  ].every((value) => typeof value === 'string')
+    && Number.isFinite(raw.progress)
+    && Number.isFinite(raw.priority)
+    && [
+      raw.tags,
+      raw.recommenders,
+      raw.materials,
+      raw.communications,
+      raw.scholarships,
+      raw.fees,
+      raw.tasks,
+      raw.timeline,
+      raw.versions,
+      raw.shares,
+      raw.reviewComments,
+    ].every(Array.isArray)
+
+  // Current server and offline-schema records already satisfy this boundary.
+  // Preserve their object identity so hydrating one slim application does not
+  // make every resident board/table row look changed to React.
+  if (alreadyNormalized) return application
+
+  return {
+    ...application,
+    professor: {
+      ...professor,
+      english: typeof professor.english === 'string' ? professor.english : '',
+      chinese: typeof professor.chinese === 'string' ? professor.chinese : '',
+      email: typeof professor.email === 'string' ? professor.email : '',
+      phone: typeof professor.phone === 'string' ? professor.phone : '',
+      social: typeof professor.social === 'string' ? professor.social : '',
+      homepage: typeof professor.homepage === 'string' ? professor.homepage : '',
+      research: typeof professor.research === 'string' ? professor.research : '',
+      lab: typeof professor.lab === 'string' ? professor.lab : '',
+    },
+    school: {
+      ...school,
+      name: typeof school.name === 'string' ? school.name : '',
+      country: typeof school.country === 'string' ? school.country : '',
+      website: typeof school.website === 'string' ? school.website : '',
+    },
+    program: typeof raw.program === 'string' ? raw.program : '',
+    deadline: typeof raw.deadline === 'string' ? raw.deadline : '',
+    status: typeof raw.status === 'string' ? raw.status : 'Draft',
+    progress: Number.isFinite(raw.progress) ? raw.progress : 0,
+    priority: Number.isFinite(raw.priority) ? raw.priority : 50,
+    tags: arrayOrEmpty(raw.tags),
+    nextReminder: typeof raw.nextReminder === 'string' ? raw.nextReminder : (typeof raw.deadline === 'string' ? raw.deadline : ''),
+    result: typeof raw.result === 'string' ? raw.result : '',
+    recommenders: arrayOrEmpty(raw.recommenders),
+    materials: arrayOrEmpty(raw.materials),
+    communications: arrayOrEmpty(raw.communications),
+    scholarships: arrayOrEmpty(raw.scholarships),
+    fees: arrayOrEmpty(raw.fees),
+    tasks: arrayOrEmpty(raw.tasks),
+    timeline: arrayOrEmpty(raw.timeline),
+    versions: arrayOrEmpty(raw.versions),
+    shares: arrayOrEmpty(raw.shares),
+    reviewComments: arrayOrEmpty(raw.reviewComments),
+  }
 }
 
 export const applications: ApplicationRecord[] = [

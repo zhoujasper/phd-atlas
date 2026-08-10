@@ -10,7 +10,7 @@ import {
   Undo2,
   UploadCloud,
 } from 'lucide-react'
-import { startTransition, useCallback, useEffect, useMemo, useState } from 'react'
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import {
   phdApi,
@@ -44,7 +44,7 @@ import { StandalonePreferences } from '../shared/StandalonePreferences'
 import { ProjectFooter } from '../shared/ProjectFooter'
 import { DossierView } from './DossierView'
 import { Inspector } from './Inspector'
-import { shareSectionsToDetailTabs, sharedPayloadToApplication } from './shareViewerModel'
+import { mergeSharedAttachmentState, shareSectionsToDetailTabs, sharedPayloadToApplication } from './shareViewerModel'
 
 type SharedUploadAttachment = {
   fileId?: string
@@ -169,6 +169,8 @@ export function ShareViewer({ token }: { token: string }) {
   const [baseline, setBaseline] = useState<ApplicationRecord | null>(null)
   const [draft, setDraft] = useState<ApplicationRecord | null>(null)
   const [isDirty, setIsDirty] = useState(false)
+  const draftRef = useRef<ApplicationRecord | null>(draft)
+  const isDirtyRef = useRef(isDirty)
   const [saving, setSaving] = useState(false)
   const [tab, setTab] = useState<DetailTab>('dossier')
   const [uploadingMaterialId, setUploadingMaterialId] = useState<string | null>(null)
@@ -176,12 +178,27 @@ export function ShareViewer({ token }: { token: string }) {
   const [uploadPreview, setUploadPreview] = useState<AttachmentPreviewFile | null>(null)
   const compactShareViewport = useCompactShareViewport()
 
-  const applyPayload = useCallback((payload: SharedApplicationPayload) => {
+  draftRef.current = draft
+  isDirtyRef.current = isDirty
+
+  const applyPayload = useCallback((
+    payload: SharedApplicationPayload,
+    options?: { preserveUnsavedDraft?: boolean },
+  ) => {
     const record = sharedPayloadToApplication(payload)
     setData(payload)
     setBaseline(cloneApplication(record))
-    setDraft(cloneApplication(record))
-    setIsDirty(false)
+    if (options?.preserveUnsavedDraft && isDirtyRef.current && draftRef.current) {
+      const mergedDraft = mergeSharedAttachmentState(draftRef.current, record)
+      draftRef.current = mergedDraft
+      setDraft(mergedDraft)
+    } else {
+      const nextDraft = cloneApplication(record)
+      draftRef.current = nextDraft
+      isDirtyRef.current = false
+      setDraft(nextDraft)
+      setIsDirty(false)
+    }
     const tabs = shareSectionsToDetailTabs(normalizeShareSections(payload.sections))
     setTab((current) => (tabs.includes(current) ? current : tabs[0] ?? 'dossier'))
   }, [])
@@ -221,6 +238,8 @@ export function ShareViewer({ token }: { token: string }) {
   const showVersions = hasSection('versions')
 
   const updateDraft = useCallback((next: ApplicationRecord) => {
+    draftRef.current = next
+    isDirtyRef.current = true
     setDraft(next)
     setIsDirty(true)
   }, [])
@@ -228,8 +247,11 @@ export function ShareViewer({ token }: { token: string }) {
   const patchDraft = useCallback((updater: (current: ApplicationRecord) => ApplicationRecord) => {
     setDraft((current) => {
       if (!current) return current
+      const next = updater(current)
+      draftRef.current = next
+      isDirtyRef.current = true
       setIsDirty(true)
-      return updater(current)
+      return next
     })
   }, [])
 
@@ -253,9 +275,10 @@ export function ShareViewer({ token }: { token: string }) {
       const payload = kind === 'material'
         ? await phdApi.removeSharedMaterialFile(token, itemId, fileId)
         : await phdApi.removeSharedTaskFile(token, itemId, fileId)
-      applyPayload(payload)
+      applyPayload(payload, { preserveUnsavedDraft: true })
     } catch (err) {
       setActionError(normalizeErrorMessage(err, lang, tx('shareViewer.editFailed')))
+      throw err
     } finally {
       setRemovingAttachmentKey(null)
     }
@@ -267,9 +290,10 @@ export function ShareViewer({ token }: { token: string }) {
       const payload = kind === 'material'
         ? await phdApi.renameSharedMaterialFile(token, itemId, fileId, fileName)
         : await phdApi.renameSharedTaskFile(token, itemId, fileId, fileName)
-      applyPayload(payload)
+      applyPayload(payload, { preserveUnsavedDraft: true })
     } catch (err) {
       setActionError(normalizeErrorMessage(err, lang, tx('shareViewer.editFailed')))
+      throw err
     }
   }
 
@@ -280,9 +304,10 @@ export function ShareViewer({ token }: { token: string }) {
     setActionError(null)
     try {
       const payload = await phdApi.uploadSharedMaterialFiles(token, materialId, files)
-      applyPayload(payload)
+      applyPayload(payload, { preserveUnsavedDraft: true })
     } catch (err) {
       setActionError(normalizeErrorMessage(err, lang, tx('shareViewer.uploadFailed')))
+      throw err
     } finally {
       setUploadingMaterialId(null)
     }
@@ -295,16 +320,17 @@ export function ShareViewer({ token }: { token: string }) {
     setActionError(null)
     try {
       const payload = await phdApi.uploadSharedTaskFiles(token, taskId, files)
-      applyPayload(payload)
+      applyPayload(payload, { preserveUnsavedDraft: true })
     } catch (err) {
       setActionError(normalizeErrorMessage(err, lang, tx('shareViewer.uploadFailed')))
+      throw err
     } finally {
       setUploadingMaterialId(null)
     }
   }
 
-  const saveSharedDraft = async () => {
-    if (!draft || !baseline || !canEdit) return
+  const saveSharedDraft = async (): Promise<boolean> => {
+    if (!draft || !baseline || !canEdit) return false
     setSaving(true)
     setActionError(null)
     try {
@@ -359,8 +385,10 @@ export function ShareViewer({ token }: { token: string }) {
       }
 
       if (payload) applyPayload(payload)
+      return true
     } catch (err) {
       setActionError(normalizeErrorMessage(err, lang, tx('shareViewer.editFailed')))
+      return false
     } finally {
       setSaving(false)
     }
@@ -368,7 +396,10 @@ export function ShareViewer({ token }: { token: string }) {
 
   const discardDraft = () => {
     if (!baseline) return
-    setDraft(cloneApplication(baseline))
+    const nextDraft = cloneApplication(baseline)
+    draftRef.current = nextDraft
+    isDirtyRef.current = false
+    setDraft(nextDraft)
     setIsDirty(false)
     setActionError(null)
   }
@@ -650,7 +681,9 @@ export function ShareViewer({ token }: { token: string }) {
                                   type="button"
                                   className="checklist-icon-control danger"
                                   disabled={!fileId || removing}
-                                  onClick={() => fileId && void removeSharedFile(item.kind, item.id, fileId)}
+                                  onClick={() => {
+                                    if (fileId) void removeSharedFile(item.kind, item.id, fileId).catch(() => undefined)
+                                  }}
                                   title={tx('dossier.remove')}
                                   aria-label={tx('dossier.remove')}
                                 >
@@ -672,8 +705,8 @@ export function ShareViewer({ token }: { token: string }) {
                       maxFiles={MAX_UPLOAD_FILES_PER_BATCH}
                       disabled={isUploading}
                       onFiles={(files) => {
-                        if (item.kind === 'material') void uploadMaterialFiles(item.id, files)
-                        else void uploadTaskFiles(item.id, files)
+                        if (item.kind === 'material') void uploadMaterialFiles(item.id, files).catch(() => undefined)
+                        else void uploadTaskFiles(item.id, files).catch(() => undefined)
                       }}
                     />
                   </article>
@@ -783,14 +816,14 @@ export function ShareViewer({ token }: { token: string }) {
                   })
                 }}
                 onDraft={canEdit ? updateDraft : () => undefined}
-                onSave={() => void saveSharedDraft()}
+                onSave={saveSharedDraft}
                 onDiscardDraft={discardDraft}
                 onDelete={() => undefined}
                 onShare={() => undefined}
                 onCopy={(value) => void copyText(value)}
                 onUpload={() => undefined}
-                onUploadMaterialFiles={canUpload ? (materialId, files) => void uploadMaterialFiles(materialId, files) : undefined}
-                onUploadTaskFiles={canUpload ? (taskId, files) => void uploadTaskFiles(taskId, files) : undefined}
+                onUploadMaterialFiles={canUpload ? (materialId, files) => uploadMaterialFiles(materialId, files) : undefined}
+                onUploadTaskFiles={canUpload ? (taskId, files) => uploadTaskFiles(taskId, files) : undefined}
                 onDownload={(fileId, name) => {
                   if (fileId) void downloadSharedFile(fileId, name || 'download')
                 }}

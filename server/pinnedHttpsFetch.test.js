@@ -80,4 +80,38 @@ describe('pinned HTTPS fetch', () => {
     })
     await expect(response.text()).rejects.toThrow()
   })
+
+  it('destroys the owned Node response and ignores late data after Web-reader cancellation', async () => {
+    const capture = {}
+    const requestImpl = (options, callback) => {
+      capture.options = options
+      const request = new Writable({ write(_chunk, _encoding, done) { done() } })
+      request.once('finish', () => {
+        const incoming = new Readable({ read() {} })
+        incoming.statusCode = 200
+        incoming.statusMessage = 'OK'
+        incoming.rawHeaders = ['Content-Type', 'application/json']
+        capture.incoming = incoming
+        callback(incoming)
+        incoming.push(Buffer.from('{"partial":'))
+      })
+      return request
+    }
+    const response = await pinnedHttpsFetch('https://provider.example/v1', {}, {
+      resolveTarget: async () => ({
+        address: '8.8.8.8',
+        family: 4,
+        host: 'provider.example',
+        servername: 'provider.example',
+        pinned: true,
+      }),
+      requestImpl,
+    })
+    const reader = response.body.getReader()
+    await expect(reader.read()).resolves.toMatchObject({ done: false })
+    await expect(reader.cancel(new Error('bounded caller finished'))).resolves.toBeUndefined()
+
+    expect(capture.incoming.destroyed).toBe(true)
+    expect(() => capture.incoming.emit('data', Buffer.from('late}'))).not.toThrow()
+  })
 })

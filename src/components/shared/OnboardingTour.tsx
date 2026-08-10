@@ -1,3 +1,4 @@
+import '../../styles/onboarding.css'
 import { Check, CheckCircle2, MousePointer2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getMotionDelay } from '../hooks/useAnimatedClose'

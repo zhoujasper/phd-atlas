@@ -66,6 +66,18 @@ describe('SchoolLogo', () => {
     expect(previewMark).toContain('max-width: 64px')
   })
 
+  it('keeps the Dossier identity compact without clipping title descenders', () => {
+    const program = cssRule('.dossier-header-copy > .eyebrow')
+    const school = cssRule('.dossier-header .dossier-header-copy h2')
+    const professor = cssRule('.dossier-header .dossier-header-copy p')
+
+    expect(program).toContain('font-size: 10px')
+    expect(school).toContain('font-size: 21px')
+    expect(school).toContain('line-height: 1.2')
+    expect(school).toContain('padding-bottom: 2px')
+    expect(professor).toContain('font-size: 12px')
+  })
+
   it('tries the bundled multilingual catalog even when no website was entered', async () => {
     const onResolve = vi.fn(async () => false)
     render(

@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nContext, type I18nContextValue } from '../hooks/useI18n'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -69,5 +69,58 @@ describe('ConfirmDialog', () => {
       </I18nContext.Provider>,
     )
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
+  it('keeps an async confirmation mounted when the mutation rejects', async () => {
+    const onConfirm = vi.fn().mockRejectedValue(new Error('write-failed'))
+    render(
+      <I18nContext.Provider value={zhContext}>
+        <ConfirmDialog
+          open
+          title="删除"
+          message="确认删除？"
+          onConfirm={onConfirm}
+          onCancel={vi.fn()}
+        />
+      </I18nContext.Provider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '确认' }))
+    expect(screen.getByRole('button', { name: 'working' })).toBeDisabled()
+    await waitFor(() => expect(screen.getByRole('button', { name: '确认' })).toBeEnabled())
+    expect(onConfirm).toHaveBeenCalledOnce()
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument()
+  })
+
+  it('exposes a distinct retry-safe secondary decision without treating it as cancel', async () => {
+    vi.useFakeTimers()
+    const onSecondary = vi.fn().mockResolvedValue(undefined)
+    const onCancel = vi.fn()
+    render(
+      <I18nContext.Provider value={zhContext}>
+        <ConfirmDialog
+          open
+          title="同步推荐人"
+          message="同步全部，还是仅保留在本申请？"
+          confirmLabel="同步全部"
+          secondaryLabel="仅本申请"
+          cancelLabel="取消"
+          onConfirm={vi.fn()}
+          onSecondary={onSecondary}
+          onCancel={onCancel}
+        />
+      </I18nContext.Provider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '仅本申请' }))
+    expect(screen.getByRole('button', { name: 'working' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '同步全部' })).toBeDisabled()
+
+    await act(async () => Promise.resolve())
+    expect(onSecondary).toHaveBeenCalledOnce()
+    expect(onCancel).not.toHaveBeenCalled()
+
+    act(() => vi.advanceTimersByTime(160))
+    expect(onCancel).toHaveBeenCalledOnce()
   })
 })

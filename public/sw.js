@@ -7,16 +7,20 @@ const PUSH_PREFERENCE_CACHE = 'phd-atlas-push-preference-v1'
 const PUSH_PREFERENCE_URL = '/__phd-atlas-push-preference__'
 const IS_DEVELOPMENT_WORKER = new URL(self.location.href).searchParams.has('dev')
 const ASSET_MANIFEST_URL = '/asset-manifest.json'
-const MAX_MANIFEST_ASSETS = 600
+const MAX_CORE_ASSETS = 48
+const MAX_CORE_CACHE_BYTES = 4 * 1024 * 1024
+const PRECACHE_CONCURRENCY = 6
 const MAX_CACHEABLE_BYTES = 8 * 1024 * 1024
 const NAVIGATION_NETWORK_TIMEOUT_MS = 4_500
+const CACHEABLE_PUBLIC_API_PATHS = new Set([
+  '/api/health',
+  '/api/health/live',
+  '/api/health/ready',
+])
 const APP_SHELL = [
   '/',
   ASSET_MANIFEST_URL,
   '/manifest.webmanifest',
-  '/favicon.svg',
-  '/favicon-48x48.png',
-  '/apple-touch-icon.png',
   '/pwa-192x192.png',
   '/pwa-512x512.png',
   '/pwa-maskable-512x512.png',
@@ -57,14 +61,26 @@ function isSafeCacheableResponse(response, requestUrl) {
   return contentType.includes(expected)
 }
 
-function collectBuiltAssetUrls(manifest) {
+function collectCoreBuiltAssetUrls(manifest) {
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
     throw new Error('Invalid production asset manifest.')
   }
 
   const assets = new Set()
-  for (const entry of Object.values(manifest)) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+  const visited = new Set()
+  const entryKeys = Object.entries(manifest)
+    .filter(([, entry]) => entry?.isEntry === true)
+    .map(([key]) => key)
+
+  if (entryKeys.length === 0) {
+    throw new Error('Production asset manifest has no application entry.')
+  }
+
+  const visit = (key) => {
+    if (visited.has(key)) return
+    visited.add(key)
+    const entry = manifest[key]
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return
     const candidates = [
       entry.file,
       ...(Array.isArray(entry.css) ? entry.css : []),
@@ -77,10 +93,15 @@ function collectBuiltAssetUrls(manifest) {
         assets.add(`${url.pathname}${url.search}`)
       }
     }
+    for (const importedKey of Array.isArray(entry.imports) ? entry.imports : []) {
+      if (typeof importedKey === 'string' && manifest[importedKey]) visit(importedKey)
+    }
   }
 
-  if (assets.size === 0 || assets.size > MAX_MANIFEST_ASSETS) {
-    throw new Error('Production asset manifest is empty or unexpectedly large.')
+  entryKeys.forEach(visit)
+
+  if (assets.size === 0 || assets.size > MAX_CORE_ASSETS) {
+    throw new Error('Production core asset graph is empty or unexpectedly large.')
   }
   return [...assets]
 }
@@ -98,18 +119,52 @@ async function fetchCacheable(url) {
   return { request, response }
 }
 
+async function responseSizeBytes(response) {
+  return (await response.clone().arrayBuffer()).byteLength
+}
+
+async function precacheAssets(cache, urls, {
+  concurrency = PRECACHE_CONCURRENCY,
+  maxBytes = MAX_CORE_CACHE_BYTES,
+} = {}) {
+  const queue = [...new Set(urls)]
+  const workerCount = Math.max(1, Math.min(queue.length, Math.floor(concurrency) || 1))
+  let cursor = 0
+  let cachedBytes = 0
+
+  const worker = async () => {
+    while (cursor < queue.length) {
+      const url = queue[cursor]
+      cursor += 1
+      const asset = await fetchCacheable(url)
+      const assetBytes = await responseSizeBytes(asset.response)
+      if (assetBytes > MAX_CACHEABLE_BYTES || cachedBytes + assetBytes > maxBytes) {
+        throw new Error('Production core asset graph exceeds the offline cache budget.')
+      }
+      cachedBytes += assetBytes
+      await cache.put(asset.request, asset.response)
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  return { cachedBytes, cachedCount: queue.length }
+}
+
 async function precacheOfflineApp() {
   const cache = await caches.open(SHELL_CACHE)
   const manifestAsset = await fetchCacheable(ASSET_MANIFEST_URL)
   const manifest = await manifestAsset.response.clone().json()
-  const builtAssets = collectBuiltAssetUrls(manifest)
+  const manifestBytes = await responseSizeBytes(manifestAsset.response)
+  if (manifestBytes > MAX_CORE_CACHE_BYTES) {
+    throw new Error('Production asset manifest exceeds the offline cache budget.')
+  }
+  const builtAssets = collectCoreBuiltAssetUrls(manifest)
   await cache.put(manifestAsset.request, manifestAsset.response)
 
   const shellAssets = APP_SHELL.filter((url) => url !== ASSET_MANIFEST_URL)
-  await Promise.all([...shellAssets, ...builtAssets].map(async (url) => {
-    const asset = await fetchCacheable(url)
-    await cache.put(asset.request, asset.response)
-  }))
+  await precacheAssets(cache, [...shellAssets, ...builtAssets], {
+    maxBytes: MAX_CORE_CACHE_BYTES - manifestBytes,
+  })
 }
 
 self.addEventListener('install', (event) => {
@@ -124,7 +179,18 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     if (self.registration.navigationPreload) {
-      await self.registration.navigationPreload.enable().catch(() => undefined)
+      // Only the production worker answers navigations. The development worker
+      // returns from `fetch` without touching `event.preloadResponse`, so
+      // leaving preload enabled makes the browser start a preload request for
+      // every navigation and then cancel it unread — which is reported as
+      // "navigation preload request was cancelled before 'preloadResponse'
+      // settled" on each page load. Disable it explicitly rather than merely
+      // skipping enable(): a worker from an earlier production build may
+      // already have it turned on for this scope.
+      await (IS_DEVELOPMENT_WORKER
+        ? self.registration.navigationPreload.disable()
+        : self.registration.navigationPreload.enable()
+      ).catch(() => undefined)
     }
     await caches.keys()
       .then((keys) => Promise.all(
@@ -283,7 +349,7 @@ async function staleWhileRevalidate(request) {
   const refresh = fetch(request)
     .then((response) => {
       if (isSafeCacheableResponse(response, new URL(request.url))) {
-        caches.open(RUNTIME_CACHE)
+        Promise.resolve(caches.open(RUNTIME_CACHE))
           .then((cache) => cache.put(request, response.clone()))
           .catch(() => undefined)
       }
@@ -318,8 +384,6 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url)
   if (url.origin !== self.location.origin) return
 
-  if (url.pathname.startsWith('/api/')) return
-
   if (request.mode === 'navigate') {
     // The response strategy may fall back to the cached shell when its timeout
     // wins the race. Keep the fetch event alive until Chrome's navigation
@@ -333,6 +397,17 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(networkFirstNavigation(request, preloadResponse))
     return
   }
+
+  if (CACHEABLE_PUBLIC_API_PATHS.has(url.pathname)) {
+    // Health probes are deliberately the only API responses eligible for
+    // stale-while-revalidate. Authenticated and personalized /api payloads
+    // remain network-only; they must never enter the shared Service Worker
+    // cache where another session could observe them.
+    event.respondWith(staleWhileRevalidate(request))
+    return
+  }
+
+  if (url.pathname.startsWith('/api/')) return
 
   if (isImmutableAssetRequest(url)) {
     event.respondWith(cacheFirst(request))

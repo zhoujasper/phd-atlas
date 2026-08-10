@@ -39,6 +39,8 @@ import { Skeleton } from './Skeleton'
 import { InlinePresence } from './InlinePresence'
 import { ExplorerContextMenu, type ExplorerContextMenuState } from './ExplorerContextMenu'
 
+const NOTIFICATION_RENDER_LIMIT = 50
+
 type Tx = (path: string, fallback?: string) => string
 type Format = (template: string, values: Record<string, string | number>) => string
 type NotificationApplicationRecord = ApplicationRecord & {
@@ -672,6 +674,7 @@ export function NotificationCenter({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [activeId, setActiveId] = useState<string | null>(null)
   const [filter, setFilter] = useState<'all' | 'unread' | 'archived'>('all')
+  const [notificationRenderLimit, setNotificationRenderLimit] = useState(NOTIFICATION_RENDER_LIMIT)
   const [editing, setEditing] = useState(false)
   const [selectionContextMenu, setSelectionContextMenu] = useState<ExplorerContextMenuState | null>(null)
   const [isCompactViewport, setIsCompactViewport] = useState(isCompactNotificationViewport)
@@ -716,6 +719,13 @@ export function NotificationCenter({
     }),
     [filter, notifications],
   )
+  const renderedNotifications = useMemo(() => {
+    const activeIndex = filteredNotifications.findIndex((item) => item.id === activeId)
+    const limit = activeIndex >= 0
+      ? Math.max(notificationRenderLimit, activeIndex + 1)
+      : notificationRenderLimit
+    return filteredNotifications.slice(0, limit)
+  }, [activeId, filteredNotifications, notificationRenderLimit])
   const visibleIds = useMemo(() => filteredNotifications.map((item) => item.id), [filteredNotifications])
   const selectedItems = useMemo(
     () => filteredNotifications.filter((item) => selectedIds.has(item.id)),
@@ -737,6 +747,10 @@ export function NotificationCenter({
   const activeApplication = activeItem?.applicationId
     ? applicationById.get(activeItem.applicationId) ?? null
     : null
+
+  useEffect(() => {
+    setNotificationRenderLimit(NOTIFICATION_RENDER_LIMIT)
+  }, [filter, notifications])
 
   useEffect(() => {
     const dialogHeightAnimation = dialogHeightAnimationRef.current
@@ -1243,7 +1257,7 @@ export function NotificationCenter({
               <ul
                 className={`notification-center-list${clearingAllUnread ? ' is-clearing-all' : ''}${clearingAllUnread && filter === 'unread' ? ' is-clearing-exit' : ''}`}
               >
-                {filteredNotifications.map((item) => {
+                {renderedNotifications.map((item) => {
                 const Icon = NOTIFICATION_ICONS[item.type] ?? Bell
                 const unread = !item.readAt
                 const isClearingUnread = clearingUnreadIds.has(item.id)
@@ -1342,6 +1356,17 @@ export function NotificationCenter({
                 )
                 })}
               </ul>
+              {renderedNotifications.length < filteredNotifications.length ? (
+                <button
+                  type="button"
+                  className="quiet-action compact-action notification-center-load-more"
+                  onClick={() =>
+                    setNotificationRenderLimit((current) => current + NOTIFICATION_RENDER_LIMIT)
+                  }
+                >
+                  {tx('notifications.showMore')}
+                </button>
+              ) : null}
             </div>
             <div
               className="notification-center-detail-pane"

@@ -9,6 +9,7 @@ import type {
 } from '../../api/phdApi'
 import type { BackupFrequency } from '../../data/applications'
 import { localeForLanguage } from '../../i18n'
+import { normalizeBackupFrequency as sharedNormalizeBackupFrequency } from '../../../shared/backupFrequency.js'
 
 export type AdminTx = (key: string, fallback?: string) => string
 export type AccountType = 'free' | 'pro' | 'admin'
@@ -57,11 +58,30 @@ export function databaseDraftFromConfiguration(configuration: DatabaseConfigurat
   }
 }
 
+/**
+ * The admin console must preserve whatever cadence an account is actually on,
+ * including the sub-hourly ones the picker does not list. Validating against
+ * the picker's options instead rewrote them to `daily` on the next save.
+ */
 export function normalizeBackupFrequency(value: string | undefined): BackupFrequency {
-  if (value === 'weekly') return '7d'
-  return backupFrequencyOptions.some((option) => option.value === value)
-    ? (value as BackupFrequency)
-    : 'daily'
+  return sharedNormalizeBackupFrequency(value) as BackupFrequency
+}
+
+/**
+ * The picker offers a shortlist, but it still has to be able to *show* the
+ * cadence an account is on — otherwise a value it does not list reads as blank
+ * or as some other option, and the next change is made against a wrong
+ * starting point.
+ */
+export function backupFrequencyOptionsFor(
+  current: BackupFrequency | undefined,
+): Array<{ value: BackupFrequency; labelKey: string; fallback: string }> {
+  const active = normalizeBackupFrequency(current)
+  if (backupFrequencyOptions.some((option) => option.value === active)) return backupFrequencyOptions
+  return [
+    ...backupFrequencyOptions,
+    { value: active, labelKey: `settings.backupEvery${active}`, fallback: active },
+  ]
 }
 
 export function normalizeBackupLimitOption(value: string | number | undefined): string {

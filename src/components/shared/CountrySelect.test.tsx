@@ -115,4 +115,29 @@ describe('CountrySelect', () => {
     expect(optionRule).toContain('min-height: 36px')
     expect(optionRule).toContain('padding: 4px 8px')
   })
+
+  it('keeps country disclosure motion isolated from list scroll anchoring', () => {
+    const groupRule = workspaceStyles.match(
+      /\.country-select-group-panel\s*\{([^}]*)\}/,
+    )?.[1] ?? ''
+
+    expect(groupRule).toContain('--collapsible-open-duration: 320ms')
+    expect(groupRule).toContain('--collapsible-close-duration: 260ms')
+    expect(workspaceStyles).toMatch(/\.country-select-list\s*\{[^}]*overflow-anchor:\s*none;/s)
+    expect(workspaceStyles).toMatch(/\.country-select-group-section\s*\{[^}]*overflow-anchor:\s*none;/s)
+  })
+
+  it('sizes the closed menu to its content instead of reserving expanded-list space', () => {
+    const dropdownRule = workspaceStyles.match(
+      /\.country-select-dropdown\s*\{([^}]*)\}/,
+    )?.[1] ?? ''
+    const listRule = workspaceStyles.match(
+      /\.country-select-list\s*\{([^}]*)\}/,
+    )?.[1] ?? ''
+
+    expect(dropdownRule).toContain('height: auto')
+    expect(dropdownRule).toContain('max-height: var(--floating-available-height, 420px)')
+    expect(dropdownRule).not.toContain('height: min(420px')
+    expect(listRule).toContain('flex: 0 1 auto')
+  })
 })

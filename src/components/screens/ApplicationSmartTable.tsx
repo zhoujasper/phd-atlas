@@ -8,6 +8,7 @@ import {
   Download,
   ExternalLink,
   FolderOpen,
+  LoaderCircle,
   Mail,
   Plus,
   Table2,
@@ -25,6 +26,7 @@ import {
   useMemo,
   useRef,
   useState,
+  startTransition,
   useTransition,
 } from 'react'
 import { formatDate } from '../../appModel'
@@ -59,6 +61,7 @@ import {
   type ApplicationPipelineScope,
   type TeamKanbanStudent,
 } from './applicationPipelineModel'
+import { useApplicationTableStickyHeader } from './applicationTableStickyHeader'
 
 type ApplicationTableSortField =
   | 'application'
@@ -80,13 +83,13 @@ type ApplicationTableRow = {
 }
 
 const SORT_STORAGE_PREFIX = 'phd-atlas:application-pipeline-sort:v1:'
-const DESKTOP_INITIAL_ROW_COUNT = 20
-const DESKTOP_ROW_BATCH_SIZE = 20
-const MOBILE_INITIAL_ROW_COUNT = 10
-const MOBILE_ROW_BATCH_SIZE = 10
+const DESKTOP_INITIAL_ROW_COUNT = 12
+const DESKTOP_ROW_BATCH_SIZE = 12
+const MOBILE_INITIAL_ROW_COUNT = 8
+const MOBILE_ROW_BATCH_SIZE = 8
 const TABLE_ROW_ENTRANCE_MS = 320
 const TABLE_ROW_STAGGER_MS = 9
-const TABLE_ROW_STAGGER_LIMIT = 7
+const TABLE_ROW_STAGGER_LIMIT = DESKTOP_ROW_BATCH_SIZE - 1
 
 function useCompactTableViewport() {
   const [compact, setCompact] = useState(() => (
@@ -138,6 +141,12 @@ function ApplicationTableCheckbox({
       <span className="application-table-checkbox-mixed" aria-hidden="true" />
     </label>
   )
+}
+
+function preventNativeShiftRangeSelection(event: MouseEvent<HTMLElement>) {
+  if (event.button !== 0 || !event.shiftKey) return
+  event.preventDefault()
+  window.getSelection()?.removeAllRanges()
 }
 
 function ApplicationTableStatusEditor({
@@ -357,7 +366,7 @@ export type ApplicationSmartTableProps = {
   customApplicationStatuses?: readonly ApplicationStatus[]
   onStatusChange: (id: string, status: ApplicationStatus) => void
   onSelect: (id: string) => void
-  onPrefetch?: () => void
+  onPrefetch?: (id?: string) => void
   onOpenInNewPage?: (id: string) => void
   onOpenMany?: (ids: string[]) => void
   onExportApplication?: (id: string) => void
@@ -395,10 +404,15 @@ export function ApplicationSmartTable({
   const [contextMenu, setContextMenu] = useState<ExplorerContextMenuState | null>(null)
   const [visibleRowCount, setVisibleRowCount] = useState(initialRowCount)
   const [isAppendingRows, startAppendingRows] = useTransition()
+  const [isLoadingMoreRows, setIsLoadingMoreRows] = useState(false)
   const selectAllRef = useRef<HTMLInputElement>(null)
   const tableShellRef = useRef<HTMLDivElement>(null)
+  const tableHeadRef = useRef<HTMLTableSectionElement>(null)
+  const residentToolsRef = useRef<HTMLDivElement>(null)
   const loadMoreMarkerRef = useRef<HTMLDivElement>(null)
   const observerAppendFrameRef = useRef<number | null>(null)
+  const loadMoreBusyRef = useRef(false)
+  const progressiveLoadArmedRef = useRef(false)
 
   useEffect(() => {
     writeSort(scope, sort)
@@ -417,6 +431,14 @@ export function ApplicationSmartTable({
     }
     return nextRows
   }, [applications, teamStudents])
+
+  useApplicationTableStickyHeader({
+    active: rows.length > 0,
+    compactViewport,
+    headerRef: tableHeadRef,
+    residentToolsRef,
+    shellRef: tableShellRef,
+  })
 
   const statusOrder = useMemo(
     () => applicationStatusOrder(
@@ -588,7 +610,7 @@ export function ApplicationSmartTable({
   }, [someSelected])
 
   const loadMoreRows = useCallback(() => {
-    if (!hasMoreRows) return
+    if (!hasMoreRows || loadMoreBusyRef.current) return
     if (observerAppendFrameRef.current !== null) {
       window.cancelAnimationFrame(observerAppendFrameRef.current)
       observerAppendFrameRef.current = null
@@ -599,6 +621,8 @@ export function ApplicationSmartTable({
       .map(({ application }) => application.id)
     if (enteringIds.length === 0) return
 
+    loadMoreBusyRef.current = true
+    setIsLoadingMoreRows(true)
     startAppendingRows(() => {
       setRowEntrance((current) => ({
         token: current.token + 1,
@@ -609,7 +633,7 @@ export function ApplicationSmartTable({
   }, [hasMoreRows, rowBatchSize, sortedRows, visibleRowCount])
 
   const scheduleObservedLoadMoreRows = useCallback(() => {
-    if (!hasMoreRows || observerAppendFrameRef.current !== null) return
+    if (!hasMoreRows || loadMoreBusyRef.current || observerAppendFrameRef.current !== null) return
     observerAppendFrameRef.current = window.requestAnimationFrame(() => {
       observerAppendFrameRef.current = null
       loadMoreRows()
@@ -622,25 +646,43 @@ export function ApplicationSmartTable({
     const workspaceScrollRoot = compactViewport
       ? null
       : tableShellRef.current?.closest('.kanban-workspace') ?? null
+    const scrollTarget: Window | Element = workspaceScrollRoot ?? window
+    const preloadDistance = compactViewport ? 180 : 260
+    const armProgressiveLoading = () => {
+      if (progressiveLoadArmedRef.current) return
+      progressiveLoadArmedRef.current = true
+      const markerTop = marker.getBoundingClientRect().top
+      const viewportBottom = workspaceScrollRoot
+        ? workspaceScrollRoot.getBoundingClientRect().bottom
+        : window.innerHeight
+      if (markerTop <= viewportBottom + preloadDistance) scheduleObservedLoadMoreRows()
+    }
+    const initialScrollTop = workspaceScrollRoot?.scrollTop ?? window.scrollY
+    if (initialScrollTop > 1) progressiveLoadArmedRef.current = true
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) scheduleObservedLoadMoreRows()
+        if (
+          progressiveLoadArmedRef.current
+          && entries.some((entry) => entry.isIntersecting)
+        ) scheduleObservedLoadMoreRows()
       },
       {
         root: workspaceScrollRoot,
-        rootMargin: compactViewport ? '0px 0px 360px' : '0px 0px 520px',
+        rootMargin: `0px 0px ${preloadDistance}px`,
         threshold: 0.01,
       },
     )
+    scrollTarget.addEventListener('scroll', armProgressiveLoading, { passive: true })
     observer.observe(marker)
     return () => {
+      scrollTarget.removeEventListener('scroll', armProgressiveLoading)
       observer.disconnect()
       if (observerAppendFrameRef.current !== null) {
         window.cancelAnimationFrame(observerAppendFrameRef.current)
         observerAppendFrameRef.current = null
       }
     }
-  }, [compactViewport, hasMoreRows, scheduleObservedLoadMoreRows])
+  }, [compactViewport, hasMoreRows, scheduleObservedLoadMoreRows, tableShellRef])
 
   const finishRowEntrance = useCallback((token: number) => {
     setRowEntrance((current) => (
@@ -662,7 +704,11 @@ export function ApplicationSmartTable({
       ? 0
       : TABLE_ROW_ENTRANCE_MS + (finalStaggerIndex * TABLE_ROW_STAGGER_MS) + 32
     const timer = window.setTimeout(
-      () => finishRowEntrance(rowEntrance.token),
+      () => {
+        finishRowEntrance(rowEntrance.token)
+        loadMoreBusyRef.current = false
+        setIsLoadingMoreRows(false)
+      },
       releaseDelay,
     )
     return () => window.clearTimeout(timer)
@@ -796,8 +842,8 @@ export function ApplicationSmartTable({
     if (event.target !== event.currentTarget) return
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
-      selection.clearSelection()
       onSelect(applicationId)
+      if (selection.selectedCount > 0) startTransition(selection.clearSelection)
     }
   }
 
@@ -891,21 +937,6 @@ export function ApplicationSmartTable({
         <span>{tx('kanban.tableHint')}</span>
       </div>
       <div className="application-table-tools">
-        <div
-          className={`application-table-bulk-status${selection.selectedCount > 0 ? ' is-visible' : ''}`}
-          aria-hidden={selection.selectedCount === 0}
-          inert={selection.selectedCount === 0 || undefined}
-        >
-          <Select<ApplicationStatus | ''>
-            value=""
-            options={statusOptions}
-            onChange={moveSelected}
-            placeholder={tx('kanban.moveSelected')}
-            ariaLabel={tx('kanban.moveSelected')}
-            size="small"
-            disabled={selection.selectedCount === 0}
-          />
-        </div>
         {compactViewport ? (
           <div className="application-table-mobile-sort">
             <Select<ApplicationTableSortField>
@@ -970,23 +1001,54 @@ export function ApplicationSmartTable({
       visible={selection.selectedCount > 0}
       label={format(tx('explorer.selectedCount'), { count: selection.selectedCount })}
       clearLabel={tx('explorer.clearSelection')}
+      placement="viewport-bottom"
+      viewportAnchorRef={tableShellRef}
+      className="application-table-selection-dock"
+      leadingContent={(
+        <Select<ApplicationStatus | ''>
+          value=""
+          options={statusOptions}
+          onChange={moveSelected}
+          placeholder={tx('kanban.moveSelected')}
+          ariaLabel={tx('kanban.moveSelected')}
+          size="small"
+        />
+      )}
       onClear={selection.clearSelection}
       actions={selectionActions}
     />
   )
 
+  const isLoadMoreBusy = isLoadingMoreRows || isAppendingRows
+  const loadMoreLabel = format(tx('kanban.showMore'), {
+    count: Math.min(rowBatchSize, remainingRowCount),
+  })
   const loadMoreNode = hasMoreRows ? (
     <div
       ref={loadMoreMarkerRef}
-      className={`application-table-load-more${isAppendingRows ? ' is-loading' : ''}`}
-      aria-busy={isAppendingRows}
+      className={`application-table-load-more${isLoadMoreBusy ? ' is-loading' : ''}`}
+      aria-busy={isLoadMoreBusy || undefined}
     >
-      <button type="button" onClick={loadMoreRows}>
-        <Plus size={13} aria-hidden="true" />
-        <span>
-          {format(tx('kanban.showMore'), {
-            count: Math.min(rowBatchSize, remainingRowCount),
-          })}
+      <button
+        type="button"
+        onClick={() => {
+          progressiveLoadArmedRef.current = true
+          loadMoreRows()
+        }}
+        disabled={isLoadMoreBusy}
+        aria-label={isLoadMoreBusy ? tx('working') : loadMoreLabel}
+      >
+        <span className="application-table-load-more-icon" aria-hidden="true">
+          <Plus size={13} className="application-table-load-more-icon-idle" />
+          <LoaderCircle size={13} className="application-table-load-more-icon-busy" />
+        </span>
+        <span className="application-table-load-more-label" aria-hidden="true">
+          <span className="application-table-load-more-copy application-table-load-more-copy-idle">
+            {loadMoreLabel}
+          </span>
+          <span className="application-table-load-more-copy application-table-load-more-copy-busy">
+            {tx('working')}
+          </span>
         </span>
       </button>
     </div>
@@ -994,15 +1056,19 @@ export function ApplicationSmartTable({
 
   return (
     <div className={`application-pipeline-view application-smart-table-view${compactViewport ? ' is-compact' : ''}`}>
-      <div className="application-table-sticky-tools">
+      <div ref={residentToolsRef} className="application-table-sticky-tools">
         {toolbarNode}
-        {selectionBarNode}
       </div>
+
+      {selectionBarNode}
 
       <div ref={tableShellRef} className="atlas-table-shell application-smart-table-shell">
         <table className="atlas-table application-smart-table" style={tableStyle}>
           <TableColGroup columns={columns} api={columnMenu.api} />
-          <thead>
+          <thead
+            ref={tableHeadRef}
+            onContextMenu={(event) => columnMenu.openMenu(event, tx('table.columns'))}
+          >
             <tr>
               <TableHeaderCell
                 column={columns.find((column) => column.id === 'select')!}
@@ -1129,19 +1195,23 @@ export function ApplicationSmartTable({
                     className={`${selected ? 'is-selected ' : ''}${entering ? 'is-entering' : ''}`.trim() || undefined}
                     data-pipeline-row-id={application.id}
                     style={{
-                      '--application-table-row-index': Math.min(entranceIndex ?? (index % rowBatchSize), 7),
+                      '--application-table-row-index': Math.min(
+                        entranceIndex ?? (index % rowBatchSize),
+                        TABLE_ROW_STAGGER_LIMIT,
+                      ),
                     } as CSSProperties}
                     tabIndex={0}
                     aria-selected={selected}
-                    onPointerEnter={onPrefetch}
-                    onFocus={onPrefetch}
+                    onPointerEnter={() => onPrefetch?.(application.id)}
+                    onFocus={() => onPrefetch?.(application.id)}
+                    onMouseDown={preventNativeShiftRangeSelection}
                     onClick={(event) => {
                       if (hasExplorerSelectionModifier(event)) {
                         selection.applyGesture(application.id, event)
                         return
                       }
-                      selection.clearSelection()
                       onSelect(application.id)
+                      if (selection.selectedCount > 0) startTransition(selection.clearSelection)
                     }}
                     onContextMenu={(event) => openRowContextMenu(event, row)}
                     onKeyDown={(event) => handleRowKeyDown(event, application.id)}

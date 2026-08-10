@@ -1,9 +1,10 @@
 import '@testing-library/jest-dom/vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { prepareForSafeReload } from '../../safeReload'
 import { I18nContext } from '../hooks/useI18n'
-import FeeTracker from './FeeTracker'
+import FeeTracker, { type FeeTrackerExitGuard } from './FeeTracker'
 
 const paidFee = {
   id: 'paid-fee',
@@ -25,6 +26,10 @@ const unpaidFee = {
   createdAt: '2026-07-15T10:00:00.000Z',
 }
 
+beforeEach(() => {
+  sessionStorage.clear()
+})
+
 type FeePatch = {
   amount?: number
   currency?: string
@@ -38,6 +43,12 @@ function renderFeeTracker(
   fees: Array<typeof paidFee | typeof unpaidFee> = [paidFee],
   onDelete = vi.fn(),
   onAdd = vi.fn(),
+  options: {
+    userId?: string
+    applicationId?: string
+    onRegisterExitGuard?: (guard: FeeTrackerExitGuard | null) => void
+    onNotify?: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
+  } = {},
 ) {
   return render(
     <I18nContext.Provider value={{
@@ -47,16 +58,35 @@ function renderFeeTracker(
       tx: (path, fallback) => fallback ?? path,
     }}>
       <FeeTracker
+        userId={options.userId ?? 'fee-test-user'}
+        applicationId={options.applicationId ?? 'fee-test-application'}
         fees={fees}
         onAdd={onAdd}
         onUpdate={onUpdate}
         onDelete={onDelete}
+        onRegisterExitGuard={options.onRegisterExitGuard}
+        onNotify={options.onNotify}
       />
     </I18nContext.Provider>,
   )
 }
 
 describe('FeeTracker editing', () => {
+  it('uses localized currency symbols in both the summary and saved fee row', () => {
+    const cadFee = {
+      ...paidFee,
+      id: 'cad-fee',
+      amount: 70,
+      currency: 'CAD',
+    }
+    renderFeeTracker(vi.fn(async () => {}), [cadFee])
+
+    const summary = document.querySelector<HTMLElement>('.fee-summary')!
+    expect(within(summary).getAllByText('CA$70')).toHaveLength(2)
+    expect(within(document.getElementById('fee-cad-fee')!).getByText('CA$70')).toBeInTheDocument()
+    expect(document.querySelector('.fee-status-summary-dot, .fee-status-option-dot')).not.toBeInTheDocument()
+  })
+
   it('morphs removal into confirmation, then collapses the fee before deleting it', async () => {
     const user = userEvent.setup()
     const onDelete = vi.fn()
@@ -175,12 +205,19 @@ describe('FeeTracker editing', () => {
 
     await user.click(screen.getByRole('button', { name: 'Add Fee' }))
     const form = document.querySelector<HTMLFormElement>('.fee-add-form')!
+    const amount = within(form).getByRole('spinbutton')
+    expect(amount).toBeRequired()
+    expect(amount).toHaveAttribute('type', 'number')
+    expect(amount).toHaveAttribute('min', '0.01')
+    expect(amount).toHaveAttribute('max', '10000')
+    expect(amount).toHaveAttribute('step', '0.01')
+
     const waiverToggle = within(form).getByRole('button', { name: 'Waived' })
     expect(waiverToggle).toHaveAttribute('aria-pressed', 'false')
 
     await user.click(waiverToggle)
     expect(waiverToggle).toHaveAttribute('aria-pressed', 'true')
-    await user.type(within(form).getByPlaceholderText('Amount'), '75')
+    await user.type(amount, '75')
     await user.type(within(form).getByPlaceholderText('Notes (optional)'), 'Department waiver')
     await user.click(within(form).getByRole('button', { name: 'Add Fee' }))
 
@@ -190,6 +227,25 @@ describe('FeeTracker editing', () => {
       waived: true,
       notes: 'Department waiver',
     })
+  })
+
+  it('keeps the add form retryable when the fee write rejects', async () => {
+    const user = userEvent.setup()
+    const onAdd = vi.fn()
+      .mockRejectedValueOnce(new Error('fee-write-failed'))
+      .mockResolvedValueOnce(undefined)
+    renderFeeTracker(vi.fn(async () => {}), [paidFee], vi.fn(), onAdd)
+
+    await user.click(screen.getByRole('button', { name: 'Add Fee' }))
+    const form = document.querySelector<HTMLFormElement>('.fee-add-form')!
+    await user.type(within(form).getByRole('spinbutton'), '75')
+    await user.click(within(form).getByRole('button', { name: 'Add Fee' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('fee-write-failed')
+    expect(within(form).getByRole('button', { name: 'Add Fee' })).toBeEnabled()
+
+    await user.click(within(form).getByRole('button', { name: 'Add Fee' }))
+    await waitFor(() => expect(onAdd).toHaveBeenCalledTimes(2))
   })
 
   it('prompts save / discard / cancel when closing with unsaved edits', async () => {
@@ -303,5 +359,87 @@ describe('FeeTracker editing', () => {
     await waitFor(() => expect(unpaid).toHaveClass('editing'))
     expect(paid).not.toHaveClass('editing')
     expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it('restores an exact edit draft after remount only inside the same user and application scope', async () => {
+    const user = userEvent.setup()
+    const first = renderFeeTracker(vi.fn(async () => {}), [paidFee], vi.fn(), vi.fn(), {
+      userId: 'user-a',
+      applicationId: 'application-a',
+    })
+    const fee = document.getElementById('fee-paid-fee')!
+    await user.click(within(fee).getByRole('button', { name: 'Edit fee: 80 GBP' }))
+    const amount = within(fee).getByRole('spinbutton', { name: 'Amount' })
+    const notes = within(fee).getByRole('textbox', { name: 'Notes' })
+    await user.clear(amount)
+    await user.type(amount, '127.5')
+    await user.clear(notes)
+    await user.type(notes, 'Keep this exact resident draft.')
+    await waitFor(() => expect(sessionStorage.length).toBe(1))
+    first.unmount()
+
+    const otherScope = renderFeeTracker(vi.fn(async () => {}), [paidFee], vi.fn(), vi.fn(), {
+      userId: 'user-b',
+      applicationId: 'application-a',
+    })
+    expect(document.getElementById('fee-paid-fee')).not.toHaveClass('editing')
+    otherScope.unmount()
+
+    renderFeeTracker(vi.fn(async () => {}), [paidFee], vi.fn(), vi.fn(), {
+      userId: 'user-a',
+      applicationId: 'application-a',
+    })
+    const recovered = document.getElementById('fee-paid-fee')!
+    expect(recovered).toHaveClass('editing')
+    expect(within(recovered).getByRole('spinbutton', { name: 'Amount' })).toHaveValue(127.5)
+    expect(within(recovered).getByRole('textbox', { name: 'Notes' })).toHaveValue('Keep this exact resident draft.')
+  })
+
+  it('blocks automatic reload while dirty after verifying the recovery snapshot', async () => {
+    const user = userEvent.setup()
+    renderFeeTracker(vi.fn(async () => {}))
+    const fee = document.getElementById('fee-paid-fee')!
+    await user.click(within(fee).getByRole('button', { name: 'Edit fee: 80 GBP' }))
+    const amount = within(fee).getByRole('spinbutton', { name: 'Amount' })
+    await user.clear(amount)
+    await user.type(amount, '144')
+
+    await expect(prepareForSafeReload({ reason: 'application-update' })).resolves.toBe(false)
+    expect(sessionStorage.length).toBe(1)
+    expect(within(fee).getByRole('spinbutton', { name: 'Amount' })).toHaveValue(144)
+  })
+
+  it('keeps an external exit continuation blocked after a failed save and resumes it after a successful retry', async () => {
+    const user = userEvent.setup()
+    let guard: FeeTrackerExitGuard | null = null
+    const proceed = vi.fn()
+    const onUpdate = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    renderFeeTracker(onUpdate, [paidFee], vi.fn(), vi.fn(), {
+      onRegisterExitGuard: (nextGuard) => { guard = nextGuard },
+    })
+    const fee = document.getElementById('fee-paid-fee')!
+    await user.click(within(fee).getByRole('button', { name: 'Edit fee: 80 GBP' }))
+    const amount = within(fee).getByRole('spinbutton', { name: 'Amount' })
+    await user.clear(amount)
+    await user.type(amount, '166')
+
+    await waitFor(() => expect(guard).not.toBeNull())
+    act(() => {
+      expect(guard!(proceed)).toBe(false)
+    })
+    const dialog = await screen.findByRole('alertdialog')
+    const save = within(dialog).getByRole('button', { name: /Save changes/i })
+    await user.click(save)
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1))
+    expect(proceed).not.toHaveBeenCalled()
+    expect(fee).toHaveClass('editing')
+    expect(within(fee).getByRole('spinbutton', { name: 'Amount' })).toHaveValue(166)
+
+    await waitFor(() => expect(save).not.toBeDisabled())
+    await user.click(save)
+    await waitFor(() => expect(proceed).toHaveBeenCalledOnce())
+    expect(onUpdate).toHaveBeenCalledTimes(2)
   })
 })

@@ -5,14 +5,22 @@
 > 一套可自托管、隐私优先的博士申请全流程管理工作空间。
 
 [![CI](https://github.com/zhoujasper/phd-atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/zhoujasper/phd-atlas/actions/workflows/ci.yml)
-[![状态：Beta](https://img.shields.io/badge/status-beta-f59e0b.svg)](TODO.zh-CN.md)
-[![许可证：MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![状态：稳定版](https://img.shields.io/badge/status-stable-16a34a.svg)](TODO.zh-CN.md)
+[![许可证：PhD Atlas Community 1.0](https://img.shields.io/badge/license-PhD_Atlas_Community_1.0-7c3aed.svg)](LICENSE)
 [![Node.js 24 LTS](https://img.shields.io/badge/Node.js-24%20LTS-339933.svg)](https://nodejs.org/)
 
-> [!WARNING]
-> **PhD Atlas 当前是 Beta。** 在第一个稳定公共版之前，
-> 数据库结构、已存数据和升级路径可能发生不向后兼容的变化。重要数据必须备份，
-> Beta 更新应先在副本中测试。当前预发布版本与已发布安装包以
+> [!IMPORTANT]
+> **使用前请务必阅读许可证。** 本项目源码仅向个人，以及公益组织、慈善机构、
+> 非营利机构等主体免费开放，用于个人、学术、科研、教育、公益及其他非商业目的。
+> **任何营利机构、商业组织、企业或其他以盈利为目的的主体，无论直接使用还是由
+> 他人代为使用，都必须事先取得版权所有者的书面授权。** 这包括企业内部使用、
+> 付费服务、托管服务、SaaS、咨询、转售，以及承包商代表营利机构开展的工作。
+> 源码公开不等于可以不受限制地商用。任何商业使用前，请先阅读
+> [PhD Atlas Community License v1.0](LICENSE)，并通过官方仓库联系版权所有者。
+
+> [!NOTE]
+> `v0.1.0` 是第一个公开稳定版。已有 Beta 安装升级前必须完整备份工作空间。
+> 带版本号的安装包与校验文件以
 > [Releases 页面](https://github.com/zhoujasper/phd-atlas/releases)为准。
 
 PhD Atlas 把申请项目、潜在导师、材料、截止日期、通信、奖学金、可复用个人资料、
@@ -20,9 +28,8 @@ PhD Atlas 把申请项目、潜在导师、材料、截止日期、通信、奖�
 也可选择 MySQL/MariaDB、PostgreSQL 或 Microsoft SQL Server；上传文件、备份、
 凭据和集成设置都保留在你控制的基础设施上。
 
-本仓库是**公共自托管 Beta 版本**。它已包含完整的团队协作工作空间：所有者、
-教师与学生角色，邀请，范围受控的工作空间，共享申请与资料，审计历史，以及与
-私有源码版一致的权限校验。
+本仓库是**公共自托管稳定版**。当前产品只提供个人版；团队协作已在私有源码中
+归档，不在此分发版本中展示、加载、测试或发布。
 
 ## 真实界面
 
@@ -37,8 +44,8 @@ PhD Atlas 把申请项目、潜在导师、材料、截止日期、通信、奖�
   <img src="public/assets/product-tour/workspace-zh-light.webp" alt="PhD Atlas 真实申请工作空间，展示 ETH Zurich 清单、申请 Explorer、档案和检查器" width="1600">
 </picture>
 
-<details>
-<summary><strong>展开查看另外五个真实系统页面</strong></summary>
+<details open>
+<summary><strong>查看或收起另外五个真实系统页面</strong></summary>
 
 ### 往来消息
 
@@ -167,14 +174,49 @@ PhD Atlas 把申请项目、潜在导师、材料、截止日期、通信、奖�
 - 支持英语、简体中文、德语、西班牙语、法语、意大利语、日语、韩语、
   葡萄牙语、俄语、泰语和越南语。
 
-## 公共版 Team 可用性
+## 面向 Codex 与 Claude Desktop 的 MCP / Skill
 
-公共 Beta 已完整提供 Team 协作：机构可管理所有者、教师和学生成员、邀请、
-范围受控的工作空间、申请共享、审阅流程、审计历史和 Team AI 访问。公共仓与
-私有源码部署使用相同的服务端权限与配额校验。
+PhD Atlas 提供零依赖 Codex Skill 和 Claude Desktop MCPB，可以通过自然语言在账号权限范围内操作申请、
+画像、截止日期、文件、通信、发现和设置。它始终使用登录用户的真实权限；安装
+Skill 不会获得管理员权限。
 
-公共仓仍使用空白登录字段，不提供私有演示快捷方式。作为 Beta，请在生产升级
-前备份并在副本中验证 Team 数据和更新路径。
+推荐新建 Codex 任务并告诉它：
+
+> 使用 skill-installer，从
+> `https://github.com/zhoujasper/phd-atlas/tree/main/integrations/codex/plugins/phd-atlas/skills/phd-atlas`
+> 安装 PhD Atlas Skill。
+
+需要固定、可复现版本时，把 `main` 换成对应 `v...` Release 标签。生产构建还会
+提供带 checksum 的手动下载：`/downloads/phd-atlas-codex-skill.zip`、
+`/downloads/phd-atlas-codex-plugin.zip` 和 `/downloads/phd-atlas-claude.mcpb`。
+Skill ZIP 用于 Codex 直接安装，Plugin ZIP 额外提供本地 stdio MCP，MCPB 则用于
+Claude Desktop 一键安装；三者复用同一个仅个人工作空间授权边界。手动安装前
+必须验证旁边的 `.sha256`，安装或更新后新建 Codex 任务。
+
+首次使用时，Codex 或 Claude Desktop 会在浏览器中打开 PhD Atlas 授权页；验证
+网址和短验证码仍作为兜底。在该页面登录，检查
+申请的 scope 和有效期，再批准或拒绝设备授权。授权可以长期使用，也可以随时
+撤销，但默认和最长有效期都是 365 天，连续 180 天没有使用会提前失效，绝不是
+永久授权。在 **设置 → MCP / Skill** 中可以重命名连接，查看客户端/电脑和最后使用
+时间，暂停、恢复或删除连接。集成可以保存同一或不同自托管服务器上的多个账号，
+列出并切换默认账号、只为一次请求指定账号，以及断开本地账号；服务端撤销始终
+是权威安全边界。设置中撤销、账号禁用、`authVersion` 变化或系统全量恢复都会
+立即让受影响授权失效。
+
+专用通信工具可以设置人工邮件类别，也可以在明确确认后，用稳定幂等键执行一次
+AI 分类批次；通用通信更新不能改写分类权威字段。Discover 与 AI 路由继续分别受
+读取、写入和使用 scope 约束；浏览器 workspace bootstrap stream 仍明确不可用，
+Interview Prep 只通过 scope version 2 capability manifest 和对应 interview
+scope 开放。旧的 scope-v1 授权需要重新审批。
+
+凭据只会在批准后创建，并保存在操作系统的用户配置目录，绝不会进入下载 ZIP、
+Skill 或 Plugin 缓存。除本机回环开发外必须使用 HTTPS；不要把 Token 粘贴到
+提示词。设备或凭据文件可能泄露时，应立即撤销对应授权。
+
+## 仅个人版的产品边界
+
+Team 协作、Team 升级、Team 入口和 Team 管理均已归档，不属于当前公开分发。
+公共仓使用空白登录字段，不提供私有演示快捷方式。
 
 ## 技术栈
 
@@ -202,6 +244,8 @@ npm run dev
 
 打开 `http://localhost:5173/admin`。新数据库会显示一次性设置引导，要求填写：
 
+- 浏览器领取首次设置权限前，必须在受保护的本地环境中配置 32–512 字节
+  `PHD_ATLAS_BOOTSTRAP_TOKEN`；
 - 首位管理员姓名、登录邮箱和至少 12 位的密码；
 - SQLite 或外部 MySQL/MariaDB、PostgreSQL、SQL Server 连接；
 - 系统 SMTP 主机、端口、登录名、应用密码、TLS 选项和通知收件人。
@@ -214,40 +258,36 @@ PhD Atlas 会在保存前验证数据库和 SMTP 连接。管理员创建成功�
 
 ## 生产部署
 
-一条命令即可上线：
-
-```bash
-docker run --detach --name phd-atlas \
-  --env DOMAIN="https://phd.example.com" \
-  --volume phd-atlas-data:/app/storage \
-  --restart unless-stopped \
-  --publish 127.0.0.1:8000:4317 \
-  ghcr.io/zhoujasper/phd-atlas:latest
-```
-
-或使用 Docker Compose：
+生产环境使用仓库提供的完整 Compose 服务，确保停止窗口、资源、PID、日志、
+capability、持久卷、代理信任、健康检查和重启熔断边界始终一起生效：
 
 ```bash
 git clone https://github.com/zhoujasper/phd-atlas.git
 cd phd-atlas
-# 在 .env 中设置 DOMAIN，其余自动推导
-vim .env
+cp .env.example .env
+chmod 600 .env
+# 在 .env 设置 DOMAIN=https://phd.example.com，然后把首次启动必需的
+# 32–512 字节 token 直接写入受保护文件。
+{ printf 'PHD_ATLAS_BOOTSTRAP_TOKEN='; openssl rand -base64 48 | tr -d '\n'; printf '\n'; } >> .env
+docker compose pull
 docker compose up -d --wait
 ```
 
-服务只绑定 `127.0.0.1`，全部数据保存在命名卷中。
-请在前面配置 HTTPS 反向代理。
+不得打印、提交、记录到日志或把 bootstrap token 发到聊天中；首次 `/admin` claim
+页面要求输入时，只能在可信编辑器中从 `.env` 读取。服务只绑定宿主机
+`127.0.0.1:4317`，全部数据保存在命名卷中；前面必须配置 HTTPS 反向代理。
 
 Docker、Ubuntu、通用 Linux 和 Windows Server 的完整步骤见
 [DEPLOYMENT.zh-CN.md](DEPLOYMENT.zh-CN.md)。
 
 ## 配置
 
-只需设置 `DOMAIN`。`BASE_URL`、`CORS_ORIGIN` 和 `ALLOWED_HOSTS` 从它自动
-推导，JWT 签名密钥和数据加密密钥在首次启动时自动生成并存储在持久卷中。
+新生产工作空间必须设置 `DOMAIN` 与 32–512 字节
+`PHD_ATLAS_BOOTSTRAP_TOKEN`。`BASE_URL`、`CORS_ORIGIN` 和 `ALLOWED_HOSTS` 从域名
+自动推导，JWT 签名密钥和数据加密密钥在首次启动时自动生成并存储在持久卷中。
 
-服务启动后，首次打开 `https://你的域名/admin` 创建管理员、选择数据库并配置
-系统发件邮箱。
+服务启动后，首次打开 `https://你的域名/admin`，先用受保护的 bootstrap token
+领取设置权限，再创建管理员、选择数据库并配置系统发件邮箱。
 可选变量包括 VAPID Web Push 密钥和 PDF 字体；完整清单见
 [.env.example](.env.example)。
 
@@ -291,8 +331,14 @@ npm run test:e2e     # Playwright 端到端测试
 带标签的更新包和容器在发布前还必须通过隔离的 Microsoft SQL Server 2022
 adapter 冒烟测试。
 
-Beta 更新包执行同样的运行时代码安装和回滚测试，但不承诺不同 Beta 版本之间的
-数据库结构或已存数据兼容。每次 Beta 更新前必须备份整个工作空间。
+如果存在兼容的上一个 Release 包，工作流还会发布文件级差异包。自动更新仅在
+本地持久化基线包的版本和内容指纹完全匹配时，下载新增或变化的运行时文件以及
+删除清单；服务端随后重建并校验一个完整本地包，因此重启、旧镜像重放和回滚仍
+沿用原有信任边界。差异包缺失、基线不符、体积没有更小或校验失败时，会自动
+回退到完整包。
+
+稳定版更新包会执行同样的运行时代码安装与回滚测试。每次更新前都应备份整个
+工作空间，从 Beta 升级到首个稳定版时尤其如此。
 
 已经运行 `v0.1.0-beta.6` 或更高版本的 Docker、Windows 原生或 Linux 原生部署：
 
@@ -330,6 +376,7 @@ server/              Express 路由、多数据库持久层、邮件、推送、
 public/              PWA 清单、图标、Service Worker 和启动资源
 tests/e2e/            Playwright 用户流程测试
 deploy/               systemd、Nginx、WinSW 和 IIS 模板
+integrations/codex/    可安装 Codex Skill 与可选 Plugin/MCP 源码
 tools/                构建、验证、压力测试和启动工具
 Dockerfile            可复现生产镜像
 compose.yaml          单机生产 Compose 服务
@@ -352,4 +399,15 @@ npm run verify:tree
 
 ## 许可证
 
-[MIT](LICENSE)
+[PhD Atlas Community License v1.0](LICENSE) 是带商业使用限制的源码可见许可证，
+不是 MIT License，也不是 OSI 认可的开源许可证。
+
+- 个人，以及公益组织、慈善机构和非营利机构，可以在遵守许可证的前提下，为个人、
+  学术、科研、教育、公益及其他非商业目的使用、研究、修改和分发本软件。
+- 任何营利机构、商业组织、企业或其他以盈利为目的的主体，在使用本软件前都必须
+  取得版权所有者的书面授权；即使只在企业内部使用，也不例外。
+- 未经事先书面授权，不得把本软件用于商业产品、付费或托管服务、SaaS、咨询、
+  转售，也不得由承包商代表营利机构使用。
+
+如需商业使用、商业许可或其他授权，请在使用前通过 PhD Atlas 官方仓库或版权所有者
+公开的其他联系渠道与版权所有者联系。

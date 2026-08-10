@@ -6,8 +6,6 @@ import {
   ArrowUp,
   Check,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   Clock3,
   Columns,
   Copy,
@@ -33,6 +31,7 @@ import {
 import type { SortField, SortKey } from '../../appModel'
 import { daysUntil, deadlineUrgency } from '../../appModel'
 import { localeForLanguage } from '../../i18n'
+import { SAFE_RELOAD_FLUSH_EVENT } from '../../safeReload'
 import { statusCssSlug, statusLabel } from '../../statusLabels'
 import { StatusPill } from '../shared/StatusPill'
 import { CollapsiblePanel } from '../shared/CollapsiblePanel'
@@ -44,8 +43,11 @@ import { ExplorerSelectionBar } from '../shared/ExplorerSelectionBar'
 import { SchoolLogoMark } from '../shared/SchoolLogo'
 import { InlinePresence } from '../shared/InlinePresence'
 
-const APPLICATIONS_PER_PAGE = 10
+const APPLICATIONS_INITIAL_BATCH_SIZE = 10
+const APPLICATIONS_BATCH_SIZE = 10
+const APPLICATIONS_LOAD_AHEAD_PX = 220
 const APPLICATION_SELECTION_MOTION_FALLBACK_MS = 320
+const APPLICATION_SELECTION_SURFACE_HEIGHT = 46
 
 function isJsdomRuntime() {
   return typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent)
@@ -122,26 +124,47 @@ function ApplicationSearchField({
 }) {
   const [value, setValue] = useState(query)
   const timerRef = useRef<number | null>(null)
+  const pendingLocalValueRef = useRef<string | null>(null)
+  const onQueryRef = useRef(onQuery)
+  onQueryRef.current = onQuery
+
+  const commitValue = useCallback((nextValue: string, urgent = false) => {
+    const commit = () => onQueryRef.current(nextValue)
+    if (urgent) commit()
+    else startTransition(commit)
+  }, [])
 
   const scheduleCommit = useCallback((nextValue: string) => {
     if (timerRef.current !== null) window.clearTimeout(timerRef.current)
     timerRef.current = window.setTimeout(() => {
       timerRef.current = null
-      startTransition(() => onQuery(nextValue))
+      commitValue(nextValue)
     }, 90)
-  }, [onQuery])
+  }, [commitValue])
 
-  const flushCommit = useCallback(() => {
-    if (timerRef.current === null) return
-    window.clearTimeout(timerRef.current)
-    timerRef.current = null
-    startTransition(() => onQuery(value))
-  }, [onQuery, value])
-
-  useEffect(() => setValue(query), [query])
-  useEffect(() => () => {
+  const flushCommit = useCallback((urgent = false) => {
     if (timerRef.current !== null) window.clearTimeout(timerRef.current)
-  }, [])
+    timerRef.current = null
+    const pendingValue = pendingLocalValueRef.current
+    if (pendingValue === null) return
+    commitValue(pendingValue, urgent)
+  }, [commitValue])
+
+  useEffect(() => {
+    // A delayed parent echo must not overwrite a newer local keystroke. Once
+    // the parent acknowledges the latest draft, both layers converge again.
+    if (pendingLocalValueRef.current !== null && query !== pendingLocalValueRef.current) return
+    pendingLocalValueRef.current = null
+    setValue(query)
+  }, [query])
+  useEffect(() => {
+    const handleSafeReloadFlush = () => flushCommit(true)
+    window.addEventListener(SAFE_RELOAD_FLUSH_EVENT, handleSafeReloadFlush)
+    return () => {
+      window.removeEventListener(SAFE_RELOAD_FLUSH_EVENT, handleSafeReloadFlush)
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
+    }
+  }, [flushCommit])
 
   return (
     <label className="search-field" data-tour="application-tools">
@@ -152,10 +175,11 @@ function ApplicationSearchField({
         value={value}
         onChange={(event) => {
           const nextValue = event.target.value
+          pendingLocalValueRef.current = nextValue
           setValue(nextValue)
           scheduleCommit(nextValue)
         }}
-        onBlur={flushCommit}
+        onBlur={() => flushCommit()}
         placeholder={placeholder}
       />
       <span className="search-shortcut" aria-hidden="true">{shortcut}</span>
@@ -176,8 +200,8 @@ type ApplicationPaneProps = {
   onStatusFilters: (value: ApplicationStatus[]) => void
   onSort: (key: SortKey) => void
   onSelect: (id: string) => void
-  onPrefetch?: () => void
-  onResolveMissingSchoolLogo?: (application: ApplicationRecord) => Promise<boolean>
+  onPrefetch?: (id?: string) => void
+  onPrefetchBoard?: () => void
   // Omitted in the team-scoped browser — no one creates an application on a teammate's behalf.
   onNew?: () => void
   onUpgrade: () => void
@@ -191,7 +215,7 @@ type ApplicationPaneProps = {
   /** Records retained briefly so destructive actions can exit without a list jump. */
   removingApplicationIds?: ReadonlySet<string>
   removingTrashItemIds?: ReadonlySet<string>
-  // False in the team-scoped browser — trash is a personal-account concept.
+  // False only for surfaces that intentionally omit the account-owned recycle bin.
   showTrash?: boolean
   onRestoreTrash?: (item: ApplicationTrashItem) => void
   onDeleteTrash?: (item: ApplicationTrashItem) => void
@@ -201,6 +225,9 @@ type ApplicationPaneProps = {
   // applicationId -> owner display name, populated only when this pane is showing the
   // team-scoped list (multiple owners); absent in the personal application pane.
   ownerNames?: Record<string, string>
+  // userId -> owner display name for Team recycle-bin rows. The current user is
+  // intentionally omitted so a student's own deleted rows stay visually calm.
+  trashOwnerNames?: Record<string, string>
   // Team-scoped browser only — lets an institution admin/teacher narrow the list to one
   // teammate at a time. Omitted (or a single entry) hides the filter row entirely.
   ownerFilterOptions?: Array<{ id: string; name: string; count?: number; advisorName?: string | null; role?: string | null }>
@@ -234,7 +261,7 @@ export function ApplicationPane({
   onSort,
   onSelect,
   onPrefetch,
-  onResolveMissingSchoolLogo,
+  onPrefetchBoard,
   onNew,
   onUpgrade,
   onShowBoard,
@@ -253,6 +280,7 @@ export function ApplicationPane({
   onCopyApplication,
   onDeleteMany,
   ownerNames,
+  trashOwnerNames,
   ownerFilterOptions,
   ownerFilter,
   onOwnerFilter,
@@ -275,17 +303,17 @@ export function ApplicationPane({
     ],
     [applications, statusFilters],
   )
-  const [currentPage, setCurrentPage] = useState(1)
-  const [pageAnimDirection, setPageAnimDirection] = useState<'next' | 'prev' | 'none'>('none')
+  const [visibleApplicationCount, setVisibleApplicationCount] = useState(
+    () => Math.min(applications.length, APPLICATIONS_INITIAL_BATCH_SIZE),
+  )
   const [contextMenu, setContextMenu] = useState<ExplorerContextMenuState | null>(null)
   const [trashOpen, setTrashOpen] = useState(false)
-  const schoolLogoAutoAttemptsRef = useRef(new Set<string>())
-  const resolveMissingSchoolLogoRef = useRef(onResolveMissingSchoolLogo)
   const [ownerPickerOpen, setOwnerPickerOpen] = useState(false)
   const [ownerPickerQuery, setOwnerPickerQuery] = useState('')
   const ownerPickerRef = useRef<HTMLDivElement | null>(null)
   const paneRef = useRef<HTMLElement | null>(null)
   const applicationListRef = useRef<HTMLDivElement | null>(null)
+  const loadMoreMarkerRef = useRef<HTMLSpanElement | null>(null)
   const applicationSelectionSliderRef = useRef<HTMLSpanElement | null>(null)
   const applicationRowRefs = useRef(new Map<string, HTMLButtonElement>())
   const applicationRowGeometryRef = useRef(new Map<string, { top: number; height: number }>())
@@ -312,26 +340,14 @@ export function ApplicationPane({
 
   const locale = localeForLanguage(lang)
   const sorted = useMemo(() => sortApplications(applications, sort, locale), [applications, locale, sort])
-  const totalPages = Math.max(1, Math.ceil(sorted.length / APPLICATIONS_PER_PAGE))
-  const safeCurrentPage = Math.min(currentPage, totalPages)
   const activeSort = parseSortKey(sort)
-  const pageStart = (safeCurrentPage - 1) * APPLICATIONS_PER_PAGE
-  const pageEnd = Math.min(pageStart + APPLICATIONS_PER_PAGE, sorted.length)
-  const visiblePage = useMemo(
-    () => sorted.slice(pageStart, pageEnd),
-    [pageEnd, pageStart, sorted],
+  const visibleApplications = useMemo(
+    () => sorted.slice(0, visibleApplicationCount),
+    [sorted, visibleApplicationCount],
   )
-  const visiblePageKey = visiblePage.map((application) => application.id).join('|')
-  const visiblePageLogoKey = visiblePage
-    .map((application) => [
-      application.id,
-      application.school.website,
-      application.school.logo?.updatedAt ?? '',
-      application.school.logoAutoDetect === false ? 'off' : 'auto',
-      readOnlyIds?.has(application.id) ? 'readonly' : 'editable',
-    ].join(':'))
-    .join('|')
+  const visibleApplicationKey = visibleApplications.map((application) => application.id).join('|')
   const limitReached = !isPro && totalApplicationCount >= applicationLimit
+  const hasMoreApplications = visibleApplicationCount < sorted.length
   const sortedApplicationIds = useMemo(() => sorted.map((application) => application.id), [sorted])
   const selection = useExplorerSelection(sortedApplicationIds)
   const selectedApplications = useMemo(
@@ -346,61 +362,58 @@ export function ApplicationPane({
     return ownerFilterOptions.filter((option) => option.name.toLowerCase().includes(needle))
   }, [ownerFilterOptions, ownerPickerQuery])
 
-  useEffect(() => {
-    resolveMissingSchoolLogoRef.current = onResolveMissingSchoolLogo
-  }, [onResolveMissingSchoolLogo])
-
-  useEffect(() => {
-    const resolver = resolveMissingSchoolLogoRef.current
-    if (!resolver || typeof navigator !== 'undefined' && !navigator.onLine) return undefined
-    let cancelled = false
-    const candidates = visiblePage.filter((application) => (
-      (
-        !application.school.logo
-        // Refresh legacy automatic results that predate compact-mark geometry
-        // ranking. This upgrades already-saved Cambridge-style wordmarks on
-        // sight instead of requiring the user to remove the old image first.
-        || (
-          application.school.logo.source === 'website'
-          && ['page-logo', 'structured-logo', 'metadata-logo']
-            .includes(application.school.logo.candidateKind ?? '')
-        )
-      )
-      && application.school.logoAutoDetect !== false
-      && !readOnlyIds?.has(application.id)
-    ))
-
-    void (async () => {
-      for (let index = 0; index < candidates.length; index += 2) {
-        if (cancelled) return
-        const batch = candidates.slice(index, index + 2).filter((application) => {
-          const key = [
-            application.id,
-            application.school.name.trim(),
-            application.school.website.trim(),
-          ].join('::')
-          if (schoolLogoAutoAttemptsRef.current.has(key)) return false
-          schoolLogoAutoAttemptsRef.current.add(key)
-          return true
-        })
-        if (batch.length === 0) continue
-        await Promise.allSettled(batch.map((application) => resolver(application)))
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [readOnlyIds, visiblePage, visiblePageLogoKey])
-
   const closeContextMenu = useCallback(() => setContextMenu(null), [])
 
-  const goToPage = useCallback((nextPage: number, direction: 'next' | 'prev') => {
-    setPageAnimDirection(direction)
+  const loadMoreApplications = useCallback(() => {
+    if (!hasMoreApplications) return
     startTransition(() => {
-      setCurrentPage(nextPage)
+      setVisibleApplicationCount((current) => Math.min(sorted.length, current + APPLICATIONS_BATCH_SIZE))
     })
-  }, [])
+  }, [hasMoreApplications, sorted.length])
+
+  const loadMoreApplicationsIfNearEnd = useCallback(() => {
+    if (!hasMoreApplications) return
+    const list = applicationListRef.current
+    const marker = loadMoreMarkerRef.current
+    const listRemaining = list
+      ? list.scrollHeight - list.scrollTop - list.clientHeight
+      : Number.POSITIVE_INFINITY
+    const markerRemaining = marker
+      ? marker.getBoundingClientRect().top - window.innerHeight
+      : Number.POSITIVE_INFINITY
+    if (Math.min(listRemaining, markerRemaining) <= APPLICATIONS_LOAD_AHEAD_PX) {
+      loadMoreApplications()
+    }
+  }, [hasMoreApplications, loadMoreApplications])
+
+  useEffect(() => {
+    if (!hasMoreApplications) return undefined
+    const marker = loadMoreMarkerRef.current
+    if (!marker || typeof IntersectionObserver === 'undefined') return undefined
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) loadMoreApplications()
+      },
+      { rootMargin: `0px 0px ${APPLICATIONS_LOAD_AHEAD_PX}px` },
+    )
+    observer.observe(marker)
+    return () => observer.disconnect()
+  }, [hasMoreApplications, loadMoreApplications])
+
+  useEffect(() => {
+    if (typeof IntersectionObserver !== 'undefined') return undefined
+    const list = applicationListRef.current
+    const pane = paneRef.current
+    const handleScroll = () => loadMoreApplicationsIfNearEnd()
+    list?.addEventListener('scroll', handleScroll, { passive: true })
+    pane?.addEventListener('scroll', handleScroll, { passive: true })
+    window.addEventListener('scroll', handleScroll, { passive: true })
+    return () => {
+      list?.removeEventListener('scroll', handleScroll)
+      pane?.removeEventListener('scroll', handleScroll)
+      window.removeEventListener('scroll', handleScroll)
+    }
+  }, [loadMoreApplicationsIfNearEnd])
 
   const cancelSelectionSliderMotionRelease = useCallback(() => {
     const scheduled = selectionMotionReleaseFramesRef.current
@@ -493,6 +506,7 @@ export function ApplicationPane({
       : row.offsetHeight || 46
     const nextTopValue = `${nextTop}px`
     const nextHeightValue = `${nextHeight}px`
+    const nextScaleY = nextHeight / APPLICATION_SELECTION_SURFACE_HEIGHT
     const shouldAnimate = slider.classList.contains('is-visible')
       && (
         slider.style.getPropertyValue('--application-selection-y') !== nextTopValue
@@ -512,6 +526,7 @@ export function ApplicationPane({
     }
     slider.style.setProperty('--application-selection-y', nextTopValue)
     slider.style.setProperty('--application-selection-height', nextHeightValue)
+    slider.style.setProperty('--application-selection-scale-y', String(nextScaleY))
     slider.classList.add('is-visible')
     list.classList.add('has-selection-slider')
   }, [
@@ -565,7 +580,7 @@ export function ApplicationPane({
     observer.observe(list)
     applicationRowRefs.current.forEach((applicationRow) => observer.observe(applicationRow))
     return () => observer.disconnect()
-  }, [measureApplicationRows, safeCurrentPage, syncSelectionSlider, visiblePageKey])
+  }, [measureApplicationRows, syncSelectionSlider, visibleApplicationKey])
 
   useLayoutEffect(() => {
     const selectionChanged = committedSelectionRef.current !== selectedId
@@ -766,12 +781,22 @@ export function ApplicationPane({
   }, [deleteApplications, format, onCopyApplication, onDeleteMany, onExportMany, onOpenMany, onSelect, selectedApplications, selection, tx])
 
   useEffect(() => {
-    setCurrentPage(1)
-  }, [applications.length, query, sort, statusFilters])
+    setVisibleApplicationCount((current) => Math.min(
+      sorted.length,
+      Math.max(current, Math.min(sorted.length, APPLICATIONS_INITIAL_BATCH_SIZE)),
+    ))
+  }, [sorted.length])
 
   useEffect(() => {
-    setCurrentPage((page) => Math.min(page, totalPages))
-  }, [totalPages])
+    setVisibleApplicationCount(Math.min(sorted.length, APPLICATIONS_INITIAL_BATCH_SIZE))
+  }, [ownerFilter, query, sort, sorted.length, statusFilters])
+
+  useEffect(() => {
+    if (!selectedId) return
+    const selectedIndex = sorted.findIndex((application) => application.id === selectedId)
+    if (selectedIndex < 0) return
+    setVisibleApplicationCount((current) => Math.min(sorted.length, Math.max(current, selectedIndex + 1)))
+  }, [selectedId, sorted])
 
   useEffect(() => {
     if (!ownerPickerOpen) return
@@ -955,11 +980,17 @@ export function ApplicationPane({
               className="application-board-action-presence"
               durationMs={220}
               parentGap="1px"
+              layout="instant"
             >
               <button
                 type="button"
                 className="application-board-button"
                 onClick={onShowBoard}
+                onPointerDown={(event) => {
+                  if (event.button === 0) onPrefetchBoard?.()
+                }}
+                onPointerEnter={onPrefetchBoard}
+                onFocus={onPrefetchBoard}
                 aria-label={tx('kanban.boardView')}
                 title={tx('kanban.boardView')}
               >
@@ -1032,10 +1063,11 @@ export function ApplicationPane({
       ) : (
         <div className="application-list-shell">
           <div
-            key={safeCurrentPage}
             ref={applicationListRef}
-            className={`application-list page-anim-${pageAnimDirection}`}
-            data-page={safeCurrentPage}
+            className="application-list"
+            data-loaded-count={visibleApplications.length}
+            data-total-count={sorted.length}
+            onScroll={loadMoreApplicationsIfNearEnd}
           >
             <span
               ref={applicationSelectionSliderRef}
@@ -1045,7 +1077,7 @@ export function ApplicationPane({
                 if (event.propertyName === 'transform') scheduleSelectionSliderMotionFinish()
               }}
             />
-            {visiblePage.map((application, index) => {
+            {visibleApplications.map((application, index) => {
               const due = daysUntil(application.deadline)
               const urgency = deadlineUrgency(due)
               const isSelected = selectedId === application.id
@@ -1073,13 +1105,13 @@ export function ApplicationPane({
                   aria-selected={isExplorerSelected}
                   aria-busy={isRemoving || undefined}
                   onPointerDown={(event) => {
-                    onPrefetch?.()
+                    onPrefetch?.(application.id)
                     if (event.button === 0 && !hasExplorerSelectionModifier(event)) {
                       primeApplicationSelection(application.id, event.currentTarget)
                     }
                   }}
-                  onPointerEnter={onPrefetch}
-                  onFocus={onPrefetch}
+                  onPointerEnter={() => onPrefetch?.(application.id)}
+                  onFocus={() => onPrefetch?.(application.id)}
                   onClick={(event) => {
                     if (hasExplorerSelectionModifier(event)) {
                       selection.applyGesture(application.id, event)
@@ -1146,42 +1178,14 @@ export function ApplicationPane({
                 </button>
               )
             })}
+            {hasMoreApplications ? (
+              <span
+                ref={loadMoreMarkerRef}
+                className="application-list-load-marker"
+                aria-hidden="true"
+              />
+            ) : null}
           </div>
-
-          {totalPages > 1 ? (
-            <div className="application-pagination" aria-label={tx('workspace.pagination')}>
-              <span className="pagination-summary">
-                {format(tx('workspace.paginationRange'), {
-                  start: pageStart + 1,
-                  end: pageEnd,
-                  total: sorted.length,
-                })}
-              </span>
-              <div className="pagination-controls">
-                <button
-                  type="button"
-                  className="pagination-button"
-                  onClick={() => goToPage(Math.max(1, safeCurrentPage - 1), 'prev')}
-                  disabled={safeCurrentPage === 1}
-                  aria-label={tx('workspace.previousPage')}
-                >
-                  <ChevronLeft size={14} aria-hidden="true" />
-                </button>
-                <span className="pagination-status">
-                  {format(tx('workspace.pageStatus'), { page: safeCurrentPage, pages: totalPages })}
-                </span>
-                <button
-                  type="button"
-                  className="pagination-button"
-                  onClick={() => goToPage(Math.min(totalPages, safeCurrentPage + 1), 'next')}
-                  disabled={safeCurrentPage === totalPages}
-                  aria-label={tx('workspace.nextPage')}
-                >
-                  <ChevronRight size={14} aria-hidden="true" />
-                </button>
-              </div>
-            </div>
-          ) : null}
         </div>
       )}
       {showTrash ? (
@@ -1231,6 +1235,9 @@ export function ApplicationPane({
               <div className="application-trash-list">
                 {trashItems.slice(0, 5).map((item) => {
                   const isRemoving = Boolean(removingTrashItemIds?.has(item.id))
+                  const trashOwnerName = item.application.ownerId
+                    ? trashOwnerNames?.[item.application.ownerId]
+                    : undefined
                   return (
                   <div key={item.id} className={`application-trash-item${isRemoving ? ' is-removing' : ''}`} aria-busy={isRemoving || undefined}>
                     <span
@@ -1239,7 +1246,7 @@ export function ApplicationPane({
                     />
                     <span className="application-trash-copy">
                       <strong>{item.application.school.name}</strong>
-                      <em>{item.application.program} · {item.application.professor.english}</em>
+                      <em>{trashOwnerName ? `${trashOwnerName} · ` : ''}{item.application.program} · {item.application.professor.english}</em>
                       <small><Clock3 size={11} aria-hidden="true" /> {formatTrashDate(item.expiresAt)}</small>
                     </span>
                     <span className="application-trash-actions">

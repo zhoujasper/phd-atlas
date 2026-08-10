@@ -43,7 +43,15 @@ export type DiscoverFeeRequirement = {
   notes?: string
 }
 
-export type SupervisorContact = 'required' | 'recommended' | 'optional' | 'not_needed' | 'unknown'
+export const SUPERVISOR_CONTACT_VALUES = [
+  'required',
+  'recommended',
+  'optional',
+  'not_needed',
+  'unknown',
+] as const
+
+export type SupervisorContact = (typeof SUPERVISOR_CONTACT_VALUES)[number]
 export type MultiApplyRule = 'multi' | 'single' | 'unknown'
 
 export type DiscoverRestrictionSet = {
@@ -169,9 +177,7 @@ export function programMatchesRequirementFilters(
 
   if (filters.rollingOk) {
     const hasRolling = req?.deadlines?.some((d) => d.kind === 'application' && (d.certainty === 'rolling' || !d.date))
-    // When rollingOk is on as a positive filter, require rolling OR still show dated — interpret as "include rolling programs" not exclusive.
-    // Exclusive mode: only show if rolling present when filter is the only deadline preference.
-    void hasRolling
+    if (!hasRolling) return false
   }
 
   if (filters.deadlineWithinDays > 0) {

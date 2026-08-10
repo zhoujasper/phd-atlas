@@ -1,5 +1,5 @@
 import https from 'node:https'
-import { Readable, Transform } from 'node:stream'
+import { Transform } from 'node:stream'
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib'
 import { resolvePinnedNetworkTarget } from './outboundNetworkPolicy.js'
 
@@ -7,11 +7,13 @@ const DEFAULT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 
 function responseBodyStream(response, encoding, maximumBytes) {
   let source = response
-  if (encoding === 'gzip') source = source.pipe(createGunzip())
-  if (encoding === 'deflate') source = source.pipe(createInflate())
-  if (encoding === 'br') source = source.pipe(createBrotliDecompress())
+  let decoder = null
+  if (encoding === 'gzip') decoder = createGunzip()
+  if (encoding === 'deflate') decoder = createInflate()
+  if (encoding === 'br') decoder = createBrotliDecompress()
+  if (decoder) source = source.pipe(decoder)
   let received = 0
-  return source.pipe(new Transform({
+  const limiter = source.pipe(new Transform({
     transform(chunk, _encoding, callback) {
       received += chunk.length
       if (received > maximumBytes) {
@@ -23,6 +25,93 @@ function responseBodyStream(response, encoding, maximumBytes) {
       callback(null, chunk)
     },
   }))
+  // `pipe()` deliberately does not forward source errors to its destination.
+  // Make every owner converge on the one body error observed by the consumer.
+  response.on('error', (error) => limiter.destroy(error))
+  decoder?.on('error', (error) => limiter.destroy(error))
+  return {
+    stream: limiter,
+    cancel() {
+      // Do not pass the Web-stream cancellation reason into destroy(): after
+      // the adapter removes its listeners that would create a late unhandled
+      // Node `error` event. Cancellation is already represented to the reader.
+      if (!limiter.destroyed) limiter.destroy()
+      if (decoder && !decoder.destroyed) decoder.destroy()
+      if (!response.destroyed) response.destroy()
+    },
+  }
+}
+
+/**
+ * Node 24's `Readable.toWeb()` adapter can enqueue once more after a Web reader
+ * is cancelled while an HTTPS/decompression stream is still emitting. That
+ * process-level `ERR_INVALID_STATE` is especially harmful for bounded, timed
+ * AI calls. This small adapter owns cancellation explicitly, removes every
+ * listener before destroying the socket pipeline, and ignores all late data.
+ */
+function cancellationSafeWebBody(source, cancelSource) {
+  let controller = null
+  let closed = false
+  let ended = false
+
+  const cleanup = () => {
+    source.removeListener('data', onData)
+    source.removeListener('end', onEnd)
+    source.removeListener('error', onError)
+    source.removeListener('close', onClose)
+  }
+  const finish = () => {
+    if (closed) return
+    ended = true
+    closed = true
+    cleanup()
+    controller.close()
+  }
+  const fail = (error) => {
+    if (closed) return
+    closed = true
+    cleanup()
+    controller.error(error)
+    cancelSource()
+  }
+  const onData = (chunk) => {
+    if (closed) return
+    try {
+      controller.enqueue(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk))
+      if (controller.desiredSize !== null && controller.desiredSize <= 0) source.pause()
+    } catch {
+      // A consumer may cancel between the data event and enqueue. The closed
+      // guard normally handles that race; fail closed if a runtime interleaves
+      // the callbacks more aggressively.
+      closed = true
+      cleanup()
+      cancelSource()
+    }
+  }
+  const onEnd = () => finish()
+  const onError = (error) => fail(error)
+  const onClose = () => {
+    if (!closed && !ended) fail(new Error('The HTTPS response body closed before it completed.'))
+  }
+
+  return new ReadableStream({
+    start(nextController) {
+      controller = nextController
+      source.on('data', onData)
+      source.once('end', onEnd)
+      source.once('error', onError)
+      source.once('close', onClose)
+    },
+    pull() {
+      if (!closed) source.resume()
+    },
+    cancel() {
+      if (closed) return
+      closed = true
+      cleanup()
+      cancelSource()
+    },
+  })
 }
 
 function requestHeaders(initHeaders, host) {
@@ -86,7 +175,7 @@ export async function pinnedHttpsFetch(input, init = {}, options = {}) {
       let body = null
       if (hasBody) {
         const decoded = responseBodyStream(incoming, encoding, maximumBytes)
-        body = Readable.toWeb(decoded)
+        body = cancellationSafeWebBody(decoded.stream, decoded.cancel)
         if (['gzip', 'deflate', 'br'].includes(encoding)) {
           headers.delete('content-encoding')
           headers.delete('content-length')

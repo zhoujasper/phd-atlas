@@ -6,6 +6,7 @@ import {
   timingSafeEqual,
 } from 'node:crypto'
 import { withAbortDeadline } from './abortDeadline.js'
+import { cancelResponseBody, readBoundedResponseText } from './boundedResponse.js'
 
 export const PASSWORD_MIN_LENGTH = 15
 export const PASSWORD_MAX_LENGTH = 128
@@ -27,8 +28,10 @@ const ARGON2_MIN_TAG_LENGTH = 16
 const ARGON2_MAX_TAG_LENGTH = 64
 const BCRYPT_MIN_COST = 4
 const BCRYPT_MAX_COST = 14
+const ARGON2_RUNTIME_OVERHEAD_BYTES = 4 * 1024 * 1024
 const PWNED_PREFIX_CACHE_LIMIT = 256
 const PWNED_PREFIX_CACHE_TTL_MS = 12 * 60 * 60_000
+const PWNED_RESPONSE_MAX_BYTES = 2 * 1024 * 1024
 const pwnedPrefixCache = new Map()
 
 const COMMON_PASSWORDS = new Set([
@@ -103,6 +106,18 @@ function parseArgon2Hash(encoded) {
   return parsed
 }
 
+// Argon2's encoded memory parameter is trusted only after the same strict
+// validation used by verification. The admission layer uses this estimate to
+// reserve the actual legacy-hash work set (plus a small runtime allowance)
+// before starting native password work. Invalid hashes and bcrypt need no
+// Argon2-sized reservation; callers still apply their safe baseline because a
+// successful legacy login may immediately create the current Argon2 hash.
+export function passwordHashMemoryReservationBytes(encoded) {
+  const parsed = parseArgon2Hash(encoded)
+  if (!parsed) return 0
+  return (parsed.memory * 1024) + ARGON2_RUNTIME_OVERHEAD_BYTES
+}
+
 export async function hashAccountPassword(password) {
   const nonce = randomBytes(16)
   const hash = await argon2Derive(Buffer.from(password), nonce)
@@ -134,6 +149,48 @@ export async function verifyAccountPassword(password, encoded) {
     }
   }
   return { valid: false, needsRehash: false }
+}
+
+export function passwordVerificationCoalescingKey(password, encoded) {
+  return createHash('sha256')
+    .update(String(encoded ?? ''), 'utf8')
+    .update('\0', 'utf8')
+    .update(String(password ?? ''), 'utf8')
+    .digest('base64url')
+}
+
+/**
+ * Coalesces only identical password verifications that overlap in time.
+ *
+ * A browser retry, double-submit, or reconnect can otherwise schedule the same
+ * Argon2 work more than once. Results are deliberately not cached: the entry is
+ * removed as soon as the shared promise settles, so a later login performs a
+ * fresh verification. The digest keeps raw credentials out of map keys, and
+ * the entry cap prevents attacker-controlled identifiers from growing memory.
+ */
+export function createInFlightPasswordVerificationCoalescer(
+  verify = verifyAccountPassword,
+  { maxEntries = 128 } = {},
+) {
+  const entryLimit = Number.isSafeInteger(Number(maxEntries)) && Number(maxEntries) > 0
+    ? Number(maxEntries)
+    : 128
+  const inFlight = new Map()
+
+  return (password, encoded) => {
+    const key = passwordVerificationCoalescingKey(password, encoded)
+    const existing = inFlight.get(key)
+    if (existing) return existing
+
+    const verification = Promise.resolve().then(() => verify(password, encoded))
+    if (inFlight.size >= entryLimit) return verification
+
+    inFlight.set(key, verification)
+    void verification.finally(() => {
+      if (inFlight.get(key) === verification) inFlight.delete(key)
+    }).catch(() => undefined)
+    return verification
+  }
 }
 
 function normalizedPassword(value) {
@@ -194,8 +251,15 @@ async function fetchPwnedPrefix(prefix, options) {
         signal,
       },
     )
-    if (!response.ok) throw new Error(`Pwned Passwords returned ${response.status}`)
-    const body = await response.text()
+    if (!response.ok) {
+      await cancelResponseBody(response)
+      throw new Error(`Pwned Passwords returned ${response.status}`)
+    }
+    const body = await readBoundedResponseText(response, {
+      maxBytes: PWNED_RESPONSE_MAX_BYTES,
+      signal,
+      bodyKind: 'Pwned Passwords response',
+    })
     rememberPwnedPrefix(prefix, body)
     return body
   }, { timeoutMs: options.timeoutMs ?? 2_500 })

@@ -11,6 +11,7 @@ import {
 } from 'react'
 import {
   addFloatingViewportListeners,
+  applyFloatingOverlayStyle,
   FLOATING_POPOVER_BASE_Z_INDEX,
   getAnchoredOverlayStyle,
 } from './floatingOverlay'
@@ -37,6 +38,7 @@ export function AnchoredPopover({
   width = 264,
   estimatedHeight = 260,
   align = 'start',
+  openRequest,
   onOpenChange,
   onTriggerDoubleClick,
   children,
@@ -49,6 +51,8 @@ export function AnchoredPopover({
   width?: number
   estimatedHeight?: number
   align?: 'start' | 'end'
+  /** Increment to open the popover from an external contextual action. */
+  openRequest?: number
   onOpenChange?: (open: boolean) => void
   onTriggerDoubleClick?: () => void
   children: (close: () => void) => ReactNode
@@ -61,6 +65,7 @@ export function AnchoredPopover({
   const positionFrameRef = useRef<number | null>(null)
   const restoreFocusTimerRef = useRef<number | null>(null)
   const restoreFocusFrameRef = useRef<number | null>(null)
+  const openRequestRef = useRef<number | undefined>(undefined)
   const onOpenChangeRef = useRef(onOpenChange)
   const popoverId = useId()
 
@@ -93,7 +98,13 @@ export function AnchoredPopover({
   }, [align, estimatedHeight, width])
 
   const updatePopoverPosition = useCallback(() => {
-    setPopoverStyle(getPopoverPosition())
+    const nextStyle = getPopoverPosition()
+    const popover = popoverRef.current
+    if (!popover) {
+      setPopoverStyle(nextStyle)
+      return
+    }
+    applyFloatingOverlayStyle(popover, nextStyle)
   }, [getPopoverPosition])
 
   const schedulePopoverPosition = useCallback(() => {
@@ -119,6 +130,16 @@ export function AnchoredPopover({
       restoreFocusFrameRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    if (openRequest === undefined || openRequestRef.current === openRequest) return
+    openRequestRef.current = openRequest
+    if (!openRequest || open) return
+    cancelFocusRestore()
+    setPositionReady(false)
+    setPopoverStyle({ visibility: 'hidden' })
+    setOpenState(true)
+  }, [cancelFocusRestore, open, openRequest, setOpenState])
 
   const close = useCallback((restoreFocus = true) => {
     requestClose()
@@ -149,7 +170,7 @@ export function AnchoredPopover({
   }, [getPopoverPosition, open])
 
   useEffect(() => {
-    if (!open) return undefined
+    if (!open || !positionReady) return undefined
     const focusFrame = window.requestAnimationFrame(() => {
       const preferredFocus = popoverRef.current?.querySelector<HTMLElement>('[data-popover-autofocus]')
       const firstFocus = popoverRef.current?.querySelector<HTMLElement>(focusableSelector)
@@ -202,7 +223,7 @@ export function AnchoredPopover({
         positionFrameRef.current = null
       }
     }
-  }, [close, open, schedulePopoverPosition])
+  }, [close, open, positionReady, schedulePopoverPosition])
 
   useEffect(() => {
     if (!open || !positionReady) return undefined

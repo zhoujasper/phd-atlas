@@ -1,10 +1,11 @@
 import { ChevronDown, Check, Lock, Pencil, Plus, Trash2, X } from 'lucide-react'
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type CSSProperties } from 'react'
+import { Fragment, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { getMotionDelay } from '../hooks/useAnimatedClose'
 import { useI18n } from '../hooks/useI18n'
 import {
   addFloatingViewportListeners,
+  applyFloatingOverlayStyle,
   FLOATING_CONTROL_BASE_Z_INDEX,
   getAnchoredOverlayStyle,
 } from './floatingOverlay'
@@ -13,6 +14,10 @@ export type SelectOption<T extends string = string> = {
   value: T
   label: string
   description?: string
+  /** Short qualifier rendered inline after the label (counts, units, and so on). */
+  meta?: string
+  /** Optional visual grouping label. It never participates in listbox navigation. */
+  section?: string
   disabled?: boolean
   locked?: boolean
   actionLabel?: string
@@ -26,6 +31,8 @@ export type SelectCreateConfig<T extends string = string> = {
   createAriaLabel: string
   renameAriaLabel: string
   deleteAriaLabel: string
+  /** Keep management actions available while hiding creation at a product limit. */
+  canCreate?: boolean
   maxLength?: number
   onCreate: (value: T) => void
   onRename?: (value: T, nextValue: T) => void
@@ -36,6 +43,10 @@ export function Select<T extends string = string>({
   value,
   options,
   onChange,
+  multiple = false,
+  selectedValues = [],
+  onMultiChange,
+  multipleSelectedLabel,
   placeholder,
   ariaLabel,
   size = 'default',
@@ -49,6 +60,12 @@ export function Select<T extends string = string>({
   value: T
   options: readonly SelectOption<T>[]
   onChange: (value: T) => void
+  /** Opt into a checkbox-like list while keeping the single-select API intact. */
+  multiple?: boolean
+  selectedValues?: readonly T[]
+  onMultiChange?: (values: T[]) => void
+  /** Compact trigger text supplied by the caller when several values are selected. */
+  multipleSelectedLabel?: string
   placeholder?: string
   ariaLabel?: string
   size?: 'default' | 'small'
@@ -68,6 +85,7 @@ export function Select<T extends string = string>({
   const [editingOption, setEditingOption] = useState<SelectOption<T> | null>(null)
   const [editValue, setEditValue] = useState('')
   const [dropdownStyle, setDropdownStyle] = useState<CSSProperties>({ visibility: 'hidden' })
+  const [positionReady, setPositionReady] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -82,6 +100,14 @@ export function Select<T extends string = string>({
   const openVisible = open && !exiting
 
   const selectedOption = options.find((o) => o.value === value)
+  const selectedValueList = useMemo(
+    () => (multiple ? [...selectedValues] : []),
+    [multiple, selectedValues],
+  )
+  const selectedValueSet = useMemo(() => new Set(selectedValueList), [selectedValueList])
+  const selectedOptions = multiple
+    ? options.filter((option) => selectedValueSet.has(option.value))
+    : []
   const displayPlaceholder = placeholder ?? tx('selectPlaceholder')
   const filteredOptions = useMemo(() => {
     const query = search.trim().toLowerCase()
@@ -89,6 +115,7 @@ export function Select<T extends string = string>({
     return options.filter((option) => [
       option.label,
       option.description,
+      option.meta,
       option.actionLabel,
     ].filter(Boolean).join(' ').toLowerCase().includes(query))
   }, [options, search])
@@ -116,13 +143,19 @@ export function Select<T extends string = string>({
       minWidth: 160,
       maxWidth: 340,
       estimatedHeight: searchable ? 326 : 286,
-      actualHeight: dropdownRef.current?.getBoundingClientRect().height,
+      actualHeight: dropdownRef.current?.offsetHeight,
       baseZIndex: FLOATING_CONTROL_BASE_Z_INDEX,
     })
   }, [searchable])
 
   const updateDropdownPosition = useCallback(() => {
-    setDropdownStyle(getDropdownPosition())
+    const nextStyle = getDropdownPosition()
+    const dropdown = dropdownRef.current
+    if (!dropdown) {
+      setDropdownStyle(nextStyle)
+      return
+    }
+    applyFloatingOverlayStyle(dropdown, nextStyle)
   }, [getDropdownPosition])
 
   const scheduleDropdownPosition = useCallback(() => {
@@ -148,6 +181,8 @@ export function Select<T extends string = string>({
       closeTimerRef.current = null
       setOpen(false)
       setExiting(false)
+      setPositionReady(false)
+      setDropdownStyle({ visibility: 'hidden' })
       setHighlightIndex(-1)
       setSearch('')
       setEditMode(null)
@@ -157,11 +192,30 @@ export function Select<T extends string = string>({
     }, getMotionDelay(150))
   }, [clearCloseTimer, exiting, onOpenChange, open])
 
+  const selectOption = useCallback((option: SelectOption<T>) => {
+    if (option.disabled && option.locked && onLockedOptionClick) {
+      onLockedOptionClick(option)
+      close()
+      return
+    }
+    if (option.disabled) return
+    if (multiple) {
+      const nextValues = selectedValueSet.has(option.value)
+        ? selectedValueList.filter((value) => value !== option.value)
+        : [...selectedValueList, option.value]
+      onMultiChange?.(nextValues)
+      return
+    }
+    onChange(option.value as T)
+    close()
+  }, [close, multiple, onChange, onLockedOptionClick, onMultiChange, selectedValueList, selectedValueSet])
+
   const openMenu = useCallback(() => {
     if (disabled) return
     clearCloseTimer()
     ignoreOutsideUntilRef.current = performance.now() + 120
-    setDropdownStyle(getDropdownPosition())
+    setDropdownStyle({ visibility: 'hidden' })
+    setPositionReady(false)
     setExiting(false)
     setOpen(true)
     setSearch('')
@@ -169,17 +223,18 @@ export function Select<T extends string = string>({
     setEditingOption(null)
     setEditValue('')
     onOpenChange?.(true)
-    const idx = filteredOptions.findIndex((o) => o.value === value)
+    const currentValue = multiple ? selectedValueList[0] : value
+    const idx = filteredOptions.findIndex((o) => o.value === currentValue)
     setHighlightIndex(idx >= 0 && isOptionNavigable(filteredOptions[idx]) ? idx : firstNavigableIndex)
-    window.requestAnimationFrame(() => setDropdownStyle(getDropdownPosition()))
   }, [
     clearCloseTimer,
     disabled,
     filteredOptions,
     firstNavigableIndex,
-    getDropdownPosition,
     isOptionNavigable,
+    multiple,
     onOpenChange,
+    selectedValueList,
     value,
   ])
 
@@ -242,7 +297,7 @@ export function Select<T extends string = string>({
 
   // Listen for resize/scroll to keep position updated
   useEffect(() => {
-    if (!open) return
+    if (!open || !positionReady) return
     const removeViewportListeners = addFloatingViewportListeners(scheduleDropdownPosition)
     return () => {
       removeViewportListeners()
@@ -251,7 +306,28 @@ export function Select<T extends string = string>({
         positionFrameRef.current = null
       }
     }
-  }, [open, scheduleDropdownPosition])
+  }, [open, positionReady, scheduleDropdownPosition])
+
+  // The first portal frame is initially hidden because it does not exist when
+  // openMenu() calculates its position. Resolve the real box in a layout pass
+  // so the entrance animation starts from a painted, correctly flipped frame
+  // instead of revealing halfway through a requestAnimationFrame callback.
+  // ResizeObserver keeps upward menus anchored when search results, grouped
+  // content, or the inline custom-option editor changes their height.
+  useLayoutEffect(() => {
+    if (!open || positionReady || !dropdownRef.current) return undefined
+    setDropdownStyle(getDropdownPosition())
+    setPositionReady(true)
+  }, [getDropdownPosition, open, positionReady])
+
+  useEffect(() => {
+    if (!open || !positionReady) return undefined
+    const dropdown = dropdownRef.current
+    if (!dropdown || typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(() => scheduleDropdownPosition())
+    observer.observe(dropdown)
+    return () => observer.disconnect()
+  }, [open, positionReady, scheduleDropdownPosition])
 
   useEffect(() => () => clearCloseTimer(), [clearCloseTimer])
 
@@ -281,8 +357,7 @@ export function Select<T extends string = string>({
               onLockedOptionClick(option)
               close()
             } else if (!option.disabled) {
-              onChange(option.value as T)
-              close()
+              selectOption(option)
             }
           }
           break
@@ -290,27 +365,16 @@ export function Select<T extends string = string>({
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [open, close, editMode, filteredOptions, highlightIndex, onChange, nextNavigableIndex, onLockedOptionClick])
+  }, [open, close, editMode, filteredOptions, highlightIndex, nextNavigableIndex, onLockedOptionClick, selectOption])
 
   // Scroll highlighted item into view
   useEffect(() => {
     if (!open || highlightIndex < 0 || !listRef.current) return
-    const item = listRef.current.children[highlightIndex] as HTMLElement | undefined
+    const item = listRef.current.querySelector<HTMLElement>(`[data-select-option-index="${highlightIndex}"]`)
     if (item && typeof item.scrollIntoView === 'function') {
       item.scrollIntoView({ block: 'nearest' })
     }
   }, [open, highlightIndex])
-
-  const selectOption = (option: SelectOption<T>) => {
-    if (option.disabled && option.locked && onLockedOptionClick) {
-      onLockedOptionClick(option)
-      close()
-      return
-    }
-    if (option.disabled) return
-    onChange(option.value as T)
-    close()
-  }
 
   const beginCreate = () => {
     setEditMode('create')
@@ -340,7 +404,7 @@ export function Select<T extends string = string>({
     close()
   }
 
-  const height = size === 'small' ? '32px' : '36px'
+  const height = size === 'small' ? 'var(--field-height-compact)' : 'var(--field-height)'
   const fontSize = size === 'small' ? '12px' : '14px'
 
   return (
@@ -375,8 +439,10 @@ export function Select<T extends string = string>({
         aria-label={ariaLabel ?? displayPlaceholder}
         style={{ minHeight: height, fontSize }}
       >
-        <span className={selectedOption ? '' : 'placeholder'}>
-          {selectedOption?.label ?? displayPlaceholder}
+        <span className={(multiple ? selectedValueList.length > 0 : selectedOption) ? '' : 'placeholder'}>
+          {multiple
+            ? multipleSelectedLabel ?? (selectedOptions.map((option) => option.label).join(', ') || displayPlaceholder)
+            : selectedOption?.label ?? displayPlaceholder}
         </span>
         <ChevronDown
           size={size === 'small' ? 13 : 15}
@@ -389,6 +455,7 @@ export function Select<T extends string = string>({
         <div
           className={`custom-select-dropdown ${exiting ? 'custom-select-exit' : ''}`}
           role="listbox"
+          aria-multiselectable={multiple || undefined}
           aria-label={ariaLabel ?? displayPlaceholder}
           ref={dropdownRef}
           style={dropdownStyle}
@@ -411,7 +478,10 @@ export function Select<T extends string = string>({
             {filteredOptions.length === 0 ? (
               <div className="custom-select-empty">{tx('selectNoOptions', 'No options')}</div>
             ) : filteredOptions.map((option, idx) => {
-              const isSelected = option.value === value
+              const showSection = Boolean(option.section && option.section !== filteredOptions[idx - 1]?.section)
+              const isSelected = multiple
+                ? selectedValueSet.has(option.value)
+                : option.value === value
               const isHighlighted = idx === highlightIndex
               const isDisabled = Boolean(option.disabled)
               const isLockedAction = Boolean(isDisabled && option.locked && onLockedOptionClick)
@@ -443,7 +513,10 @@ export function Select<T extends string = string>({
                   style={{ fontSize }}
                 >
                   <span>
-                    {option.label}
+                    <span className="custom-select-option-label">
+                      {option.label}
+                      {option.meta ? <em className="custom-select-option-meta">{option.meta}</em> : null}
+                    </span>
                     {option.description ? <small>{option.description}</small> : null}
                   </span>
                   {isLockedAction ? (
@@ -453,40 +526,50 @@ export function Select<T extends string = string>({
                   )}
                 </button>
               )
-              if (!option.custom || !create || (!create.onRename && !create.onDelete)) {
-                return <div key={String(option.value)} className="custom-select-option-row">{optionButton}</div>
-              }
+              const hasCustomActions = Boolean(option.custom && create && (create.onRename || create.onDelete))
               return (
-                <div key={String(option.value)} className="custom-select-option-row custom">
-                  {optionButton}
-                  <span className="custom-select-option-actions">
-                    {create.onRename ? (
-                      <button
-                        type="button"
-                        onClick={(event) => { event.stopPropagation(); beginRename(option) }}
-                        title={create.renameAriaLabel}
-                        aria-label={`${create.renameAriaLabel}: ${option.label}`}
-                      >
-                        <Pencil size={12} aria-hidden="true" />
-                      </button>
+                <Fragment key={`${option.section ?? ''}:${String(option.value)}`}>
+                  {showSection ? (
+                    <div className="custom-select-section" role="presentation" aria-hidden="true">
+                      {option.section}
+                    </div>
+                  ) : null}
+                  <div
+                    className={`custom-select-option-row ${hasCustomActions ? 'custom' : ''}`}
+                    data-select-option-index={idx}
+                  >
+                    {optionButton}
+                    {hasCustomActions && create ? (
+                      <span className="custom-select-option-actions">
+                        {create.onRename ? (
+                          <button
+                            type="button"
+                            onClick={(event) => { event.stopPropagation(); beginRename(option) }}
+                            title={create.renameAriaLabel}
+                            aria-label={`${create.renameAriaLabel}: ${option.label}`}
+                          >
+                            <Pencil size={12} aria-hidden="true" />
+                          </button>
+                        ) : null}
+                        {create.onDelete ? (
+                          <button
+                            type="button"
+                            className="danger"
+                            onClick={(event) => { event.stopPropagation(); create.onDelete?.(option.value) }}
+                            title={create.deleteAriaLabel}
+                            aria-label={`${create.deleteAriaLabel}: ${option.label}`}
+                          >
+                            <Trash2 size={12} aria-hidden="true" />
+                          </button>
+                        ) : null}
+                      </span>
                     ) : null}
-                    {create.onDelete ? (
-                      <button
-                        type="button"
-                        className="danger"
-                        onClick={(event) => { event.stopPropagation(); create.onDelete?.(option.value) }}
-                        title={create.deleteAriaLabel}
-                        aria-label={`${create.deleteAriaLabel}: ${option.label}`}
-                      >
-                        <Trash2 size={12} aria-hidden="true" />
-                      </button>
-                    ) : null}
-                  </span>
-                </div>
+                  </div>
+                </Fragment>
               )
             })}
           </div>
-          {create ? (
+          {create && create.canCreate !== false ? (
             <div
               className={`custom-select-create-stage ${editMode ? 'is-editing' : ''}`}
               data-edit-mode={editMode ?? 'idle'}

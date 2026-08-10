@@ -63,10 +63,11 @@ describe('opaque challenges', () => {
 
 describe('Turnstile verification', () => {
   it('requires provider success, action, and hostname to match', async () => {
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ success: true, action: 'signup', hostname: 'phd.example.com' }),
-    }))
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      action: 'signup',
+      hostname: 'phd.example.com',
+    }), { status: 200 }))
     await expect(verifyTurnstileToken({
       token: 'token',
       secretKey: 'secret',
@@ -77,5 +78,18 @@ describe('Turnstile verification', () => {
     })).resolves.toEqual({ ok: true })
     expect(fetchImpl).toHaveBeenCalledOnce()
     expect(String(fetchImpl.mock.calls[0][1].body)).toContain('remoteip=192.0.2.4')
+  })
+
+  it('fails closed when a Turnstile response declares more than 64 KiB', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', {
+      status: 200,
+      headers: { 'content-length': String((64 * 1024) + 1) },
+    }))
+
+    await expect(verifyTurnstileToken({
+      token: 'token',
+      secretKey: 'secret',
+      fetchImpl,
+    })).resolves.toEqual({ ok: false, reason: 'provider-unavailable' })
   })
 })

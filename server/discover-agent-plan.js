@@ -131,7 +131,7 @@ export function buildApplicantResearchProfile(applicantProfile = null) {
   }
 }
 
-export function buildDiscoverTargetCriteria({ intake = {}, researchTerms = [], region = null, targetPrograms = null } = {}) {
+export function buildDiscoverTargetCriteria({ intake = {}, researchTerms = [], region = null } = {}) {
   const requestedRegions = Array.isArray(region)
     ? region
     : (typeof region === 'string' && region.trim()
@@ -142,12 +142,12 @@ export function buildDiscoverTargetCriteria({ intake = {}, researchTerms = [], r
     subfields: boundedStringList(intake.subfields, { max: 30, itemLimit: 180 }),
     researchTerms: boundedStringList(researchTerms, { max: 80, itemLimit: 180 }),
     targetRegions: boundedStringList(requestedRegions, { max: 20, itemLimit: 80 }),
-    targetProgramCount: Math.max(1, Math.min(160, Number(targetPrograms ?? intake.nPrograms) || 1)),
+    coverageMode: 'evidence-exhaustive',
+    completionDefinition: 'Return every distinct current programme or advisor supported by the supplied evidence batch. Do not stop after reaching a count and do not create filler rows.',
     fundingFloor: {
       amount: Math.max(0, Number(intake.stipendFloor) || 0),
       currency: boundedText(intake.currency, 12),
     },
-    targetAdvisorsPerProgram: Math.max(1, Math.min(20, Number(intake.nPisPerProgram) || 1)),
     advisorPreferences: boundedStringList(intake.piPreferences, { max: 20, itemLimit: 120 }),
     risingStarBias: boundedText(intake.risingStarBias, 40),
     userConstraints: boundedText(intake.notes, 4_000),

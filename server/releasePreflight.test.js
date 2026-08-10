@@ -10,6 +10,7 @@ import {
   parsePrePushInput,
   parseWorkflowDocument,
   prePushBranchUpdates,
+  releaseTreeScriptArguments,
 } from '../tools/release-preflight.mjs'
 import {
   parseSmokeOptions,
@@ -52,6 +53,17 @@ describe('release preflight contracts', () => {
       ...lockJson,
       name: 'phd-atlas-source',
     })).toThrow(/Package-name mismatch/)
+  })
+
+  it('serializes only the release-gate Vitest suite', () => {
+    expect(releaseTreeScriptArguments('test')).toEqual([
+      'run',
+      'test',
+      '--',
+      '--maxWorkers=1',
+      '--no-file-parallelism',
+    ])
+    expect(releaseTreeScriptArguments('typecheck')).toEqual(['run', 'typecheck'])
   })
 
   it('parses workflow YAML and rejects workflows without jobs', () => {

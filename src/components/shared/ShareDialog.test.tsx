@@ -79,4 +79,74 @@ describe('ShareDialog localization and selected-state paint', () => {
       /\.share-section-option\.selected\s*\{[^}]*box-shadow:\s*0 0 0 1px var\(--border-accent\)/s,
     )
   })
+
+  it('collapses package configuration only for upload links', () => {
+    const view = render(
+      <ChineseShareProvider>
+        <ShareDialog
+          open
+          application={application}
+          expiry="7d"
+          permission="view"
+          sections={allSections}
+          onExpiry={vi.fn()}
+          onPermission={vi.fn()}
+          onSections={vi.fn()}
+          onClose={vi.fn()}
+          onCreate={vi.fn()}
+          onRevoke={vi.fn()}
+        />
+      </ChineseShareProvider>,
+    )
+
+    const packageShell = () => document.querySelector('.share-package-configuration-shell')
+    expect(packageShell()).toHaveClass('open')
+
+    view.rerender(
+      <ChineseShareProvider>
+        <ShareDialog
+          open
+          application={application}
+          expiry="7d"
+          permission="upload"
+          sections={allSections}
+          onExpiry={vi.fn()}
+          onPermission={vi.fn()}
+          onSections={vi.fn()}
+          onClose={vi.fn()}
+          onCreate={vi.fn()}
+          onRevoke={vi.fn()}
+        />
+      </ChineseShareProvider>,
+    )
+    expect(packageShell()).not.toHaveClass('open')
+
+    view.rerender(
+      <ChineseShareProvider>
+        <ShareDialog
+          open
+          application={application}
+          expiry="7d"
+          permission="edit"
+          sections={allSections}
+          onExpiry={vi.fn()}
+          onPermission={vi.fn()}
+          onSections={vi.fn()}
+          onClose={vi.fn()}
+          onCreate={vi.fn()}
+          onRevoke={vi.fn()}
+        />
+      </ChineseShareProvider>,
+    )
+    expect(packageShell()).toHaveClass('open')
+  })
+
+  it('uses a height and opacity handoff for the package configuration', () => {
+    expect(coreStyles).toMatch(
+      /\.share-package-configuration-shell\s*\{[^}]*grid-template-rows:\s*0fr;[^}]*opacity:\s*0;[^}]*visibility:\s*hidden/s,
+    )
+    expect(coreStyles).toMatch(
+      /\.share-package-configuration-shell\.open\s*\{[^}]*grid-template-rows:\s*1fr;[^}]*opacity:\s*1;[^}]*visibility:\s*visible/s,
+    )
+  })
 })

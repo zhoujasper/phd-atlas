@@ -27,7 +27,7 @@ describe('MarketingProductScreenshot', () => {
     )
 
     expect(screen.getByRole('img', { name: 'Checklist workspace' }).getAttribute('src')).toBe(
-      '/assets/product-tour/workspace-en-light.webp?v=2x-20260731c',
+      '/assets/product-tour/workspace-en-light.webp?v=2x-q82-20260801',
     )
   })
 })

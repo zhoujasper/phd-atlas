@@ -1,4 +1,6 @@
 import { AiProviderError, completeChat, supportsNativeOpenAiWebSearch } from './aiProviders.js'
+import { AI_KEY_MAX_CONCURRENCY, normalizeAiKeyMaxConcurrency } from '../shared/aiConcurrency.js'
+import { aiKeyIsEnabled, normalizeAiKeyWeight } from '../shared/aiKeyRouting.js'
 import {
   normalizeDiscoverState,
   parseAiResearchResponse,
@@ -27,6 +29,7 @@ import { resolveDiscoverOpenAlexTopics } from './discover-openalex-topics.js'
 import { findSchoolSourceEntry, groundDiscoverPrograms } from './discover-source-grounding.js'
 import { attachScholarlyEvidence, collectScholarlyEvidence } from './discover-scholarly-data.js'
 import { assessDiscoverResearchQuality } from './discover-quality.js'
+import { enrichDiscoverAdvisorProfileMatches } from './discover-profile-fit.js'
 import {
   DISCOVER_SCHOOL_ADAPTER_COVERAGE,
   DISCOVER_SOURCE_REGISTRY,
@@ -57,6 +60,42 @@ import { dedupeDiscoverProgrammeRecords } from './discover-program-identity.js'
 
 export { isRetryableDiscoverAgentError } from './discover-agent-resilience.js'
 
+export const DISCOVER_RESEARCH_FUNNEL_LIMITS = Object.freeze({
+  advisorAgentMaxTokens: Object.freeze({
+    floor: 6_000,
+    ceiling: 8_000,
+    perAdvisor: 800,
+  }),
+  crawlConcurrency: Object.freeze({
+    default: 6,
+    max: 8,
+  }),
+  crawlSources: Object.freeze({
+    max: 640,
+  }),
+  dynamicSources: Object.freeze({
+    max: 192,
+  }),
+  candidateHydration: Object.freeze({
+    maxSchools: 640,
+    perSchool: 3,
+    maxLinks: 1_920,
+  }),
+  officialProgramLeads: Object.freeze({
+    max: 2_000,
+  }),
+  scholarlyEvidence: Object.freeze({
+    researcherMin: 24,
+    researcherMax: 500,
+    perAdvisor: 8,
+    recentWorks: 20,
+  }),
+  evidenceUrls: 20,
+  // Absolute serialized-run safety ceiling, never exposed as a user target.
+  // The finite official lead pool normally terminates first.
+  mergedPrograms: 2_000,
+  searchDomains: 100,
+})
 const SOURCE_DOMAINS = webSearchDomainsForSources(DISCOVER_SOURCE_REGISTRY)
 const DECISION_EVIDENCE_DOMAINS = [
   'topuniversities.com',
@@ -72,16 +111,159 @@ const DECISION_EVIDENCE_DOMAINS = [
 ]
 export const DISCOVER_AGENT_BATCH_SIZES = Object.freeze({
   advisor: 1,
-  verification: 5,
+  verification: 1,
 })
 
-export function discoverAdvisorAgentMaxTokens(targetAdvisors) {
-  const requested = Math.max(1, Number(targetAdvisors) || 1)
-  return Math.min(8_000, Math.max(3_500, Math.ceil(requested) * 550))
+export function discoverReasoningEffortForRole(key, role) {
+  if (!['planner', 'program', 'advisor', 'verifier'].includes(role)) return null
+  const model = String(key?.model || '').trim().toLowerCase()
+  if (model === 'deepseek-v4-flash' || model === 'gpt-5.6-luna') return 'max'
+  return null
 }
 
-function uniqueUrls(values) {
-  return [...new Set((values || []).map((value) => String(value || '').trim()).filter((value) => /^https:\/\//i.test(value)))].slice(0, 20)
+export function discoverCrawlConcurrency(value = process.env.DISCOVER_CRAWL_CONCURRENCY) {
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed > 0
+    ? Math.min(DISCOVER_RESEARCH_FUNNEL_LIMITS.crawlConcurrency.max, parsed)
+    : DISCOVER_RESEARCH_FUNNEL_LIMITS.crawlConcurrency.default
+}
+
+export function discoverAdvisorAgentMaxTokens(targetAdvisors) {
+  const limits = DISCOVER_RESEARCH_FUNNEL_LIMITS.advisorAgentMaxTokens
+  const requested = Math.max(1, Number(targetAdvisors) || 1)
+  return Math.min(limits.ceiling, Math.max(limits.floor, Math.ceil(requested) * limits.perAdvisor))
+}
+
+export function uniqueUrls(values) {
+  return [...new Set((values || []).map((value) => String(value || '').trim()).filter((value) => /^https:\/\//i.test(value)))]
+    .slice(0, DISCOVER_RESEARCH_FUNNEL_LIMITS.evidenceUrls)
+}
+
+function normalizedSchoolSourceKey(value) {
+  return String(value || '')
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLocaleLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+}
+
+function uniqueSourceValues(values) {
+  return [...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))]
+}
+
+function mergeSourcePathHints(previous = {}, next = {}) {
+  const keys = new Set([...Object.keys(previous || {}), ...Object.keys(next || {})])
+  return Object.fromEntries([...keys].map((key) => [
+    key,
+    uniqueSourceValues([...(previous?.[key] || []), ...(next?.[key] || [])]),
+  ]))
+}
+
+/**
+ * Merge independently checked source additions into the curated school adapter
+ * instead of dropping one of them through URL de-duplication. Production uses
+ * this for dynamic source enrichment; the benchmark uses it to ensure official
+ * gold URLs exercise the same crawler without replacing the maintained adapter.
+ */
+export function mergeDiscoverResearchSources(sources = []) {
+  const merged = new Map()
+  const order = []
+  for (const source of sources || []) {
+    const school = String(source?.school || '').trim()
+    const key = normalizedSchoolSourceKey(school)
+    if (!key) continue
+    const previous = merged.get(key)
+    if (!previous) {
+      merged.set(key, {
+        ...source,
+        school,
+        allowedHosts: uniqueSourceValues(source?.allowedHosts),
+        seeds: [...(source?.seeds || [])],
+        pathHints: mergeSourcePathHints({}, source?.pathHints),
+      })
+      order.push(key)
+      continue
+    }
+    const seedByIdentity = new Map()
+    for (const seed of [...(previous.seeds || []), ...(source?.seeds || [])]) {
+      const url = String(seed?.url || '').trim()
+      const kind = String(seed?.kind || '').trim().toLocaleLowerCase()
+      if (!url) continue
+      seedByIdentity.set(`${kind}\n${url}`, { ...seed, url })
+    }
+    const previousMaxPages = Number(previous.crawlPolicy?.maxPages) || 0
+    const nextMaxPages = Number(source?.crawlPolicy?.maxPages) || 0
+    merged.set(key, {
+      ...previous,
+      ...source,
+      // Keep the maintained adapter root as the school identity URL. Newly
+      // supplied programme/profile URLs belong in seeds and allowed hosts.
+      url: previous.url || source.url,
+      region: previous.region || source.region,
+      country: previous.country || source.country,
+      school: previous.school || school,
+      allowedHosts: uniqueSourceValues([
+        ...(previous.allowedHosts || []),
+        ...(source.allowedHosts || []),
+      ]),
+      seeds: [...seedByIdentity.values()],
+      pathHints: mergeSourcePathHints(previous.pathHints, source.pathHints),
+      crawlPolicy: previous.crawlPolicy || source.crawlPolicy
+        ? {
+            ...(previous.crawlPolicy || {}),
+            ...(source.crawlPolicy || {}),
+            maxPages: Math.max(previousMaxPages, nextMaxPages) || undefined,
+            followSitemaps: Boolean(
+              previous.crawlPolicy?.followSitemaps
+              || source.crawlPolicy?.followSitemaps,
+            ),
+          }
+        : undefined,
+      sourceProvenance: uniqueSourceValues([
+        ...(Array.isArray(previous.sourceProvenance)
+          ? previous.sourceProvenance
+          : [previous.sourceProvenance]),
+        ...(Array.isArray(source.sourceProvenance)
+          ? source.sourceProvenance
+          : [source.sourceProvenance]),
+      ]).join('+'),
+    })
+  }
+  return order.map((key) => merged.get(key))
+}
+
+/**
+ * Convert only already-fetched, high-confidence official programme leads into
+ * candidates. The model may enrich and rank these rows, but it cannot erase an
+ * exact declared seed or a doctoral title that matches the applicant field.
+ */
+export function deterministicProgramsFromOfficialLeads(leads = []) {
+  return (leads || [])
+    .filter((lead) => (
+      lead?.evidence?.fetched === true
+      && lead?.evidence?.official === true
+      && (
+        lead?.evidence?.declarationBasis === 'source-doctoral-seed'
+        || (lead?.matchedFieldTerms || []).length > 0
+      )
+    ))
+    .map((lead) => ({
+      region: String(lead.region || 'OTHER'),
+      school: String(lead.school || ''),
+      program: String(lead.candidateLabel || ''),
+      website: String(lead.officialUrl || ''),
+      sources: [String(lead.officialUrl || '')],
+      provenance: 'ai',
+      verification: {
+        status: 'partial',
+        officialSourceCount: 1,
+        advisorSourceCount: 0,
+        issues: ['Programme identity came from a fetched official page; independent detail verification is pending.'],
+      },
+    }))
+    .filter((program) => program.school && program.program && /^https:\/\//i.test(program.website))
 }
 
 function normalizedDomain(value) {
@@ -127,9 +309,9 @@ export function webSearchDomainsForSources(sources) {
       add(source?.url || source?.officialUrl)
       for (const host of source?.allowedHosts || []) add(host)
     }
-    if (domains.length >= 100) break
+    if (domains.length >= DISCOVER_RESEARCH_FUNNEL_LIMITS.searchDomains) break
   }
-  return domains.slice(0, 100)
+  return domains.slice(0, DISCOVER_RESEARCH_FUNNEL_LIMITS.searchDomains)
 }
 
 function canonicalEvidenceUrl(value) {
@@ -204,10 +386,83 @@ export function collectFinalFetchedEvidenceUrls(sourceIndex) {
   return [...urls]
 }
 
+/**
+ * Incremental UI updates cross the same durable evidence boundary as the final
+ * result. Phase-only native citations remain useful while an agent is running,
+ * but they are never published as verified rows until our own crawler fetched
+ * the supporting page and the normal integrity quality gate accepts the batch.
+ */
+export function prepareDiscoverIncrementalPublication({
+  programs = [],
+  manualPrograms = [],
+  sourceIndex = null,
+  qualityOptions = {},
+} = {}) {
+  const grounded = groundDiscoverPrograms(
+    (programs || []).filter((program) => program?.provenance === 'ai'),
+    sourceIndex,
+    {
+      allowedEvidenceUrls: collectFinalFetchedEvidenceUrls(sourceIndex),
+      authoritativePis: true,
+    },
+  )
+  const sanitizedPrograms = dedupeDiscoverPrograms(grounded.programs)
+  const publicationState = normalizeDiscoverState({
+    customPrograms: [
+      ...(manualPrograms || []).filter((program) => program?.provenance !== 'ai'),
+      ...sanitizedPrograms,
+    ],
+  })
+  const publicationPrograms = (publicationState.customPrograms || [])
+    .filter((program) => program.provenance === 'ai')
+  const publicationProgramIds = new Set(publicationPrograms.map((program) => program.id))
+  const normalizationRejected = sanitizedPrograms
+    .filter((program) => !publicationProgramIds.has(program.id))
+    .map((program) => ({ id: program.id, reason: 'incremental-normalization-gate' }))
+  const quality = assessDiscoverResearchQuality(publicationState, sourceIndex, qualityOptions)
+  const qualityRejected = quality.passed
+    ? []
+    : publicationPrograms.map((program) => ({
+      id: program.id,
+      reason: `incremental-quality-gate:${quality.failures.join('|') || 'failed'}`,
+    }))
+  return {
+    programs: quality.passed ? publicationPrograms : [],
+    rejected: [...grounded.rejected, ...normalizationRejected, ...qualityRejected],
+    quality,
+  }
+}
+
+function discoverKeyCapacity(key, fallback = 1) {
+  return normalizeAiKeyMaxConcurrency(key?.maxConcurrency, fallback)
+}
+
+export function discoverAgentConcurrency(keys, fallback = 2) {
+  const selected = (keys || []).filter((key) => key && aiKeyIsEnabled(key.enabled))
+  if (!selected.length) return normalizeAiKeyMaxConcurrency(fallback, 2)
+  return Math.min(AI_KEY_MAX_CONCURRENCY, selected.reduce((total, key) => total + discoverKeyCapacity(key, fallback), 0))
+}
+
+/**
+ * User-weighted deterministic assignment. Concurrency remains a separate
+ * safety limit; this score only controls how frequently an enabled key is
+ * selected across independent research batches.
+ */
 export function createAiKeyRoundRobin(keys) {
-  const queue = (keys || []).filter(Boolean)
-  let cursor = 0
-  return () => queue.length ? queue[cursor++ % queue.length] : null
+  const queue = (keys || []).filter((key) => key && aiKeyIsEnabled(key.enabled))
+  const assigned = queue.map(() => 0)
+  const weights = queue.map((key) => normalizeAiKeyWeight(key?.weight))
+  return () => {
+    if (!queue.length) return null
+    let selectedIndex = 0
+    for (let index = 1; index < queue.length; index += 1) {
+      if ((assigned[index] / weights[index]) < (assigned[selectedIndex] / weights[selectedIndex])) {
+        selectedIndex = index
+      }
+    }
+    assigned[selectedIndex] += 1
+    return queue[selectedIndex]
+  }
 }
 
 async function mapWithConcurrency(items, limit, worker) {
@@ -224,6 +479,26 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 function mergeCustomPrograms(current, additions, { authoritative = false } = {}) {
+  const mergeAdvisorRows = (previousRows = [], nextRows = []) => {
+    const merged = new Map()
+    const identity = (pi) => canonicalEvidenceUrl(pi?.url)
+      || String(pi?.name || '').normalize('NFKD').replace(/\p{M}+/gu, '').toLowerCase().trim()
+    for (const pi of [...previousRows, ...nextRows]) {
+      const key = identity(pi)
+      if (!key) continue
+      const previousPi = merged.get(key)
+      merged.set(key, previousPi ? {
+        ...previousPi,
+        ...pi,
+        research: pi.research || previousPi.research,
+        whyFit: pi.whyFit || previousPi.whyFit,
+        email: pi.email || previousPi.email,
+        scholarUrl: pi.scholarUrl || previousPi.scholarUrl,
+        ...(pi.scholarly || previousPi.scholarly ? { scholarly: pi.scholarly || previousPi.scholarly } : {}),
+      } : pi)
+    }
+    return [...merged.values()]
+  }
   const merged = new Map((current || []).map((program) => [program.id, program]))
   for (const program of additions || []) {
     const previous = merged.get(program.id)
@@ -289,10 +564,13 @@ function mergeCustomPrograms(current, additions, { authoritative = false } = {})
       sources: uniqueUrls([...(previous.sources || []), ...(program.sources || [])]),
       rankingSources: uniqueUrls([...(previous.rankingSources || []), ...(program.rankingSources || [])]),
       scholarships: program.scholarships?.length ? program.scholarships : previous.scholarships,
-      pis: program.pis?.length ? program.pis : previous.pis,
+      pis: program.pis?.length
+        ? mergeAdvisorRows(previous.pis, program.pis)
+        : previous.pis,
     })
   }
-  return dedupeDiscoverPrograms([...merged.values()]).slice(0, 160)
+  return dedupeDiscoverPrograms([...merged.values()])
+    .slice(0, DISCOVER_RESEARCH_FUNNEL_LIMITS.mergedPrograms)
 }
 
 export function dedupeDiscoverPrograms(programs = []) {
@@ -300,19 +578,62 @@ export function dedupeDiscoverPrograms(programs = []) {
 }
 
 /**
- * The 145-school adapter library is persistent coverage, not a requirement to
- * hit 100 sites on every click. Scale a run with the requested result set while
- * retaining a broad minimum sample and a strict upper bound.
+ * Coverage is driven by the finite source set, not by the legacy result-count
+ * fields retained in old drafts. The ceiling is an internal abuse/memory guard
+ * and is never presented as a product quota.
  */
-export function discoverResearchCrawlLimit(scopedSourceCount, requestedPrograms) {
+export function discoverResearchCrawlLimit(scopedSourceCount, _legacyRequestedPrograms) {
+  const limits = DISCOVER_RESEARCH_FUNNEL_LIMITS.crawlSources
   const available = Math.max(0, Number(scopedSourceCount) || 0)
-  const requested = Math.max(1, Number(requestedPrograms) || 1)
-  return Math.min(available, Math.min(96, Math.max(32, Math.ceil(requested) * 4)))
+  return Math.min(available, limits.max)
 }
 
-export function compactScholarlyEvidenceForAgent(evidence, targetAdvisors = 6) {
+export function discoverDynamicSourceLimit(_legacyRequestedPrograms) {
+  return DISCOVER_RESEARCH_FUNNEL_LIMITS.dynamicSources.max
+}
+
+export function discoverCandidateHydrationLimits(selectedSourceCount, _legacyRequestedPrograms) {
+  const limits = DISCOVER_RESEARCH_FUNNEL_LIMITS.candidateHydration
+  const selected = Math.max(0, Number(selectedSourceCount) || 0)
+  const schoolLimit = Math.min(selected, limits.maxSchools)
+  return {
+    schoolLimit,
+    perSchool: limits.perSchool,
+    totalLimit: Math.min(limits.maxLinks, schoolLimit * limits.perSchool),
+  }
+}
+
+export function discoverOfficialProgramLeadLimit(_legacyRequestedPrograms) {
+  return DISCOVER_RESEARCH_FUNNEL_LIMITS.officialProgramLeads.max
+}
+
+function discoverResearchQualityOptions(state, scopedSourceCount, selectedSourceCount) {
+  return {
+    requestedPrograms: 5,
+    scopedSourceCount,
+    minimumReadableSites: Math.min(
+      scopedSourceCount,
+      Math.max(5, Math.ceil(selectedSourceCount * 0.25)),
+    ),
+    minimumPrograms: 5,
+    minimumAdvisors: 3,
+  }
+}
+
+export function compactScholarlyEvidenceForAgent(evidence, targetAdvisors = 6, advisorNames = []) {
   if (!evidence || typeof evidence !== 'object') return null
-  const researcherLimit = Math.max(24, Math.min(48, (Number(targetAdvisors) || 6) * 6))
+  const limits = DISCOVER_RESEARCH_FUNNEL_LIMITS.scholarlyEvidence
+  const researcherLimit = Math.max(
+    limits.researcherMin,
+    Math.min(limits.researcherMax, (Number(targetAdvisors) || 6) * limits.perAdvisor),
+  )
+  const normalizedTargetNames = new Set((advisorNames || [])
+    .map((value) => String(value || '').trim().toLocaleLowerCase())
+    .filter(Boolean))
+  const candidateResearchers = evidence.candidateResearchers || []
+  const selectedResearchers = normalizedTargetNames.size
+    ? candidateResearchers.filter((researcher) => normalizedTargetNames.has(String(researcher?.name || '').trim().toLocaleLowerCase()))
+    : candidateResearchers.slice(0, researcherLimit)
   return {
     provider: evidence.provider,
     status: evidence.status,
@@ -330,7 +651,7 @@ export function compactScholarlyEvidenceForAgent(evidence, targetAdvisors = 6) {
       disciplines: (evidence.disciplinePlan.disciplines || []).slice(0, 20),
       vocabularies: (evidence.disciplinePlan.vocabularies || []).slice(0, 12),
     } : null,
-    candidateResearchers: (evidence.candidateResearchers || [])
+    candidateResearchers: selectedResearchers
       .slice(0, researcherLimit)
       .map((researcher) => ({
         name: researcher.name,
@@ -341,7 +662,9 @@ export function compactScholarlyEvidenceForAgent(evidence, targetAdvisors = 6) {
         score: researcher.score,
         matchedQueries: (researcher.matchedQueries || []).slice(0, 8),
         matchedTopics: (researcher.matchedTopics || []).slice(0, 4),
-        recentWorks: (researcher.recentWorks || []).slice(0, 3),
+        // Full recent-work ledgers remain in the persisted scholarly receipt;
+        // an agent only needs a compact sample to verify identity and fit.
+        recentWorks: (researcher.recentWorks || []).slice(0, Math.min(4, limits.recentWorks)),
       })),
   }
 }
@@ -565,19 +888,35 @@ function advisorDiscoverySystem() {
   return advisorDiscoverySystemPrompt()
 }
 
-async function runAgent({ key, system, payload, liveWeb, allowedDomains = SOURCE_DOMAINS, outputSchema = PROGRAM_AGENT_OUTPUT_SCHEMA, maxTokens = 3_000 }) {
+async function runAgent({
+  key,
+  system,
+  payload,
+  liveWeb,
+  allowedDomains = SOURCE_DOMAINS,
+  outputSchema = PROGRAM_AGENT_OUTPUT_SCHEMA,
+  maxTokens = 3_000,
+  reasoningEffort = null,
+  signal,
+  onExecutionCheckpoint,
+}) {
   return runDiscoverAgentWithRetry({
     attempts: 2,
-    complete: () => completeChat({
+    complete: async () => {
+      await onExecutionCheckpoint?.('ai-provider-call')
+      return completeChat({
         key,
         system,
         user: JSON.stringify(payload),
+        signal,
         temperature: 0.2,
         maxTokens,
+        reasoningEffort,
         webSearch: liveWeb,
         allowedDomains,
         outputSchema,
-    }),
+      })
+    },
   })
 }
 
@@ -593,16 +932,59 @@ export async function buildDiscoverResearchRun({
   aiKeys,
   applicantProfile = null,
   checkpoint = null,
+  signal,
+  onExecutionCheckpoint,
   onCheckpoint,
   onProgress,
   onVerifiedPrograms,
+  evidenceHydrationOptions = {},
+  recordUsage = null,
+  // Test-harness-only scope used to compare the full pipeline with an
+  // independently collected official gold set. Production callers omit it.
+  evaluationSchoolAllowlist = null,
+  evaluationSources = null,
 }) {
+  const executionCheckpoint = async (phase) => {
+    signal?.throwIfAborted?.()
+    await onExecutionCheckpoint?.(phase)
+    signal?.throwIfAborted?.()
+  }
+  // Fixed-provider helpers do not currently accept the queue signal directly,
+  // so combine it with their request deadlines at the transport boundary.
+  // Official-site crawlers receive `signal` as an independent argument below;
+  // keeping their fetch owner unwrapped is security-sensitive because their
+  // production transport and DNS policy must never depend on function identity.
+  const externalApiFetch = signal
+    ? (resource, init = {}) => globalThis.fetch(resource, {
+        ...init,
+        signal: init.signal
+          ? AbortSignal.any([signal, init.signal])
+          : signal,
+      })
+    : globalThis.fetch
+  await executionCheckpoint('research-run-start')
   let working = normalizeDiscoverState(checkpoint?.workingState || state)
   const agentTrace = []
   let sourceCount = 0
   let sourceIndex = null
   let aiSummary = ''
   let aiUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+  const funnelAudit = {
+    registrySchools: DISCOVER_SCHOOL_ADAPTER_COVERAGE.registrySchoolCount,
+    scopedSchools: 0,
+    dynamicallyDiscoveredSchools: 0,
+    selectedOfficialSchools: 0,
+    readableOfficialSchools: 0,
+    indexedDoctoralLinks: 0,
+    hydratedCandidateSchools: 0,
+    officialProgramLeads: 0,
+    groundedProgramCandidates: 0,
+    deepAdvisorPrograms: 0,
+    scholarlyCandidateResearchers: 0,
+    matchedOfficialAdvisorLeads: 0,
+    hydratedOfficialAdvisorPages: 0,
+    independentlyVerifiedPrograms: 0,
+  }
   const rejectionReasonCounts = {}
   const degradedAgentBatches = []
   const incompleteVerificationProgramIds = new Set()
@@ -614,10 +996,11 @@ export async function buildDiscoverResearchRun({
     }
   }
   const selectedAiKeys = [...new Map((aiKeys?.length ? aiKeys : (aiKey ? [aiKey] : []))
-    .filter(Boolean)
+    .filter((key) => key && aiKeyIsEnabled(key.enabled))
     .map((key) => [key.id, key])).values()]
   const aiUsageByKey = new Map(selectedAiKeys.map((key) => [key.id, { inputTokens: 0, outputTokens: 0, totalTokens: 0 }]))
   const nextAgentKey = createAiKeyRoundRobin(selectedAiKeys)
+  const agentConcurrency = discoverAgentConcurrency(selectedAiKeys)
   const addUsage = (key, completion, phase = 'research') => {
     const usage = completion.usage || {}
     aiUsage = {
@@ -661,6 +1044,7 @@ export async function buildDiscoverResearchRun({
       message: 'Mapping the research description to professional cross-discipline vocabularies…',
       sourceCount: 0,
     })
+    await executionCheckpoint('discipline-planner')
     try {
       plannerCompletion = await completeChat({
         key: plannerKey,
@@ -675,9 +1059,11 @@ export async function buildDiscoverResearchRun({
         })),
         temperature: 0.1,
         maxTokens: 1_400,
+        reasoningEffort: discoverReasoningEffortForRole(plannerKey, 'planner'),
         webSearch: supportsNativeOpenAiWebSearch(plannerKey),
         allowedDomains: professionalQueryPlannerAllowedDomains(),
         outputSchema: PROFESSIONAL_QUERY_PLAN_OUTPUT_SCHEMA,
+        signal,
       })
       professionalQueryPlan = normalizeProfessionalQueryPlan(plannerCompletion.text)
       addUsage(plannerKey, plannerCompletion, 'professional-discipline-planning')
@@ -692,6 +1078,7 @@ export async function buildDiscoverResearchRun({
         taxonomyCitationCount: plannerCompletion.sources?.length || 0,
       })
     } catch (error) {
+      await executionCheckpoint('discipline-planner-result')
       if (plannerCompletion) addUsage(plannerKey, plannerCompletion, 'professional-discipline-planning-invalid')
       agentTrace.push({
         id: 'professional_discipline_planning',
@@ -713,17 +1100,20 @@ export async function buildDiscoverResearchRun({
       ...professionalQueryPlan.specialistQueries,
       ...deterministicResearchTerms,
     ])]
+    await executionCheckpoint('openalex-topic-resolution')
     const topicResolution = await resolveDiscoverOpenAlexTopics({
       terms: topicCandidateTerms,
       excludedMeanings: professionalQueryPlan.excludedMeanings,
       limit: 8,
       maxSearchTerms: 12,
+      fetchImpl: externalApiFetch,
     }).catch(() => ({
       status: 'unavailable',
       searchedTerms: topicCandidateTerms.slice(0, 12),
       topics: [],
       failures: Math.min(12, topicCandidateTerms.length),
     }))
+    await executionCheckpoint('openalex-topic-resolution-result')
     const validatedTopicQueries = new Set((topicResolution.topics || [])
       .map((topic) => String(topic.query || '').normalize('NFKC').toLocaleLowerCase()))
     const validatedAiTerms = aiPlannedTerms.filter((term) => (
@@ -764,7 +1154,34 @@ export async function buildDiscoverResearchRun({
       disciplinePlan,
       topicResolution,
     }
-    const curatedSources = listDiscoverResearchSources(working.intake.regions)
+    // Coverage is evidence-driven. Legacy intake counts remain readable for
+    // old drafts, but cannot truncate source selection or published results.
+    const exhaustiveCoverageBudget = DISCOVER_RESEARCH_FUNNEL_LIMITS.mergedPrograms
+    const evaluationSchoolKeys = new Set((evaluationSchoolAllowlist || [])
+      .map((value) => String(value || '')
+        .normalize('NFKD')
+        .replace(/\p{M}+/gu, '')
+        .toLocaleLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .trim())
+      .filter(Boolean))
+    const sourceAllowedForEvaluation = (source) => {
+      if (!evaluationSchoolKeys.size) return true
+      const key = String(source?.school || '')
+        .normalize('NFKD')
+        .replace(/\p{M}+/gu, '')
+        .toLocaleLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .trim()
+      return [...evaluationSchoolKeys].some((candidate) => (
+        candidate === key || candidate.includes(key) || key.includes(candidate)
+      ))
+    }
+    const curatedSources = mergeDiscoverResearchSources([
+      ...listDiscoverResearchSources(working.intake.regions),
+      ...(evaluationSources || []),
+    ])
+      .filter(sourceAllowedForEvaluation)
     let dynamicSources = []
     let dynamicSourceDiscovery = {
       provider: 'openalex',
@@ -777,13 +1194,15 @@ export async function buildDiscoverResearchRun({
       message: 'Finding additional field-active universities across the selected countries…',
       sourceCount: 0,
     })
+    await executionCheckpoint('global-institution-discovery')
     try {
-      dynamicSources = await discoverGlobalInstitutionSources({
+      dynamicSources = evaluationSchoolKeys.size ? [] : await discoverGlobalInstitutionSources({
         terms: expandedResearchTerms,
         topics: topicResolution.topics,
         regions: working.intake.regions,
         existingSources: DISCOVER_SOURCE_REGISTRY,
-        limit: Math.min(48, Math.max(16, working.intake.nPrograms * 3)),
+        limit: discoverDynamicSourceLimit(exhaustiveCoverageBudget),
+        fetchImpl: externalApiFetch,
       })
       dynamicSourceDiscovery = {
         provider: 'openalex',
@@ -794,12 +1213,15 @@ export async function buildDiscoverResearchRun({
         topicCount: topicResolution.topics.length,
       }
     } catch (error) {
+      await executionCheckpoint('global-institution-discovery-result')
       dynamicSourceDiscovery = {
         ...dynamicSourceDiscovery,
         error: String(error?.message || error).slice(0, 180),
       }
     }
     const scopedSources = [...curatedSources, ...dynamicSources]
+    funnelAudit.scopedSchools = scopedSources.length
+    funnelAudit.dynamicallyDiscoveredSchools = dynamicSources.length
     agentTrace.push({
       id: 'global_field_institution_discovery',
       name: 'OpenAlex Global Institution Discovery',
@@ -808,7 +1230,7 @@ export async function buildDiscoverResearchRun({
         ? `Added ${dynamicSourceDiscovery.sourceCount} field-active university roots across ${dynamicSourceDiscovery.countryCount} countries before the official crawl.`
         : 'Global institution expansion was unavailable; the curated adapter registry remained active.',
     })
-    const crawlLimit = discoverResearchCrawlLimit(scopedSources.length, working.intake.nPrograms)
+    const crawlLimit = discoverResearchCrawlLimit(scopedSources.length, exhaustiveCoverageBudget)
     const selectedSources = prioritizeDiscoverResearchSources(
       scopedSources,
       [
@@ -820,7 +1242,14 @@ export async function buildDiscoverResearchRun({
       ],
       crawlLimit,
     )
+    funnelAudit.selectedOfficialSchools = selectedSources.length
+    const researchQualityOptions = discoverResearchQualityOptions(
+      working,
+      scopedSources.length,
+      selectedSources.length,
+    )
     await onProgress?.({ stage: 'crawling', message: `Checking ${selectedSources.length} official university sites…`, sourceCount: 0 })
+    await executionCheckpoint('official-source-crawl')
     const resumedCrawls = Array.isArray(checkpoint?.crawls) ? checkpoint.crawls : []
     const crawlByUrl = new Map(resumedCrawls
       .filter((result) => result?.source?.url)
@@ -831,10 +1260,12 @@ export async function buildDiscoverResearchRun({
       regions: working.intake.regions,
       sources: remainingSources,
       limit: Math.max(1, remainingSources.length),
-      concurrency: 8,
+      concurrency: discoverCrawlConcurrency(),
       maxPages: 12,
       timeoutMs: 7_000,
       researchQuery,
+      fetchImpl: globalThis.fetch,
+      signal,
       onProgress: async (progress) => {
         crawled += 1
         if (progress.result?.source?.url) crawlByUrl.set(progress.result.source.url, progress.result)
@@ -854,6 +1285,7 @@ export async function buildDiscoverResearchRun({
             sourceCount: crawled,
           })
         }
+        await executionCheckpoint('official-source-crawl-batch')
       },
     })
     for (const result of freshCrawls) if (result?.source?.url) crawlByUrl.set(result.source.url, result)
@@ -884,8 +1316,12 @@ export async function buildDiscoverResearchRun({
         sourceIndex,
         researchQuery,
         concurrency: 3,
+        fetchImpl: globalThis.fetch,
+        signal,
+        ...evidenceHydrationOptions,
         ...options,
         onProgress: async ({ completed, total }) => {
+          await executionCheckpoint(`${stage}-hydration-batch`)
           if (completed === 1 || completed === total) {
             await onProgress?.({ stage, message: `${message} ${completed}/${total}…`, sourceCount })
           }
@@ -897,24 +1333,24 @@ export async function buildDiscoverResearchRun({
       }
       return hydration
     }
-    const candidateHydrationSchoolLimit = Math.min(
-      32,
-      Math.max(12, Math.ceil(working.intake.nPrograms * 1.5)),
+    const candidateHydrationLimits = discoverCandidateHydrationLimits(
+      selectedSources.length,
+      exhaustiveCoverageBudget,
     )
     const indexedDoctoralCandidates = selectDiscoverCandidateHydrationPrograms(crawls, {
-      schoolLimit: candidateHydrationSchoolLimit,
-      perSchool: 2,
-      totalLimit: candidateHydrationSchoolLimit * 2,
+      ...candidateHydrationLimits,
     })
+    funnelAudit.indexedDoctoralLinks = indexedDoctoralCandidates.length
     const candidateHydration = await hydratePrograms(
       indexedDoctoralCandidates,
       'crawling',
       'Fetching high-confidence doctoral pages already found in official indexes',
       {
         includeDeclaredSeeds: false,
-        maxSchools: candidateHydrationSchoolLimit,
+        maxSchools: candidateHydrationLimits.schoolLimit,
       },
     )
+    funnelAudit.hydratedCandidateSchools = candidateHydration.attemptedSourceCount
     agentTrace.push({
       id: 'indexed_doctoral_candidate_hydration',
       name: 'Adaptive Official Programme Deep Crawl',
@@ -924,13 +1360,15 @@ export async function buildDiscoverResearchRun({
     const officialProgramLeads = deriveOfficialProgramLeads(crawls, {
       fieldTerms: [working.intake.field, ...(working.intake.subfields || [])],
       requireFieldMatch: false,
-      limit: Math.min(320, Math.max(60, working.intake.nPrograms * 8)),
+      limit: discoverOfficialProgramLeadLimit(exhaustiveCoverageBudget),
     })
+    funnelAudit.officialProgramLeads = officialProgramLeads.length
     const officialEvidenceFor = (predicate, maxChars = 72_000) => compactDiscoverCrawlEvidence(
       crawls.filter(predicate),
       { maxChars, researchQuery },
     )
     sourceCount = sourceIndex.schools.filter((school) => school.crawlStatus === 'ok').length
+    funnelAudit.readableOfficialSchools = sourceCount
     const advisorPageCount = sourceIndex.schools.reduce((total, school) => total + school.advisorPages.length, 0)
     agentTrace.push({
       id: 'official_source_crawl',
@@ -951,9 +1389,12 @@ export async function buildDiscoverResearchRun({
       .map((result) => [result.source.url, result]))
     const remainingPortals = opportunitySources.filter((source) => !portalByUrl.has(source.url))
     await onProgress?.({ stage: 'portals', message: `Checking ${opportunitySources.length} opportunity indexes as candidate leads…`, sourceCount })
+    await executionCheckpoint('opportunity-index-crawl')
     const freshPortalCrawls = await crawlDiscoverOpportunitySources({
       sources: remainingPortals,
       concurrency: 2,
+      fetchImpl: globalThis.fetch,
+      signal,
       onProgress: async (progress) => {
         if (progress.result?.source?.url) portalByUrl.set(progress.result.source.url, progress.result)
         await persistCheckpoint({
@@ -962,6 +1403,7 @@ export async function buildDiscoverResearchRun({
           completedAdvisorBatches: checkpoint?.completedAdvisorBatches || [],
           completedVerificationBatches: checkpoint?.completedVerificationBatches || [],
         })
+        await executionCheckpoint('opportunity-index-crawl-batch')
       },
     })
     for (const result of freshPortalCrawls) if (result?.source?.url) portalByUrl.set(result.source.url, result)
@@ -1000,15 +1442,36 @@ export async function buildDiscoverResearchRun({
       customPrograms: [...manualPrograms, ...groundedPrior.programs],
     })
 
+    const deterministicOfficialCandidates = deterministicProgramsFromOfficialLeads(officialProgramLeads)
+    const groundedDeterministicLeads = groundDiscoverPrograms(
+      deterministicOfficialCandidates,
+      sourceIndex,
+      { allowedEvidenceUrls: collectFinalFetchedEvidenceUrls(sourceIndex) },
+    )
+    recordGroundingRejections(groundedDeterministicLeads.rejected)
+    working = normalizeDiscoverState({
+      ...working,
+      customPrograms: mergeCustomPrograms(
+        working.customPrograms,
+        groundedDeterministicLeads.programs,
+      ),
+    })
+    agentTrace.push({
+      id: 'deterministic_official_program_recall',
+      name: 'Deterministic Official Programme Recall',
+      status: 'done',
+      detail: `Retained ${groundedDeterministicLeads.programs.length}/${deterministicOfficialCandidates.length} fetched official doctoral seeds or field-matched programme titles before model ranking; rejected ${groundedDeterministicLeads.rejected.length} rows at the normal identity gate.`,
+    })
+
     const regions = working.intake.regions.length ? working.intake.regions : [...new Set(scopedSources.map((source) => source.region))]
-    const perRegion = Math.max(1, Math.ceil(working.intake.nPrograms / Math.max(1, regions.length)))
     const completedProgramRegions = new Set(checkpoint?.completedProgramRegions || [])
     const pendingRegions = regions.filter((region) => !completedProgramRegions.has(region))
-    const programAgentRuns = await mapWithConcurrency(pendingRegions, 2, async (region) => {
+    const programAgentRuns = await mapWithConcurrency(pendingRegions, agentConcurrency, async (region) => {
       await onProgress?.({ stage: 'discovering', message: `Finding ${region} programs from official sources…`, sourceCount })
       const agentKey = nextAgentKey()
       const regionEvidence = officialEvidenceFor((result) => result?.source?.region === region)
       const regionProgramLeads = officialProgramLeads.filter((lead) => lead.region === region)
+      const perRegion = Math.max(1, regionProgramLeads.length)
       const completion = await runAgent({
         key: agentKey,
         system: programDiscoverySystem(),
@@ -1027,6 +1490,9 @@ export async function buildDiscoverResearchRun({
           scopedSources.filter((source) => source.region === region),
         ),
         maxTokens: 4_000,
+        reasoningEffort: discoverReasoningEffortForRole(agentKey, 'program'),
+        signal,
+        onExecutionCheckpoint: executionCheckpoint,
       })
       return { region, agentKey, completion, regionEvidence, regionProgramLeads }
     })
@@ -1102,39 +1568,45 @@ export async function buildDiscoverResearchRun({
     for (let index = 0; index < remainingProgramLeads.length; index += 10) {
       supplementalChunks.push(remainingProgramLeads.slice(index, index + 10))
     }
-    const initialShortfall = Math.max(0, working.intake.nPrograms - (working.customPrograms || [])
-      .filter((program) => program.provenance === 'ai').length)
-    const supplementalLimit = Math.min(6, supplementalChunks.length, Math.max(0, Math.ceil(initialShortfall / 3)))
-    for (let batchNumber = 0; batchNumber < supplementalLimit; batchNumber += 1) {
-      const currentCount = (working.customPrograms || []).filter((program) => program.provenance === 'ai').length
-      const shortfall = Math.max(0, working.intake.nPrograms - currentCount)
-      if (!shortfall) break
-      const leads = supplementalChunks[batchNumber]
-      const schoolNames = new Set(leads.map((lead) => lead.school))
-      const supplementalEvidence = officialEvidenceFor((result) => schoolNames.has(result?.source?.school), 84_000)
-      await onProgress?.({
-        stage: 'discovering',
-        message: `Filling the verified programme shortfall from official leads (${currentCount}/${working.intake.nPrograms})…`,
-        sourceCount,
-      })
-      const agentKey = nextAgentKey()
-      const completion = await runAgent({
-        key: agentKey,
-        system: programDiscoverySystem(),
-        payload: programResearchContract({
-          state: working,
-          applicantProfile,
-          researchTerms: expandedResearchTerms,
-          region: [...new Set(leads.map((lead) => lead.region))].join(', '),
-          perRegion: Math.min(shortfall, Math.max(2, Math.ceil(leads.length / 3))),
-          evidence: supplementalEvidence,
-          portalEvidence: portalEvidence.slice(0, 8),
-          officialProgramLeads: leads,
-        }),
-        liveWeb: supportsNativeOpenAiWebSearch(agentKey),
-        allowedDomains: webSearchDomainsForSources(supplementalEvidence),
-        maxTokens: 5_000,
-      })
+    const supplementalWorkingSnapshot = working
+    const supplementalAgentRuns = await mapWithConcurrency(
+      supplementalChunks.map((leads, batchNumber) => ({ leads, batchNumber })),
+      agentConcurrency,
+      async ({ leads, batchNumber }) => {
+        const currentCount = (supplementalWorkingSnapshot.customPrograms || [])
+          .filter((program) => program.provenance === 'ai').length
+        const schoolNames = new Set(leads.map((lead) => lead.school))
+        const supplementalEvidence = officialEvidenceFor((result) => schoolNames.has(result?.source?.school), 84_000)
+        await onProgress?.({
+          stage: 'discovering',
+          message: `Checking every remaining official programme lead (${currentCount} verified so far)…`,
+          sourceCount,
+        })
+        const agentKey = nextAgentKey()
+        const completion = await runAgent({
+          key: agentKey,
+          system: programDiscoverySystem(),
+          payload: programResearchContract({
+            state: supplementalWorkingSnapshot,
+            applicantProfile,
+            researchTerms: expandedResearchTerms,
+            region: [...new Set(leads.map((lead) => lead.region))].join(', '),
+            perRegion: leads.length,
+            evidence: supplementalEvidence,
+            portalEvidence: portalEvidence.slice(0, 8),
+            officialProgramLeads: leads,
+          }),
+          liveWeb: supportsNativeOpenAiWebSearch(agentKey),
+          allowedDomains: webSearchDomainsForSources(supplementalEvidence),
+          maxTokens: 5_000,
+          reasoningEffort: discoverReasoningEffortForRole(agentKey, 'program'),
+          signal,
+          onExecutionCheckpoint: executionCheckpoint,
+        })
+        return { leads, batchNumber, supplementalEvidence, agentKey, completion }
+      },
+    )
+    for (const { leads, batchNumber, supplementalEvidence, agentKey, completion } of supplementalAgentRuns) {
       addUsage(agentKey, completion, `program-supplement:${batchNumber + 1}`)
       const parsed = parseAiResearchResponse(completion.text, rankPrograms(working))
       const hydration = await hydratePrograms(
@@ -1220,45 +1692,51 @@ export async function buildDiscoverResearchRun({
     for (let index = 0; index < targetedSchoolResults.length; index += 5) {
       targetedSchoolChunks.push(targetedSchoolResults.slice(index, index + 5))
     }
-    const targetedShortfall = Math.max(0, working.intake.nPrograms - (working.customPrograms || [])
-      .filter((program) => program.provenance === 'ai').length)
-    const targetedLimit = Math.min(6, targetedSchoolChunks.length, Math.max(0, Math.ceil(targetedShortfall / 2)))
-    for (let batchNumber = 0; batchNumber < targetedLimit; batchNumber += 1) {
-      const currentCount = (working.customPrograms || []).filter((program) => program.provenance === 'ai').length
-      const shortfall = Math.max(0, working.intake.nPrograms - currentCount)
-      if (!shortfall) break
-      const schoolResults = targetedSchoolChunks[batchNumber]
-      const schoolUrls = new Set(schoolResults.map((result) => result.source.url))
-      const evidence = officialEvidenceFor((result) => schoolUrls.has(result?.source?.url), 90_000)
-      const schoolNames = schoolResults.map((result) => result.source.school)
-      const leads = officialProgramLeads.filter((lead) => schoolNames.includes(lead.school))
-      await onProgress?.({
-        stage: 'discovering',
-        message: `Deep-searching ${schoolNames.length} additional universities for exact programme pages (${currentCount}/${working.intake.nPrograms})…`,
-        sourceCount,
-      })
-      const agentKey = nextAgentKey()
-      const completion = await runAgent({
-        key: agentKey,
-        system: `${programDiscoverySystem()} For this targeted pass, inspect every named university separately and return at most one exact, field-relevant current doctoral programme per university. A university-wide graduate landing page, "not found", or a bare "PhD" is not a programme title.`,
-        payload: {
-          ...programResearchContract({
-            state: working,
-            applicantProfile,
-            researchTerms: expandedResearchTerms,
-            region: [...new Set(schoolResults.map((result) => result.source.region))].join(', '),
-            perRegion: Math.min(shortfall, schoolResults.length),
-            evidence,
-            portalEvidence: [],
-            officialProgramLeads: leads,
-          }),
-          targetUniversities: schoolNames,
-          oneExactProgrammePerUniversity: true,
-        },
-        liveWeb: supportsNativeOpenAiWebSearch(agentKey),
-        allowedDomains: webSearchDomainsForSources(schoolResults.map((result) => result.source)),
-        maxTokens: 5_000,
-      })
+    const targetedWorkingSnapshot = working
+    const targetedAgentRuns = await mapWithConcurrency(
+      targetedSchoolChunks.map((schoolResults, batchNumber) => ({ schoolResults, batchNumber })),
+      agentConcurrency,
+      async ({ schoolResults, batchNumber }) => {
+        const currentCount = (targetedWorkingSnapshot.customPrograms || [])
+          .filter((program) => program.provenance === 'ai').length
+        const schoolUrls = new Set(schoolResults.map((result) => result.source.url))
+        const evidence = officialEvidenceFor((result) => schoolUrls.has(result?.source?.url), 90_000)
+        const schoolNames = schoolResults.map((result) => result.source.school)
+        const leads = officialProgramLeads.filter((lead) => schoolNames.includes(lead.school))
+        await onProgress?.({
+          stage: 'discovering',
+          message: `Deep-searching ${schoolNames.length} additional universities (${currentCount} verified so far)…`,
+          sourceCount,
+        })
+        const agentKey = nextAgentKey()
+        const completion = await runAgent({
+          key: agentKey,
+          system: `${programDiscoverySystem()} For this targeted pass, inspect every named university separately and return at most one exact, field-relevant current doctoral programme per university. A university-wide graduate landing page, "not found", or a bare "PhD" is not a programme title.`,
+          payload: {
+            ...programResearchContract({
+              state: targetedWorkingSnapshot,
+              applicantProfile,
+              researchTerms: expandedResearchTerms,
+              region: [...new Set(schoolResults.map((result) => result.source.region))].join(', '),
+              perRegion: schoolResults.length,
+              evidence,
+              portalEvidence: [],
+              officialProgramLeads: leads,
+            }),
+            targetUniversities: schoolNames,
+            oneExactProgrammePerUniversity: true,
+          },
+          liveWeb: supportsNativeOpenAiWebSearch(agentKey),
+          allowedDomains: webSearchDomainsForSources(schoolResults.map((result) => result.source)),
+          maxTokens: 5_000,
+          reasoningEffort: discoverReasoningEffortForRole(agentKey, 'program'),
+          signal,
+          onExecutionCheckpoint: executionCheckpoint,
+        })
+        return { schoolResults, batchNumber, evidence, schoolNames, leads, agentKey, completion }
+      },
+    )
+    for (const { schoolResults, batchNumber, evidence, schoolNames, agentKey, completion } of targetedAgentRuns) {
       addUsage(agentKey, completion, `program-targeted:${batchNumber + 1}`)
       const parsed = parseAiResearchResponse(completion.text, rankPrograms(working))
       const hydration = await hydratePrograms(
@@ -1312,11 +1790,28 @@ export async function buildDiscoverResearchRun({
 
     const candidates = rankPrograms(working)
       .filter((program) => program.sources?.length && program.verification?.status !== 'unverified')
-      .slice(0, working.intake.nPrograms)
       .sort((left, right) => String(left.id).localeCompare(String(right.id)))
     if (!candidates.length) {
-      throw new AiProviderError('AI_RESEARCH_UNGROUNDED', 'Live research returned no program with a university-owned source. Previous decisions were preserved.')
+      const error = new AiProviderError('AI_RESEARCH_UNGROUNDED', 'Live research returned no program with a university-owned source. Previous decisions were preserved.')
+      error.details = {
+        crawledSchoolCount: crawls.length,
+        officialProgramLeadCount: officialProgramLeads.length,
+        rejectionReasonCounts,
+        degradedAgentBatches: degradedAgentBatches.slice(0, 40),
+        agentTrace: agentTrace.slice(-40).map((entry) => ({
+          id: entry.id,
+          status: entry.status,
+          detail: String(entry.detail || '').slice(0, 1_000),
+          provider: entry.provider || null,
+          model: entry.model || null,
+          evidenceUrlCount: Number(entry.evidenceUrlCount) || 0,
+        })),
+      }
+      throw error
     }
+    funnelAudit.groundedProgramCandidates = (working.customPrograms || [])
+      .filter((program) => program.provenance === 'ai' && program.sources?.length).length
+    funnelAudit.deepAdvisorPrograms = candidates.length
 
     const candidateSchoolEntries = [...new Map(candidates
       .map((program) => findSchoolSourceEntry(program, sourceIndex))
@@ -1327,17 +1822,20 @@ export async function buildDiscoverResearchRun({
       message: `Cross-checking publication graphs for ${candidateSchoolEntries.length} candidate universities…`,
       sourceCount,
     })
+    await executionCheckpoint('scholarly-graph-discovery')
     const scholarlyEntries = await collectScholarlyEvidence({
       schools: candidateSchoolEntries,
       query: expandedResearchTerms,
       disciplinePlan,
       topicResolution,
+      fetchImpl: externalApiFetch,
       concurrency: 3,
       maxResearchersPerSchool: Math.max(
         48,
-        Math.min(120, working.intake.nPisPerProgram * 8),
+        DISCOVER_RESEARCH_FUNNEL_LIMITS.scholarlyEvidence.researcherMax,
       ),
       onProgress: async ({ completed, total }) => {
+        await executionCheckpoint('scholarly-graph-batch')
         if (completed === 1 || completed % 5 === 0 || completed === total) {
           await onProgress?.({
             stage: 'scholarly',
@@ -1348,18 +1846,33 @@ export async function buildDiscoverResearchRun({
       },
     })
     sourceIndex = attachScholarlyEvidence(sourceIndex, scholarlyEntries)
+    funnelAudit.scholarlyCandidateResearchers = scholarlyEntries.reduce(
+      (total, entry) => total + (entry?.evidence?.candidateResearchers?.length || 0),
+      0,
+    )
     const advisorProfileLeads = deriveOfficialAdvisorProfileLeads(candidates, sourceIndex, {
-      maxProfilesPerSchool: Math.max(
-        20,
-        Math.min(40, working.intake.nPisPerProgram * 5),
-      ),
+      maxProfilesPerSchool: DISCOVER_RESEARCH_FUNNEL_LIMITS.scholarlyEvidence.researcherMax,
     })
     const advisorLeadHydration = await hydratePrograms(
       advisorProfileLeads,
       'advisors',
       'Fetching publication-matched official advisor profiles',
-      { maxSchools: Math.min(64, Math.max(1, candidateSchoolEntries.length)) },
+      { maxSchools: Math.max(1, candidateSchoolEntries.length) },
     )
+    const groundedAdvisorLeads = groundDiscoverPrograms(advisorProfileLeads, sourceIndex, {
+      previousPrograms: working.customPrograms,
+      allowedEvidenceUrls: collectFinalFetchedEvidenceUrls(sourceIndex),
+    })
+    recordGroundingRejections(groundedAdvisorLeads.rejected)
+    working = normalizeDiscoverState({
+      ...working,
+      customPrograms: mergeCustomPrograms(working.customPrograms, groundedAdvisorLeads.programs),
+    })
+    funnelAudit.matchedOfficialAdvisorLeads = advisorProfileLeads.reduce(
+      (total, program) => total + (program.pis?.length || 0),
+      0,
+    )
+    funnelAudit.hydratedOfficialAdvisorPages = advisorLeadHydration.fetchedPageCount
     const scholarlyBySchool = new Map(sourceIndex.schools.map((school) => [school.school, school.scholarlyEvidence]))
     agentTrace.push({
       id: 'scholarly_graph_discovery',
@@ -1373,8 +1886,8 @@ export async function buildDiscoverResearchRun({
       status: 'done',
       detail: `Matched ${advisorProfileLeads.reduce((total, program) => total + (program.pis?.length || 0), 0)} publication-backed names to official directory links and fetched ${advisorLeadHydration.fetchedPageCount} profile/evidence pages across ${advisorLeadHydration.attemptedSourceCount} universities.`,
     })
-    // One programme per advisor task keeps the requested PI count realistic
-    // inside a bounded output budget. Prefix the fingerprint so checkpoints
+    // One programme per advisor task lets the model examine every retained
+    // official profile without a cross-programme output race. Prefix the fingerprint so checkpoints
     // created by the earlier five-program batching cannot skip new tasks.
     const advisorProgramFingerprint = `advisor-v2:${candidates.map((program) => program.id).join('|')}`
     const completedAdvisorBatches = new Set(
@@ -1389,7 +1902,7 @@ export async function buildDiscoverResearchRun({
       const batch = candidates.slice(index, index + DISCOVER_AGENT_BATCH_SIZES.advisor)
       advisorBatches.push({ index, batchNumber, batch })
     }
-    const advisorAgentRuns = await mapWithConcurrency(advisorBatches, 4, async ({ index, batchNumber, batch }) => {
+    const advisorAgentRuns = await mapWithConcurrency(advisorBatches, agentConcurrency, async ({ index, batchNumber, batch }) => {
       await onProgress?.({
         stage: 'advisors',
         message: `Finding official advisor and lab pages for programs ${index + 1}–${index + batch.length} of ${candidates.length}…`,
@@ -1414,7 +1927,8 @@ export async function buildDiscoverResearchRun({
             school: program.school,
             evidence: compactScholarlyEvidenceForAgent(
               scholarlyBySchool.get(program.school),
-              working.intake.nPisPerProgram,
+              DISCOVER_RESEARCH_FUNNEL_LIMITS.scholarlyEvidence.researcherMax,
+              (program.pis || []).map((pi) => pi.name),
             ),
           })),
         }),
@@ -1423,7 +1937,10 @@ export async function buildDiscoverResearchRun({
           ...schoolEvidence,
           ...batch.flatMap((program) => program.sources || []),
         ]),
-        maxTokens: discoverAdvisorAgentMaxTokens(working.intake.nPisPerProgram),
+        maxTokens: DISCOVER_RESEARCH_FUNNEL_LIMITS.advisorAgentMaxTokens.ceiling,
+        reasoningEffort: discoverReasoningEffortForRole(agentKey, 'advisor'),
+        signal,
+        onExecutionCheckpoint: executionCheckpoint,
       })
       return { index, batchNumber, batch, schoolEvidence, agentKey, completion }
     })
@@ -1501,7 +2018,7 @@ export async function buildDiscoverResearchRun({
       const batch = verificationCandidates.slice(index, index + DISCOVER_AGENT_BATCH_SIZES.verification)
       verificationBatches.push({ index, batchNumber, batch })
     }
-    const verificationAgentRuns = await mapWithConcurrency(verificationBatches, 2, async ({ index, batchNumber, batch }) => {
+    const verificationAgentRuns = await mapWithConcurrency(verificationBatches, agentConcurrency, async ({ index, batchNumber, batch }) => {
       await onProgress?.({
         stage: 'verifying',
         message: `Independently verifying programs ${index + 1}–${index + batch.length} of ${verificationCandidates.length}…`,
@@ -1523,7 +2040,8 @@ export async function buildDiscoverResearchRun({
             school: program.school,
             evidence: compactScholarlyEvidenceForAgent(
               scholarlyBySchool.get(program.school),
-              working.intake.nPisPerProgram,
+              DISCOVER_RESEARCH_FUNNEL_LIMITS.scholarlyEvidence.researcherMax,
+              (program.pis || []).map((pi) => pi.name),
             ),
           })),
         }),
@@ -1537,6 +2055,9 @@ export async function buildDiscoverResearchRun({
         ])].slice(0, 100),
         outputSchema: VERIFICATION_AGENT_OUTPUT_SCHEMA,
         maxTokens: 4_500,
+        reasoningEffort: discoverReasoningEffortForRole(agentKey, 'verifier'),
+        signal,
+        onExecutionCheckpoint: executionCheckpoint,
       })
       return { index, batchNumber, batch, schoolEvidence, agentKey, completion }
     })
@@ -1598,11 +2119,21 @@ export async function buildDiscoverResearchRun({
         completedVerificationBatches: [...completedVerificationBatches],
       })
       if (verifiedPrograms.length) {
-        await onVerifiedPrograms?.({
+        funnelAudit.independentlyVerifiedPrograms += verifiedPrograms.length
+        const incrementalPublication = prepareDiscoverIncrementalPublication({
           programs: verifiedPrograms,
+          manualPrograms: (working.customPrograms || []).filter((program) => program.provenance !== 'ai'),
+          sourceIndex,
+          qualityOptions: researchQualityOptions,
+        })
+        recordGroundingRejections(incrementalPublication.rejected)
+        if (!incrementalPublication.programs.length) continue
+        await onVerifiedPrograms?.({
+          programs: incrementalPublication.programs,
           sourceIndex,
           sourceCount,
           batchNumber,
+          quality: incrementalPublication.quality,
         })
       }
     }
@@ -1631,29 +2162,31 @@ export async function buildDiscoverResearchRun({
         },
       }
     }))
+    const profileMatchedPrograms = enrichDiscoverAdvisorProfileMatches(
+      finalSanitizedPrograms,
+      sourceIndex,
+      {
+        applicantProfile,
+        researchTerms: expandedResearchTerms,
+      },
+    )
     working = normalizeDiscoverState({
       ...working,
-      customPrograms: [...finalManualPrograms, ...finalSanitizedPrograms],
+      customPrograms: [...finalManualPrograms, ...profileMatchedPrograms],
     })
     agentTrace.push({
       id: 'final_evidence_sanitization',
       name: 'Final Evidence Sanitization',
       status: 'done',
-      detail: `Retained ${finalSanitizedPrograms.length} official-source AI programs; removed ${finalGrounded.rejected.length} stale, generic or cross-school rows before persistence.`,
+      detail: `Retained ${profileMatchedPrograms.length} official-source AI programs; replaced free-form advisor fit prose with deterministic applicant-profile overlap and removed ${finalGrounded.rejected.length} stale, generic or cross-school rows before persistence.`,
     })
     // Rejected output still consumed billable provider tokens. Record usage
     // before the final safety gate so an integrity rejection is auditable too.
-    await Promise.all(selectedAiKeys.map((key) => recordAiUsage(key, aiUsageByKey.get(key.id))))
-    const quality = assessDiscoverResearchQuality(working, sourceIndex, {
-      requestedPrograms: working.intake.nPrograms,
-      scopedSourceCount: scopedSources.length,
-      minimumReadableSites: Math.min(
-        scopedSources.length,
-        Math.max(5, Math.ceil(selectedSources.length * 0.25)),
-      ),
-      minimumPrograms: Math.min(5, working.intake.nPrograms),
-      minimumAdvisors: Math.min(3, working.intake.nPisPerProgram),
-    })
+    await executionCheckpoint('final-evidence-gate')
+    const recordUsageForRun = typeof recordUsage === 'function' ? recordUsage : recordAiUsage
+    await Promise.all(selectedAiKeys.map((key) => recordUsageForRun(key, aiUsageByKey.get(key.id))))
+    sourceIndex = { ...sourceIndex, funnel: { ...funnelAudit } }
+    const quality = assessDiscoverResearchQuality(working, sourceIndex, researchQualityOptions)
     if (degradedAgentBatches.length) {
       quality.warnings = [...new Set([...quality.warnings, 'provider-batches-degraded-after-retry'])]
       quality.coveragePassed = false
@@ -1718,6 +2251,7 @@ export async function buildDiscoverResearchRun({
     preferredAiKeyId: input.keyIds?.[0] || input.keyId || working.preferredAiKeyId,
     preferredAiKeyIds: input.keyIds?.length ? input.keyIds : working.preferredAiKeyIds,
   })
+  await executionCheckpoint('research-run-complete')
   return { nextState, research, sourceCount, sourceIndex, aiUsage }
 }
 

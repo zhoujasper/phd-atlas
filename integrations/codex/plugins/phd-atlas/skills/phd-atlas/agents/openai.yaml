@@ -1,0 +1,6 @@
+interface:
+  display_name: "PhD Atlas"
+  short_description: "Securely manage applications, profiles, and teams"
+  default_prompt: "Use $phd-atlas to review my applications and safely update the one I choose."
+policy:
+  allow_implicit_invocation: true

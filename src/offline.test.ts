@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AuthSession } from './api/phdApi'
+import { ApiError, type AuthSession } from './api/phdApi'
 import type { ApplicationRecord } from './data/applications'
 import {
   canQueueApplicationUpdate,
   enqueueApplicationUpdate,
   isNetworkLikeError,
+  isRebaseableApplicationConflict,
+  isRecoverableRecommenderVersionError,
   loadOfflineSnapshot,
   markOfflineQueueItemBlocked,
   mergeOfflineApplicationUpdate,
@@ -267,6 +269,82 @@ describe('offline queue safeguards', () => {
     expect(queue[0].application.progress).toBe(35)
   })
 
+  it('rejects an offline queue acknowledgement when durable storage throws', () => {
+    const originalSetItem = Storage.prototype.setItem
+    const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation((key, value) => {
+      if (String(key).startsWith('phd-atlas-offline-queue:v3:')) {
+        throw new DOMException('Storage quota exceeded', 'QuotaExceededError')
+      }
+      return originalSetItem.call(localStorage, key, value)
+    })
+
+    try {
+      expect(() => enqueueApplicationUpdate(
+        session,
+        { ...application, progress: 42 },
+        application.updatedAt ?? null,
+      )).toThrow(/durable browser storage/i)
+      expect(readOfflineQueue(session.user.id)).toEqual([])
+    } finally {
+      write.mockRestore()
+    }
+  })
+
+  it('rejects silent no-op storage writes instead of reporting an offline save', () => {
+    const originalSetItem = Storage.prototype.setItem
+    const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation((key, value) => {
+      if (String(key).startsWith('phd-atlas-offline-queue:v3:')) return
+      return originalSetItem.call(localStorage, key, value)
+    })
+
+    try {
+      expect(() => enqueueApplicationUpdate(
+        session,
+        { ...application, progress: 43 },
+        application.updatedAt ?? null,
+      )).toThrow(/durable browser storage/i)
+      expect(readOfflineQueue(session.user.id)).toEqual([])
+    } finally {
+      write.mockRestore()
+    }
+  })
+
+  it('can read the acknowledged queue immediately from storage', () => {
+    const queued = enqueueApplicationUpdate(
+      session,
+      { ...application, progress: 44 },
+      application.updatedAt ?? null,
+    )
+
+    expect(queued).toHaveLength(1)
+    expect(readOfflineQueue(session.user.id)).toEqual(queued)
+    expect(readOfflineQueue(session.user.id)[0].application.progress).toBe(44)
+  })
+
+  it('does not return snapshot metadata when the snapshot write cannot be read back', () => {
+    const originalSetItem = Storage.prototype.setItem
+    const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation((key, value) => {
+      if (String(key).startsWith('phd-atlas-offline-snapshot:v3:')) return
+      return originalSetItem.call(localStorage, key, value)
+    })
+
+    try {
+      expect(saveOfflineSnapshot(session, {
+        applications: [application],
+        profileAssets: [],
+        backups: [],
+        applicationTrash: [],
+        teamWorkspaces: [],
+        activeTeamId: null,
+        teamSummary: null,
+        teamApplications: [],
+      })).toBeNull()
+      expect(loadOfflineSnapshot(session)).toBeNull()
+    } finally {
+      write.mockRestore()
+    }
+  })
+
   it('folds a newer local edit into an older blocked entry so it can retry automatically', () => {
     enqueueApplicationUpdate(
       session,
@@ -320,9 +398,10 @@ describe('offline queue safeguards', () => {
     expect(result?.application.priority).toBe(92)
     expect(result?.application.updatedAt).toBe(server.updatedAt)
     expect(result?.replayRequired).toBe(true)
+    expect(result?.conflicts).toEqual([])
   })
 
-  it('uses the newer offline value for an overlapping field without manual review', () => {
+  it('keeps a newer offline overlap queued for explicit recovery instead of trusting device clocks', () => {
     enqueueApplicationUpdate(
       session,
       { ...application, progress: 35 },
@@ -343,13 +422,90 @@ describe('offline queue safeguards', () => {
     const result = mergeOfflineApplicationUpdate(operation, server)
 
     expect(result?.merged).toBe(true)
-    expect(result?.application.progress).toBe(35)
+    expect(result?.application.progress).toBe(60)
     expect(result?.application.priority).toBe(92)
     expect(result?.application.updatedAt).toBe(server.updatedAt)
+    expect(result?.replayRequired).toBe(false)
+    expect(result?.conflicts).toEqual(['progress'])
+  })
+
+  it('auto-resolves an overlap to the newer local edit so a reconnect drains the queue', () => {
+    enqueueApplicationUpdate(
+      session,
+      { ...application, progress: 35 },
+      application.updatedAt ?? null,
+      application,
+    )
+    const operation = {
+      ...readOfflineQueue(session.user.id)[0],
+      localEditedAt: '2026-07-10T00:00:00.000Z',
+    }
+    const server = {
+      ...application,
+      progress: 60,
+      priority: 92,
+      updatedAt: '2026-07-09T00:00:00.000Z',
+    }
+
+    const result = mergeOfflineApplicationUpdate(operation, server, { autoResolve: true })
+
+    expect(result?.conflicts).toEqual([])
+    expect(result?.autoResolved).toEqual([{ field: 'progress', winner: 'local' }])
+    // The local edit is newer, so it wins the overlap and still has to be replayed.
+    expect(result?.application.progress).toBe(35)
+    expect(result?.application.priority).toBe(92)
     expect(result?.replayRequired).toBe(true)
   })
 
-  it('keeps the newer server value for an overlapping field without replaying an identical record', () => {
+  it('auto-resolves an overlap to the newer server edit without queueing a pointless replay', () => {
+    enqueueApplicationUpdate(
+      session,
+      { ...application, progress: 35 },
+      application.updatedAt ?? null,
+      application,
+    )
+    const operation = {
+      ...readOfflineQueue(session.user.id)[0],
+      localEditedAt: '2026-07-08T12:00:00.000Z',
+    }
+    const server = {
+      ...application,
+      progress: 60,
+      updatedAt: '2026-07-09T00:00:00.000Z',
+    }
+
+    const result = mergeOfflineApplicationUpdate(operation, server, { autoResolve: true })
+
+    expect(result?.conflicts).toEqual([])
+    expect(result?.autoResolved).toEqual([{ field: 'progress', winner: 'server' }])
+    expect(result?.application.progress).toBe(60)
+    // The server already holds every winning value, so clearing the queue entry
+    // is the whole sync; nothing is rewritten to manufacture a newer timestamp.
+    expect(result?.replayRequired).toBe(false)
+  })
+
+  it('keeps the local value when neither side has a usable authoring timestamp', () => {
+    enqueueApplicationUpdate(
+      session,
+      { ...application, progress: 35 },
+      application.updatedAt ?? null,
+      application,
+    )
+    const operation = {
+      ...readOfflineQueue(session.user.id)[0],
+      localEditedAt: 'not-a-date',
+      updatedAt: 'not-a-date',
+      createdAt: 'not-a-date',
+    }
+    const server = { ...application, progress: 60, updatedAt: '2026-07-09T00:00:00.000Z' }
+
+    const result = mergeOfflineApplicationUpdate(operation, server, { autoResolve: true })
+
+    expect(result?.autoResolved).toEqual([{ field: 'progress', winner: 'local' }])
+    expect(result?.application.progress).toBe(35)
+  })
+
+  it('never treats a server-newer overlap as safely synced while the local value is still queued', () => {
     enqueueApplicationUpdate(
       session,
       { ...application, progress: 35 },
@@ -372,6 +528,7 @@ describe('offline queue safeguards', () => {
     expect(result?.application.progress).toBe(60)
     expect(result?.application.updatedAt).toBe(server.updatedAt)
     expect(result?.replayRequired).toBe(false)
+    expect(result?.conflicts).toEqual(['progress'])
   })
 
   it('does not mistake an older blocked-status timestamp for a newer local edit', () => {
@@ -399,6 +556,7 @@ describe('offline queue safeguards', () => {
 
     expect(result?.application.progress).toBe(60)
     expect(result?.replayRequired).toBe(false)
+    expect(result?.conflicts).toEqual(['progress'])
   })
 
   it('drops a locally tampered offline queue before replay', () => {
@@ -497,7 +655,7 @@ describe('offline queue safeguards', () => {
   })
 
   it('restores server-owned sharing, backup, and file authority before replay', () => {
-    const local = {
+    const local: ApplicationRecord = {
       ...application,
       progress: 35,
       materials: [{
@@ -509,6 +667,34 @@ describe('offline queue safeguards', () => {
         updatedAt: application.updatedAt ?? '',
         fileId: 'forged-local-file',
         storageName: 'forged-local-storage',
+      }],
+      communications: [{
+        id: 'communication-1',
+        subject: 'Local subject edit',
+        summary: 'Local summary edit',
+        channel: 'Email',
+        date: '2026-07-08',
+        bodyFormat: 'html',
+        bodyHtml: '<script>forged</script>',
+        bodyText: 'Forged body',
+        attachments: [{ id: 'forged-attachment', fileName: 'forged.txt' }],
+        mailSecurity: {
+          level: 'danger',
+          signals: ['prompt-injection'],
+          linksDisabled: true,
+          quarantinedAttachmentCount: 1,
+        },
+        mailClassification: {
+          category: 'rejection',
+          confidence: 0.99,
+          summary: 'Forged classification',
+          evidence: [],
+          actions: ['none'],
+          source: 'ai',
+          classifiedAt: '2026-07-08T00:00:00.000Z',
+          inputHash: 'forged',
+          version: 1,
+        },
       }],
     }
     const base = { ...local, progress: application.progress }
@@ -522,6 +708,30 @@ describe('offline queue safeguards', () => {
         fileId: 'server-file',
         storageName: 'server-storage',
       }],
+      communications: [{
+        ...local.communications[0],
+        bodyFormat: 'plain',
+        bodyHtml: undefined,
+        bodyText: 'Server body',
+        attachments: [{ id: 'server-attachment', fileName: 'server.txt' }],
+        mailSecurity: {
+          level: 'caution',
+          signals: ['reply-to-mismatch'],
+          linksDisabled: true,
+          quarantinedAttachmentCount: 0,
+        },
+        mailClassification: {
+          category: 'interview_invite',
+          confidence: 0.91,
+          summary: 'Interview invitation',
+          evidence: ['Interview scheduling request'],
+          actions: ['prepare_interview'],
+          source: 'ai',
+          classifiedAt: '2026-07-08T00:00:00.000Z',
+          inputHash: 'server',
+          version: 1,
+        },
+      }],
       updatedAt: application.updatedAt,
     } as ApplicationRecord
 
@@ -534,6 +744,35 @@ describe('offline queue safeguards', () => {
     })
     expect(result?.application.shares).toBe(server.shares)
     expect(result?.application.backupSettings).toBe(server.backupSettings)
+    expect(result?.application.communications[0]).toMatchObject({
+      subject: 'Local subject edit',
+      summary: 'Local summary edit',
+      bodyFormat: 'plain',
+      bodyText: 'Server body',
+      attachments: server.communications[0].attachments,
+      mailSecurity: { level: 'caution' },
+      mailClassification: { category: 'interview_invite', source: 'ai' },
+    })
+    expect(result?.application.communications[0]).not.toHaveProperty('bodyHtml')
+  })
+
+  it('does not load obsolete offline storage versions', () => {
+    localStorage.setItem('phd-atlas-offline-snapshot:v2:user-1', JSON.stringify({
+      version: 2,
+      userId: 'user-1',
+      savedAt: new Date().toISOString(),
+      data: { applications: [application] },
+    }))
+    localStorage.setItem('phd-atlas-offline-queue:v2:user-1', JSON.stringify({
+      version: 2,
+      userId: 'user-1',
+      items: [{ application }],
+    }))
+
+    expect(loadOfflineSnapshot(session)).toBeNull()
+    expect(readOfflineQueue(session.user.id)).toEqual([])
+    expect(localStorage.getItem('phd-atlas-offline-snapshot:v3:user-1')).toBeNull()
+    expect(localStorage.getItem('phd-atlas-offline-queue:v3:user-1')).toBeNull()
   })
 
   it('treats request timeouts and gateway outages as offline transport failures', () => {
@@ -556,6 +795,18 @@ describe('offline queue safeguards', () => {
 
     expect(isNetworkLikeError(smtpFailure)).toBe(false)
     expect(isNetworkLikeError(imapFailure)).toBe(false)
+  })
+
+  it('does not turn structured conflicts or capacity responses into offline mode', () => {
+    for (const [code, status] of [
+      ['STORE_WRITE_CONFLICT', 409],
+      ['SERVER_BUSY', 503],
+      ['AUTH_CAPACITY_EXCEEDED', 429],
+      ['AI_CAPACITY_EXCEEDED', 503],
+    ] as const) {
+      const error = Object.assign(new Error('Structured API response.'), { code, status })
+      expect(isNetworkLikeError(error), code).toBe(false)
+    }
   })
 
   it('falls back to a signed main-thread snapshot when the worker reports an error', async () => {
@@ -594,5 +845,51 @@ describe('offline queue safeguards', () => {
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+})
+
+describe('rebaseable application conflicts', () => {
+  it('classifies stale-baseline rejections as recoverable so a save can replay itself', () => {
+    const codes = [
+      'APPLICATION_MUTATION_BASELINE_MISMATCH',
+      'APPLICATION_VERSION_CONFLICT',
+      'APPLICATION_VERSION_REQUIRED',
+      'APPLICATION_DELTA_CANONICAL_MISMATCH',
+      'APPLICATION_DURABILITY_UNVERIFIED',
+      'STORE_WRITE_CONFLICT',
+    ]
+    for (const code of codes) {
+      expect(isRebaseableApplicationConflict(new ApiError('conflict', code, 409))).toBe(true)
+    }
+  })
+
+  it('leaves genuine rejections alone so they still reach the person', () => {
+    expect(isRebaseableApplicationConflict(new ApiError('bad url', 'VALIDATION_ERROR', 400))).toBe(false)
+    expect(isRebaseableApplicationConflict(new ApiError('nope', 'FORBIDDEN', 403))).toBe(false)
+    expect(isRebaseableApplicationConflict(new Error('boom'))).toBe(false)
+    expect(isRebaseableApplicationConflict(null)).toBe(false)
+  })
+})
+
+describe('recoverable recommender version errors', () => {
+  it('treats a stale directory version as recoverable, not as the author\u2019s problem', () => {
+    for (const code of [
+      'PROFILE_RECOMMENDER_VERSION_CONFLICT',
+      'PROFILE_RECOMMENDER_VERSION_REQUIRED',
+      'TEAM_PROFILE_RECOMMENDER_VERSION_CONFLICT',
+      'APPLICATION_VERSION_CONFLICT',
+    ]) {
+      expect(isRecoverableRecommenderVersionError(new ApiError('stale', code, 409))).toBe(true)
+    }
+  })
+
+  it('leaves a real refusal to surface', () => {
+    expect(isRecoverableRecommenderVersionError(
+      new ApiError('choose', 'RECOMMENDER_SYNC_DECISION_REQUIRED', 409),
+    )).toBe(false)
+    expect(isRecoverableRecommenderVersionError(
+      new ApiError('duplicate', 'RECOMMENDER_IDENTITY_AMBIGUOUS', 409),
+    )).toBe(false)
+    expect(isRecoverableRecommenderVersionError(new Error('boom'))).toBe(false)
   })
 })

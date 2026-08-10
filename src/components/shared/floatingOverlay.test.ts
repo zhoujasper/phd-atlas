@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import type { CSSProperties } from 'react'
 import {
+  applyFloatingOverlayStyle,
   FLOATING_CONTROL_BASE_Z_INDEX,
   getAnchoredOverlayStyle,
   getFloatingOverlayZIndex,
 } from './floatingOverlay'
+import countrySelectSource from './CountrySelect.tsx?raw'
+import datePickerSource from './DatePicker.tsx?raw'
+import recommenderComboboxSource from './RecommenderCombobox.tsx?raw'
+import selectSource from './Select.tsx?raw'
+import timePickerSource from './TimePicker.tsx?raw'
 
 const originalInnerWidth = window.innerWidth
 const originalInnerHeight = window.innerHeight
@@ -20,6 +27,40 @@ afterEach(() => {
 })
 
 describe('getAnchoredOverlayStyle', () => {
+  it('writes transient geometry on the resident portal without a React rerender', () => {
+    const element = document.createElement('div')
+    element.style.visibility = 'hidden'
+
+    applyFloatingOverlayStyle(element, {
+      position: 'fixed',
+      left: 12,
+      top: 48,
+      zIndex: FLOATING_CONTROL_BASE_Z_INDEX,
+      '--floating-transform-origin': 'top left',
+    } as CSSProperties)
+
+    expect(element.style.position).toBe('fixed')
+    expect(element.style.left).toBe('12px')
+    expect(element.style.top).toBe('48px')
+    expect(element.style.zIndex).toBe(String(FLOATING_CONTROL_BASE_Z_INDEX))
+    expect(element.style.getPropertyValue('--floating-transform-origin')).toBe('top left')
+    expect(element.style.visibility).toBe('')
+  })
+
+  it('keeps shared trigger menus hidden until measured and observes content growth', () => {
+    for (const source of [countrySelectSource, selectSource, datePickerSource, timePickerSource, recommenderComboboxSource]) {
+      expect(source).toMatch(/useLayoutEffect/)
+      expect(source).toMatch(/actualHeight:[\s\S]*?offsetHeight/)
+      expect(source).toMatch(/new ResizeObserver/)
+    }
+
+    expect(countrySelectSource).not.toMatch(/requestAnimationFrame\(\(\) => setDropdownStyle\(getDropdownPosition\(\)\)\)/)
+    expect(selectSource).not.toMatch(/requestAnimationFrame\(\(\) => setDropdownStyle\(getDropdownPosition\(\)\)\)/)
+    expect(datePickerSource).not.toMatch(/requestAnimationFrame\(\(\) => \{\s*updateDropdownPosition\(\)/)
+    expect(timePickerSource).not.toMatch(/requestAnimationFrame\(\(\) => setDropdownStyle\(getDropdownPosition\(\)\)\)/)
+    expect(recommenderComboboxSource).not.toMatch(/requestAnimationFrame\(\(\) => setMenuStyle\(getMenuPosition\(\)\)\)/)
+  })
+
   it('opens beside a mobile trigger instead of detaching into a bottom sheet', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 })
@@ -55,6 +96,50 @@ describe('getAnchoredOverlayStyle', () => {
     expect(style['--floating-transform-origin' as keyof typeof style]).toBe('bottom left')
     expect(style['--floating-enter-y' as keyof typeof style]).toBe('4px')
     expect(style['--floating-exit-y' as keyof typeof style]).toBe('3px')
+  })
+
+  it('can choose the full-menu side before a collapsed menu grows', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 780 })
+
+    const trigger = triggerAt(24, 500, 180, 40)
+    const initial = getAnchoredOverlayStyle(trigger, {
+      minWidth: 180,
+      maxWidth: 340,
+      estimatedHeight: 400,
+      actualHeight: 180,
+      useEstimatedHeightForPlacement: true,
+    })
+    const grown = getAnchoredOverlayStyle(trigger, {
+      minWidth: 180,
+      maxWidth: 340,
+      estimatedHeight: 400,
+      actualHeight: 380,
+      placement: 'above',
+    })
+
+    expect(initial['--floating-placement' as keyof typeof initial]).toBe('above')
+    expect(grown['--floating-placement' as keyof typeof grown]).toBe('above')
+    expect(grown['--floating-transform-origin' as keyof typeof grown]).toBe('bottom left')
+  })
+
+  it('can pin an above-growing overlay to the trigger edge', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 780 })
+
+    const style = getAnchoredOverlayStyle(triggerAt(24, 500, 180, 40), {
+      minWidth: 180,
+      maxWidth: 340,
+      estimatedHeight: 400,
+      actualHeight: 180,
+      useEstimatedHeightForPlacement: true,
+      anchorAboveToBottom: true,
+      gap: 6,
+    })
+
+    expect(style.top).toBe('auto')
+    expect(style.bottom).toBe(286)
+    expect(style['--floating-placement' as keyof typeof style]).toBe('above')
   })
 
   it('clamps wide overlays to narrow screens without horizontal overflow', () => {

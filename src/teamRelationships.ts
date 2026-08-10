@@ -1,59 +1,21 @@
 import type { TeamMember } from './api/phdApi'
 
+/** Public-edition compatibility boundary; Team relationships are unavailable. */
 export type TeamMemberRelationshipSource = {
   role?: TeamMember['role']
   invitedBy?: string | null
-  relationships?: {
-    teacherIds?: readonly unknown[]
-  }
+  relationships?: { teacherIds?: readonly unknown[] }
 }
-
-function uniqueStrings(values: readonly unknown[]) {
-  return Array.from(new Set(
-    values
-      .map((value) => String(value ?? '').trim())
-      .filter(Boolean),
-  ))
-}
-
-/**
- * `invitedBy` is the legacy single-teacher fallback. Once teacherIds exists,
- * including as an empty array, it is the authoritative collaboration team.
- */
-export function teamMemberTeacherIds(member: TeamMemberRelationshipSource | null | undefined) {
-  const relationships = member?.relationships
-  if (
-    relationships
-    && Object.prototype.hasOwnProperty.call(relationships, 'teacherIds')
-  ) {
-    return uniqueStrings(relationships.teacherIds ?? [])
-  }
-  return member?.invitedBy ? [member.invitedBy] : []
-}
-
+export function teamMemberTeacherIds(_member: TeamMemberRelationshipSource | null | undefined): string[] { return [] }
 export function isTeacherAssignedToStudent(
-  member: TeamMemberRelationshipSource | null | undefined,
-  teacherUserId: string | null | undefined,
-) {
-  return Boolean(
-    member?.role === 'member'
-    && teacherUserId
-    && teamMemberTeacherIds(member).includes(teacherUserId),
-  )
-}
-
+  _member: TeamMemberRelationshipSource | null | undefined,
+  _teacherUserId: string | null | undefined,
+) { return false }
 export function teachersForStudent(
-  member: TeamMember | null | undefined,
-  membersByUserId: ReadonlyMap<string, TeamMember>,
-) {
-  return teamMemberTeacherIds(member)
-    .map((userId) => membersByUserId.get(userId))
-    .filter((teacher): teacher is TeamMember => Boolean(teacher))
-}
-
+  _member: TeamMember | null | undefined,
+  _membersByUserId: ReadonlyMap<string, TeamMember>,
+): TeamMember[] { return [] }
 export function primaryTeacherForStudent(
-  member: TeamMember | null | undefined,
-  membersByUserId: ReadonlyMap<string, TeamMember>,
-) {
-  return teachersForStudent(member, membersByUserId)[0] ?? null
-}
+  _member: TeamMember | null | undefined,
+  _membersByUserId: ReadonlyMap<string, TeamMember>,
+): TeamMember | null { return null }

@@ -1,3 +1,5 @@
+import { clearVerifiedStorageItem, setVerifiedStorageItem } from '../../verifiedStorage'
+
 const ATTACHMENT_REFERENCE_PATTERNS = [
   /\b(?:attach(?:ed|ing|ment|ments)?|enclos(?:e|ed|ing|ure|ures))\b/iu,
   /(?:附件|附檔|附档|隨附|随附|見附|见附|附上|附送|附呈)/u,
@@ -12,6 +14,141 @@ const ATTACHMENT_REFERENCE_PATTERNS = [
   /แนบ/u,
   /(?:đính\s*kèm|dinh\s*kem)/iu,
 ]
+
+const SAVED_DRAFT_SUBJECT_MARKERS = [
+  'DRAFT',
+  '草稿',
+  'ENTWURF',
+  'BORRADOR',
+  'PROJET',
+  'BOZZA',
+  'ドラフト',
+  '초안',
+  'RASCUNHO',
+  'ЧЕРНОВИК',
+  'ฉบับร่าง',
+  'Bản nháp',
+] as const
+
+const EMAIL_COMPOSER_RECOVERY_PREFIX = 'phd-atlas-email-composer:v1'
+
+export type RecoverableEmailAttachment = {
+  id: string
+  name: string
+  fileName?: string
+  fileId?: string
+  assetId?: string
+  fileSize?: number
+  mimeType?: string
+}
+
+export type RecoverableEmailComposer = {
+  activeDraftId?: string
+  attachments: RecoverableEmailAttachment[]
+  body: string
+  deliveryId: string
+  recipient: string
+  scheduledDate: string
+  scheduledTime: string
+  subject: string
+  updatedAt: number
+}
+
+function emailComposerRecoveryKey(userId: string, applicationId: string) {
+  return `${EMAIL_COMPOSER_RECOVERY_PREFIX}:${encodeURIComponent(userId)}:${encodeURIComponent(applicationId)}`
+}
+
+function isRecoverableAttachment(value: unknown): value is RecoverableEmailAttachment {
+  if (!value || typeof value !== 'object') return false
+  const attachment = value as Partial<RecoverableEmailAttachment>
+  return typeof attachment.id === 'string'
+    && typeof attachment.name === 'string'
+    && (attachment.fileName === undefined || typeof attachment.fileName === 'string')
+    && (attachment.fileId === undefined || typeof attachment.fileId === 'string')
+    && (attachment.assetId === undefined || typeof attachment.assetId === 'string')
+    && (attachment.fileSize === undefined || typeof attachment.fileSize === 'number')
+    && (attachment.mimeType === undefined || typeof attachment.mimeType === 'string')
+}
+
+function parseRecoverableEmailComposer(value: unknown): RecoverableEmailComposer | null {
+  if (!value || typeof value !== 'object') return null
+  const draft = value as Partial<RecoverableEmailComposer>
+  if (
+    typeof draft.subject !== 'string'
+    || typeof draft.body !== 'string'
+    || typeof draft.recipient !== 'string'
+    || typeof draft.scheduledDate !== 'string'
+    || typeof draft.scheduledTime !== 'string'
+    || typeof draft.deliveryId !== 'string'
+    || draft.deliveryId.trim().length < 8
+    || draft.deliveryId.trim().length > 128
+    || typeof draft.updatedAt !== 'number'
+    || !Array.isArray(draft.attachments)
+    || !draft.attachments.every(isRecoverableAttachment)
+    || (draft.activeDraftId !== undefined && typeof draft.activeDraftId !== 'string')
+  ) {
+    return null
+  }
+  return draft as RecoverableEmailComposer
+}
+
+export function editableDraftEmailSubject(subject: string) {
+  const markerPattern = SAVED_DRAFT_SUBJECT_MARKERS
+    .map((marker) => marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|')
+  return subject.replace(new RegExp(`^(?:\\[(?:${markerPattern})\\]\\s*)+`, 'iu'), '')
+}
+
+export function loadRecoverableEmailComposer(
+  userId: string,
+  applicationId: string,
+  storage?: Pick<Storage, 'getItem'>,
+) {
+  try {
+    const target = storage ?? globalThis.sessionStorage
+    if (!target) return null
+    const raw = target.getItem(emailComposerRecoveryKey(userId, applicationId))
+    if (!raw) return null
+    const parsed = parseRecoverableEmailComposer(JSON.parse(raw))
+    if (!parsed || (!parsed.subject.trim() && !parsed.body.trim() && parsed.attachments.length === 0)) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+export function saveRecoverableEmailComposer(
+  userId: string,
+  applicationId: string,
+  draft: RecoverableEmailComposer,
+  storage?: Pick<Storage, 'getItem' | 'setItem'>,
+) {
+  try {
+    const target = storage ?? globalThis.sessionStorage
+    if (!target) return false
+    return setVerifiedStorageItem(
+      target,
+      emailComposerRecoveryKey(userId, applicationId),
+      JSON.stringify(draft),
+    )
+  } catch {
+    return false
+  }
+}
+
+export function clearRecoverableEmailComposer(
+  userId: string,
+  applicationId: string,
+  storage?: Pick<Storage, 'getItem' | 'removeItem'> & Partial<Pick<Storage, 'setItem'>>,
+) {
+  try {
+    const target = storage ?? globalThis.sessionStorage
+    if (!target) return false
+    return clearVerifiedStorageItem(target, emailComposerRecoveryKey(userId, applicationId))
+  } catch {
+    return false
+  }
+}
 
 export function emailContentMentionsAttachment(subject: string, body: string) {
   const content = `${subject}\n${body}`.normalize('NFKC')

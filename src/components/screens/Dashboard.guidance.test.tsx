@@ -62,6 +62,22 @@ function renderDashboard(
 }
 
 describe('student dashboard guidance team', () => {
+  it('keeps the dashboard explanation behind the title info control', () => {
+    renderDashboard()
+
+    const description = 'See what needs attention, understand why, and continue exactly where the work lives.'
+    const trigger = screen.getByRole('button', { name: description })
+    const tooltip = document.querySelector('.info-tooltip-portal')!
+    expect(tooltip).not.toHaveClass('is-open')
+
+    fireEvent.click(trigger)
+    expect(tooltip).toHaveClass('is-open')
+    expect(tooltip).toHaveTextContent(description)
+
+    fireEvent.click(trigger)
+    expect(tooltip).not.toHaveClass('is-open')
+  })
+
   it('shows the saved title after the name and offers in-app or email contact', async () => {
     renderDashboard()
 

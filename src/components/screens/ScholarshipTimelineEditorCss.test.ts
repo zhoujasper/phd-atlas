@@ -20,7 +20,7 @@ describe('Scholarship timeline editor polish', () => {
     expect(dossierSource).toContain('data-timeline-title-input="true"')
     expect(dossierSource).toContain('?.focus({ preventScroll: true })')
     expect(presence).toContain('grid-template-rows: 0fr')
-    expect(presence).toContain('grid-template-rows 360ms var(--ease-fluid)')
+    expect(presence).toContain('grid-template-rows 340ms var(--ease-fluid)')
     expect(openPresence).toContain('grid-template-rows: 1fr')
   })
 
@@ -35,7 +35,7 @@ describe('Scholarship timeline editor polish', () => {
     expect(dossierSource).toContain('<PencilLine size={12} aria-hidden="true" />')
     expect(field).toContain('display: grid')
     expect(control).toContain('border: 1px solid var(--border)')
-    expect(control).toContain('background: var(--surface)')
+    expect(control).toContain('background: var(--surface-secondary)')
     expect(focusedControl).toContain('border-color: var(--accent)')
   })
 

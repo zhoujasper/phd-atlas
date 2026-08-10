@@ -147,7 +147,7 @@
 
 .inline-test-email-form input:focus-visible {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, .16);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .inline-test-email-send {

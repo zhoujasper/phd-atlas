@@ -6,7 +6,7 @@ async function signInAndOpenSettings(page: Page) {
     window.localStorage.setItem('phd-atlas-language', 'zh')
   })
   await page.goto('/', { waitUntil: 'domcontentloaded' })
-  await page.getByLabel(/Email|邮箱/i).fill('jasper@example.com')
+  await page.locator('input[type="email"]').fill('jasper@example.com')
   await page.locator('input[type="password"]').fill('demo123456')
   await page.getByRole('button', { name: /^(Sign in|登录)$/ }).click()
   await expect(page.getByRole('heading', { name: /Dashboard|仪表盘/i })).toBeVisible({ timeout: 12_000 })

@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import { Buffer } from 'node:buffer'
+import { AI_KEY_MAX_CONCURRENCY } from '../shared/aiConcurrency.js'
+import { AI_KEY_MAX_WEIGHT, AI_KEY_MIN_WEIGHT, AI_KEY_REQUEST_MODES } from '../shared/aiKeyRouting.js'
 
 const BUILT_IN_APPLICATION_STATUSES = new Map([
   ['draft', 'Draft'],
@@ -47,13 +49,96 @@ const CustomApplicationStatusesSchema = z
 
 export const MaterialStatusSchema = z.string().trim().min(1).max(64)
 
+const BUILT_IN_CHECKLIST_STATUSES = new Set([
+  'missing',
+  'not started',
+  'draft',
+  'requested',
+  'in progress',
+  'waiting',
+  'needs review',
+  'ready',
+  'needs revision',
+  'submitted',
+  'open',
+  'done',
+])
+
+const CustomChecklistStatusesSchema = z
+  .array(MaterialStatusSchema)
+  .max(30)
+  .superRefine((statuses, context) => {
+    const seen = new Set()
+    statuses.forEach((status, index) => {
+      const key = status.toLocaleLowerCase()
+      if (BUILT_IN_CHECKLIST_STATUSES.has(key)) {
+        context.addIssue({
+          code: 'custom',
+          path: [index],
+          message: 'Built-in checklist statuses must not be duplicated as custom statuses.',
+        })
+      } else if (seen.has(key)) {
+        context.addIssue({
+          code: 'custom',
+          path: [index],
+          message: 'Custom checklist statuses must be unique.',
+        })
+      }
+      seen.add(key)
+    })
+  })
+
+const BUILT_IN_CHECKLIST_MATERIAL_FORMATS = new Set([
+  'pdf',
+  'docx',
+  'spreadsheet',
+  'presentation',
+  'image',
+  'online form',
+  'link',
+  'request',
+  'other',
+])
+
+const CustomChecklistMaterialFormatsSchema = z
+  .array(MaterialStatusSchema)
+  .max(30)
+  .superRefine((formats, context) => {
+    const seen = new Set()
+    formats.forEach((format, index) => {
+      const key = format.toLocaleLowerCase()
+      if (BUILT_IN_CHECKLIST_MATERIAL_FORMATS.has(key)) {
+        context.addIssue({
+          code: 'custom',
+          path: [index],
+          message: 'Built-in checklist material formats must not be duplicated as custom formats.',
+        })
+      } else if (seen.has(key)) {
+        context.addIssue({
+          code: 'custom',
+          path: [index],
+          message: 'Custom checklist material formats must be unique.',
+        })
+      }
+      seen.add(key)
+    })
+  })
+
 const ReminderDateSchema = z.union([z.iso.date(), z.literal('')]).default('')
 const OptionalUrlSchema = z.union([z.url(), z.literal('')])
 
-const MaterialRecommenderSchema = z.object({
-  id: z.string().min(1),
-  name: z.string(),
-  contact: z.string(),
+export const MaterialRecommenderSchema = z.object({
+  id: z.string().min(1).max(160),
+  name: z.string().trim().max(200),
+  contact: z.string().trim().max(320),
+  email: z.union([z.email().max(320), z.literal('')]).optional().default(''),
+  phone: z.string().max(80).optional().default(''),
+  profileId: z.string().min(1).max(160).optional(),
+  notes: z.string().max(4_000).optional().default(''),
+  deadline: ReminderDateSchema,
+  deadlineTime: z.string().max(32).optional().default(''),
+  reminderDate: ReminderDateSchema,
+  reminderTime: z.string().max(32).optional().default(''),
 })
 
 export const ChannelSchema = z.enum(['Email', 'Message', 'Note', 'Interview', 'Card', 'Meeting', 'Portal'])
@@ -75,7 +160,21 @@ const MailSecuritySchema = z.object({
   linksDisabled: z.literal(true),
   quarantinedAttachmentCount: z.number().int().nonnegative().max(100_000),
 })
-export const BackupFrequencySchema = z.enum(['1m', '5m', '15m', '30m', '1h', '3h', '6h', '12h', 'daily', '3d', '7d', 'weekly', 'monthly'])
+export const BackupFrequencySchema = z.enum([
+  '1m',
+  '5m',
+  '15m',
+  '30m',
+  '1h',
+  '3h',
+  '6h',
+  '12h',
+  'daily',
+  '3d',
+  '7d',
+  'weekly',
+  'monthly',
+])
 export const SharePermissionSchema = z.enum(['view', 'upload', 'edit'])
 export const ShareSectionSchema = z.enum([
   'overview',
@@ -92,79 +191,142 @@ export const InvitableTeamMemberRoleSchema = z.enum(['admin', 'member'])
 // Display still falls back to a default glyph when an unknown id is stored.
 export const ProfilePresetIconSchema = z.string().trim().min(1).max(48)
 export const ProfilePresetColorSchema = z.enum(['system', 'blue', 'purple', 'green', 'orange', 'pink', 'teal', 'gray'])
-export const ProfilePresetBaseSchema = z.object({
-  kind: z.string().trim().min(1).max(120),
-  nameZh: z.string().trim().max(120),
-  nameEn: z.string().trim().max(120),
-  descriptionZh: z.string().trim().max(300),
-  descriptionEn: z.string().trim().max(300),
-  contentZh: z.string().trim().max(4000),
-  contentEn: z.string().trim().max(4000),
-  icon: ProfilePresetIconSchema,
-  color: ProfilePresetColorSchema,
-}).refine((value) => value.nameZh.length > 0 || value.nameEn.length > 0, {
-  message: 'A preset needs at least one localized name.',
-  path: ['nameZh'],
-})
-export const StoredProfilePresetSchema = z.object({
-  id: z.string().min(1).max(160),
-  kind: z.string().trim().min(1).max(120),
-  nameZh: z.string().trim().max(120),
-  nameEn: z.string().trim().max(120),
-  descriptionZh: z.string().trim().max(300),
-  descriptionEn: z.string().trim().max(300),
-  contentZh: z.string().trim().max(4000),
-  contentEn: z.string().trim().max(4000),
-  icon: ProfilePresetIconSchema,
-  color: ProfilePresetColorSchema,
-  builtIn: z.boolean().optional(),
-  createdAt: z.string().optional(),
-  updatedAt: z.string().optional(),
-}).refine((value) => value.nameZh.length > 0 || value.nameEn.length > 0, {
-  message: 'A preset needs at least one localized name.',
-  path: ['nameZh'],
-})
-export const TeamProfilePresetCreateSchema = z.object({
-  kind: z.string().trim().min(1).max(120),
-  nameZh: z.string().trim().max(120),
-  nameEn: z.string().trim().max(120),
-  descriptionZh: z.string().trim().max(300),
-  descriptionEn: z.string().trim().max(300),
-  contentZh: z.string().trim().max(4000),
-  contentEn: z.string().trim().max(4000),
-  icon: ProfilePresetIconSchema,
-  color: ProfilePresetColorSchema,
-  syncToTeachers: z.boolean().optional().default(false),
-  syncToStudents: z.boolean().optional().default(false),
-}).refine((value) => value.nameZh.length > 0 || value.nameEn.length > 0, {
-  message: 'A preset needs at least one localized name.',
-  path: ['nameZh'],
-})
-export const TeamProfilePresetPatchSchema = z.object({
-  kind: z.string().trim().min(1).max(120).optional(),
-  nameZh: z.string().trim().max(120).optional(),
-  nameEn: z.string().trim().max(120).optional(),
-  descriptionZh: z.string().trim().max(300).optional(),
-  descriptionEn: z.string().trim().max(300).optional(),
-  contentZh: z.string().trim().max(4000).optional(),
-  contentEn: z.string().trim().max(4000).optional(),
-  icon: ProfilePresetIconSchema.optional(),
-  color: ProfilePresetColorSchema.optional(),
-  syncToTeachers: z.boolean().optional(),
-  syncToStudents: z.boolean().optional(),
-}).refine((value) => Object.keys(value).length > 0, { message: 'Preset update cannot be empty.' })
+export const ProfilePresetBaseSchema = z
+  .object({
+    kind: z.string().trim().min(1).max(120),
+    nameZh: z.string().trim().max(120),
+    nameEn: z.string().trim().max(120),
+    descriptionZh: z.string().trim().max(300),
+    descriptionEn: z.string().trim().max(300),
+    contentZh: z.string().trim().max(4000),
+    contentEn: z.string().trim().max(4000),
+    icon: ProfilePresetIconSchema,
+    color: ProfilePresetColorSchema,
+  })
+  .refine((value) => value.nameZh.length > 0 || value.nameEn.length > 0, {
+    message: 'A preset needs at least one localized name.',
+    path: ['nameZh'],
+  })
+export const StoredProfilePresetSchema = z
+  .object({
+    id: z.string().min(1).max(160),
+    kind: z.string().trim().min(1).max(120),
+    nameZh: z.string().trim().max(120),
+    nameEn: z.string().trim().max(120),
+    descriptionZh: z.string().trim().max(300),
+    descriptionEn: z.string().trim().max(300),
+    contentZh: z.string().trim().max(4000),
+    contentEn: z.string().trim().max(4000),
+    icon: ProfilePresetIconSchema,
+    color: ProfilePresetColorSchema,
+    builtIn: z.boolean().optional(),
+    createdAt: z.string().optional(),
+    updatedAt: z.string().optional(),
+  })
+  .refine((value) => value.nameZh.length > 0 || value.nameEn.length > 0, {
+    message: 'A preset needs at least one localized name.',
+    path: ['nameZh'],
+  })
 
-export const ReviewCommentSchema = z.lazy(() => z.object({
-  id: z.string().min(1),
-  authorId: z.string().min(1),
-  authorName: z.string(),
-  body: z.string().min(1),
-  createdAt: z.string(),
-  targetTab: z.enum(['dossier', 'materials', 'mail', 'funding', 'timeline', 'review']).optional(),
-  parentId: z.string().min(1).nullable().optional(),
-  mentionedUserIds: z.array(z.string().min(1)).optional().default([]),
-  replies: z.array(ReviewCommentSchema).optional(),
-}))
+const ProfileWritingBriefFieldSchema = z.object({
+  id: z.string().min(1).max(160),
+  label: z.string().trim().max(160),
+  value: z.string().max(4000),
+  includeInExport: z.boolean().optional().default(false),
+  placement: z.enum(['beforeBody', 'afterBody']).optional().default('beforeBody'),
+})
+
+const ProfileWritingSectionSchema = z.object({
+  id: z.string().min(1).max(160),
+  title: z.string().trim().max(160),
+  content: z.string().max(12_000),
+  width: z.enum(['full', 'half']).optional().default('full'),
+})
+
+export const ProfileWritingBriefSchema = z.object({
+  requirements: z.string().max(12_000).optional().default(''),
+  sourceUrl: OptionalUrlSchema.optional().default(''),
+  wordLimit: z.number().int().min(1).max(100_000).optional(),
+  pageLimit: z.number().int().min(1).max(500).optional(),
+  customFields: z.array(ProfileWritingBriefFieldSchema).max(20).optional().default([]),
+  sections: z.array(ProfileWritingSectionSchema).max(20).optional().default([]),
+})
+
+export const ProfileRecommenderSchema = z.object({
+  id: z.string().min(1).max(160),
+  name: z.string().trim().min(1).max(200),
+  email: z.union([z.email().max(320), z.literal('')]),
+  phone: z.string().trim().max(80).optional().default(''),
+  title: z.string().trim().max(160).optional().default(''),
+  institution: z.string().trim().max(240).optional().default(''),
+  relationship: z.string().trim().max(1000).optional().default(''),
+  notes: z.string().max(4000).optional().default(''),
+  createdAt: z.string().max(64).optional(),
+  updatedAt: z.string().max(64).optional(),
+})
+
+export const ApplicationRecommenderResolveSchema = z.object({
+  recommender: MaterialRecommenderSchema,
+  decision: z.enum(['auto', 'sync', 'independent']).default('auto'),
+  expectedApplicationUpdatedAt: z.string().min(1).max(64),
+  expectedProfileUpdatedAt: z.string().max(64).nullable().optional(),
+}).strict()
+
+export const ProfileRecommenderListSchema = z.array(ProfileRecommenderSchema).max(100)
+
+export const ProfileRecommenderReplaceSchema = z.object({
+  profiles: ProfileRecommenderListSchema,
+  baseProfiles: ProfileRecommenderListSchema,
+}).strict()
+export const TeamProfilePresetCreateSchema = z
+  .object({
+    kind: z.string().trim().min(1).max(120),
+    nameZh: z.string().trim().max(120),
+    nameEn: z.string().trim().max(120),
+    descriptionZh: z.string().trim().max(300),
+    descriptionEn: z.string().trim().max(300),
+    contentZh: z.string().trim().max(4000),
+    contentEn: z.string().trim().max(4000),
+    icon: ProfilePresetIconSchema,
+    color: ProfilePresetColorSchema,
+    syncToTeachers: z.boolean().optional().default(false),
+    syncToStudents: z.boolean().optional().default(false),
+  })
+  .refine((value) => value.nameZh.length > 0 || value.nameEn.length > 0, {
+    message: 'A preset needs at least one localized name.',
+    path: ['nameZh'],
+  })
+export const TeamProfilePresetPatchSchema = z
+  .object({
+    kind: z.string().trim().min(1).max(120).optional(),
+    nameZh: z.string().trim().max(120).optional(),
+    nameEn: z.string().trim().max(120).optional(),
+    descriptionZh: z.string().trim().max(300).optional(),
+    descriptionEn: z.string().trim().max(300).optional(),
+    contentZh: z.string().trim().max(4000).optional(),
+    contentEn: z.string().trim().max(4000).optional(),
+    icon: ProfilePresetIconSchema.optional(),
+    color: ProfilePresetColorSchema.optional(),
+    syncToTeachers: z.boolean().optional(),
+    syncToStudents: z.boolean().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'Preset update cannot be empty.',
+  })
+
+export const ReviewCommentSchema = z.lazy(() =>
+  z.object({
+    id: z.string().min(1),
+    authorId: z.string().min(1),
+    authorName: z.string(),
+    body: z.string().min(1),
+    createdAt: z.string(),
+    targetTab: z.enum(['dossier', 'materials', 'mail', 'funding', 'timeline', 'review']).optional(),
+    parentId: z.string().min(1).nullable().optional(),
+    mentionedUserIds: z.array(z.string().min(1)).optional().default([]),
+    replies: z.array(ReviewCommentSchema).optional(),
+  }),
+)
 
 export const ReviewCommentCreateSchema = z.object({
   body: z.string().min(1).max(4000),
@@ -190,74 +352,91 @@ export const AdminTeamCreateSchema = z.object({
 
 const OptionalTeamMemberLimitSchema = z.number().int().min(1).max(10_000).nullable()
 
-const TeamStudentPermissionsPatchSchema = z.object({
-  editApplications: z.boolean().optional(),
-  createApplications: z.boolean().optional(),
-  useDiscover: z.boolean().optional(),
-  createShareLinks: z.boolean().optional(),
-  requestTeamTransfers: z.boolean().optional(),
-  activeApplicationLimit: OptionalTeamMemberLimitSchema.optional(),
-  lifetimeApplicationLimit: OptionalTeamMemberLimitSchema.optional(),
-  activeShareLimit: OptionalTeamMemberLimitSchema.optional(),
-  lifetimeShareLimit: OptionalTeamMemberLimitSchema.optional(),
-}).strict()
+const TeamStudentPermissionsPatchSchema = z
+  .object({
+    editApplications: z.boolean().optional(),
+    createApplications: z.boolean().optional(),
+    useDiscover: z.boolean().optional(),
+    useInterviewPrep: z.boolean().optional(),
+    createShareLinks: z.boolean().optional(),
+    requestTeamTransfers: z.boolean().optional(),
+    activeApplicationLimit: OptionalTeamMemberLimitSchema.optional(),
+    lifetimeApplicationLimit: OptionalTeamMemberLimitSchema.optional(),
+    activeShareLimit: OptionalTeamMemberLimitSchema.optional(),
+    lifetimeShareLimit: OptionalTeamMemberLimitSchema.optional(),
+  })
+  .strict()
 
-const TeamTeacherPermissionsPatchSchema = z.object({
-  inviteStudents: z.boolean().optional(),
-  manageStudentPermissions: z.boolean().optional(),
-  useDiscover: z.boolean().optional(),
-  createStudentApplications: z.boolean().optional(),
-  editStudentApplications: z.boolean().optional(),
-  manageStudentShares: z.boolean().optional(),
-}).strict()
+const TeamTeacherPermissionsPatchSchema = z
+  .object({
+    inviteStudents: z.boolean().optional(),
+    manageStudentPermissions: z.boolean().optional(),
+    useDiscover: z.boolean().optional(),
+    manageStudentInterviewPrep: z.boolean().optional(),
+    createStudentApplications: z.boolean().optional(),
+    editStudentApplications: z.boolean().optional(),
+    manageStudentShares: z.boolean().optional(),
+  })
+  .strict()
 
-const TeamPermissionDefaultsPatchSchema = z.object({
-  student: TeamStudentPermissionsPatchSchema.optional(),
-  teacher: TeamTeacherPermissionsPatchSchema.optional(),
-}).strict().refine((value) => value.student !== undefined || value.teacher !== undefined, {
-  message: 'Permission defaults update must include student or teacher settings.',
-})
+const TeamPermissionDefaultsPatchSchema = z
+  .object({
+    student: TeamStudentPermissionsPatchSchema.optional(),
+    teacher: TeamTeacherPermissionsPatchSchema.optional(),
+  })
+  .strict()
+  .refine((value) => value.student !== undefined || value.teacher !== undefined, {
+    message: 'Permission defaults update must include student or teacher settings.',
+  })
 
-export const TeamMemberRolePatchSchema = z.object({
-  role: InvitableTeamMemberRoleSchema.optional(),
-  invitedBy: z.string().min(1).optional(),
-  teacherIds: z.array(z.string().min(1)).max(20).optional(),
-  studentPermissions: TeamStudentPermissionsPatchSchema.nullable().optional(),
-  teacherPermissions: TeamTeacherPermissionsPatchSchema.nullable().optional(),
-}).refine((value) => (
-  value.role !== undefined
-  || value.invitedBy !== undefined
-  || value.teacherIds !== undefined
-  || value.studentPermissions !== undefined
-  || value.teacherPermissions !== undefined
-), {
-  message: 'Team member update must include a role, teacher assignment, or delegated access setting.',
-})
+export const TeamMemberRolePatchSchema = z
+  .object({
+    role: InvitableTeamMemberRoleSchema.optional(),
+    invitedBy: z.string().min(1).optional(),
+    teacherIds: z.array(z.string().min(1)).max(20).optional(),
+    studentPermissions: TeamStudentPermissionsPatchSchema.nullable().optional(),
+    teacherPermissions: TeamTeacherPermissionsPatchSchema.nullable().optional(),
+  })
+  .refine(
+    (value) =>
+      value.role !== undefined ||
+      value.invitedBy !== undefined ||
+      value.teacherIds !== undefined ||
+      value.studentPermissions !== undefined ||
+      value.teacherPermissions !== undefined,
+    {
+      message: 'Team member update must include a role, teacher assignment, or delegated access setting.',
+    },
+  )
 
-export const TeamMemberContactProfilePatchSchema = z.object({
-  title: z.string().trim().max(120).optional(),
-  department: z.string().trim().max(160).optional(),
-  contactEmail: z.union([z.literal(''), z.email().max(254)]).optional(),
-  phone: z.string().trim().max(48).optional(),
-  office: z.string().trim().max(160).optional(),
-  website: z.string().trim().max(300).optional(),
-  availability: z.string().trim().max(200).optional(),
-  bio: z.string().trim().max(800).optional(),
-}).refine((value) => Object.keys(value).length > 0, {
-  message: 'Contact profile update must include at least one field.',
-})
+export const TeamMemberContactProfilePatchSchema = z
+  .object({
+    title: z.string().trim().max(120).optional(),
+    department: z.string().trim().max(160).optional(),
+    contactEmail: z.union([z.literal(''), z.email().max(254)]).optional(),
+    phone: z.string().trim().max(48).optional(),
+    office: z.string().trim().max(160).optional(),
+    website: z.string().trim().max(300).optional(),
+    availability: z.string().trim().max(200).optional(),
+    bio: z.string().trim().max(800).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'Contact profile update must include at least one field.',
+  })
 
 export const TeamTeacherGroupCreateSchema = z.object({
   name: z.string().trim().min(1).max(40),
   memberIds: z.array(z.string().min(1)).max(100).optional().default([]),
 })
 
-export const TeamTeacherGroupPatchSchema = z.object({
-  name: z.string().trim().min(1).max(40).optional(),
-  memberIds: z.array(z.string().min(1)).max(100).optional(),
-}).refine((value) => value.name !== undefined || value.memberIds !== undefined, {
-  message: 'Teacher group update must include a name or member list.',
-})
+export const TeamTeacherGroupPatchSchema = z
+  .object({
+    name: z.string().trim().min(1).max(40).optional(),
+    memberIds: z.array(z.string().min(1)).max(100).optional(),
+  })
+  .refine((value) => value.name !== undefined || value.memberIds !== undefined, {
+    message: 'Teacher group update must include a name or member list.',
+  })
 
 const TEAM_LOGO_DATA_URL_PREFIX = 'data:image/png;base64,'
 const TEAM_LOGO_PNG_SIGNATURE = Buffer.from('89504e470d0a1a0a', 'hex')
@@ -288,48 +467,74 @@ function hasCompletePngChunkStructure(bytes) {
 
 const TeamLogoDataUrlSchema = z.union([
   z.literal(''),
-  z.string()
+  z
+    .string()
     .max(600_000)
     .regex(/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/)
-    .refine((value) => {
+    .refine(
+      (value) => {
+        const bytes = Buffer.from(value.slice(TEAM_LOGO_DATA_URL_PREFIX.length), 'base64')
+        if (bytes.length < 24 || !bytes.subarray(0, 8).equals(TEAM_LOGO_PNG_SIGNATURE)) return false
+        if (bytes.readUInt32BE(8) !== 13 || bytes.toString('ascii', 12, 16) !== 'IHDR') return false
+        const width = bytes.readUInt32BE(16)
+        const height = bytes.readUInt32BE(20)
+        return (
+          width > 0 &&
+          height > 0 &&
+          width <= 16_384 &&
+          height <= 16_384 &&
+          width * height <= 40_000_000 &&
+          hasCompletePngChunkStructure(bytes)
+        )
+      },
+      { message: 'Organization logo must be a valid PNG image.' },
+    ),
+])
+
+const SchoolLogoDataUrlSchema = z
+  .string()
+  .max(260_000)
+  .regex(/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/)
+  .refine(
+    (value) => {
       const bytes = Buffer.from(value.slice(TEAM_LOGO_DATA_URL_PREFIX.length), 'base64')
       if (bytes.length < 24 || !bytes.subarray(0, 8).equals(TEAM_LOGO_PNG_SIGNATURE)) return false
       if (bytes.readUInt32BE(8) !== 13 || bytes.toString('ascii', 12, 16) !== 'IHDR') return false
       const width = bytes.readUInt32BE(16)
       const height = bytes.readUInt32BE(20)
-      return width > 0
-        && height > 0
-        && width <= 16_384
-        && height <= 16_384
-        && width * height <= 40_000_000
-        && hasCompletePngChunkStructure(bytes)
-    }, { message: 'Organization logo must be a valid PNG image.' }),
-])
-
-const SchoolLogoDataUrlSchema = z.string()
-  .max(260_000)
-  .regex(/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/)
-  .refine((value) => {
-    const bytes = Buffer.from(value.slice(TEAM_LOGO_DATA_URL_PREFIX.length), 'base64')
-    if (bytes.length < 24 || !bytes.subarray(0, 8).equals(TEAM_LOGO_PNG_SIGNATURE)) return false
-    if (bytes.readUInt32BE(8) !== 13 || bytes.toString('ascii', 12, 16) !== 'IHDR') return false
-    const width = bytes.readUInt32BE(16)
-    const height = bytes.readUInt32BE(20)
-    return width > 0
-      && height > 0
-      && width <= 1_024
-      && height <= 1_024
-      && width * height <= 1_048_576
-      && hasCompletePngChunkStructure(bytes)
-  }, { message: 'School logo must be a valid PNG image.' })
+      return (
+        width > 0 &&
+        height > 0 &&
+        width <= 1_024 &&
+        height <= 1_024 &&
+        width * height <= 1_048_576 &&
+        hasCompletePngChunkStructure(bytes)
+      )
+    },
+    { message: 'School logo must be a valid PNG image.' },
+  )
 
 export const SchoolLogoSchema = z.object({
   dataUrl: SchoolLogoDataUrlSchema,
   source: z.enum(['website', 'link', 'upload']),
-  sourceUrl: z.url().max(2_048).refine((value) => value.startsWith('https://')).optional(),
-  websiteUrl: z.url().max(2_048).refine((value) => value.startsWith('https://')).optional(),
-  cacheKey: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
-  assetKey: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  sourceUrl: z
+    .url()
+    .max(2_048)
+    .refine((value) => value.startsWith('https://'))
+    .optional(),
+  websiteUrl: z
+    .url()
+    .max(2_048)
+    .refine((value) => value.startsWith('https://'))
+    .optional(),
+  cacheKey: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .optional(),
+  assetKey: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .optional(),
   candidateKind: z.string().max(64).optional(),
   updatedAt: z.string().max(64),
 })
@@ -339,39 +544,47 @@ export const SchoolLogoPatchSchema = z.object({
   autoDetect: z.boolean(),
 })
 
-export const SchoolLogoResolveSchema = z.object({
-  website: z.url().max(2_048).optional(),
-  imageUrl: z.url().max(2_048).optional(),
-  auto: z.literal(true).optional(),
-  refresh: z.boolean().optional(),
-}).refine((value) => (
-  !value.imageUrl
-    ? Boolean(value.auto || value.website)
-    : !value.auto && !value.website
-), {
-  message: 'Provide automatic discovery, a school website, or a direct logo image URL.',
-}).refine((value) => !value.auto || !value.refresh, {
-  message: 'Automatic catalog discovery cannot be force-refreshed.',
-})
+export const SchoolLogoResolveSchema = z
+  .object({
+    website: z.url().max(2_048).optional(),
+    imageUrl: z.url().max(2_048).optional(),
+    auto: z.literal(true).optional(),
+    refresh: z.boolean().optional(),
+  })
+  .refine((value) => (!value.imageUrl ? Boolean(value.auto || value.website) : !value.auto && !value.website), {
+    message: 'Provide automatic discovery, a school website, or a direct logo image URL.',
+  })
+  .refine((value) => !value.auto || !value.refresh, {
+    message: 'Automatic catalog discovery cannot be force-refreshed.',
+  })
 
-export const TeamPatchSchema = z.object({
-  name: z.string().min(1).max(120).optional(),
-  seatLimit: z.number().int().min(1).max(500).optional(),
-  logoDataUrl: TeamLogoDataUrlSchema.optional(),
-  roleLabels: z.object({
-    admin: z.string().trim().max(40).optional(),
-    member: z.string().trim().max(40).optional(),
-  }).optional(),
-  permissionDefaults: TeamPermissionDefaultsPatchSchema.optional(),
-}).refine((value) => (
-  value.name !== undefined
-  || value.seatLimit !== undefined
-  || value.logoDataUrl !== undefined
-  || value.roleLabels !== undefined
-  || value.permissionDefaults !== undefined
-), {
-  message: 'Team update must include a name, logo, seat limit, role labels, or permission defaults.',
-})
+export const TeamPatchSchema = z
+  .object({
+    name: z.string().min(1).max(120).optional(),
+    seatLimit: z.number().int().min(1).max(500).optional(),
+    logoDataUrl: TeamLogoDataUrlSchema.optional(),
+    roleLabels: z
+      .object({
+        admin: z.string().trim().min(1).max(40).optional(),
+        member: z.string().trim().min(1).max(40).optional(),
+      })
+      .refine((labels) => Boolean(labels.admin?.trim() || labels.member?.trim()), {
+        message: 'At least one custom role label is required.',
+      })
+      .optional(),
+    permissionDefaults: TeamPermissionDefaultsPatchSchema.optional(),
+  })
+  .refine(
+    (value) =>
+      value.name !== undefined ||
+      value.seatLimit !== undefined ||
+      value.logoDataUrl !== undefined ||
+      value.roleLabels !== undefined ||
+      value.permissionDefaults !== undefined,
+    {
+      message: 'Team update must include a name, logo, seat limit, role labels, or permission defaults.',
+    },
+  )
 
 export const NotificationGroupSchema = z.object({
   name: z.string().trim().min(1).max(80),
@@ -381,7 +594,10 @@ export const NotificationGroupSchema = z.object({
 export const NotificationPublishSchema = z.object({
   title: z.string().trim().min(1).max(160),
   body: z.string().trim().min(1).max(2000),
-  channels: z.array(z.enum(['in_app', 'email'])).min(1).default(['in_app']),
+  channels: z
+    .array(z.enum(['in_app', 'email']))
+    .min(1)
+    .default(['in_app']),
   userIds: z.array(z.string().min(1)).max(500).optional().default([]),
   memberIds: z.array(z.string().min(1)).max(500).optional().default([]),
   groupIds: z.array(z.string().min(1)).max(100).optional().default([]),
@@ -389,9 +605,12 @@ export const NotificationPublishSchema = z.object({
 })
 
 export const PushSubscriptionSchema = z.object({
-  endpoint: z.url().max(2048).refine((value) => value.startsWith('https://'), {
-    message: 'Push subscription endpoint must use HTTPS.',
-  }),
+  endpoint: z
+    .url()
+    .max(2048)
+    .refine((value) => value.startsWith('https://'), {
+      message: 'Push subscription endpoint must use HTTPS.',
+    }),
   keys: z.object({
     p256dh: z.string().min(16).max(512),
     auth: z.string().min(8).max(256),
@@ -399,9 +618,12 @@ export const PushSubscriptionSchema = z.object({
 })
 
 export const PushSubscriptionDeleteSchema = z.object({
-  endpoint: z.url().max(2048).refine((value) => value.startsWith('https://'), {
-    message: 'Push subscription endpoint must use HTTPS.',
-  }),
+  endpoint: z
+    .url()
+    .max(2048)
+    .refine((value) => value.startsWith('https://'), {
+      message: 'Push subscription endpoint must use HTTPS.',
+    }),
 })
 
 export const UserAuthSchema = z.object({
@@ -474,7 +696,11 @@ export const PasskeyUpdateSchema = z.object({
 })
 
 export const PasskeyAuthenticationStartSchema = z.object({
-  email: z.email().transform((value) => value.toLowerCase()).or(z.literal('')).optional(),
+  email: z
+    .email()
+    .transform((value) => value.toLowerCase())
+    .or(z.literal(''))
+    .optional(),
   scope: z.enum(['app', 'admin']).optional().default('app'),
 })
 
@@ -514,7 +740,7 @@ export const MaterialSchema = z.object({
   uploadReserved: z.boolean().optional().default(false),
   allowedFileTypes: z.array(z.string()).optional().default([]),
   requiredCount: z.number().int().min(1).max(12).default(1),
-  recommenders: z.array(MaterialRecommenderSchema).default([]),
+  recommenders: z.array(MaterialRecommenderSchema).max(12).default([]),
   version: z.string().min(1),
   updatedAt: z.iso.date(),
   fileId: z.string().optional(),
@@ -524,6 +750,121 @@ export const MaterialSchema = z.object({
   storageName: z.string().optional(),
   versions: z.array(FileVersionSchema).default([]),
 })
+
+export const BUILT_IN_MAIL_CATEGORIES = Object.freeze([
+  'outreach',
+  'positive_reply',
+  'neutral_reply',
+  'negative_reply',
+  'interview_invite',
+  'interview_followup',
+  'offer',
+  'rejection',
+  'application_update',
+  'funding',
+  'recommendation',
+  'administrative',
+  'other',
+  'not_relevant',
+])
+
+const BUILT_IN_MAIL_CATEGORY_SET = new Set(BUILT_IN_MAIL_CATEGORIES)
+export const CUSTOM_MAIL_CATEGORY_PREFIX = 'custom:'
+export const MAX_MAIL_CATEGORIES_PER_MESSAGE = 6
+export const MAX_CUSTOM_MAIL_CATEGORIES = 24
+
+/**
+ * A built-in category or one this account defined. Custom ids carry a reserved
+ * prefix, so no user-chosen name can ever shadow a built-in — the same shape
+ * the checklist statuses already use for user-extended enums.
+ */
+export const MailCategorySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .refine(
+    (value) => BUILT_IN_MAIL_CATEGORY_SET.has(value) || value.startsWith(CUSTOM_MAIL_CATEGORY_PREFIX),
+    { message: 'Unknown mail category.' },
+  )
+
+/** One message may carry several categories; the list is bounded and unique. */
+export const MailCategoryListSchema = z
+  .array(MailCategorySchema)
+  .max(MAX_MAIL_CATEGORIES_PER_MESSAGE)
+  .superRefine((categories, context) => {
+    const seen = new Set()
+    categories.forEach((category, index) => {
+      if (seen.has(category)) {
+        context.addIssue({
+          code: 'custom',
+          path: [index],
+          message: 'A message cannot carry the same category twice.',
+        })
+      }
+      seen.add(category)
+    })
+  })
+
+const CustomMailCategorySchema = z.object({
+  id: z
+    .string()
+    .trim()
+    .min(CUSTOM_MAIL_CATEGORY_PREFIX.length + 1)
+    .max(64)
+    .startsWith(CUSTOM_MAIL_CATEGORY_PREFIX),
+  label: z.string().trim().min(1).max(40),
+  tone: z
+    .enum(['neutral', 'info', 'warning', 'success', 'danger', 'accent', 'purple'])
+    .default('neutral'),
+})
+
+export const CustomMailCategoriesSchema = z
+  .array(CustomMailCategorySchema)
+  .max(MAX_CUSTOM_MAIL_CATEGORIES)
+  .superRefine((entries, context) => {
+    const ids = new Set()
+    const labels = new Set()
+    entries.forEach((entry, index) => {
+      if (ids.has(entry.id)) {
+        context.addIssue({ code: 'custom', path: [index, 'id'], message: 'Custom mail category ids must be unique.' })
+      }
+      const label = entry.label.toLocaleLowerCase()
+      if (labels.has(label)) {
+        context.addIssue({ code: 'custom', path: [index, 'label'], message: 'Custom mail category names must be unique.' })
+      }
+      ids.add(entry.id)
+      labels.add(label)
+    })
+  })
+
+const MailClassificationActionSchema = z.enum([
+  'reply',
+  'follow_up',
+  'schedule_interview',
+  'prepare_interview',
+  'submit_materials',
+  'review_funding',
+  'update_application',
+  'track_deadline',
+  'review_security',
+  'none',
+])
+
+export const MailClassificationSchema = z.object({
+  category: MailCategorySchema,
+  // Every category the classifier found. `category` stays as the primary
+  // one so older clients keep working.
+  categories: MailCategoryListSchema.optional(),
+  confidence: z.number().min(0).max(1),
+  summary: z.string().max(480),
+  evidence: z.array(z.string().max(320)).max(4),
+  actions: z.array(MailClassificationActionSchema).min(1).max(4),
+  source: z.enum(['ai', 'rule']),
+  classifiedAt: z.iso.datetime(),
+  inputHash: z.string().regex(/^[a-f0-9]{64}$/),
+  version: z.number().int().min(1).max(10),
+}).strict()
 
 export const CommunicationSchema = z.object({
   id: z.string().min(1),
@@ -539,16 +880,20 @@ export const CommunicationSchema = z.object({
   from: z.string().default(''),
   to: z.string().default(''),
   time: z.string().default(''),
-  attachments: z.array(z.object({
-    id: z.string().optional(),
-    fileName: z.string().min(1),
-    fileId: z.string().optional(),
-    assetId: z.string().optional(),
-    fileSize: z.number().nonnegative().optional(),
-    mimeType: z.string().optional(),
-    storageName: z.string().optional(),
-    source: z.string().optional(),
-  })).default([]),
+  attachments: z
+    .array(
+      z.object({
+        id: z.string().optional(),
+        fileName: z.string().min(1),
+        fileId: z.string().optional(),
+        assetId: z.string().optional(),
+        fileSize: z.number().nonnegative().optional(),
+        mimeType: z.string().optional(),
+        storageName: z.string().optional(),
+        source: z.string().optional(),
+      }),
+    )
+    .default([]),
   deliveryStatus: z.enum(['queued', 'sending', 'sent', 'log-only']).optional(),
   scheduledAt: z.iso.datetime().optional(),
   sentAt: z.iso.datetime().optional(),
@@ -563,6 +908,11 @@ export const CommunicationSchema = z.object({
   sourceMailbox: z.string().optional(),
   importedAt: z.string().optional(),
   mailSecurity: MailSecuritySchema.optional(),
+  // Manual selection, one or more. Supersedes mailCategoryOverride, which is
+  // retained so rows written before this keep their category.
+  mailCategories: MailCategoryListSchema.nullable().optional(),
+  mailCategoryOverride: MailCategorySchema.nullable().optional(),
+  mailClassification: MailClassificationSchema.optional(),
 })
 
 const ScholarshipStatusSchema = z.enum(['Draft', 'Preparing', 'Submitted', 'Awarded', 'Rejected'])
@@ -578,8 +928,9 @@ const ScholarshipMaterialSchema = z.object({
 const ScholarshipTaskSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
-  due: z.iso.date(),
+  due: ReminderDateSchema,
   done: z.boolean().default(false),
+  status: MaterialStatusSchema.optional(),
   details: z.string().optional().default(''),
 })
 
@@ -608,8 +959,9 @@ export const ScholarshipSchema = z.object({
 export const TaskSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
-  due: z.iso.date(),
+  due: ReminderDateSchema,
   done: z.boolean(),
+  status: MaterialStatusSchema.optional(),
   details: z.string().optional().default(''),
   reminderEnabled: z.boolean().optional().default(false),
   reminderOffsets: z.array(z.string()).optional().default([]),
@@ -734,6 +1086,7 @@ export const ApplicationSchema = z.object({
   tags: z.array(z.string()),
   nextReminder: ReminderDateSchema,
   result: z.string(),
+  recommenders: z.array(MaterialRecommenderSchema).max(12).optional().default([]),
   dossierCards: z.array(DossierCardSchema).optional(),
   materials: z.array(MaterialSchema),
   communications: z.array(CommunicationSchema),
@@ -781,6 +1134,7 @@ export const CreateApplicationSchema = z.object({
   notes: z.string().optional().default(''),
   visibleToTeam: z.boolean().optional().default(false),
   ownerId: z.string().min(1).optional(),
+  teamId: z.string().min(1).max(128).optional(),
 })
 
 export const TeamVisibilityPatchSchema = z.object({
@@ -794,6 +1148,9 @@ export const TeamTransferApprovalSchema = z.object({
 
 export const AiProviderSchema = z.enum(['openai', 'deepseek', 'anthropic', 'gemini'])
 export const AiKeyScopeSchema = z.enum(['personal', 'team'])
+export const AiKeyMaxConcurrencySchema = z.number().int().min(1).max(AI_KEY_MAX_CONCURRENCY)
+export const AiKeyRequestModeSchema = z.enum(AI_KEY_REQUEST_MODES)
+export const AiKeyWeightSchema = z.number().int().min(AI_KEY_MIN_WEIGHT).max(AI_KEY_MAX_WEIGHT)
 
 export const AiKeyCreateSchema = z.object({
   scope: AiKeyScopeSchema.default('personal'),
@@ -803,16 +1160,26 @@ export const AiKeyCreateSchema = z.object({
   model: z.string().trim().min(1).max(160),
   baseUrl: z.string().trim().max(500).optional().default(''),
   apiKey: z.string().trim().min(8).max(1000),
+  maxConcurrency: AiKeyMaxConcurrencySchema.optional().default(4),
+  requestMode: AiKeyRequestModeSchema.optional().default('auto'),
+  weight: AiKeyWeightSchema.optional().default(50),
+  enabled: z.boolean().optional().default(true),
 })
 
-export const AiKeyPatchSchema = z.object({
-  label: z.string().trim().min(1).max(80).optional(),
-  model: z.string().trim().min(1).max(160).optional(),
-  baseUrl: z.string().trim().max(500).optional(),
-  apiKey: z.string().trim().min(8).max(1000).optional(),
-}).refine((value) => Object.keys(value).length > 0, {
-  message: 'AI key update must include at least one field.',
-})
+export const AiKeyPatchSchema = z
+  .object({
+    label: z.string().trim().min(1).max(80).optional(),
+    model: z.string().trim().min(1).max(160).optional(),
+    baseUrl: z.string().trim().max(500).optional(),
+    apiKey: z.string().trim().min(8).max(1000).optional(),
+    maxConcurrency: AiKeyMaxConcurrencySchema.optional(),
+    requestMode: AiKeyRequestModeSchema.optional(),
+    weight: AiKeyWeightSchema.optional(),
+    enabled: z.boolean().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'AI key update must include at least one field.',
+  })
 
 export const AiUserProfileSchema = z.object({
   preferredName: z.string().trim().max(120).default(''),
@@ -841,10 +1208,12 @@ export const AiDraftRequestSchema = z.object({
   mode: z.enum(['compose', 'reply']),
   instructions: z.string().trim().min(1).max(4000),
   replyToId: z.string().min(1).max(128).optional(),
-  currentDraft: z.object({
-    subject: z.string().max(512),
-    body: z.string().max(30_000),
-  }).optional(),
+  currentDraft: z
+    .object({
+      subject: z.string().max(512),
+      body: z.string().max(30_000),
+    })
+    .optional(),
   grants: z.object({
     userProfile: z.boolean().default(false),
     dossier: z.boolean().default(true),
@@ -852,6 +1221,9 @@ export const AiDraftRequestSchema = z.object({
     scholarships: z.boolean().default(false),
     tasks: z.boolean().default(false),
     correspondence: z.boolean().default(false),
+    // Optional narrowing of `userProfile`: an empty or absent list keeps the
+    // long-standing meaning of the switch, which is the whole profile.
+    profileAssetIds: z.array(z.string().trim().min(1).max(128)).max(200).optional(),
   }),
 })
 
@@ -860,11 +1232,7 @@ export const OfflineReplayMetadataSchema = z.object({
 })
 
 export function hasOfflineReplayConflict(currentUpdatedAt, clientBaseUpdatedAt) {
-  return Boolean(
-    clientBaseUpdatedAt &&
-    currentUpdatedAt &&
-    clientBaseUpdatedAt !== currentUpdatedAt
-  )
+  return Boolean(clientBaseUpdatedAt && currentUpdatedAt && clientBaseUpdatedAt !== currentUpdatedAt)
 }
 
 export const MaterialCreateSchema = z.object({
@@ -886,6 +1254,7 @@ export const ProfileAssetCreateSchema = z.object({
   kind: z.string().min(1).default('Other'),
   description: z.string().default(''),
   notes: z.string().default(''),
+  writingBrief: ProfileWritingBriefSchema.optional(),
   customLabelZh: z.string().optional(),
   customLabelEn: z.string().optional(),
   icon: ProfilePresetIconSchema.optional(),
@@ -904,6 +1273,7 @@ export const ProfileAssetPatchSchema = z.object({
   kind: z.string().min(1).optional(),
   description: z.string().optional(),
   notes: z.string().optional(),
+  writingBrief: ProfileWritingBriefSchema.optional(),
   customLabelZh: z.string().optional(),
   customLabelEn: z.string().optional(),
   icon: ProfilePresetIconSchema.optional(),
@@ -972,6 +1342,20 @@ export const CommunicationPatchSchema = z.object({
   attachments: z.array(CommunicationAttachmentSchema).max(20).optional(),
 })
 
+export const CommunicationCategoriesSchema = z.object({
+  communicationIds: z.array(z.string().trim().min(1).max(160)).min(1).max(50),
+  // A message can carry several categories. `category` remains for callers
+  // written against the earlier single-valued contract.
+  categories: MailCategoryListSchema.nullable().optional(),
+  category: MailCategorySchema.nullable().optional(),
+}).strict()
+
+export const CommunicationClassifySchema = z.object({
+  communicationIds: z.array(z.string().trim().min(1).max(160)).min(1).max(50),
+  keyId: z.string().trim().min(1).max(160),
+  force: z.boolean().optional().default(false),
+}).strict()
+
 export const CommunicationSendSchema = z.object({
   subject: z.string().min(1),
   summary: z.string().min(1),
@@ -980,6 +1364,7 @@ export const CommunicationSendSchema = z.object({
   time: z.string().default(''),
   sendAt: z.iso.datetime().optional(),
   idempotencyKey: z.string().trim().min(8).max(128).optional(),
+  sourceDraftId: z.string().trim().min(1).max(160).optional(),
   channel: ChannelSchema.default('Email'),
   direction: CommunicationDirectionSchema.default('outgoing'),
   messageType: z.string().default('outgoing-email'),
@@ -1007,6 +1392,7 @@ export const TaskCreateSchema = z.object({
   title: z.string().min(1),
   due: z.iso.date(),
   done: z.boolean().default(false),
+  status: MaterialStatusSchema.optional().default('Open'),
   details: z.string().optional().default(''),
   reminderEnabled: z.boolean().optional().default(false),
   reminderOffsets: z.array(z.string()).optional().default([]),
@@ -1021,6 +1407,7 @@ export const TaskPatchSchema = z.object({
   title: z.string().min(1).optional(),
   due: z.iso.date().optional(),
   done: z.boolean().optional(),
+  status: MaterialStatusSchema.optional(),
   details: z.string().optional(),
   reminderEnabled: z.boolean().optional(),
   reminderOffsets: z.array(z.string()).optional(),
@@ -1031,18 +1418,102 @@ export const TaskPatchSchema = z.object({
   allowedFileTypes: z.array(z.string()).optional(),
 })
 
+export const CodexScopeSchema = z.enum([
+  'applications:read',
+  'applications:write',
+  'profile:read',
+  'profile:write',
+  'files:read',
+  'files:write',
+  'communications:read',
+  'communications:send',
+  'teams:read',
+  'teams:write',
+  'discover:read',
+  'discover:write',
+  'notifications:read',
+  'notifications:write',
+  'settings:read',
+  'settings:write',
+  'ai:read',
+  'ai:use',
+  'ai:manage',
+  'exports:read',
+  'backups:manage',
+  'analytics:read',
+  'shares:manage',
+  'mail:manage',
+  'interview:read',
+  'interview:write',
+  'interview:use',
+])
+
+const CodexScopeVersionSchema = z.literal(2)
+const CodexAuthorizationLifetimeSchema = z.union([
+  z.literal(30),
+  z.literal(90),
+  z.literal(180),
+  z.literal(365),
+])
+const CodexScopesSchema = z.array(CodexScopeSchema).min(1).max(27)
+  .refine((scopes) => new Set(scopes).size === scopes.length, {
+    message: 'Codex authorization scopes must be unique.',
+  })
+
+export const CodexDeviceAuthorizationStartSchema = z.object({
+  client_name: z.string().trim().min(1).max(100),
+  client_version: z.string().trim().min(1).max(80),
+  device_name: z.string().trim().min(1).max(120).optional(),
+  scope_version: CodexScopeVersionSchema,
+  scopes: CodexScopesSchema,
+  expires_in_days: CodexAuthorizationLifetimeSchema.optional(),
+}).strict()
+
+export const CodexDeviceAuthorizationTokenSchema = z.object({
+  device_code: z.string().trim().min(32).max(600),
+  grant_type: z.literal('urn:ietf:params:oauth:grant-type:device_code'),
+}).strict()
+
+export const CodexAuthorizationCreateSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  scopeVersion: CodexScopeVersionSchema,
+  scopes: CodexScopesSchema,
+  expiresInDays: CodexAuthorizationLifetimeSchema.optional(),
+}).strict()
+
+export const CodexAuthorizationPatchSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  scopeVersion: CodexScopeVersionSchema.optional(),
+  scopes: CodexScopesSchema.optional(),
+  expiresInDays: CodexAuthorizationLifetimeSchema.optional(),
+  /** Reversible pause; revoking and deleting stay one-way. */
+  disabled: z.boolean().optional(),
+}).strict().refine((patch) => Object.keys(patch).length > 0, {
+  message: 'Codex authorization update must include at least one field.',
+})
+
+export const CodexDeviceAuthorizationDecisionSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  scopeVersion: CodexScopeVersionSchema.optional(),
+  scopes: CodexScopesSchema.optional(),
+  expiresInDays: CodexAuthorizationLifetimeSchema.optional(),
+}).strict()
+
 export const UserSettingsPatchSchema = z.object({
   language: z.string().min(2).max(12).optional(),
   contentLanguagePrimary: z.string().min(2).max(12).optional(),
   contentLanguageSecondary: z.string().min(2).max(12).optional(),
   highContrast: z.boolean().optional(),
   themeAccent: z.string().min(1).optional(),
-  avatarDataUrl: z.union([
-    z.literal(''),
-    z.string()
-      .max(600_000)
-      .regex(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/),
-  ]).optional(),
+  avatarDataUrl: z
+    .union([
+      z.literal(''),
+      z
+        .string()
+        .max(600_000)
+        .regex(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/),
+    ])
+    .optional(),
   sendFrom: z.string().email().optional(),
   receiveAt: z.string().email().optional(),
   receiveEmails: z
@@ -1079,15 +1550,21 @@ export const UserSettingsPatchSchema = z.object({
   incomingTls: z.boolean().optional(),
   autoFetchMail: z.boolean().optional(),
   storageQuotaMb: z.number().int().min(1).max(102400).optional(),
-  trashRetentionDays: z.union([z.literal(1), z.literal(5), z.literal(10), z.literal(30), z.literal(60), z.null()]).optional(),
+  trashRetentionDays: z
+    .union([z.literal(1), z.literal(5), z.literal(10), z.literal(30), z.literal(60), z.null()])
+    .optional(),
   sessionDurationMinutes: z.number().int().min(5).max(43200).optional(),
   snippetPhraseLeadZh: z.string().optional(),
   snippetPhraseTailZh: z.string().optional(),
   snippetPhraseLeadEn: z.string().optional(),
   snippetPhraseTailEn: z.string().optional(),
   customApplicationStatuses: CustomApplicationStatusesSchema.optional(),
+  customChecklistStatuses: CustomChecklistStatusesSchema.optional(),
+  customChecklistMaterialFormats: CustomChecklistMaterialFormatsSchema.optional(),
   aiProfile: AiUserProfileSchema.optional(),
   profilePresets: z.array(StoredProfilePresetSchema).max(100).optional(),
+  profileRecommenders: z.array(ProfileRecommenderSchema).max(100).optional(),
+  customMailCategories: CustomMailCategoriesSchema.optional(),
 })
 
 export const EncryptionAlgorithmSchema = z.enum(['aes-256-gcm', 'chacha20-poly1305'])
@@ -1108,7 +1585,13 @@ export const DatabaseConnectionSchema = z.object({
 export const AdminSettingsPatchSchema = z.object({
   allowRegistration: z.boolean().optional(),
   adminEntryHidden: z.boolean().optional(),
-  adminEntryCode: z.string().trim().min(3).max(64).regex(/^[A-Za-z0-9_-]+$/).optional(),
+  adminEntryCode: z
+    .string()
+    .trim()
+    .min(3)
+    .max(64)
+    .regex(/^[A-Za-z0-9_-]+$/)
+    .optional(),
   notificationMailbox: z.email().optional(),
   systemLogRetentionDays: z.number().int().min(1).max(3650).nullable().optional(),
   backupFrequency: BackupFrequencySchema.optional(),
@@ -1140,7 +1623,7 @@ export const DiscoverStatePatchSchema = z.object({
       regions: z.array(z.string().max(16)).max(12).optional(),
       stipendFloor: z.number().int().min(0).max(200000).optional(),
       currency: z.string().max(8).optional(),
-          nPrograms: z.number().int().min(5).max(120).optional(),
+      nPrograms: z.number().int().min(5).max(120).optional(),
       nPisPerProgram: z.number().int().min(1).max(20).optional(),
       piPreferences: z.array(z.string().max(40)).max(12).optional(),
       risingStarBias: z.enum(['strong', 'moderate', 'neutral']).optional(),
@@ -1204,6 +1687,29 @@ export const DiscoverResearchSchema = z.object({
   acceptSuggestions: z.boolean().optional().default(true),
 })
 
+export const AdmissionOutcomesQuerySchema = z.object({
+  school: z.string().trim().min(1).max(200),
+  program: z.string().trim().min(1).max(200),
+  officialUrl: z.string().trim().url().max(500).optional(),
+  year: z.number().int().min(1990).max(2100).optional(),
+})
+
+export const AdvisorSignalsQuerySchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  institution: z.string().trim().max(200).optional(),
+})
+
+/**
+ * A saved lookup takes no school, programme or professor. Those come from the
+ * stored application so the report is provably about the record it is filed
+ * against; accepting them here would let a body claim otherwise.
+ */
+export const AdmissionSignalReportSchema = z.object({
+  /** Omit to skip the AI reading and return the records alone. */
+  keyId: z.string().min(1).max(128).optional(),
+  year: z.number().int().min(1990).max(2100).optional(),
+})
+
 const DiscoverEnrichmentChangeSchema = z.object({
   id: z.string().min(1).max(80),
   target: z.enum([
@@ -1232,30 +1738,38 @@ const DiscoverEnrichmentChangeSchema = z.object({
   sources: z.array(z.string().max(500)).max(12),
 })
 
-export const InitialAdminSetupSchema = z.object({
-  name: z.string().trim().min(2).max(80),
-  email: z.email().transform((value) => value.toLowerCase()),
-  password: z.string().min(15).max(128),
-  adminEntryHidden: z.boolean().default(false),
-  adminEntryCode: z.string().trim().min(3).max(64).regex(/^[A-Za-z0-9_-]+$/).optional(),
-  notificationMailbox: z.email().transform((value) => value.toLowerCase()),
-  smtpHost: z.string().trim().min(1).max(253),
-  smtpPort: z.number().int().min(1).max(65535),
-  smtpUser: z.email().transform((value) => value.toLowerCase()),
-  smtpPass: z.string().min(1).max(500),
-  smtpTls: z.boolean(),
-  smtpVerificationToken: z.string().min(16).max(4096),
-  language: z.string().min(2).max(12).default('en'),
-  database: DatabaseConnectionSchema.default({ type: 'sqlite' }),
-}).superRefine((value, context) => {
-  if (value.adminEntryHidden && !value.adminEntryCode) {
-    context.addIssue({
-      code: 'custom',
-      path: ['adminEntryCode'],
-      message: 'An activation code is required when the administrator entry is hidden.',
-    })
-  }
-})
+export const InitialAdminSetupSchema = z
+  .object({
+    name: z.string().trim().min(2).max(80),
+    email: z.email().transform((value) => value.toLowerCase()),
+    password: z.string().min(15).max(128),
+    adminEntryHidden: z.boolean().default(false),
+    adminEntryCode: z
+      .string()
+      .trim()
+      .min(3)
+      .max(64)
+      .regex(/^[A-Za-z0-9_-]+$/)
+      .optional(),
+    notificationMailbox: z.email().transform((value) => value.toLowerCase()),
+    smtpHost: z.string().trim().min(1).max(253),
+    smtpPort: z.number().int().min(1).max(65535),
+    smtpUser: z.email().transform((value) => value.toLowerCase()),
+    smtpPass: z.string().min(1).max(500),
+    smtpTls: z.boolean(),
+    smtpVerificationToken: z.string().min(16).max(4096),
+    language: z.string().min(2).max(12).default('en'),
+    database: DatabaseConnectionSchema.default({ type: 'sqlite' }),
+  })
+  .superRefine((value, context) => {
+    if (value.adminEntryHidden && !value.adminEntryCode) {
+      context.addIssue({
+        code: 'custom',
+        path: ['adminEntryCode'],
+        message: 'An activation code is required when the administrator entry is hidden.',
+      })
+    }
+  })
 
 export const DiscoverApplicationEnrichmentPreviewSchema = z.object({
   /** Kept for older clients; enrichment is AI-only and rejects an explicit false. */
@@ -1274,88 +1788,109 @@ export const DiscoverApplicationEnrichmentApplySchema = z.object({
     applicationUpdatedAt: z.string().max(40).optional(),
     generatedAt: z.string().max(40),
     usedAi: z.boolean(),
-    matchedProgram: z.object({
-      id: z.string().min(1).max(80),
-      school: z.string().max(240),
-      program: z.string().max(240),
-      matchScore: z.number().min(0).max(100),
-    }).nullable(),
-    changes: z.array(DiscoverEnrichmentChangeSchema).max(48),
-    caveats: z.array(z.string().max(1000)).max(10),
-    research: z.object({
-      protocolVersion: z.string().max(100),
-      stages: z.array(z.string().max(80)).max(10),
-      suppliedLinkCount: z.number().int().min(0).max(96),
-      fetchedPageCount: z.number().int().min(0).max(2000),
-      quarantinedPageCount: z.number().int().min(0).max(2000),
-      plannedQueryCount: z.number().int().min(0).max(100),
-      candidateUrlCount: z.number().int().min(0).max(100),
-      sourceCount: z.number().int().min(0).max(120),
-      webSearchUsed: z.boolean(),
-      durationMs: z.object({
-        contextAndPlan: z.number().int().min(0).max(900000),
-        candidateCrawl: z.number().int().min(0).max(900000),
-        verification: z.number().int().min(0).max(900000),
-        total: z.number().int().min(0).max(900000),
-      }),
-    }).optional(),
-    payload: z.object({
-      snapshot: z.object({
-        programId: z.string().max(80),
+    matchedProgram: z
+      .object({
+        id: z.string().min(1).max(80),
         school: z.string().max(240),
         program: z.string().max(240),
-        website: z.string().max(500),
-        deadline: z.string().max(40),
-        research: z.string().max(1600),
-        fit: z.string().max(1600),
-        funding: z.string().max(2400),
-        requirements: z.string().max(2400),
-        outcomes: z.string().max(1600),
-        international: z.string().max(1600),
-        tuition: z.string().max(500),
-        rankings: z.string().max(1600),
-        scholarships: z.string().max(4000),
-        sources: z.array(z.string().max(500)).max(12),
-      }).optional(),
+        matchScore: z.number().min(0).max(100),
+      })
+      .nullable(),
+    changes: z.array(DiscoverEnrichmentChangeSchema).max(48),
+    caveats: z.array(z.string().max(1000)).max(10),
+    research: z
+      .object({
+        protocolVersion: z.string().max(100),
+        stages: z.array(z.string().max(80)).max(10),
+        suppliedLinkCount: z.number().int().min(0).max(96),
+        fetchedPageCount: z.number().int().min(0).max(2000),
+        quarantinedPageCount: z.number().int().min(0).max(2000),
+        plannedQueryCount: z.number().int().min(0).max(100),
+        candidateUrlCount: z.number().int().min(0).max(100),
+        sourceCount: z.number().int().min(0).max(120),
+        webSearchUsed: z.boolean(),
+        durationMs: z.object({
+          contextAndPlan: z.number().int().min(0).max(900000),
+          candidateCrawl: z.number().int().min(0).max(900000),
+          verification: z.number().int().min(0).max(900000),
+          total: z.number().int().min(0).max(900000),
+        }),
+      })
+      .optional(),
+    payload: z.object({
+      snapshot: z
+        .object({
+          programId: z.string().max(80),
+          school: z.string().max(240),
+          program: z.string().max(240),
+          website: z.string().max(500),
+          deadline: z.string().max(40),
+          research: z.string().max(1600),
+          fit: z.string().max(1600),
+          funding: z.string().max(2400),
+          requirements: z.string().max(2400),
+          outcomes: z.string().max(1600),
+          international: z.string().max(1600),
+          tuition: z.string().max(500),
+          rankings: z.string().max(1600),
+          scholarships: z.string().max(4000),
+          sources: z.array(z.string().max(500)).max(12),
+        })
+        .optional(),
       tags: z.array(z.string().max(80)).max(12).optional(),
-      checklistSuggestions: z.array(z.object({
-        changeId: z.string().min(1).max(80),
-        title: z.string().min(1).max(240),
-        details: z.string().max(1600),
-        due: z.string().max(40),
-        source: z.string().max(500),
-      })).max(16).optional(),
-      feeSuggestion: z.object({
-        changeId: z.string().min(1).max(80),
-        amount: z.number().positive().max(10000),
-        currency: z.string().min(1).max(10),
-        waiverNotes: z.string().max(1000),
-        source: z.string().max(500),
-      }).nullable().optional(),
-      scholarshipSuggestions: z.array(z.object({
-        changeId: z.string().min(1).max(80),
-        name: z.string().min(1).max(240),
-        amount: z.string().max(500),
-        deadline: z.string().max(40),
-        eligibility: z.string().max(1600),
-        source: z.string().max(500),
-      })).max(12).optional(),
-      timelineSuggestions: z.array(z.object({
-        changeId: z.string().min(1).max(80),
-        title: z.string().min(1).max(240),
-        date: z.string().max(40),
-        note: z.string().max(1600),
-        source: z.string().max(500),
-      })).max(16).optional(),
+      checklistSuggestions: z
+        .array(
+          z.object({
+            changeId: z.string().min(1).max(80),
+            title: z.string().min(1).max(240),
+            details: z.string().max(1600),
+            due: z.string().max(40),
+            source: z.string().max(500),
+          }),
+        )
+        .max(16)
+        .optional(),
+      feeSuggestion: z
+        .object({
+          changeId: z.string().min(1).max(80),
+          amount: z.number().positive().max(10000),
+          currency: z.string().min(1).max(10),
+          waiverNotes: z.string().max(1000),
+          source: z.string().max(500),
+        })
+        .nullable()
+        .optional(),
+      scholarshipSuggestions: z
+        .array(
+          z.object({
+            changeId: z.string().min(1).max(80),
+            name: z.string().min(1).max(240),
+            amount: z.string().max(500),
+            deadline: z.string().max(40),
+            eligibility: z.string().max(1600),
+            source: z.string().max(500),
+          }),
+        )
+        .max(12)
+        .optional(),
+      timelineSuggestions: z
+        .array(
+          z.object({
+            changeId: z.string().min(1).max(80),
+            title: z.string().min(1).max(240),
+            date: z.string().max(40),
+            note: z.string().max(1600),
+            source: z.string().max(500),
+          }),
+        )
+        .max(16)
+        .optional(),
     }),
   }),
   acceptedChangeIds: z.array(z.string().min(1).max(80)).max(48),
 })
 
-const adminQuotaSchema = (max) => z.union([
-  z.literal(-1),
-  z.number().int().min(1).max(max),
-])
+const adminQuotaSchema = (max) => z.union([z.literal(-1), z.number().int().min(1).max(max)])
 
 export const AdminUserPatchSchema = z.object({
   role: z.enum(['admin', 'user']).optional(),

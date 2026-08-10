@@ -202,7 +202,7 @@ function pageTypes(page) {
 function boundedLimit(value) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return 240
-  return Math.min(1_000, Math.max(1, Math.floor(parsed)))
+  return Math.min(2_000, Math.max(1, Math.floor(parsed)))
 }
 
 /**

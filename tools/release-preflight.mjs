@@ -111,6 +111,13 @@ export function assertPackageMetadata(packageJson, lockJson) {
   return { name: packageName, version: packageVersion }
 }
 
+export function releaseTreeScriptArguments(script) {
+  if (script === 'test') {
+    return ['run', script, '--', '--maxWorkers=1', '--no-file-parallelism']
+  }
+  return ['run', script]
+}
+
 export function parseWorkflowDocument(contents, label) {
   const document = YAML.parseDocument(contents)
   if (document.errors.length) {
@@ -328,8 +335,11 @@ async function validateContracts(root) {
   const dockerfile = await readFile(path.join(root, 'Dockerfile'), 'utf8')
   for (const required of [
     'FROM node:24-alpine AS build',
-    'COPY tools/start-server.mjs tools/apply-update.mjs tools/container-entrypoint.mjs tools/stamp-service-worker.mjs ./tools/',
+    'COPY shared ./shared',
+    'COPY tools/start-server.mjs tools/apply-update.mjs tools/container-entrypoint.mjs tools/stamp-service-worker.mjs tools/verify-build-entry-budget.mjs ./tools/',
+    'npm --ignore-scripts run build',
     'npm prune --omit=dev',
+    'COPY --from=build --chown=node:node /app/shared ./shared',
   ]) {
     if (!dockerfile.includes(required)) {
       throw new Error(`Dockerfile release contract is missing '${required}'.`)
@@ -384,10 +394,12 @@ async function runTree(root) {
     'release:notes:check',
     'typecheck',
     'test',
+    'test:codex-plugin',
     'build',
+    'check:codex-skill-bundles',
     'verify:discover-adapters',
   ]) {
-    await run('npm', ['run', script], { cwd: root })
+    await run('npm', releaseTreeScriptArguments(script), { cwd: root })
   }
   await assertSourceTreeUnchanged(root, initialFingerprint)
   return metadata

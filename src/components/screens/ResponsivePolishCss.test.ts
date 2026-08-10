@@ -3,6 +3,7 @@ import coreStyles from '../../index.css?raw'
 import discoverStyles from '../../styles/discover.css?raw'
 import mobileStyles from '../../styles/mobile.css?raw'
 import settingsStyles from '../../styles/settings.css?raw'
+import kanbanBoardSource from './KanbanBoard.tsx?raw'
 
 describe('requested responsive polish CSS', () => {
   it('keeps usage pills compact and phone exports in two columns', () => {
@@ -35,12 +36,15 @@ describe('requested responsive polish CSS', () => {
     expect(mobileStyles).toMatch(/\.discover-research-trigger > svg\s*\{[^}]*width:\s*14px[^}]*height:\s*14px/s)
   })
 
-  it('keeps the mobile board copy and summary on the full header width', () => {
+  it('keeps the mobile board header compact and moves both view guides into info disclosure', () => {
     expect(mobileStyles).toMatch(/\.kanban-hero\s*\{[^}]*position:\s*relative[^}]*padding-right:\s*0/s)
-    expect(mobileStyles).toMatch(/\.kanban-hero:has\(\.kanban-mobile-new\) \.kanban-hero-info\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) 50px/s)
-    expect(mobileStyles).toMatch(/\.kanban-hero:has\(\.kanban-mobile-new\) \.kanban-hero-info > p\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/s)
-    expect(mobileStyles).toMatch(/\.kanban-hero \.kanban-summary\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*overscroll-behavior-inline:\s*contain/s)
-    expect(mobileStyles).toMatch(/\.kanban-hero \.kanban-summary > span\s*\{[^}]*flex:\s*0 0 auto/s)
+    expect(kanbanBoardSource).toContain('className="application-pipeline-title-row"')
+    expect(kanbanBoardSource).toContain("content={tx(tableHeading ? 'kanban.tableSubtitle' : 'kanban.subtitle')}")
+    expect(kanbanBoardSource).not.toContain("<p>{tx('kanban.subtitle')}</p>")
+    expect(kanbanBoardSource).not.toContain('className="kanban-mobile-new"')
+    expect(kanbanBoardSource).not.toContain('className="kanban-summary"')
+    expect(mobileStyles).not.toContain('kanban-mobile-new')
+    expect(mobileStyles).not.toContain('kanban-summary')
   })
 
   it('fits research and filter sheets into the same safe mobile viewport without duplicate gaps', () => {

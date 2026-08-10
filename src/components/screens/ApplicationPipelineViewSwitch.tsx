@@ -1,14 +1,18 @@
 import { LayoutGrid, Table2 } from 'lucide-react'
-import { useEffect, useRef } from 'react'
-import { flushSync } from 'react-dom'
+import {
+  startTransition,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import type {
   ApplicationPipelineScope,
   ApplicationPipelineViewMode,
 } from './applicationPipelineModel'
 
 let pipelineViewTransitionSequence = 0
-const PIPELINE_VIEW_FADE_OUT_MS = 80
-const PIPELINE_VIEW_FADE_IN_CLEANUP_MS = 160
+const PIPELINE_VIEW_SLIDE_CLEANUP_MS = 240
 
 function prefersReducedMotion() {
   return typeof window !== 'undefined'
@@ -19,6 +23,7 @@ function prefersReducedMotion() {
 function clearTransitionState(token: string, stage: HTMLElement | null) {
   if (stage?.dataset.applicationPipelineTransitionToken !== token) return
   delete stage.dataset.applicationPipelineTransitionToken
+  delete stage.dataset.applicationPipelineTransitionDirection
   delete stage.dataset.applicationPipelineTransitionMode
   if (stage.dataset.applicationPipelineBusyToken === token) {
     delete stage.dataset.applicationPipelineBusyToken
@@ -46,6 +51,7 @@ export function ApplicationPipelineViewSwitch({
   tableLabel,
   scope,
   controlsId,
+  onPrepare,
 }: {
   value: ApplicationPipelineViewMode
   onChange: (value: ApplicationPipelineViewMode) => void
@@ -54,17 +60,24 @@ export function ApplicationPipelineViewSwitch({
   tableLabel: string
   scope: ApplicationPipelineScope
   controlsId: string
+  onPrepare?: (value: ApplicationPipelineViewMode) => void
 }) {
-  const commitTimerRef = useRef<number | null>(null)
+  const [optimisticValue, setOptimisticValue] = useState(value)
+  const settleFrameRef = useRef<number | null>(null)
   const cleanupTimerRef = useRef<number | null>(null)
   const activeTokenRef = useRef<string | null>(null)
   const activeStageRef = useRef<HTMLElement | null>(null)
   const pendingValueRef = useRef<ApplicationPipelineViewMode | null>(null)
+  const scrollSnapshotRef = useRef<{
+    owner: HTMLElement
+    top: number
+    token: string
+  } | null>(null)
 
   const clearTransitionTimers = () => {
-    if (commitTimerRef.current !== null) {
-      window.clearTimeout(commitTimerRef.current)
-      commitTimerRef.current = null
+    if (settleFrameRef.current !== null) {
+      window.cancelAnimationFrame(settleFrameRef.current)
+      settleFrameRef.current = null
     }
     if (cleanupTimerRef.current !== null) {
       window.clearTimeout(cleanupTimerRef.current)
@@ -81,6 +94,7 @@ export function ApplicationPipelineViewSwitch({
     }
     activeStageRef.current = null
     pendingValueRef.current = null
+    scrollSnapshotRef.current = null
   }
 
   const supersedeActiveTransition = (nextStage: HTMLElement) => {
@@ -93,17 +107,17 @@ export function ApplicationPipelineViewSwitch({
     activeTokenRef.current = null
     activeStageRef.current = null
     pendingValueRef.current = null
+    scrollSnapshotRef.current = null
   }
 
-  const scheduleVeilOut = (token: string, stage: HTMLElement) => {
-    stage.dataset.applicationPipelineTransitionMode = 'veil-out'
+  const scheduleSlideCleanup = (token: string, stage: HTMLElement) => {
     cleanupTimerRef.current = window.setTimeout(() => {
       cleanupTimerRef.current = null
       clearTransitionState(token, stage)
       if (activeTokenRef.current === token) activeTokenRef.current = null
       if (activeStageRef.current === stage) activeStageRef.current = null
-      pendingValueRef.current = null
-    }, PIPELINE_VIEW_FADE_IN_CLEANUP_MS)
+      if (scrollSnapshotRef.current?.token === token) scrollSnapshotRef.current = null
+    }, PIPELINE_VIEW_SLIDE_CLEANUP_MS)
   }
 
   const cancelPendingChange = () => {
@@ -113,29 +127,69 @@ export function ApplicationPipelineViewSwitch({
     const token = String(++pipelineViewTransitionSequence)
     activeTokenRef.current = token
     pendingValueRef.current = null
+    scrollSnapshotRef.current = null
     stage.dataset.applicationPipelineTransitionToken = token
-    stage.dataset.applicationPipelineBusyToken = token
-    stage.setAttribute('aria-busy', 'true')
-    scheduleVeilOut(token, stage)
+    stage.dataset.applicationPipelineTransitionMode = 'settling'
+    stage.removeAttribute('aria-busy')
+    delete stage.dataset.applicationPipelineBusyToken
+    scheduleSlideCleanup(token, stage)
   }
 
   useEffect(() => () => clearActiveTransition(), [controlsId])
 
+  useEffect(() => {
+    if (pendingValueRef.current === null && activeTokenRef.current === null) {
+      setOptimisticValue(value)
+    }
+  }, [value])
+
+  useLayoutEffect(() => {
+    const pendingValue = pendingValueRef.current
+    const token = activeTokenRef.current
+    const stage = activeStageRef.current
+    if (!pendingValue || pendingValue !== value || !token || !stage) return
+    if (stage.dataset.applicationPipelineTransitionToken !== token) return
+
+    const scrollSnapshot = scrollSnapshotRef.current
+    if (scrollSnapshot?.token === token && scrollSnapshot.owner.scrollTop !== scrollSnapshot.top) {
+      scrollSnapshot.owner.scrollTop = scrollSnapshot.top
+    }
+    pendingValueRef.current = null
+    settleFrameRef.current = window.requestAnimationFrame(() => {
+      // Leave one painted frame at the directional start position. A second
+      // frame avoids collapsing prepare + settle into one style calculation
+      // when the resident destination commits very quickly.
+      settleFrameRef.current = window.requestAnimationFrame(() => {
+        settleFrameRef.current = null
+        if (stage.dataset.applicationPipelineTransitionToken !== token) return
+        stage.dataset.applicationPipelineTransitionMode = 'settling'
+        scheduleSlideCleanup(token, stage)
+      })
+    })
+  }, [value])
+
   const changeView = (nextValue: ApplicationPipelineViewMode) => {
+    if (optimisticValue === nextValue) return
+    setOptimisticValue(nextValue)
+
     if (value === nextValue) {
       if (pendingValueRef.current && pendingValueRef.current !== nextValue) {
         cancelPendingChange()
+        // The prior transition update has already been enqueued. Add the
+        // latest intent to the same lane so an uncommitted destination cannot
+        // arrive after the user has reversed back to the current view.
+        startTransition(() => onChange(nextValue))
       }
       return
     }
     if (typeof document === 'undefined' || prefersReducedMotion()) {
+      clearActiveTransition()
       onChange(nextValue)
       return
     }
 
     const stage = document.getElementById(controlsId)
-    const veil = stage?.querySelector('[data-application-pipeline-transition-veil]')
-    if (!stage || !veil) {
+    if (!stage) {
       onChange(nextValue)
       return
     }
@@ -146,30 +200,23 @@ export function ApplicationPipelineViewSwitch({
     activeStageRef.current = stage
     pendingValueRef.current = nextValue
     stage.dataset.applicationPipelineTransitionToken = token
-    stage.dataset.applicationPipelineTransitionMode = 'veil-in'
+    stage.dataset.applicationPipelineTransitionDirection = nextValue === 'table' ? 'to-table' : 'to-board'
+    stage.dataset.applicationPipelineTransitionMode = 'preparing'
     stage.dataset.applicationPipelineBusyToken = token
     stage.setAttribute('aria-busy', 'true')
+    const scrollOwner = getPipelineScrollOwner(stage)
+    scrollSnapshotRef.current = { owner: scrollOwner, top: scrollOwner.scrollTop, token }
 
-    commitTimerRef.current = window.setTimeout(() => {
-      commitTimerRef.current = null
-      if (stage.dataset.applicationPipelineTransitionToken !== token) return
-
-      const scrollOwner = getPipelineScrollOwner(stage)
-      const scrollTop = scrollOwner.scrollTop
-      // The inactive Activity has already rendered at hidden priority. Commit
-      // only after the tiny veil has settled, so React never competes with a
-      // running full-content animation or a browser snapshot.
-      flushSync(() => onChange(nextValue))
-      if (scrollOwner.scrollTop !== scrollTop) scrollOwner.scrollTop = scrollTop
-      pendingValueRef.current = null
-      scheduleVeilOut(token, stage)
-    }, PIPELINE_VIEW_FADE_OUT_MS)
+    // The button and indicator respond immediately, while the expensive
+    // Activity handoff stays interruptible and keeps the outgoing view painted
+    // until React has the destination ready to commit.
+    startTransition(() => onChange(nextValue))
   }
 
   return (
     <div
       className="application-pipeline-view-switch"
-      data-view={value}
+      data-view={optimisticValue}
       data-pipeline-scope={scope}
       role="group"
       aria-label={label}
@@ -177,11 +224,13 @@ export function ApplicationPipelineViewSwitch({
       <span className="application-pipeline-view-indicator" aria-hidden="true" />
       <button
         type="button"
-        className={value === 'board' ? 'active' : ''}
+        className={optimisticValue === 'board' ? 'active' : ''}
         title={boardLabel}
         aria-label={boardLabel}
-        aria-pressed={value === 'board'}
+        aria-pressed={optimisticValue === 'board'}
         aria-controls={controlsId}
+        onPointerEnter={() => onPrepare?.('board')}
+        onFocus={() => onPrepare?.('board')}
         onClick={() => changeView('board')}
       >
         <LayoutGrid size={14} aria-hidden="true" />
@@ -189,11 +238,13 @@ export function ApplicationPipelineViewSwitch({
       </button>
       <button
         type="button"
-        className={value === 'table' ? 'active' : ''}
+        className={optimisticValue === 'table' ? 'active' : ''}
         title={tableLabel}
         aria-label={tableLabel}
-        aria-pressed={value === 'table'}
+        aria-pressed={optimisticValue === 'table'}
         aria-controls={controlsId}
+        onPointerEnter={() => onPrepare?.('table')}
+        onFocus={() => onPrepare?.('table')}
         onClick={() => changeView('table')}
       >
         <Table2 size={14} aria-hidden="true" />

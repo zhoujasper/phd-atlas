@@ -1218,8 +1218,14 @@
 }
 
 @keyframes admin-update-progress-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+    transform: translate3d(0, 3px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
 }
 
 .admin-update-progress-mark {
@@ -1276,24 +1282,29 @@
 
 .admin-update-progress-track > i {
   position: absolute;
-  inset: 0 auto 0 0;
-  min-width: 3px;
+  inset: 0;
   border-radius: inherit;
   background: var(--accent);
-  transition: width 380ms var(--ease-out), background-color var(--duration-fast) var(--ease-out);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition:
+    transform 760ms var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
 }
 
 .admin-update-progress-downloading .admin-update-progress-track > i::after {
   content: '';
   position: absolute;
-  inset: 0;
+  inset-block: 0;
+  left: 0;
+  width: 40%;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
-  transform: translateX(-100%);
-  animation: admin-update-download-sheen 1.1s ease-in-out infinite;
+  transform: translate3d(-125%, 0, 0);
+  animation: admin-update-download-sheen 1.45s linear infinite;
 }
 
 @keyframes admin-update-download-sheen {
-  to { transform: translateX(100%); }
+  to { transform: translate3d(350%, 0, 0); }
 }
 
 .admin-update-progress-ready .admin-update-progress-track > i,
@@ -1336,6 +1347,63 @@
   background: var(--surface);
   box-shadow: 0 0 0 3px var(--accent-ring);
   transform: scale(1.08);
+}
+
+.admin-update-progress-steps > i.failed {
+  border-color: var(--danger);
+  background: var(--surface);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
+}
+
+@media (forced-colors: active) {
+  .admin-update-progress {
+    border-color: CanvasText;
+  }
+
+  .admin-update-progress-track {
+    height: 5px;
+    border: 1px solid CanvasText;
+    background: Canvas;
+  }
+
+  .admin-update-progress-track > i,
+  .admin-update-progress-ready .admin-update-progress-track > i,
+  .admin-update-progress-stored .admin-update-progress-track > i {
+    background: Highlight;
+  }
+
+  .admin-update-progress-error .admin-update-progress-track > i,
+  .admin-update-progress-timeout .admin-update-progress-track > i {
+    background: CanvasText;
+  }
+
+  .admin-update-progress-downloading .admin-update-progress-track > i::after {
+    background: HighlightText;
+  }
+
+  .admin-update-progress-steps > i {
+    border-color: CanvasText;
+    background: Canvas;
+  }
+
+  .admin-update-progress-steps > i.done {
+    border-color: Highlight;
+    background: Highlight;
+  }
+
+  .admin-update-progress-steps > i.active {
+    border-color: Highlight;
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+    box-shadow: none;
+  }
+
+  .admin-update-progress-steps > i.failed {
+    border-color: CanvasText;
+    outline: 2px solid CanvasText;
+    outline-offset: 1px;
+    box-shadow: none;
+  }
 }
 
 .admin-update-error-detail {
@@ -1637,13 +1705,13 @@
 .admin-update-dropzone.dragging {
   border-color: var(--accent);
   background: var(--accent-soft);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.08);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .admin-update-dropzone:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.32);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 32%, transparent);
 }
 
 .admin-update-dropzone:active {
@@ -1682,7 +1750,7 @@
 .admin-auth-canvas {
   background-image:
     radial-gradient(ellipse at 50% 0%, rgba(29, 29, 31, 0.05) 0%, transparent 60%),
-    radial-gradient(ellipse at 80% 100%, rgba(0, 113, 227, 0.035) 0%, transparent 50%);
+    radial-gradient(ellipse at 80% 100%, color-mix(in srgb, var(--accent) 3.5%, transparent) 0%, transparent 50%);
 }
 
 .admin-auth-mark {
@@ -3754,7 +3822,7 @@ html[lang^="ko"] .admin-session-control-label {
 }
 
 .admin-team-teacher-multi button.selected {
-  border-color: rgba(0, 113, 227, 0.22);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
   color: var(--accent);
   background: var(--accent-soft);
 }
@@ -4871,6 +4939,58 @@ html[lang^="ko"] .admin-session-control-label {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.admin-stored-update {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-secondary);
+}
+
+.admin-stored-update-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.admin-stored-update-copy strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-stored-update-copy em {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.admin-stored-update > .danger-action {
+  flex: 0 0 auto;
+  min-height: var(--action-height);
+  padding-inline: 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+@media (max-width: 560px) {
+  .admin-stored-update {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .admin-stored-update > .danger-action {
+    justify-content: center;
+  }
 }
 
 @media (max-width: 680px) {

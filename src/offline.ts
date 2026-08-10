@@ -8,6 +8,11 @@ import type {
   TeamWorkspaceOption,
 } from './api/phdApi'
 import type { ApplicationRecord } from './data/applications'
+import {
+  APPLICATION_SERVER_AUTHORITY_FIELDS,
+  COMMUNICATION_SERVER_AUTHORITY_FIELDS,
+  VAULT_REFERENCE_FIELDS,
+} from '../shared/applicationAuthorityFields.js'
 
 export type OfflineSnapshotData = {
   applications: ApplicationRecord[]
@@ -42,32 +47,16 @@ export type OfflineAccessDecision = {
 }
 
 type OfflineIntegrity = {
-  algorithm: 'hmac-sha256-json-v2' | 'hmac-sha256-device-v1' | 'fnv1a64-device-v1'
+  algorithm: 'hmac-sha256-json-v2' | 'hmac-sha256-device-v1'
   digest: string
 }
 
 type OfflineSnapshotPayload = Omit<OfflineSnapshot, 'integrity'>
 
-type LegacyOfflineSnapshot = {
-  version: 2
-  userId: string
-  savedAt: string
-  data: OfflineSnapshotData
-  integrity: OfflineIntegrity
-}
-
 type OfflineQueueStore = {
   version: 3
   userId: string
   scope: 'personal-owner'
-  updatedAt: string
-  items: OfflineApplicationUpdate[]
-  integrity: OfflineIntegrity
-}
-
-type LegacyOfflineQueueStore = {
-  version: 2
-  userId: string
   updatedAt: string
   items: OfflineApplicationUpdate[]
   integrity: OfflineIntegrity
@@ -90,12 +79,9 @@ export type OfflineApplicationUpdate = {
 
 const SNAPSHOT_PREFIX = 'phd-atlas-offline-snapshot:v3:'
 const QUEUE_PREFIX = 'phd-atlas-offline-queue:v3:'
-const LEGACY_SNAPSHOT_PREFIX = 'phd-atlas-offline-snapshot:v2:'
-const LEGACY_QUEUE_PREFIX = 'phd-atlas-offline-queue:v2:'
 const DEVICE_SECRET_KEY = 'phd-atlas-offline-integrity-key:v1'
 const WORKER_INTEGRITY_ALGORITHM: OfflineIntegrity['algorithm'] = 'hmac-sha256-json-v2'
 const INTEGRITY_ALGORITHM: OfflineIntegrity['algorithm'] = 'hmac-sha256-device-v1'
-const LEGACY_INTEGRITY_ALGORITHM: OfflineIntegrity['algorithm'] = 'fnv1a64-device-v1'
 const MAX_OFFLINE_ACCESS_MS = 72 * 60 * 60 * 1000
 const SNAPSHOT_WORKER_TIMEOUT_MS = 12_000
 let cachedDeviceSecret: string | null = null
@@ -151,14 +137,6 @@ function snapshotKey(userId: string) {
 
 function queueKey(userId: string) {
   return `${QUEUE_PREFIX}${userId}`
-}
-
-function legacySnapshotKey(userId: string) {
-  return `${LEGACY_SNAPSHOT_PREFIX}${userId}`
-}
-
-function legacyQueueKey(userId: string) {
-  return `${LEGACY_QUEUE_PREFIX}${userId}`
 }
 
 function safeParse<T>(value: string | null): T | null {
@@ -436,17 +414,6 @@ function hmacSha256Hex(keyHex: string, message: string) {
   return bytesToHex(sha256Bytes(concatBytes(outerKeyPad, innerDigest)))
 }
 
-function fnv1a64(value: string) {
-  let hash = 0xcbf29ce484222325n
-  const prime = 0x100000001b3n
-  const mask = 0xffffffffffffffffn
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= BigInt(value.charCodeAt(index))
-    hash = (hash * prime) & mask
-  }
-  return hash.toString(16).padStart(16, '0')
-}
-
 function offlineSignatureMessage(scope: 'snapshot' | 'queue', userId: string, payload: unknown) {
   return stableStringify({ scope, userId, payload })
 }
@@ -459,18 +426,6 @@ function signOfflinePayload(scope: 'snapshot' | 'queue', userId: string, payload
   return {
     algorithm: INTEGRITY_ALGORITHM,
     digest: hmacSha256Hex(readDeviceSecret(), offlineSignatureMessage(scope, userId, payload)),
-  }
-}
-
-function signLegacyOfflinePayload(scope: 'snapshot' | 'queue', userId: string, payload: unknown): OfflineIntegrity {
-  return {
-    algorithm: LEGACY_INTEGRITY_ALGORITHM,
-    digest: fnv1a64(stableStringify({
-      scope,
-      userId,
-      deviceSecret: readDeviceSecret(),
-      payload,
-    })),
   }
 }
 
@@ -494,10 +449,6 @@ function hasValidIntegrity(
     if (!/^[a-f0-9]{64}$/i.test(digest)) return false
     return signOfflinePayload(scope, userId, payload).digest === digest
   }
-  if (integrity.algorithm === LEGACY_INTEGRITY_ALGORITHM) {
-    if (!/^[a-f0-9]{16}$/i.test(digest)) return false
-    return signLegacyOfflinePayload(scope, userId, payload).digest === digest
-  }
   return false
 }
 
@@ -509,18 +460,9 @@ function isApplicationLike(value: unknown): value is ApplicationRecord {
     typeof value.program === 'string'
 }
 
-const OFFLINE_SERVER_AUTHORITY_KEYS = new Set<keyof ApplicationRecord>([
-  'id',
-  'ownerId',
-  'teamId',
-  'teamTransferRequest',
-  'shares',
-  'reviewComments',
-  'backupSettings',
-  'versions',
-  'createdAt',
-  'updatedAt',
-])
+const OFFLINE_SERVER_AUTHORITY_KEYS = new Set<keyof ApplicationRecord>(
+  [...APPLICATION_SERVER_AUTHORITY_FIELDS] as Array<keyof ApplicationRecord>,
+)
 
 function sanitizeStoredVersion<T extends {
   fileId?: string
@@ -623,66 +565,30 @@ export function sanitizePersonalApplicationForOffline(
   }
 }
 
-function restoreMaterialAuthority(
-  offlineMaterials: ApplicationRecord['materials'],
-  serverMaterials: ApplicationRecord['materials'],
-) {
-  const serverById = new Map(serverMaterials.map((item) => [item.id, item]))
-  return offlineMaterials.map((item) => {
-    const server = serverById.get(item.id)
-    if (!server) {
-      const {
-        fileId: _fileId,
-        storageName: _storageName,
-        fileName: _fileName,
-        fileSize: _fileSize,
-        mimeType: _mimeType,
-        versions: _versions,
-        ...safe
-      } = item
-      return safe
-    }
-    return {
-      ...item,
-      fileId: server.fileId,
-      storageName: server.storageName,
-      fileName: server.fileName,
-      fileSize: server.fileSize,
-      mimeType: server.mimeType,
-      versions: server.versions,
-    }
-  })
+function restoreAuthorityFields<T extends object>(
+  incoming: T,
+  current: T | undefined,
+  fields: ReadonlySet<string>,
+): T {
+  const restored = { ...incoming } as Record<string, unknown>
+  const durable = current as Record<string, unknown> | undefined
+  for (const field of fields) {
+    if (durable && durable[field] !== undefined) restored[field] = durable[field]
+    else delete restored[field]
+  }
+  return restored as T
 }
 
-function restoreTaskAuthority(
-  offlineTasks: ApplicationRecord['tasks'],
-  serverTasks: ApplicationRecord['tasks'],
+function restoreVaultAuthority<T extends { id: string }>(
+  offlineItems: T[],
+  serverItems: T[],
 ) {
-  const serverById = new Map(serverTasks.map((item) => [item.id, item]))
-  return offlineTasks.map((item) => {
-    const server = serverById.get(item.id)
-    if (!server) {
-      const {
-        fileId: _fileId,
-        storageName: _storageName,
-        fileName: _fileName,
-        fileSize: _fileSize,
-        mimeType: _mimeType,
-        versions: _versions,
-        ...safe
-      } = item
-      return safe
-    }
-    return {
-      ...item,
-      fileId: server.fileId,
-      storageName: server.storageName,
-      fileName: server.fileName,
-      fileSize: server.fileSize,
-      mimeType: server.mimeType,
-      versions: server.versions,
-    }
-  })
+  const serverById = new Map(serverItems.map((item) => [item.id, item]))
+  return offlineItems.map((item) => restoreAuthorityFields(
+    item,
+    serverById.get(item.id),
+    VAULT_REFERENCE_FIELDS,
+  ))
 }
 
 function restoreCommunicationAuthority(
@@ -692,35 +598,9 @@ function restoreCommunicationAuthority(
   const serverById = new Map(serverCommunications.map((item) => [item.id, item]))
   return offlineCommunications.map((item) => {
     const server = serverById.get(item.id)
-    if (!server) {
-      const {
-        bodyFormat: _bodyFormat,
-        bodyHtml: _bodyHtml,
-        bodyText: _bodyText,
-        ...safe
-      } = item
-      return { ...safe, attachments: [] }
-    }
-    return {
-      ...item,
-      attachments: server.attachments,
-      bodyFormat: server.bodyFormat,
-      bodyHtml: server.bodyHtml,
-      bodyText: server.bodyText,
-      deliveryStatus: server.deliveryStatus,
-      scheduledAt: server.scheduledAt,
-      sentAt: server.sentAt,
-      deliveryId: server.deliveryId,
-      deliveryUserId: server.deliveryUserId,
-      deliveryStartedAt: server.deliveryStartedAt,
-      nextDeliveryAttemptAt: server.nextDeliveryAttemptAt,
-      deliveryAttemptCount: server.deliveryAttemptCount,
-      deliveryLastErrorCode: server.deliveryLastErrorCode,
-      deliveryLastErrorAt: server.deliveryLastErrorAt,
-      sourceMessageKey: server.sourceMessageKey,
-      sourceMailbox: server.sourceMailbox,
-      importedAt: server.importedAt,
-    }
+    const restored = restoreAuthorityFields(item, server, COMMUNICATION_SERVER_AUTHORITY_FIELDS)
+    if (!server) restored.attachments = []
+    return restored
   })
 }
 
@@ -733,20 +613,18 @@ export function restoreOfflineApplicationAuthority(
   offlineApplication: ApplicationRecord,
   serverApplication: ApplicationRecord,
 ): ApplicationRecord {
+  const restored = restoreAuthorityFields(
+    offlineApplication,
+    serverApplication,
+    APPLICATION_SERVER_AUTHORITY_FIELDS,
+  )
   return {
-    ...offlineApplication,
+    ...restored,
     id: serverApplication.id,
-    ownerId: serverApplication.ownerId,
     teamId: serverApplication.teamId ?? null,
     teamTransferRequest: serverApplication.teamTransferRequest ?? null,
-    shares: serverApplication.shares,
-    reviewComments: serverApplication.reviewComments,
-    backupSettings: serverApplication.backupSettings,
-    versions: serverApplication.versions,
-    createdAt: serverApplication.createdAt,
-    updatedAt: serverApplication.updatedAt,
-    materials: restoreMaterialAuthority(offlineApplication.materials, serverApplication.materials),
-    tasks: restoreTaskAuthority(offlineApplication.tasks, serverApplication.tasks),
+    materials: restoreVaultAuthority(offlineApplication.materials, serverApplication.materials),
+    tasks: restoreVaultAuthority(offlineApplication.tasks, serverApplication.tasks),
     communications: restoreCommunicationAuthority(
       offlineApplication.communications,
       serverApplication.communications,
@@ -886,19 +764,20 @@ function isOfflineApplicationUpdate(value: unknown, userId: string): value is Of
   return true
 }
 
-function writeJson(key: string, value: unknown) {
+function writeSerializedJson(key: string, value: string) {
   try {
-    localStorage.setItem(key, JSON.stringify(value))
-    return true
+    localStorage.setItem(key, value)
+    // Some privacy/storage shims silently ignore writes instead of throwing.
+    // A save is durable only after the exact serialized value can be read back.
+    return localStorage.getItem(key) === value
   } catch {
     return false
   }
 }
 
-function writeSerializedJson(key: string, value: string) {
+function writeJson(key: string, value: unknown) {
   try {
-    localStorage.setItem(key, value)
-    return true
+    return writeSerializedJson(key, JSON.stringify(value))
   } catch {
     return false
   }
@@ -1008,7 +887,15 @@ export function saveOfflineSnapshot(session: AuthSession, data: OfflineSnapshotD
     data: personalData,
   }
   const key = snapshotKey(session.user.id)
-  removeStoredJson(legacySnapshotKey(session.user.id))
+  const snapshot: OfflineSnapshot = {
+    ...payload,
+    integrity: signOfflinePayload('snapshot', session.user.id, payload),
+  }
+  if (!writeJson(key, snapshot)) return null
+
+  // The main-thread write above is the acknowledgement boundary. The worker
+  // may replace it with an equivalent serialized envelope, but callers never
+  // receive a saved timestamp before storage has accepted and returned it.
   const worker = getSnapshotWorker()
   if (worker) {
     const id = ++snapshotWorkerSequence
@@ -1030,49 +917,12 @@ export function saveOfflineSnapshot(session: AuthSession, data: OfflineSnapshotD
     }
     return { savedAt, authorization }
   }
-  const snapshot: OfflineSnapshot = {
-    ...payload,
-    integrity: signOfflinePayload('snapshot', session.user.id, payload),
-  }
-  writeJson(key, snapshot)
   return { savedAt, authorization }
 }
 
 export function loadOfflineSnapshot(session: AuthSession): OfflineSnapshot | null {
   const key = snapshotKey(session.user.id)
-  let snapshot = safeParse<OfflineSnapshot>(localStorage.getItem(key))
-
-  if (!snapshot) {
-    const legacyKey = legacySnapshotKey(session.user.id)
-    const legacy = safeParse<LegacyOfflineSnapshot>(localStorage.getItem(legacyKey))
-    if (legacy && legacy.version === 2 && legacy.userId === session.user.id && isOfflineSnapshotData(legacy.data)) {
-      const { integrity, ...legacyPayload } = legacy
-      const authorization = authorizationForSnapshot(session, legacy.savedAt)
-      if (
-        authorization
-        && hasValidIntegrity('snapshot', session.user.id, legacyPayload, integrity)
-      ) {
-        const personalData = personalOfflineSnapshotDataForSession(session, legacy.data)
-        if (!personalData) {
-          removeStoredJson(legacyKey)
-          return null
-        }
-        const payload: OfflineSnapshotPayload = {
-          version: 3,
-          userId: session.user.id,
-          savedAt: legacy.savedAt,
-          authorization,
-          data: personalData,
-        }
-        snapshot = {
-          ...payload,
-          integrity: signOfflinePayload('snapshot', session.user.id, payload),
-        }
-        writeJson(key, snapshot)
-      }
-    }
-    removeStoredJson(legacyKey)
-  }
+  const snapshot = safeParse<OfflineSnapshot>(localStorage.getItem(key))
 
   if (!snapshot || snapshot.version !== 3 || snapshot.userId !== session.user.id) {
     removeStoredJson(key)
@@ -1109,40 +959,12 @@ function writeOfflineQueue(userId: string, items: OfflineApplicationUpdate[]) {
     ...payload,
     integrity: signOfflinePayload('queue', userId, payload),
   }
-  writeJson(queueKey(userId), store)
+  return writeJson(queueKey(userId), store)
 }
 
 export function readOfflineQueue(userId: string): OfflineApplicationUpdate[] {
   const key = queueKey(userId)
-  let store = safeParse<OfflineQueueStore>(localStorage.getItem(key))
-  if (!store) {
-    const legacyKey = legacyQueueKey(userId)
-    const legacy = safeParse<LegacyOfflineQueueStore>(localStorage.getItem(legacyKey))
-    if (legacy && legacy.version === 2 && legacy.userId === userId && Array.isArray(legacy.items)) {
-      const { integrity, ...legacyPayload } = legacy
-      if (hasValidIntegrity('queue', userId, legacyPayload, integrity)) {
-        const migratedItems = legacy.items
-          .flatMap((item): OfflineApplicationUpdate[] => {
-            if (!isApplicationLike(item?.application)) return []
-            const application = sanitizePersonalApplicationForOffline(item.application, userId)
-            const baseApplication = item.baseApplication
-              ? sanitizePersonalApplicationForOffline(item.baseApplication, userId)
-              : undefined
-            if (!application) return []
-            return [{
-              ...item,
-              userId,
-              applicationId: application.id,
-              application,
-              baseApplication: baseApplication ?? undefined,
-            }]
-          })
-        writeOfflineQueue(userId, migratedItems)
-        store = safeParse<OfflineQueueStore>(localStorage.getItem(key))
-      }
-    }
-    removeStoredJson(legacyKey)
-  }
+  const store = safeParse<OfflineQueueStore>(localStorage.getItem(key))
 
   if (
     !store
@@ -1176,6 +998,11 @@ export function pendingOfflineQueueSize(userId: string) {
 
 export function blockedOfflineQueueSize(userId: string) {
   return readOfflineQueue(userId).filter((item) => item.status === 'blocked').length
+}
+
+/** The reason the oldest still-blocked change was refused, for the status panel. */
+export function firstBlockedOfflineReason(userId: string) {
+  return readOfflineQueue(userId).find((item) => item.status === 'blocked')?.blockedReason ?? null
 }
 
 export function enqueueApplicationUpdate(
@@ -1227,8 +1054,19 @@ export function enqueueApplicationUpdate(
     })
   }
 
-  writeOfflineQueue(userId, queue)
-  return queue
+  if (!writeOfflineQueue(userId, queue)) {
+    throw new Error('Offline changes could not be written to durable browser storage.')
+  }
+  const persistedQueue = readOfflineQueue(userId)
+  const persisted = persistedQueue.find((item) => item.applicationId === safeApplication.id)
+  if (
+    !persisted
+    || persisted.status === 'blocked'
+    || !valuesEqual(persisted.application, safeApplication)
+  ) {
+    throw new Error('Offline changes could not be verified in durable browser storage.')
+  }
+  return persistedQueue
 }
 
 function valuesEqual(left: unknown, right: unknown) {
@@ -1240,33 +1078,62 @@ function valuesEqual(left: unknown, right: unknown) {
   }
 }
 
-function timestampValue(value: string | null | undefined) {
-  if (!value) return null
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) ? timestamp : null
+/**
+ * The moment the queued offline copy was last authored on this device. An
+ * operation written before `localEditedAt` existed falls back to the queue
+ * timestamp, which is still an authoring time rather than a server clock.
+ */
+function localAuthoredTime(operation: OfflineApplicationUpdate) {
+  const parsed = Date.parse(operation.localEditedAt || operation.updatedAt || operation.createdAt || '')
+  return Number.isFinite(parsed) ? parsed : null
 }
 
-function localEditTimestamp(operation: OfflineApplicationUpdate) {
-  // Older blocked entries used `updatedAt` for the block-status write itself.
-  // Their original creation time is therefore a safer comparison point than
-  // treating the later blocked-status marker as a user edit.
-  return timestampValue(
-    operation.localEditedAt
-      ?? (operation.status === 'blocked' ? operation.createdAt : operation.updatedAt),
-  )
+function serverAuthoredTime(serverApplication: ApplicationRecord) {
+  const parsed = Date.parse(serverApplication.updatedAt || '')
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 /**
- * Reconciles a personal offline edit without creating a manual review draft.
- * Non-overlapping edits are retained from both copies. If both copies changed
- * the same user-editable field, the later local-edit/server timestamp wins;
- * ties and unverifiable timestamps prefer the server. Capability/vault fields
- * always come from the current server record.
+ * Decides a same-field divergence between two copies authored by one person on
+ * two devices. The later authoring time wins. When either side has no usable
+ * timestamp the local copy wins, because the queued edit is the one the person
+ * made while they could not see the server value; discarding it would lose
+ * work they know they typed, while the replaced server value stays recoverable
+ * from the application's own version history.
+ */
+function autoResolveWinner(
+  operation: OfflineApplicationUpdate,
+  serverApplication: ApplicationRecord,
+): 'local' | 'server' {
+  const localTime = localAuthoredTime(operation)
+  const serverTime = serverAuthoredTime(serverApplication)
+  if (localTime === null || serverTime === null) return 'local'
+  return localTime >= serverTime ? 'local' : 'server'
+}
+
+export type OfflineMergeResult = {
+  application: ApplicationRecord
+  merged: boolean
+  replayRequired: boolean
+  /** Fields that could not be reconciled. Empty whenever `autoResolve` is on. */
+  conflicts: string[]
+  /** Fields where a divergence was settled by authoring time, and who won. */
+  autoResolved: Array<{ field: string; winner: 'local' | 'server' }>
+}
+
+/**
+ * Reconciles a personal offline edit. Non-overlapping edits are retained from
+ * both copies. When both copies changed the same user-editable field, the
+ * caller chooses: `autoResolve` settles it by authoring time so a reconnect
+ * always drains the queue, and without it the divergence is reported so the
+ * caller can decide. Capability/vault fields always come from the current
+ * server record.
  */
 export function mergeOfflineApplicationUpdate(
   operation: OfflineApplicationUpdate,
   serverApplication: ApplicationRecord,
-): { application: ApplicationRecord; merged: boolean; replayRequired: boolean } | null {
+  options: { autoResolve?: boolean } = {},
+): OfflineMergeResult | null {
   const base = operation.baseApplication
   const serverUnchanged = serverApplication.updatedAt === operation.baseUpdatedAt
   if (
@@ -1283,13 +1150,18 @@ export function mergeOfflineApplicationUpdate(
   for (const key of OFFLINE_SERVER_AUTHORITY_KEYS) keys.delete(key)
 
   const merged = { ...serverApplication }
-  const offlineTimestamp = localEditTimestamp(operation)
-  const serverTimestamp = timestampValue(serverApplication.updatedAt)
-  const offlineIsNewer = (
-    offlineTimestamp !== null
-    && serverTimestamp !== null
-    && offlineTimestamp > serverTimestamp
-  )
+  const conflicts: string[] = []
+  const autoResolved: Array<{ field: string; winner: 'local' | 'server' }> = []
+  const winner = options.autoResolve ? autoResolveWinner(operation, serverApplication) : null
+
+  const diverged = (key: keyof ApplicationRecord, localValue: unknown) => {
+    if (!winner) {
+      conflicts.push(String(key))
+      return
+    }
+    autoResolved.push({ field: String(key), winner })
+    if (winner === 'local') (merged as unknown as Record<string, unknown>)[key] = localValue
+  }
 
   for (const key of keys) {
     const localValue = operation.application[key]
@@ -1297,8 +1169,10 @@ export function mergeOfflineApplicationUpdate(
     if (valuesEqual(localValue, serverValue)) continue
 
     if (!base) {
-      if (serverUnchanged || offlineIsNewer) {
+      if (serverUnchanged) {
         ;(merged as unknown as Record<string, unknown>)[key] = localValue
+      } else {
+        diverged(key, localValue)
       }
       continue
     }
@@ -1307,8 +1181,10 @@ export function mergeOfflineApplicationUpdate(
     const localChanged = !valuesEqual(localValue, baselineValue)
     if (!localChanged) continue
     const serverChanged = !serverUnchanged && !valuesEqual(serverValue, baselineValue)
-    if (!serverChanged || offlineIsNewer) {
+    if (!serverChanged) {
       ;(merged as unknown as Record<string, unknown>)[key] = localValue
+    } else {
+      diverged(key, localValue)
     }
   }
 
@@ -1319,6 +1195,8 @@ export function mergeOfflineApplicationUpdate(
     application: restoreOfflineApplicationAuthority(merged, serverApplication),
     merged: !serverUnchanged,
     replayRequired,
+    conflicts,
+    autoResolved,
   }
 }
 
@@ -1326,14 +1204,12 @@ export function removeOfflineQueueItems(userId: string, operationIds: string[]) 
   if (operationIds.length === 0) return readOfflineQueue(userId)
   const blocked = new Set(operationIds)
   const queue = readOfflineQueue(userId).filter((item) => !blocked.has(item.id))
-  writeOfflineQueue(userId, queue)
-  return queue
+  return writeOfflineQueue(userId, queue) ? queue : readOfflineQueue(userId)
 }
 
 export function removeOfflineApplicationUpdates(userId: string, applicationId: string) {
   const queue = readOfflineQueue(userId).filter((item) => item.applicationId !== applicationId)
-  writeOfflineQueue(userId, queue)
-  return queue
+  return writeOfflineQueue(userId, queue) ? queue : readOfflineQueue(userId)
 }
 
 export function markOfflineQueueItemBlocked(userId: string, operationId: string, blockedReason: string) {
@@ -1342,8 +1218,7 @@ export function markOfflineQueueItemBlocked(userId: string, operationId: string,
       ? { ...item, status: 'blocked' as const, blockedReason, updatedAt: new Date().toISOString() }
       : item,
   )
-  writeOfflineQueue(userId, queue)
-  return queue
+  return writeOfflineQueue(userId, queue) ? queue : readOfflineQueue(userId)
 }
 
 export function canQueueApplicationUpdate(
@@ -1362,8 +1237,50 @@ export function canQueueApplicationUpdate(
 export function purgeOfflineAccountData(userId: string) {
   removeStoredJson(snapshotKey(userId))
   removeStoredJson(queueKey(userId))
-  removeStoredJson(legacySnapshotKey(userId))
-  removeStoredJson(legacyQueueKey(userId))
+}
+
+/**
+ * Conflicts that mean "your baseline is stale", not "your edit is wrong". Each
+ * of these is recoverable by re-reading the record and replaying the edit on
+ * top, so the editor rebases instead of asking the person to reconcile a change
+ * that in the common single-editor case is their own.
+ */
+const REBASEABLE_APPLICATION_CONFLICT_CODES = new Set([
+  'APPLICATION_MUTATION_BASELINE_MISMATCH',
+  'APPLICATION_VERSION_CONFLICT',
+  'APPLICATION_VERSION_REQUIRED',
+  'APPLICATION_DELTA_CANONICAL_MISMATCH',
+  'APPLICATION_DURABILITY_UNVERIFIED',
+  'STORE_WRITE_CONFLICT',
+  // The recommender directory has its own atomic route, so an ordinary save
+  // carrying a diverged copy is refused. Nothing about that is actionable for
+  // the person typing — and every later autosave carries the same divergence,
+  // so without a rebase the record can never be saved again.
+  'RECOMMENDER_RESOLUTION_REQUIRED',
+])
+
+/**
+ * The recommender directory version this client read went stale. Nothing about
+ * that is the author's doing, and no retry can clear it until the directory is
+ * re-read, so the caller refreshes and replays instead of surfacing it.
+ */
+const RECOVERABLE_RECOMMENDER_VERSION_CODES = new Set([
+  'PROFILE_RECOMMENDER_VERSION_CONFLICT',
+  'PROFILE_RECOMMENDER_VERSION_REQUIRED',
+  'TEAM_PROFILE_RECOMMENDER_VERSION_CONFLICT',
+  'APPLICATION_VERSION_CONFLICT',
+])
+
+export function isRecoverableRecommenderVersionError(error: unknown) {
+  if (!(error instanceof Error)) return false
+  const code = (error as Error & { code?: string }).code
+  return typeof code === 'string' && RECOVERABLE_RECOMMENDER_VERSION_CODES.has(code)
+}
+
+export function isRebaseableApplicationConflict(error: unknown) {
+  if (!(error instanceof Error)) return false
+  const code = (error as Error & { code?: string }).code
+  return typeof code === 'string' && REBASEABLE_APPLICATION_CONFLICT_CODES.has(code)
 }
 
 export function isNetworkLikeError(error: unknown) {
@@ -1383,4 +1300,36 @@ export function isNetworkLikeError(error: unknown) {
     return /failed to fetch|networkerror|load failed|network request failed/i.test(error.message)
   }
   return false
+}
+
+/**
+ * A structured error meaning "the server reached the request but is
+ * temporarily unable to admit it". These are neither network outages nor
+ * authoring conflicts: the change is valid, the server is just busy, so the
+ * caller should retry briefly and then persist the change for a durable
+ * replay instead of telling the author the save failed.
+ */
+export function isTransientBusyError(error: unknown) {
+  if (error instanceof TypeError) return false
+  if (!(error instanceof Error)) return false
+  const candidate = error as Error & { code?: string; status?: number; retryAfterMs?: number }
+  if (
+    typeof candidate.code === 'string'
+    && [
+      'SERVER_BUSY',
+      'SERVER_STARTING',
+      'SERVER_UNAVAILABLE',
+      'MEMORY_PRESSURE',
+      'MEMORY_PRESSURE_SOFT',
+      'MEMORY_PRESSURE_HARD',
+      'WORK_DEADLINE_EXCEEDED',
+      'WORKSPACE_STREAM_RETRY_REQUIRED',
+      'WORKSPACE_STREAM_IDLE_TIMEOUT',
+      'REQUEST_TIMEOUT',
+      'RATE_LIMITED',
+    ].includes(candidate.code)
+  ) return true
+  return candidate.status === 408
+    || candidate.status === 429
+    || candidate.status === 503
 }

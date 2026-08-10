@@ -1,12 +1,13 @@
 import '@testing-library/jest-dom/vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getDict, preloadLanguage, t, tpl } from '../../i18n'
 import { I18nContext } from '../hooks/useI18n'
 import { AvatarCropDialog } from './AvatarCropDialog'
 import { UserAvatar } from './UserAvatar'
 
-async function renderDialog(onSave = vi.fn()) {
+async function renderDialog(onSave = vi.fn(), currentAvatar?: string) {
   await preloadLanguage('en', ['settings'])
   const result = render(
     <I18nContext.Provider value={{
@@ -17,6 +18,7 @@ async function renderDialog(onSave = vi.fn()) {
     }}>
       <AvatarCropDialog
         open
+        currentAvatar={currentAvatar}
         name="Lina Zhao"
         email="student.lina@example.com"
         onClose={vi.fn()}
@@ -105,6 +107,20 @@ describe('AvatarCropDialog', () => {
       expect(largeImage.style.left).toBe('calc(50% + 40px)')
       expect(largeImage.style.top).toBe('calc(50% + 0px)')
     })
+  })
+
+  it('keeps the dialog open and retryable when the avatar write rejects', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn().mockRejectedValue(new Error('avatar-write-failed'))
+    await renderDialog(onSave, 'data:image/png;base64,AAAA')
+
+    const remove = await screen.findByRole('button', { name: 'Remove photo' })
+    await user.click(remove)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('avatar-write-failed')
+    expect(screen.getByRole('dialog', { name: 'Choose your avatar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove photo' })).toBeEnabled()
+    expect(onSave).toHaveBeenCalledWith('')
   })
 })
 

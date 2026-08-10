@@ -1,0 +1,366 @@
+/* ---------------------------------------------------------------------------
+ * Verification, provenance and the AI reading.
+ *
+ * admissions.css owns the panel's layout. This layer owns what was added when
+ * the panel stopped presenting every returned row as fact: the evidence tying
+ * a record to this professor and this programme, the ordered provenance links,
+ * the model's reading, and the motion that covers a lookup crossing four
+ * public APIs.
+ *
+ * Motion here shows work happening and lets a result land. Results appear once
+ * per query, which is exactly the frequency that earns an entrance.
+ * ------------------------------------------------------------------------- */
+
+.admissions-target,
+.admissions-saved-at {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.admissions-target {
+  color: var(--text-secondary);
+}
+
+/* Loading: the label plus the shape of what is coming. Three bars read as
+   progress where a lone spinner on a thirty-second request reads as a hang. */
+.admissions-loading {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.admissions-loading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.admissions-skeletons {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.admissions-skeleton {
+  height: 14px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--surface-secondary) 0%,
+    var(--border) 50%,
+    var(--surface-secondary) 100%
+  );
+  background-size: 200% 100%;
+  animation: admissions-skeleton-sweep 1.4s linear infinite;
+}
+
+.admissions-skeleton:nth-child(2) {
+  width: 82%;
+  animation-delay: 0.12s;
+}
+
+.admissions-skeleton:nth-child(3) {
+  width: 64%;
+  animation-delay: 0.24s;
+}
+
+@keyframes admissions-skeleton-sweep {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+/* Results landing. Sections and rows stagger in from a near-scale so nothing
+   appears out of nothing; the cap keeps a long list from becoming a wave. */
+.admissions-reveal {
+  animation: admissions-reveal var(--duration) var(--ease-out) both;
+}
+
+.admissions-sections > .admissions-reveal:nth-child(1) { animation-delay: 0ms; }
+.admissions-sections > .admissions-reveal:nth-child(2) { animation-delay: 40ms; }
+.admissions-sections > .admissions-reveal:nth-child(3) { animation-delay: 80ms; }
+.admissions-sections > .admissions-reveal:nth-child(n + 4) { animation-delay: 120ms; }
+
+.admissions-outcomes-list > .admissions-reveal:nth-child(1),
+.admissions-advisor-list > .admissions-reveal:nth-child(1),
+.admissions-discussion-list > .admissions-reveal:nth-child(1) { animation-delay: 30ms; }
+
+.admissions-outcomes-list > .admissions-reveal:nth-child(2),
+.admissions-advisor-list > .admissions-reveal:nth-child(2),
+.admissions-discussion-list > .admissions-reveal:nth-child(2) { animation-delay: 60ms; }
+
+.admissions-outcomes-list > .admissions-reveal:nth-child(3),
+.admissions-advisor-list > .admissions-reveal:nth-child(3),
+.admissions-discussion-list > .admissions-reveal:nth-child(3) { animation-delay: 90ms; }
+
+.admissions-outcomes-list > .admissions-reveal:nth-child(n + 4),
+.admissions-advisor-list > .admissions-reveal:nth-child(n + 4),
+.admissions-discussion-list > .admissions-reveal:nth-child(n + 4) { animation-delay: 110ms; }
+
+@keyframes admissions-reveal {
+  from {
+    opacity: 0;
+    transform: translate3d(0, var(--motion-reveal-y, 8px), 0) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Match evidence. "We found this" and "this is theirs" are different claims,
+   so every record carries which one it is making. */
+.admissions-match-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.admissions-match-badge.confirmed {
+  color: var(--success);
+}
+
+.admissions-match-badge.likely {
+  color: var(--accent);
+}
+
+.admissions-match-badge.unconfirmed {
+  color: var(--warning);
+}
+
+.admissions-provenance-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.admissions-provenance {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.4;
+  text-decoration: none;
+}
+
+a.admissions-provenance:hover {
+  color: var(--accent);
+}
+
+/* The raw response stays reachable and stays quiet. It used to be the only
+   thing a source link led to. */
+.admissions-raw-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.35;
+  text-decoration: none;
+  opacity: 0.75;
+  transition: opacity var(--duration-fast) ease, color var(--duration-fast) ease;
+}
+
+.admissions-raw-link:hover {
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* Where to keep looking. These are searches, offered as searches. */
+.admissions-explore {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.admissions-explore-label {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.admissions-explore-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.admissions-explore-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-decoration: none;
+  transition: color var(--duration-fast) ease;
+}
+
+.admissions-explore-link:hover {
+  color: var(--accent);
+}
+
+.admissions-explore small {
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+/* Near misses and other-programme rows: reachable, never counted. */
+.admissions-unmatched {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.admissions-unmatched > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.admissions-unmatched > summary::-webkit-details-marker {
+  display: none;
+}
+
+.admissions-unmatched > summary::before {
+  content: '\203A';
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.admissions-unmatched[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.admissions-unmatched > summary:hover {
+  color: var(--accent);
+}
+
+.admissions-unmatched-note {
+  margin: 8px 0 10px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* The model's reading, kept visually separate from the records it read. */
+.admissions-insights {
+  padding: 24px 0;
+}
+
+.admissions-insights.is-error {
+  background: transparent;
+}
+
+.admissions-insights-note {
+  margin: 0 0 12px;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.admissions-confidence {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.admissions-confidence.strong {
+  color: var(--success);
+}
+
+.admissions-confidence.moderate {
+  color: var(--accent);
+}
+
+.admissions-confidence.weak {
+  color: var(--warning);
+}
+
+.admissions-insight-block {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.admissions-insight-block:last-child {
+  margin-bottom: 0;
+}
+
+.admissions-insight-block > strong {
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 640;
+}
+
+.admissions-insight-block p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.admissions-insight-block ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.admissions-insight-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 0 8px 10px;
+  border-left: 2px solid currentColor;
+  color: var(--warning);
+}
+
+.admissions-insight-warning > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.admissions-advisor-row.is-highlighted {
+  box-shadow: inset 2px 0 var(--accent);
+  padding-left: 10px;
+}
+
+.admissions-relevance-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admissions-reveal {
+    animation: none;
+  }
+
+  .admissions-skeleton {
+    animation: none;
+    background: var(--surface-secondary);
+  }
+}

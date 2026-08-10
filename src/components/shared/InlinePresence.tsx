@@ -1,4 +1,5 @@
 import {
+  createElement,
   useLayoutEffect,
   useRef,
   type CSSProperties,
@@ -11,6 +12,8 @@ type InlinePresenceStyle = CSSProperties & {
   '--inline-presence-gap'?: string
 }
 
+type InlinePresenceElement = 'span' | 'div'
+
 export type InlinePresenceProps = {
   present: boolean
   children: ReactNode
@@ -21,6 +24,8 @@ export type InlinePresenceProps = {
   parentGap?: string
   /** Skips width measurement when a busy surface should only animate on the compositor. */
   layout?: 'measured' | 'instant'
+  /** Uses block-safe markup when the presence owns controls that render div roots. */
+  as?: InlinePresenceElement
 }
 
 /**
@@ -39,9 +44,10 @@ export function InlinePresence({
   durationMs = 380,
   parentGap = '0px',
   layout = 'measured',
+  as = 'span',
 }: InlinePresenceProps) {
-  const rootRef = useRef<HTMLSpanElement>(null)
-  const innerRef = useRef<HTMLSpanElement>(null)
+  const rootRef = useRef<HTMLElement>(null)
+  const innerRef = useRef<HTMLElement>(null)
 
   useLayoutEffect(() => {
     if (layout === 'instant') return undefined
@@ -54,8 +60,11 @@ export function InlinePresence({
     const measure = () => {
       window.cancelAnimationFrame(frame)
       frame = window.requestAnimationFrame(() => {
-        const width = Math.ceil(inner.getBoundingClientRect().width)
+        const bounds = inner.getBoundingClientRect()
+        const width = Math.ceil(bounds.width)
+        const height = Math.ceil(bounds.height)
         if (width > 0) root.style.setProperty('--inline-presence-width', `${width}px`)
+        if (height > 0) root.style.setProperty('--inline-presence-height', `${height}px`)
       })
     }
 
@@ -81,18 +90,23 @@ export function InlinePresence({
     '--inline-presence-gap': parentGap,
   } as InlinePresenceStyle
 
-  return (
-    <span
-      ref={rootRef}
-      className={clsx('inline-presence', layout === 'instant' && 'inline-presence-instant', className)}
-      data-present={present ? 'true' : 'false'}
-      aria-hidden={!present}
-      inert={present ? undefined : true}
-      style={style}
-    >
-      <span ref={innerRef} className={clsx('inline-presence-inner', innerClassName)}>
-        {children}
-      </span>
-    </span>
+  return createElement(
+    as,
+    {
+      ref: rootRef,
+      className: clsx('inline-presence', layout === 'instant' && 'inline-presence-instant', className),
+      'data-present': present ? 'true' : 'false',
+      'aria-hidden': !present,
+      inert: present ? undefined : true,
+      style,
+    },
+    createElement(
+      as,
+      {
+        ref: innerRef,
+        className: clsx('inline-presence-inner', innerClassName),
+      },
+      children,
+    ),
   )
 }

@@ -70,9 +70,9 @@ export function selectDiscoverCandidateHydrationPrograms(crawls = [], {
   perSchool = 2,
   totalLimit = 40,
 } = {}) {
-  const boundedSchoolLimit = Math.min(64, Math.max(1, Number(schoolLimit) || 20))
+  const boundedSchoolLimit = Math.min(640, Math.max(1, Number(schoolLimit) || 20))
   const boundedPerSchool = Math.min(6, Math.max(1, Number(perSchool) || 2))
-  const boundedTotal = Math.min(240, Math.max(1, Number(totalLimit) || 40))
+  const boundedTotal = Math.min(1_920, Math.max(1, Number(totalLimit) || 40))
   const schools = []
   for (const result of crawls || []) {
     const school = String(result?.source?.school || '').trim().slice(0, 220)

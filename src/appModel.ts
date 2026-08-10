@@ -1,13 +1,14 @@
 import { localeForLanguage, t, type Language } from './i18n'
 
-export type Screen = 'dashboard' | 'workspace' | 'discover' | 'profile' | 'settings' | 'team'
+export type Screen = 'dashboard' | 'workspace' | 'discover' | 'interview' | 'profile' | 'settings' | 'team'
 /** Which nav/data context is active for team roles that have both a personal workspace and
  * a team system to manage or participate in. */
 export type InterfaceMode = 'personal' | 'team'
-export type TeamSection = 'overview' | 'applications' | 'members' | 'resources' | 'discover' | 'audit' | 'settings'
-export type DetailTab = 'dossier' | 'materials' | 'mail' | 'funding' | 'timeline' | 'review'
+export type TeamSection = 'overview' | 'applications' | 'members' | 'resources' | 'discover' | 'interview' | 'audit' | 'settings'
+export type DetailTab = 'dossier' | 'materials' | 'mail' | 'funding' | 'timeline' | 'admissions' | 'review'
 export type ReviewCommentTargetTab = DetailTab
 export type ToastTone = 'success' | 'error' | 'info' | 'warning'
+export type ToastCategory = 'network' | 'conflict' | 'quota' | 'permission' | 'validation' | 'system'
 export type SortField = 'deadline' | 'name' | 'status' | 'priority' | 'progress'
 export type SortKey = SortField | `${SortField}:asc` | `${SortField}:desc`
 
@@ -20,6 +21,9 @@ export type Toast = {
   tone: ToastTone
   message: string
   action?: ToastAction
+  category?: ToastCategory
+  title?: string
+  actions?: ToastAction[]
 }
 
 /** Parses JSON from storage without ever throwing — malformed/corrupted values just yield null. */

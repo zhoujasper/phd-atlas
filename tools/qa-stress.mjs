@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import nodemailer from 'nodemailer'
@@ -54,6 +55,10 @@ async function runStep(name, fn) {
 async function request(baseUrl, pathName, { token, method = 'GET', body, headers } = {}) {
   const requestHeaders = new Headers(headers)
   if (token) requestHeaders.set('Authorization', `Bearer ${token}`)
+  if (method === 'PATCH' && pathName === '/api/settings') {
+    requestHeaders.set('X-PhD-Settings-Acknowledgement', 'v1')
+    requestHeaders.set('X-PhD-Settings-Mutation-Id', `qa-stress:${randomUUID()}`)
+  }
   let requestBody = body
   if (body && !(body instanceof FormData) && typeof body !== 'string') {
     requestHeaders.set('Content-Type', 'application/json')

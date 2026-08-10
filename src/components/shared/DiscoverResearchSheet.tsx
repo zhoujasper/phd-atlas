@@ -147,7 +147,7 @@ export function DiscoverResearchSheet({
           >
               <label className="field">
                 <span>{tx('discover.field')}</span>
-                <input value={draft.field} onChange={(event) => onDraftChange({ ...draft, field: event.target.value })} placeholder={tx('discover.fieldPlaceholder')} />
+                <input required value={draft.field} onChange={(event) => onDraftChange({ ...draft, field: event.target.value })} placeholder={tx('discover.fieldPlaceholder')} />
               </label>
               <label className="field">
                 <span>{tx('discover.relatedTopics', 'Related topics')}</span>
@@ -171,7 +171,7 @@ export function DiscoverResearchSheet({
           <SmoothDisclosure
             className="discover-sheet-section"
             defaultOpen
-            summary={tx('discover.targetRegions', 'Target regions')}
+            summary={<>{tx('discover.targetRegions', 'Target regions')} <span className="field-required-mark">*</span></>}
             indicator={<ChevronDown size={15} />}
             bodyClassName="discover-sheet-section-body discover-multiselect-grid"
           >
@@ -248,9 +248,9 @@ export function DiscoverResearchSheet({
                 <span>{tx('discover.extraNotes', 'What else matters')}</span>
                 <textarea rows={5} value={draft.notes} onChange={(event) => onDraftChange({ ...draft, notes: event.target.value })} placeholder={tx('discover.notesPlaceholder')} />
               </label>
-              <div className="discover-sheet-two-column">
-                <label className="field"><span>{tx('discover.nPrograms')}</span><input type="number" min={5} max={120} value={draft.nPrograms} onChange={(event) => onDraftChange({ ...draft, nPrograms: Number(event.target.value) || 20 })} /></label>
-                <label className="field"><span>{tx('discover.nPis')}</span><input type="number" min={1} max={20} value={draft.nPisPerProgram} onChange={(event) => onDraftChange({ ...draft, nPisPerProgram: Number(event.target.value) || 6 })} /></label>
+              <div className="discover-exhaustive-coverage-note">
+                <strong>{tx('discover.exhaustiveCoverage', 'No result quota')}</strong>
+                <span>{tx('discover.exhaustiveCoverageHint', 'Research continues across the finite official evidence set and keeps every verified match. Stronger profile matches rank first; weaker matches stay visible with their evidence limits.')}</span>
               </div>
           </SmoothDisclosure>
 
@@ -271,7 +271,7 @@ export function DiscoverResearchSheet({
           >
             {aiKeys.length > 0 ? (
               <div className="field">
-                <span>{tx('discover.aiKeysLabel', 'AI keys')}</span>
+                <span>{tx('discover.aiKeysLabel', 'AI keys')} <span className="field-required-mark">*</span></span>
                 <div className="discover-multiselect-grid">
                   {aiKeys.map((key) => (
                     <DiscoverMultiSelectOption
@@ -283,7 +283,7 @@ export function DiscoverResearchSheet({
                   ))}
                 </div>
                 <small>{selectedKeyIds.length > 0
-                  ? tx('discover.aiKeysHint', 'Selected keys are used evenly across independent research batches.')
+                  ? tx('discover.aiKeysHint', 'Selected keys share independent research batches according to their saved weights.')
                   : tx('discover.selectAiKeyRequired', 'Select at least one AI research model.')}</small>
               </div>
             ) : (

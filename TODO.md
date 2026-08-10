@@ -5,19 +5,18 @@
 The public edition prioritizes a dependable personal/self-hosted workspace.
 Planned work is tracked here in broad delivery order.
 
-## Beta exit criteria
+## Stable-release maintenance
 
-- [ ] Freeze the first stable public database schema and migration contract.
-- [ ] Add versioned, tested database migrations and documented compatibility
-      guarantees for upgrades between stable public releases.
-- [ ] Publish a stable-release data support policy. Beta versions intentionally
-      do not guarantee database or stored-data compatibility.
+- [x] Publish the first stable public version with manifest-verified update
+      packages, rollback checks, immutable tags, and stable container channels.
+- [ ] Continue expanding versioned migration coverage and document the exact
+      compatibility guarantee for every later stable-to-stable upgrade.
+- [ ] Publish a long-term data-support policy before the project reaches 1.0.
 
 ## Product
 
-- [x] Ship the Team/institution collaboration model in the public Beta,
-      including owner/teacher/student roles, invitation lifecycle, permission
-      enforcement, audit recovery, and personal-workspace transfers.
+- [x] Retain the completed Team/institution implementation as a private-source
+      archive; keep it outside the current personal-only public roadmap and build.
 - [ ] Continue the full mobile adaptation pass: smaller-phone layouts,
       touch-first context actions, bottom-sheet replacements for dense menus,
       virtualized long lists, and browser-tested motion at 320-480 px.

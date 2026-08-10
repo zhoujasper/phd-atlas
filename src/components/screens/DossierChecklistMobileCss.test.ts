@@ -10,10 +10,18 @@ const mobileChecklistStyles = normalizedMobileStyles.match(
 )?.[0] ?? ''
 
 describe('mobile checklist hierarchy', () => {
-  it('gives the hero actions their own calm row without vertical separators', () => {
-    expect(mobileChecklistStyles).toMatch(
-      /\.checklist-hero\s*\{[^}]*grid-template-areas:\s*"eyebrow"\s*"title"\s*"actions";/s,
+  it('aligns the desktop title with its actions and keeps a compact two-row phone handoff', () => {
+    expect(dossierSource).not.toContain("tx('dossier.checklistEyebrow')")
+    expect(normalizedWorkspaceStyles).toMatch(
+      /\.checklist-hero\s*\{[^}]*align-items:\s*center;/s,
     )
+    expect(normalizedWorkspaceStyles).toMatch(
+      /\.checklist-hero-info h3\s*\{[^}]*margin:\s*0;/s,
+    )
+    expect(mobileChecklistStyles).toMatch(
+      /\.checklist-hero\s*\{[^}]*grid-template-areas:\s*"title"\s*"actions";/s,
+    )
+    expect(mobileChecklistStyles).not.toMatch(/grid-area:\s*eyebrow|"eyebrow"/)
     expect(mobileChecklistStyles).toMatch(
       /\.checklist-hero-actions\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto auto;[^}]*gap:\s*4px;/s,
     )

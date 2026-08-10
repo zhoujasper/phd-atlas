@@ -3,6 +3,7 @@ import type { ScholarshipItem } from './dossierScholarshipDraft'
 import {
   cleanScholarshipDraft,
   createScholarshipDraft,
+  scholarshipDraftHasMeaningfulChanges,
   scholarshipToDraft,
   sortScholarshipTimelineNewestFirst,
 } from './dossierScholarshipDraft'
@@ -63,7 +64,7 @@ describe('dossier scholarship drafts', () => {
     // The existing form treats any non-empty string, including whitespace, as
     // supplied input and performs trimming only at the persistence boundary.
     expect(draft.school).toBe('  ')
-    expect(draft.tasks[0].due).toBe('2027-08-31')
+    expect(draft.tasks[0].due).toBe('')
     expect(draft.timeline[0].date).toBe('2027-08-31')
     expect(cleanScholarshipDraft(draft)).toEqual({
       name: 'Research Fellowship',
@@ -75,8 +76,31 @@ describe('dossier scholarship drafts', () => {
       status: 'Submitted',
       notes: 'Awaiting decision.',
       materials: [{ id: 'material-1', name: 'Proposal', status: 'Draft', due: '2026-07-30', details: 'Final review' }],
-      tasks: [{ id: 'task-1', title: 'Submit form', due: '2027-08-31', done: false, details: 'Before noon' }],
+      tasks: [{ id: 'task-1', title: 'Submit form', due: '', done: false, status: 'Open', details: 'Before noon' }],
       timeline: [{ id: 'event-1', title: 'Deadline', date: '2027-08-31', note: 'Portal closes' }],
     })
+  })
+
+  it('ignores blank nested checklist rows but detects their first meaningful edit', () => {
+    const baseline = createScholarshipDraft('Example University')
+    const withBlankRows = {
+      ...baseline,
+      materials: [{ id: 'material-empty', name: '', status: 'Draft', due: '', details: '' }],
+      tasks: [{ id: 'task-empty', title: '', due: '', done: false, status: 'Open', details: '' }],
+    }
+
+    expect(scholarshipDraftHasMeaningfulChanges(withBlankRows, baseline)).toBe(false)
+    expect(scholarshipDraftHasMeaningfulChanges({
+      ...withBlankRows,
+      materials: [{ ...withBlankRows.materials[0], details: 'Discuss formatting' }],
+    }, baseline)).toBe(true)
+    expect(scholarshipDraftHasMeaningfulChanges({
+      ...withBlankRows,
+      tasks: [{ ...withBlankRows.tasks[0], status: 'Blocked' }],
+    }, baseline)).toBe(true)
+    expect(scholarshipDraftHasMeaningfulChanges({
+      ...withBlankRows,
+      materials: [{ ...withBlankRows.materials[0], name: 'Research proposal' }],
+    }, baseline)).toBe(true)
   })
 })

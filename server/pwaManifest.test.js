@@ -2,8 +2,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { gunzipSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
-import { BUILD_ID_TOKEN, createBuildId, stampServiceWorker } from '../tools/stamp-service-worker.mjs'
+import {
+  BUILD_ID_TOKEN,
+  createBuildId,
+  precompressStaticAssets,
+  stampServiceWorker,
+} from '../tools/stamp-service-worker.mjs'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const publicRoot = path.join(projectRoot, 'public')
@@ -125,7 +131,7 @@ describe('installable PWA contract', () => {
     try {
       mkdirSync(path.dirname(assetPath), { recursive: true })
       writeFileSync(serviceWorkerPath, workerTemplate, 'utf8')
-      writeFileSync(assetPath, 'console.log("first build")', 'utf8')
+      writeFileSync(assetPath, 'console.log("first build")\n'.repeat(100), 'utf8')
 
       const firstBuildId = createBuildId(outputRoot)
       expect(createBuildId(outputRoot)).toBe(firstBuildId)
@@ -134,11 +140,14 @@ describe('installable PWA contract', () => {
       expect(readFileSync(serviceWorkerPath, 'utf8')).not.toContain(BUILD_ID_TOKEN)
 
       writeFileSync(serviceWorkerPath, workerTemplate, 'utf8')
-      writeFileSync(assetPath, 'console.log("second build")', 'utf8')
+      writeFileSync(assetPath, 'console.log("second build")\n'.repeat(100), 'utf8')
 
       const secondBuildId = createBuildId(outputRoot)
       expect(secondBuildId).not.toBe(firstBuildId)
       expect(stampServiceWorker(outputRoot)).toBe(secondBuildId)
+      const precompressed = precompressStaticAssets(outputRoot)
+      expect(precompressed.files).toBeGreaterThan(0)
+      expect(gunzipSync(readFileSync(`${assetPath}.gz`))).toEqual(readFileSync(assetPath))
     } finally {
       rmSync(outputRoot, { recursive: true, force: true })
     }

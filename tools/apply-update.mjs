@@ -6,6 +6,8 @@ import {
   applyUpdatePackage,
   claimUpdateLock,
   clearUpdateLock,
+  releaseUpdateHelperClaim,
+  requireUpdateSafeShutdownMarker,
 } from '../server/systemUpdate.js'
 import {
   appendSystemUpdateLog,
@@ -24,6 +26,12 @@ for (let index = 2; index < process.argv.length; index += 2) {
 }
 const packagePath = path.resolve(args.get('--package') ?? '')
 const previousPid = Number(args.get('--pid') ?? 0)
+// The old worker can spend 20 seconds draining and 40 seconds in its primary
+// durability-recovery window. Abort before either the 70-second inner or
+// 75-second outer forced-kill boundary: PID disappearance is accepted only
+// together with the launcher's matching durable safe-shutdown marker.
+export const PREVIOUS_PROCESS_WAIT_TIMEOUT_MS = 65_000
+const PREVIOUS_PROCESS_POLL_MS = 250
 
 async function processExists(pid) {
   if (!pid) return false
@@ -35,11 +43,31 @@ async function processExists(pid) {
   }
 }
 
-async function waitForPreviousProcess() {
-  const deadline = Date.now() + 60_000
-  while (await processExists(previousPid)) {
-    if (Date.now() >= deadline) throw new Error('The previous server process did not stop in time.')
-    await new Promise((resolve) => setTimeout(resolve, 250))
+export async function waitForPreviousProcess(
+  pid = previousPid,
+  options = {},
+) {
+  const now = options.now ?? Date.now
+  const processExistsOperation = options.processExists ?? processExists
+  const sleep = options.sleep ?? ((delayMs) => new Promise((resolveSleep) => {
+    setTimeout(resolveSleep, delayMs)
+  }))
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs))
+    && Number(options.timeoutMs) > 0
+    ? Number(options.timeoutMs)
+    : PREVIOUS_PROCESS_WAIT_TIMEOUT_MS
+  const pollMs = Number.isFinite(Number(options.pollMs)) && Number(options.pollMs) > 0
+    ? Number(options.pollMs)
+    : PREVIOUS_PROCESS_POLL_MS
+  const deadline = now() + timeoutMs
+  while (await processExistsOperation(pid)) {
+    const remainingMs = deadline - now()
+    if (remainingMs <= 0) {
+      const error = new Error('The previous server process did not stop in time.')
+      error.code = 'UPDATE_PREVIOUS_PROCESS_TIMEOUT'
+      throw error
+    }
+    await sleep(Math.min(pollMs, remainingMs))
   }
 }
 
@@ -112,81 +140,86 @@ async function installDependencies(cwd) {
   })
 }
 
-let exitCode = 0
-let preserveUpdateLock = false
-try {
-  const claimed = await claimUpdateLock(storageRoot, {
-    packagePath,
-    helperPid: process.pid,
-  })
-  await fs.access(packagePath)
-  await waitForPreviousProcess()
-  const claimedStatus = await patchSystemUpdateStatus(storageRoot, {
-    phase: 'preparing',
-    operationInFlight: true,
-    restartPending: true,
-    errorCode: null,
-    errorMessage: null,
-  })
-  activeJobId = claimedStatus.jobId ?? claimed.updateId
-  await appendSystemUpdateLog(storageRoot, {
-    jobId: activeJobId,
-    phase: 'preparing',
-    message: 'The detached helper claimed the update, the previous server stopped, and the verified runtime package is being applied.',
-  })
-  await applyUpdatePackage({
-    packagePath,
-    projectRoot,
-    storageRoot,
-    installDependencies,
-  })
-  await patchSystemUpdateStatus(storageRoot, {
-    phase: 'restarting',
-    operationInFlight: false,
-    restartPending: true,
-    errorCode: null,
-    errorMessage: null,
-  })
-  await appendSystemUpdateLog(storageRoot, {
-    jobId: activeJobId,
-    phase: 'restarting',
-    message: 'The update was applied and passed runtime preflight; the server supervisor can now start the new version.',
-  })
-} catch (error) {
-  exitCode = 1
-  preserveUpdateLock = error?.code === 'UPDATE_ROLLBACK_FAILED'
-    || error?.code === 'UPDATE_BOOT_ROLLBACK_FAILED'
-  await patchSystemUpdateStatus(storageRoot, {
-    phase: 'error',
-    operationInFlight: false,
-    restartPending: false,
-    errorCode: error?.code ?? 'UPDATE_APPLY_FAILED',
-    errorMessage: error instanceof Error ? error.message : String(error),
-  }).catch(() => undefined)
-  await appendSystemUpdateLog(storageRoot, {
-    jobId: activeJobId,
-    level: 'error',
-    phase: 'error',
-    errorCode: error?.code ?? 'UPDATE_APPLY_FAILED',
-    message: error instanceof Error ? error.message : String(error),
-    detail: error?.updateDependencyOutput
-      || error?.cause?.updateDependencyOutput
-      || error?.stack
-      || null,
-  }).catch(() => undefined)
-  await fs.appendFile(
-    path.join(storageRoot, 'update-helper.log'),
-    `${new Date().toISOString()} ${error?.stack ?? error}\n`,
-    'utf8',
-  ).catch(() => {})
-} finally {
-  if (!preserveUpdateLock) {
-    await clearUpdateLock(storageRoot, {
+export async function runApplyUpdateHelper() {
+  let exitCode = 0
+  let preserveUpdateLock = false
+  let claimedLock = null
+  try {
+    claimedLock = await claimUpdateLock(storageRoot, {
       packagePath,
       helperPid: process.pid,
-    }).catch(() => {})
+    })
+    await fs.access(packagePath)
+    await waitForPreviousProcess()
+    await requireUpdateSafeShutdownMarker(storageRoot, claimedLock)
+    const claimedStatus = await patchSystemUpdateStatus(storageRoot, {
+      phase: 'preparing',
+      operationInFlight: true,
+      restartPending: true,
+      errorCode: null,
+      errorMessage: null,
+    })
+    activeJobId = claimedStatus.jobId ?? claimedLock.updateId
+    await appendSystemUpdateLog(storageRoot, {
+      jobId: activeJobId,
+      phase: 'preparing',
+      message: 'The detached helper claimed the update, the previous server stopped, and the verified runtime package is being applied.',
+    })
+    await applyUpdatePackage({
+      packagePath,
+      projectRoot,
+      storageRoot,
+      installDependencies,
+    })
+    await patchSystemUpdateStatus(storageRoot, {
+      phase: 'restarting',
+      operationInFlight: false,
+      restartPending: true,
+      errorCode: null,
+      errorMessage: null,
+    })
+    await appendSystemUpdateLog(storageRoot, {
+      jobId: activeJobId,
+      phase: 'restarting',
+      message: 'The update was applied and passed runtime preflight; the server supervisor can now start the new version.',
+    })
+  } catch (error) {
+    exitCode = 1
+    preserveUpdateLock = error?.code === 'UPDATE_ROLLBACK_FAILED'
+      || error?.code === 'UPDATE_BOOT_ROLLBACK_FAILED'
+    await patchSystemUpdateStatus(storageRoot, {
+      phase: 'error',
+      operationInFlight: false,
+      restartPending: false,
+      errorCode: error?.code ?? 'UPDATE_APPLY_FAILED',
+      errorMessage: error instanceof Error ? error.message : String(error),
+    }).catch(() => undefined)
+    await appendSystemUpdateLog(storageRoot, {
+      jobId: activeJobId,
+      level: 'error',
+      phase: 'error',
+      errorCode: error?.code ?? 'UPDATE_APPLY_FAILED',
+      message: error instanceof Error ? error.message : String(error),
+      detail: error?.updateDependencyOutput
+        || error?.cause?.updateDependencyOutput
+        || error?.stack
+        || null,
+    }).catch(() => undefined)
+    await fs.appendFile(
+      path.join(storageRoot, 'update-helper.log'),
+      `${new Date().toISOString()} ${error?.stack ?? error}\n`,
+      'utf8',
+    ).catch(() => {})
+  } finally {
+    if (!preserveUpdateLock && claimedLock) {
+      await clearUpdateLock(storageRoot, claimedLock).catch(() => {})
+    }
+    releaseUpdateHelperClaim(claimedLock)
+    await flushSystemUpdateJournal(storageRoot).catch(() => undefined)
   }
-  await flushSystemUpdateJournal(storageRoot).catch(() => undefined)
+  return exitCode
 }
 
-process.exit(exitCode)
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  process.exit(await runApplyUpdateHelper())
+}

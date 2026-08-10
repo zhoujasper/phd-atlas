@@ -1,6 +1,7 @@
 import { AiProviderError } from './aiProviders.js'
 
 const RETRYABLE_PROVIDER_CODES = new Set([
+  'AI_CAPACITY_EXCEEDED',
   'PROVIDER_TIMEOUT',
   'PROVIDER_UNAVAILABLE',
   'PROVIDER_RATE_LIMITED',

@@ -1,3 +1,4 @@
+import '../../styles/marketing.css'
 import {
   ArrowLeft,
   ArrowRight,

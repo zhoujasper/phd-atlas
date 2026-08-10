@@ -12,10 +12,11 @@ import {
   Users,
   X,
 } from 'lucide-react'
-import { useId, useMemo, useRef, useState, type Dispatch, type FormEvent, type ReactNode, type SetStateAction } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type Dispatch, type FormEvent, type ReactNode, type SetStateAction } from 'react'
 import type { NotificationGroup, NotificationPublishInput, NotificationPublishResult } from '../../api/phdApi'
 import { normalizeErrorMessage } from '../../errorMessages'
 import { MAX_CSV_IMPORT_FILE_SIZE, MAX_UPLOAD_FILES_PER_BATCH } from '../../fileUploads'
+import { registerSafeReloadGuard } from '../../safeReload'
 import { useI18n } from '../hooks/useI18n'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { useModalA11y } from '../hooks/useModalA11y'
@@ -23,6 +24,14 @@ import { ModalPortal } from './ModalPortal'
 import { FileDropzone } from './FileDropzone'
 import { PendingLabel } from './PendingLabel'
 import { downloadCsvFile, escapeCsvValue, parseCsvRows } from './csv'
+import {
+  isNotificationPublisherDraftDirty,
+  loadRecoverableNotificationPublisherDraft,
+  notificationPublisherDraftStorageKey,
+  saveRecoverableNotificationPublisherDraft,
+  type RecoverableNotificationPublisherDraft,
+  type ResidentDraftScope,
+} from './residentCommunicationDraftStorage'
 
 export type NotificationPublisherRecipient = {
   id: string
@@ -121,6 +130,8 @@ export function NotificationPublisherPanel({
   onPublish,
   onCreateGroup,
   onDeleteGroup,
+  draftScope,
+  onDirtyChange,
 }: {
   className?: string
   eyebrow: string
@@ -133,6 +144,8 @@ export function NotificationPublisherPanel({
   onPublish: (input: NotificationPublishInput) => Promise<NotificationPublishResult>
   onCreateGroup: (name: string, memberIds: string[]) => Promise<void>
   onDeleteGroup: (groupId: string) => Promise<void>
+  draftScope?: ResidentDraftScope
+  onDirtyChange?: (dirty: boolean) => void
 }) {
   const { tx, format, lang } = useI18n()
   const publisherText = (key: string, zhFallback: string, enFallback: string) => (
@@ -154,20 +167,24 @@ export function NotificationPublisherPanel({
   const groupDescId = useId()
   const csvImportTitleId = useId()
   const csvImportDescId = useId()
+  const safeReloadGuardId = useId()
   const titleInputRef = useRef<HTMLInputElement>(null)
   const groupNameInputRef = useRef<HTMLInputElement>(null)
   const csvTemplateButtonRef = useRef<HTMLButtonElement>(null)
+  const [residentSeed] = useState(() => (
+    draftScope ? loadRecoverableNotificationPublisherDraft(draftScope) : null
+  ))
   const [composeOpen, setComposeOpen] = useState(false)
   const [groupDialogOpen, setGroupDialogOpen] = useState(false)
   const [csvImportOpen, setCsvImportOpen] = useState(false)
-  const [title, setTitle] = useState('')
-  const [body, setBody] = useState('')
-  const [channels, setChannels] = useState<Array<'in_app' | 'email'>>(['in_app'])
-  const [recipientIds, setRecipientIds] = useState<Set<string>>(() => new Set())
-  const [groupIds, setGroupIds] = useState<Set<string>>(() => new Set())
-  const [audienceIds, setAudienceIds] = useState<Set<string>>(() => new Set())
-  const [groupName, setGroupName] = useState('')
-  const [groupMemberIds, setGroupMemberIds] = useState<Set<string>>(() => new Set())
+  const [title, setTitle] = useState(residentSeed?.title ?? '')
+  const [body, setBody] = useState(residentSeed?.body ?? '')
+  const [channels, setChannels] = useState<Array<'in_app' | 'email'>>(residentSeed?.channels ?? ['in_app'])
+  const [recipientIds, setRecipientIds] = useState<Set<string>>(() => new Set(residentSeed?.recipientIds))
+  const [groupIds, setGroupIds] = useState<Set<string>>(() => new Set(residentSeed?.groupIds))
+  const [audienceIds, setAudienceIds] = useState<Set<string>>(() => new Set(residentSeed?.audienceIds))
+  const [groupName, setGroupName] = useState(residentSeed?.groupName ?? '')
+  const [groupMemberIds, setGroupMemberIds] = useState<Set<string>>(() => new Set(residentSeed?.groupMemberIds))
   const [recipientQuery, setRecipientQuery] = useState('')
   const [groupRecipientQuery, setGroupRecipientQuery] = useState('')
   const [message, setMessage] = useState<NotificationPublisherMessage | null>(null)
@@ -175,10 +192,91 @@ export function NotificationPublisherPanel({
   const [sending, setSending] = useState(false)
   const [groupBusy, setGroupBusy] = useState(false)
   const [deletingGroupId, setDeletingGroupId] = useState<string | null>(null)
-  const [csvPreview, setCsvPreview] = useState<CsvPreview | null>(null)
-  const [csvFileName, setCsvFileName] = useState('')
+  const [csvPreview, setCsvPreview] = useState<CsvPreview | null>(residentSeed?.csvPreview ?? null)
+  const [csvFileName, setCsvFileName] = useState(residentSeed?.csvFileName ?? '')
   const [csvBusy, setCsvBusy] = useState(false)
   const [csvMessage, setCsvMessage] = useState<NotificationPublisherMessage | null>(null)
+
+  const draftScopeKey = draftScope ? notificationPublisherDraftStorageKey(draftScope) : null
+  const residentDraft: RecoverableNotificationPublisherDraft = useMemo(() => ({
+    title,
+    body,
+    channels: [...channels],
+    recipientIds: Array.from(recipientIds).sort(),
+    groupIds: Array.from(groupIds).sort(),
+    audienceIds: Array.from(audienceIds).sort(),
+    groupName,
+    groupMemberIds: Array.from(groupMemberIds).sort(),
+    csvPreview,
+    csvFileName,
+  }), [
+    audienceIds,
+    body,
+    channels,
+    csvFileName,
+    csvPreview,
+    groupIds,
+    groupMemberIds,
+    groupName,
+    recipientIds,
+    title,
+  ])
+  const residentDirty = isNotificationPublisherDraftDirty(residentDraft)
+  const residentBusy = sending || groupBusy || csvBusy
+  const residentDraftRef = useRef(residentDraft)
+  const draftScopeRef = useRef(draftScope)
+  const draftScopeKeyRef = useRef(draftScopeKey)
+  const residentDirtyRef = useRef(residentDirty)
+  const residentBusyRef = useRef(residentBusy)
+  const mountedRef = useRef(true)
+  residentDraftRef.current = residentDraft
+  draftScopeRef.current = draftScope
+  draftScopeKeyRef.current = draftScopeKey
+  residentDirtyRef.current = residentDirty
+  residentBusyRef.current = residentBusy
+
+  const persistResidentDraft = (
+    nextDraft = residentDraftRef.current,
+    scope = draftScopeRef.current,
+  ) => {
+    if (!scope) return true
+    return saveRecoverableNotificationPublisherDraft(scope, nextDraft)
+  }
+
+  useEffect(() => {
+    onDirtyChange?.(residentDirty || residentBusy)
+  }, [onDirtyChange, residentBusy, residentDirty])
+
+  useEffect(() => {
+    if (!draftScopeKey) return undefined
+    const timer = window.setTimeout(() => {
+      persistResidentDraft(residentDraft)
+    }, 160)
+    return () => window.clearTimeout(timer)
+  }, [draftScopeKey, residentDraft])
+
+  useEffect(() => registerSafeReloadGuard(`notification-publisher:${safeReloadGuardId}`, {
+    prepare: () => {
+      if (residentBusyRef.current) return false
+      return persistResidentDraft()
+    },
+    hasUnsavedChanges: () => residentDirtyRef.current || residentBusyRef.current,
+  }), [safeReloadGuardId])
+
+  useEffect(() => {
+    mountedRef.current = true
+    const persist = () => {
+      persistResidentDraft()
+    }
+    window.addEventListener('beforeunload', persist)
+    window.addEventListener('pagehide', persist)
+    return () => {
+      mountedRef.current = false
+      window.removeEventListener('beforeunload', persist)
+      window.removeEventListener('pagehide', persist)
+      persist()
+    }
+  }, [])
 
   const composeClose = useAnimatedClose(composeOpen, () => setComposeOpen(false))
   const groupClose = useAnimatedClose(groupDialogOpen, () => setGroupDialogOpen(false))
@@ -268,6 +366,36 @@ export function NotificationPublisherPanel({
     setRecipientQuery('')
   }
 
+  const composeDraftSignature = (draft: RecoverableNotificationPublisherDraft) => JSON.stringify({
+    title: draft.title,
+    body: draft.body,
+    channels: draft.channels,
+    recipientIds: draft.recipientIds,
+    groupIds: draft.groupIds,
+    audienceIds: draft.audienceIds,
+  })
+
+  const groupDraftSignature = (draft: RecoverableNotificationPublisherDraft) => JSON.stringify({
+    groupName: draft.groupName,
+    groupMemberIds: draft.groupMemberIds,
+  })
+
+  const withoutComposeDraft = (draft: RecoverableNotificationPublisherDraft): RecoverableNotificationPublisherDraft => ({
+    ...draft,
+    title: '',
+    body: '',
+    channels: ['in_app'],
+    recipientIds: [],
+    groupIds: [],
+    audienceIds: [],
+  })
+
+  const withoutGroupDraft = (draft: RecoverableNotificationPublisherDraft): RecoverableNotificationPublisherDraft => ({
+    ...draft,
+    groupName: '',
+    groupMemberIds: [],
+  })
+
   const openCompose = () => {
     setMessage(null)
     setComposeOpen(true)
@@ -306,10 +434,33 @@ export function NotificationPublisherPanel({
     }
     if (recipientField === 'userIds') input.userIds = Array.from(recipientIds)
     else input.memberIds = Array.from(recipientIds)
+    const submittedScope = draftScopeRef.current
+    const submittedScopeKey = draftScopeKeyRef.current
+    const submittedDraft = residentDraftRef.current
+    const submittedSignature = composeDraftSignature(submittedDraft)
+    if (!persistResidentDraft(submittedDraft, submittedScope)) {
+      setMessage({ type: 'error', text: tx('localRecoveryUnavailable') })
+      return
+    }
+    residentBusyRef.current = true
     setSending(true)
     setMessage(null)
     try {
       const result = await onPublish(input)
+      const latestDraft = residentDraftRef.current
+      const canSettleSubmittedDraft = draftScopeKeyRef.current === submittedScopeKey
+        && composeDraftSignature(latestDraft) === submittedSignature
+      if (canSettleSubmittedDraft) {
+        const nextDraft = withoutComposeDraft(latestDraft)
+        if (!persistResidentDraft(nextDraft, submittedScope)) {
+          if (mountedRef.current) {
+            setMessage({ type: 'error', text: tx('localRecoveryUnavailable') })
+          }
+          return
+        }
+        residentDraftRef.current = nextDraft
+      }
+      if (!mountedRef.current || draftScopeKeyRef.current !== submittedScopeKey) return
       setMessage({
         type: 'success',
         text: format(tx('notificationPublisher.sent'), {
@@ -318,12 +469,17 @@ export function NotificationPublisherPanel({
           emailed: result.emailed,
         }),
       })
-      resetCompose()
-      composeClose.requestClose()
+      if (canSettleSubmittedDraft) {
+        resetCompose()
+        composeClose.requestClose()
+      }
     } catch (error) {
-      setMessage({ type: 'error', text: normalizeErrorMessage(error, lang) })
+      if (mountedRef.current && draftScopeKeyRef.current === submittedScopeKey) {
+        setMessage({ type: 'error', text: normalizeErrorMessage(error, lang) })
+      }
     } finally {
-      setSending(false)
+      residentBusyRef.current = groupBusy || csvBusy
+      if (mountedRef.current) setSending(false)
     }
   }
 
@@ -336,19 +492,47 @@ export function NotificationPublisherPanel({
       setGroupMessage({ type: 'error', text: tx('notificationPublisher.groupMembersRequired') })
       return
     }
+    const submittedScope = draftScopeRef.current
+    const submittedScopeKey = draftScopeKeyRef.current
+    const submittedDraft = residentDraftRef.current
+    const submittedSignature = groupDraftSignature(submittedDraft)
+    if (!persistResidentDraft(submittedDraft, submittedScope)) {
+      setGroupMessage({ type: 'error', text: tx('localRecoveryUnavailable') })
+      return
+    }
+    residentBusyRef.current = true
     setGroupBusy(true)
     setGroupMessage(null)
     try {
       await onCreateGroup(groupName.trim(), Array.from(groupMemberIds))
-      setGroupName('')
-      setGroupMemberIds(new Set())
-      setGroupRecipientQuery('')
+      const latestDraft = residentDraftRef.current
+      const canSettleSubmittedDraft = draftScopeKeyRef.current === submittedScopeKey
+        && groupDraftSignature(latestDraft) === submittedSignature
+      if (canSettleSubmittedDraft) {
+        const nextDraft = withoutGroupDraft(latestDraft)
+        if (!persistResidentDraft(nextDraft, submittedScope)) {
+          if (mountedRef.current) {
+            setGroupMessage({ type: 'error', text: tx('localRecoveryUnavailable') })
+          }
+          return
+        }
+        residentDraftRef.current = nextDraft
+      }
+      if (!mountedRef.current || draftScopeKeyRef.current !== submittedScopeKey) return
+      if (canSettleSubmittedDraft) {
+        setGroupName('')
+        setGroupMemberIds(new Set())
+        setGroupRecipientQuery('')
+      }
       setGroupMessage({ type: 'success', text: tx('notificationPublisher.groupCreated') })
-      groupNameInputRef.current?.focus({ preventScroll: true })
+      if (canSettleSubmittedDraft) groupNameInputRef.current?.focus({ preventScroll: true })
     } catch (error) {
-      setGroupMessage({ type: 'error', text: normalizeErrorMessage(error, lang) })
+      if (mountedRef.current && draftScopeKeyRef.current === submittedScopeKey) {
+        setGroupMessage({ type: 'error', text: normalizeErrorMessage(error, lang) })
+      }
     } finally {
-      setGroupBusy(false)
+      residentBusyRef.current = sending || csvBusy
+      if (mountedRef.current) setGroupBusy(false)
     }
   }
 
@@ -436,22 +620,70 @@ export function NotificationPublisherPanel({
 
   const handleImportCsvGroups = async () => {
     if (!csvPreview?.groups.length) return
+    const submittedScope = draftScopeRef.current
+    const submittedScopeKey = draftScopeKeyRef.current
+    const submittedDraft = residentDraftRef.current
+    let remainingGroups = csvPreview.groups.map((group) => ({
+      name: group.name,
+      memberIds: [...group.memberIds],
+    }))
+    let checkpointDraft = submittedDraft
+    let createdCount = 0
+    if (!persistResidentDraft(submittedDraft, submittedScope)) {
+      setCsvMessage({ type: 'error', text: tx('localRecoveryUnavailable') })
+      return
+    }
+    residentBusyRef.current = true
     setCsvBusy(true)
     setCsvMessage(null)
     try {
-      for (const group of csvPreview.groups) {
-        await onCreateGroup(group.name, group.memberIds)
+      while (remainingGroups.length > 0) {
+        const group = remainingGroups[0]
+        try {
+          await onCreateGroup(group.name, group.memberIds)
+        } catch (error) {
+          if (mountedRef.current && draftScopeKeyRef.current === submittedScopeKey) {
+            setCsvMessage({ type: 'error', text: normalizeErrorMessage(error, lang) })
+          }
+          return
+        }
+        createdCount += 1
+        remainingGroups = remainingGroups.slice(1)
+        const nextPreview = remainingGroups.length > 0
+          ? {
+              groups: remainingGroups,
+              matchedMembers: remainingGroups.reduce((total, item) => total + item.memberIds.length, 0),
+              skippedRows: checkpointDraft.csvPreview?.skippedRows ?? 0,
+            }
+          : null
+        checkpointDraft = {
+          ...checkpointDraft,
+          csvPreview: nextPreview,
+          csvFileName: nextPreview ? checkpointDraft.csvFileName : '',
+        }
+        if (!persistResidentDraft(checkpointDraft, submittedScope)) {
+          residentDraftRef.current = checkpointDraft
+          if (mountedRef.current && draftScopeKeyRef.current === submittedScopeKey) {
+            setCsvPreview(nextPreview)
+            setCsvFileName(nextPreview ? csvFileName : '')
+            setCsvMessage({ type: 'error', text: tx('localRecoveryUnavailable') })
+          }
+          return
+        }
+        residentDraftRef.current = checkpointDraft
+        if (mountedRef.current && draftScopeKeyRef.current === submittedScopeKey) {
+          setCsvPreview(nextPreview)
+          if (!nextPreview) setCsvFileName('')
+        }
       }
+      if (!mountedRef.current || draftScopeKeyRef.current !== submittedScopeKey) return
       setCsvMessage({
         type: 'success',
-        text: format(tx('notificationPublisher.importedGroups'), { count: csvPreview.groups.length }),
+        text: format(tx('notificationPublisher.importedGroups'), { count: createdCount }),
       })
-      setCsvPreview(null)
-      setCsvFileName('')
-    } catch (error) {
-      setCsvMessage({ type: 'error', text: normalizeErrorMessage(error, lang) })
     } finally {
-      setCsvBusy(false)
+      residentBusyRef.current = sending || groupBusy
+      if (mountedRef.current) setCsvBusy(false)
     }
   }
 
@@ -870,6 +1102,7 @@ export function NotificationPublisherPanel({
               <span>{tx('notificationPublisher.titleLabel')}</span>
               <input
                 ref={titleInputRef}
+                required
                 value={title}
                 onChange={(event) => setTitle(event.target.value)}
                 placeholder={tx('notificationPublisher.titlePlaceholder')}
@@ -879,6 +1112,7 @@ export function NotificationPublisherPanel({
             <label className="team-field">
               <span>{tx('notificationPublisher.bodyLabel')}</span>
               <textarea
+                required
                 value={body}
                 onChange={(event) => setBody(event.target.value)}
                 placeholder={tx('notificationPublisher.bodyPlaceholder')}
@@ -888,7 +1122,7 @@ export function NotificationPublisherPanel({
             </label>
             <div className="notification-publisher-section-head compact">
               <div>
-                <strong>{tx('notificationPublisher.delivery')}</strong>
+                <strong>{tx('notificationPublisher.delivery')} <span className="field-required-mark" aria-hidden="true">*</span></strong>
                 <span>{tx('notificationPublisher.deliveryHint')}</span>
               </div>
             </div>
@@ -915,7 +1149,7 @@ export function NotificationPublisherPanel({
           <section className="notification-compose-targets">
             <div className="notification-publisher-section-head">
               <div>
-                <strong>{tx('notificationPublisher.recipientPanelTitle')}</strong>
+                <strong>{tx('notificationPublisher.recipientPanelTitle')} <span className="field-required-mark" aria-hidden="true">*</span></strong>
                 <span>{format(tx('notificationPublisher.targetCount'), { count: selectedTargetCount })}</span>
               </div>
               {selectedTargetCount > 0 ? (

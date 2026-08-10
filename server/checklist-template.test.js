@@ -8,7 +8,6 @@ describe('default application checklist template', () => {
 
     expect(names).toEqual([
       'Academic CV',
-      'Recommendation Letters',
       'Personal Statement (PS)',
       'Research Proposal (RP)',
       'Language Scores (IELTS/TOEFL)',
@@ -23,20 +22,9 @@ describe('default application checklist template', () => {
     expect(checklist.every((item) => item.details.length > 0)).toBe(true)
   })
 
-  it('prepares recommendation letters with editable recommender slots', () => {
-    const recommendation = buildDefaultChecklistMaterials().find(
-      (item) => item.name === 'Recommendation Letters',
-    )
-
-    expect(recommendation).toMatchObject({
-      type: 'Request',
-      group: 'Recommendations',
-      requiredCount: 3,
-    })
-    expect(recommendation?.recommenders).toHaveLength(3)
-    expect(recommendation?.recommenders?.[0]).toMatchObject({
-      name: '',
-      contact: '',
-    })
+  it('does not turn application recommenders into checklist rows', () => {
+    const checklist = buildDefaultChecklistMaterials()
+    expect(checklist.some((item) => /recommendation|recommender/i.test(item.name))).toBe(false)
+    expect(checklist.some((item) => item.group === 'Recommendations')).toBe(false)
   })
 })

@@ -1,4 +1,5 @@
 import {
+  Activity,
   createElement,
   useCallback,
   useDeferredValue,
@@ -8,7 +9,6 @@ import {
   useRef,
   startTransition,
   lazy,
-  memo,
   Suspense,
   useState,
   type CSSProperties,
@@ -24,7 +24,6 @@ import {
   Bell,
   Check,
   CloudOff,
-  Columns,
   HelpCircle,
   GripVertical,
   Keyboard,
@@ -38,6 +37,7 @@ import {
   PanelRightOpen,
   Plus,
   RotateCcw,
+  ShieldCheck,
   SlidersHorizontal,
   SunMoon,
   TriangleAlert,
@@ -47,6 +47,7 @@ import {
 import {
   ApiError,
   clearClientSessionCaches,
+  communicationDeliveryPresentation,
   getLatestSessionToken,
   phdApi,
   readSessionTokenSubject,
@@ -58,14 +59,20 @@ import {
   type AccountPlan,
   type AiKey,
   type AiKeyInput,
+  type ApplicationRecommenderDecision,
+  type ApplicationRecommenderMutationResult,
+  type ApplicationRecommenderSlice,
   type BackupRecord,
   type CommunicationInput,
   type ApplicationTrashItem,
+  type ApplicationTrashScope,
   type NotificationRecord,
   type MailSyncJob,
   type PasskeyCredentialSummary,
   type ProfileAsset,
   type ProfileAssetInput,
+  type ProfileRecommender,
+  type ProfileRecommenderMutationResult,
   type TeamApplicationRecord,
   type TeamRole,
   type TeamSummary,
@@ -73,9 +80,18 @@ import {
   type UserSettings,
   type UserSettingsPatch,
 } from './api/phdApi'
+import { applicationTrashForScope } from './applicationTrash'
 import { SupersedingTaskCoordinator } from './api/supersedingTaskCoordinator'
-import { shouldUseGranularWorkspaceFallback } from './api/workspaceBootstrapFallback'
-import type { ApplicationRecord, ApplicationStatus, MaterialStatus, SharePermission, ShareSection } from './data/applications'
+import { scheduleIdleRouteWarmups, type RouteWarmupTask } from './routeWarmup'
+import { normalizeApplicationRecord } from './data/applications'
+import type {
+  ApplicationRecord,
+  ApplicationStatus,
+  MaterialRecommender,
+  MaterialStatus,
+  SharePermission,
+  ShareSection,
+} from './data/applications'
 import type { SharedLinkInfo } from './components/screens/settingsShareModel'
 import { canAccessDiscover, discoverStudentMembers, hasPersonalDiscoverAccess, hasTeamDiscoverAccess } from './components/screens/discoverAccess'
 import { teachersForStudent } from './teamRelationships'
@@ -83,11 +99,43 @@ import {
   canCreateTeamApplication,
   canCreateTeamShare,
   canEditTeamApplication,
+  canUseTeamInterviewPrep,
 } from './teamPermissions'
+import {
+  createEmptyInterviewPrepWorkspace,
+  createInterviewEvent,
+  saveRecoverableInterviewPrepDraft,
+  selectInterviewPrepAiKey,
+  upsertInterviewEvent,
+  type InterviewPrepStudent,
+  type InterviewPrepWorkspace,
+} from './interviewPrep'
 import { toggleWorkspacePaneClass } from './workspaceLayoutMotion'
 import { shareSections as allShareSections } from './data/applications'
 import { appendReviewComment } from './reviewComments'
 import { formatApplicationIdentity } from './data/countries'
+import {
+  applicationsWithActiveRecommenderDraft,
+  profileRecommenderSuggestions,
+} from './profileRecommenders'
+import { useProfileRecommenderAggregation } from './profileRecommenderAggregation'
+import { applicationPersistenceAcknowledged } from './persistenceAcknowledgement'
+import {
+  assertSettingsPersistenceAcknowledged,
+  isNewerSettingsPersistenceVersion,
+} from './settingsPersistenceAcknowledgement'
+import {
+  forgetMailClassificationRequestId,
+  isBuiltInMailCategory,
+  mailClassificationCommunicationIdBatches,
+  mergeMailClassificationDeltas,
+  persistedMailClassificationRequestId,
+  rememberMailClassificationRequestId,
+} from './mailClassification'
+import {
+  defaultChecklistMaterialType,
+  inferChecklistMaterialType,
+} from './components/screens/dossierChecklistModel'
 import {
   type DetailTab,
   type InterfaceMode,
@@ -96,7 +144,7 @@ import {
   type TeamSection,
   safeParseJson,
 } from './appModel'
-import type { LangDict, Language } from './i18n'
+import type { Language } from './i18n'
 import { I18nContext, useI18nValue } from './components/hooks/useI18n'
 import { usePwaInstall } from './components/hooks/usePwaInstall'
 import { useConnectivity } from './components/hooks/useConnectivity'
@@ -104,6 +152,7 @@ import { useRealtimeUpdates } from './components/hooks/useRealtimeUpdates'
 import { useVisibilityAwarePolling } from './components/hooks/useVisibilityAwarePolling'
 import { useWebPushNotifications } from './components/hooks/useWebPushNotifications'
 import { useToastQueue } from './components/hooks/useToastQueue'
+import { enhanceErrorInfo, enhancedErrorToToast, isRetryableError } from './utils/errorHandling'
 import {
   useApplicationAutoSave,
   type ApplicationAutoSaveResult,
@@ -116,13 +165,11 @@ import {
   normalizeThemeAccent,
   useThemeProvider,
 } from './components/hooks/useTheme'
-import { AuthScreen } from './components/screens/AuthScreen'
 import { Rail } from './components/layout/Rail'
 import type { DossierJumpIntent } from './components/screens/DossierView'
 import { EmptyDossier } from './components/screens/EmptyDossier'
 import { ToastStack } from './components/shared/ToastView'
 import { ConfirmDialog } from './components/shared/ConfirmDialog'
-import { TeamWorkspaceChooser } from './components/shared/TeamWorkspaceChooser'
 import {
   LoadingCurtain,
   PaneSkeleton,
@@ -130,13 +177,17 @@ import {
 } from './components/shared/LaunchScreen'
 import type { LoadingVariant, ScreenSkeletonVariant } from './components/shared/loadingVariant'
 import { waitForUiSettle } from './components/shared/uiSettle'
+import { useLatestCallback, withLatestCallbackProps } from './components/shared/withLatestCallbackProps'
 import type { ShareExpiry } from './components/shared/shareOptions'
 import type { NewApplicationStudentOption, NewApplicationTeamMode } from './components/shared/NewApplicationDialog'
 import type { CommandPaletteAction } from './components/shared/CommandPalette'
 import { FormValidationPrompt } from './components/shared/FormValidationPrompt'
+import { flashInvalidField } from './components/shared/invalidFieldFlash'
 import { GlobalOverflowReveal } from './components/shared/GlobalOverflowReveal'
 import { LazyOverlayBoundary } from './components/shared/LazyOverlayBoundary'
 import { OfflineStatusCenter } from './components/shared/OfflineStatusCenter'
+import { UpdateReadyBanner } from './components/shared/UpdateReadyBanner'
+import { ImpersonationBanner } from './components/shared/ImpersonationBanner'
 import { OfflineUnavailableScreen } from './components/shared/OfflineUnavailableScreen'
 import { NotFoundScreen } from './components/screens/NotFoundScreen'
 import {
@@ -144,13 +195,13 @@ import {
   normalizeSchoolLogoFile,
   SchoolLogoError,
 } from './components/shared/schoolLogoModel'
+import { SchoolLogoRequestCoordinator } from './schoolLogoRequestCoordinator'
 import {
   applyDocumentLanguage,
   browserDefaultLanguage,
   languageOptions,
   localizeStaticText,
   preloadLanguage,
-  registerLanguage,
   resolveLanguage,
   tpl,
   t,
@@ -164,11 +215,19 @@ import { connectivityUnavailable, probeServerConnectivity, setManualOfflineMode 
 import { activatePwaUpdate, PWA_OFFLINE_SYNC_EVENT, requestOfflineSync } from './serviceWorker'
 import { passkeyLoginEmailHint } from './passkeyClient'
 import { createRecoverableModuleLoader, loadLazyModule } from './lazyModuleRecovery'
+import { reloadPage } from './pageReload'
+import {
+  prepareForSafeReload,
+  registerSafeReloadGuard,
+  SAFE_RELOAD_BLOCKED_EVENT,
+} from './safeReload'
 import {
   blockedOfflineQueueSize,
   canQueueApplicationUpdate,
   enqueueApplicationUpdate,
+  firstBlockedOfflineReason,
   isNetworkLikeError,
+  isTransientBusyError,
   loadOfflineSnapshot,
   offlineAccessForSession,
   offlineQueueSize,
@@ -176,30 +235,16 @@ import {
   personalOfflineSnapshotDataForSession,
   purgeOfflineAccountData,
   readOfflineQueue,
-  markOfflineQueueItemBlocked,
+  isRebaseableApplicationConflict,
+  isRecoverableRecommenderVersionError,
   mergeOfflineApplicationUpdate,
   removeOfflineApplicationUpdates,
   removeOfflineQueueItems,
   saveOfflineSnapshot,
   type OfflineSnapshotData,
 } from './offline'
-import englishDashboard from './i18n/en/dashboard.json'
-import englishDossier from './i18n/en/dossier.json'
-import englishProfile from './i18n/en/profile.json'
-import englishWorkspace from './i18n/en/workspace.json'
-import chineseDashboard from './i18n/zh/dashboard.json'
-import chineseDossier from './i18n/zh/dossier.json'
-import chineseProfile from './i18n/zh/profile.json'
-import chineseWorkspace from './i18n/zh/workspace.json'
-
-registerLanguage('en', englishDashboard as LangDict, 'dashboard')
-registerLanguage('zh', chineseDashboard as LangDict, 'dashboard')
-registerLanguage('en', englishWorkspace as LangDict, 'workspace')
-registerLanguage('zh', chineseWorkspace as LangDict, 'workspace')
-registerLanguage('en', englishDossier as LangDict, 'dossier')
-registerLanguage('zh', chineseDossier as LangDict, 'dossier')
-registerLanguage('en', englishProfile as LangDict, 'profile')
-registerLanguage('zh', chineseProfile as LangDict, 'profile')
+import { withSmartRetry, AGGRESSIVE_RETRY_CONFIG } from './utils/errorHandling'
+import { mergeApplicationListPreservingIdentity } from './applicationListSync'
 
 type AnimatedScreenTransitionScope = 'screen' | 'workspace-view' | 'dossier-tab' | 'dossier-record'
 type ScreenReadinessGate = {
@@ -276,11 +321,12 @@ function markTransitionedSurface(root: HTMLElement, scope: AnimatedScreenTransit
  */
 function cssFallbackExitDuration(scope: AnimatedScreenTransitionScope) {
   if (scope === 'screen') return 160
-  // Record changes commit immediately. Supported browsers overlap the old
-  // snapshot and live destination through a scoped View Transition; fallback
-  // browsers receive the destination's opacity-only entrance without a blank
-  // sequential exit hold.
-  if (scope === 'dossier-record') return 0
+  // Supported browsers overlap the old snapshot and live destination through a
+  // scoped View Transition; fallback browsers use a very short dimming handoff
+  // before the destination starts.
+  // The destination begins above zero opacity, so this never exposes a blank
+  // dossier pane between records while still giving the eye a clear fade.
+  if (scope === 'dossier-record') return 72
   // Workspace surfaces replace one another inside the already-mounted shell.
   // Committing immediately lets the incoming compositor animation start on the
   // tap frame; holding an invisible mobile surface here reads as a white flash.
@@ -291,8 +337,8 @@ function cssFallbackExitDuration(scope: AnimatedScreenTransitionScope) {
 function cssFallbackEnterDuration(scope: AnimatedScreenTransitionScope) {
   if (scope === 'screen') return 260
   if (scope === 'workspace-view') return 210
-  if (scope === 'dossier-record') return 190
-  if (scope === 'dossier-tab') return 220
+  if (scope === 'dossier-record') return 230
+  if (scope === 'dossier-tab') return 160
   return 180
 }
 
@@ -325,6 +371,7 @@ function createPreloadedScreen<TComponent extends ComponentType<any>>(
   return { Component, preload, isResolved: () => resolved !== null }
 }
 
+const loadAuthScreen = createRecoverableModuleLoader(() => import('./components/screens/AuthScreen').then((module) => ({ default: module.AuthScreen })))
 const dashboardScreen = createPreloadedScreen(() => import('./components/screens/Dashboard').then((module) => ({ default: module.Dashboard })))
 const applicationPaneScreen = createPreloadedScreen(() => import('./components/screens/ApplicationPane').then((module) => ({ default: module.ApplicationPane })))
 const dossierViewScreen = createPreloadedScreen(() => import('./components/screens/DossierView').then((module) => ({ default: module.DossierView })))
@@ -332,6 +379,7 @@ const kanbanBoardScreen = createPreloadedScreen(() => import('./components/scree
 const inspectorScreen = createPreloadedScreen(() => import('./components/screens/Inspector').then((module) => ({ default: module.Inspector })))
 const profileScreen = createPreloadedScreen(() => import('./components/screens/ProfileScreen').then((module) => ({ default: module.ProfileScreen })))
 const discoverScreen = createPreloadedScreen(() => import('./components/screens/DiscoverScreen').then((module) => ({ default: module.DiscoverScreen })))
+const interviewPrepScreen = createPreloadedScreen(() => import('./components/screens/InterviewPrepScreen').then((module) => ({ default: module.InterviewPrepScreen })))
 const settingsScreen = createPreloadedScreen(() => import('./components/screens/SettingsScreen').then((module) => ({ default: module.SettingsScreen })))
 const teamScreen = createPreloadedScreen(() => import('./components/screens/TeamScreen').then((module) => ({ default: module.TeamScreen })))
 const loadDashboardScreen = dashboardScreen.preload
@@ -341,8 +389,10 @@ const loadKanbanBoard = kanbanBoardScreen.preload
 const loadInspector = inspectorScreen.preload
 const loadProfileScreen = profileScreen.preload
 const loadDiscoverScreen = discoverScreen.preload
+const loadInterviewPrepScreen = interviewPrepScreen.preload
 const loadSettingsScreen = settingsScreen.preload
 const loadTeamScreen = teamScreen.preload
+const loadTeamWorkspaceChooser = createRecoverableModuleLoader(() => import('./components/shared/TeamWorkspaceChooser').then((module) => ({ default: module.TeamWorkspaceChooser })))
 const loadNewApplicationDialog = createRecoverableModuleLoader(() => import('./components/shared/NewApplicationDialog').then((module) => ({ default: module.NewApplicationDialog })))
 const loadShareDialog = createRecoverableModuleLoader(() => import('./components/shared/ShareDialog').then((module) => ({ default: module.ShareDialog })))
 const loadDiscoverApplicationEnrichmentDialog = createRecoverableModuleLoader(() => import('./components/shared/DiscoverApplicationEnrichmentDialog').then((module) => ({ default: module.DiscoverApplicationEnrichmentDialog })))
@@ -351,38 +401,17 @@ const loadKeyboardShortcuts = createRecoverableModuleLoader(() => import('./comp
 const loadOnboardingTour = createRecoverableModuleLoader(() => import('./components/shared/OnboardingTour'))
 const loadCommandPalette = createRecoverableModuleLoader(() => import('./components/shared/CommandPalette'))
 
-function shallowEqualViewProps<T extends object>(
-  previous: T,
-  next: T,
-  ignoredKeys: ReadonlySet<string> = new Set(),
-) {
-  const keys = new Set([...Object.keys(previous), ...Object.keys(next)])
-  for (const key of keys) {
-    if (ignoredKeys.has(key)) continue
-    const previousValue = previous[key as keyof T]
-    const nextValue = next[key as keyof T]
-    if (typeof previousValue === 'function' && typeof nextValue === 'function') continue
-    if (!Object.is(previousValue, nextValue)) return false
-  }
-  return true
-}
-
-const paneIgnoredProps = new Set(['resizeHandle'])
-const Dashboard = memo(dashboardScreen.Component, shallowEqualViewProps)
-const ApplicationPane = memo(
-  applicationPaneScreen.Component,
-  (previous, next) => shallowEqualViewProps(previous, next, paneIgnoredProps),
-)
-const DossierView = memo(dossierViewScreen.Component, shallowEqualViewProps)
-const KanbanBoard = memo(kanbanBoardScreen.Component, shallowEqualViewProps)
-const Inspector = memo(
-  inspectorScreen.Component,
-  (previous, next) => shallowEqualViewProps(previous, next, paneIgnoredProps),
-)
-const ProfileScreen = memo(profileScreen.Component, shallowEqualViewProps)
-const DiscoverScreen = memo(discoverScreen.Component, shallowEqualViewProps)
-const SettingsScreen = memo(settingsScreen.Component, shallowEqualViewProps)
-const TeamScreen = memo(teamScreen.Component, shallowEqualViewProps)
+const AuthScreen = lazy(loadAuthScreen)
+const Dashboard = withLatestCallbackProps(dashboardScreen.Component)
+const ApplicationPane = withLatestCallbackProps(applicationPaneScreen.Component)
+const DossierView = withLatestCallbackProps(dossierViewScreen.Component)
+const KanbanBoard = withLatestCallbackProps(kanbanBoardScreen.Component)
+const Inspector = withLatestCallbackProps(inspectorScreen.Component)
+const ProfileScreen = withLatestCallbackProps(profileScreen.Component)
+const DiscoverScreen = withLatestCallbackProps(discoverScreen.Component)
+const InterviewPrepScreen = withLatestCallbackProps(interviewPrepScreen.Component)
+const SettingsScreen = withLatestCallbackProps(settingsScreen.Component)
+const TeamScreen = withLatestCallbackProps(teamScreen.Component)
 const NewApplicationDialog = lazy(loadNewApplicationDialog)
 const ShareDialog = lazy(loadShareDialog)
 const DiscoverApplicationEnrichmentDialog = lazy(loadDiscoverApplicationEnrichmentDialog)
@@ -390,6 +419,7 @@ const NotificationCenter = lazy(loadNotificationCenter)
 const KeyboardShortcuts = lazy(loadKeyboardShortcuts)
 const OnboardingTour = lazy(loadOnboardingTour)
 const CommandPalette = lazy(loadCommandPalette)
+const TeamWorkspaceChooser = lazy(loadTeamWorkspaceChooser)
 
 type PreloadedScreenHandle = Pick<ScreenReadinessGate, 'preload'> & {
   isResolved: () => boolean
@@ -405,6 +435,7 @@ function screenReadinessGate(...screens: PreloadedScreenHandle[]): ScreenReadine
 function readinessGateForScreen(screen: Screen, viewMode: 'list' | 'kanban'): ScreenReadinessGate {
   if (screen === 'dashboard') return screenReadinessGate(dashboardScreen)
   if (screen === 'discover') return screenReadinessGate(discoverScreen)
+  if (screen === 'interview') return screenReadinessGate(interviewPrepScreen)
   if (screen === 'profile') return screenReadinessGate(profileScreen)
   if (screen === 'settings') return screenReadinessGate(settingsScreen)
   if (screen === 'team') return screenReadinessGate(teamScreen)
@@ -416,6 +447,8 @@ function readinessGateForScreen(screen: Screen, viewMode: 'list' | 'kanban'): Sc
 }
 
 const SESSION_KEY = 'phd-atlas-session'
+const EMPTY_RECOMMENDER_OPTIONS: readonly never[] = []
+const EMPTY_TEAM_RECOMMENDER_PROFILES: Readonly<Record<string, readonly ProfileRecommender[]>> = Object.freeze({})
 const LANGUAGE_PREFERENCE_KEY = 'phd-atlas-language'
 const SCREEN_KEY = 'phd-atlas-screen'
 const SELECTED_ID_KEY = 'phd-atlas-selectedId'
@@ -433,11 +466,11 @@ const ONBOARDING_SAMPLE_ACTIVE_KEY = 'phd-atlas-onboarding-sample-active'
 const TOUR_SAMPLE_APPLICATION_ID = '__phd_atlas_tour_sample__'
 const RECENT_OPENED_LIMIT = 6
 const validScreens: Screen[] = PUBLIC_EDITION
-  ? ['dashboard', 'workspace', 'discover', 'profile', 'settings']
-  : ['dashboard', 'workspace', 'discover', 'profile', 'settings', 'team']
-const validTabs: DetailTab[] = ['dossier', 'materials', 'mail', 'funding', 'timeline', 'review']
-const validTeamSections: TeamSection[] = ['overview', 'applications', 'members', 'resources', 'discover', 'audit', 'settings']
-const shortcutTabs: DetailTab[] = ['dossier', 'materials', 'mail', 'funding', 'timeline', 'review']
+  ? ['dashboard', 'workspace', 'discover', 'interview', 'profile', 'settings']
+  : ['dashboard', 'workspace', 'discover', 'interview', 'profile', 'settings', 'team']
+const validTabs: DetailTab[] = ['dossier', 'materials', 'mail', 'funding', 'timeline', 'admissions', 'review']
+const validTeamSections: TeamSection[] = ['overview', 'applications', 'members', 'resources', 'discover', 'interview', 'audit', 'settings']
+const shortcutTabs: DetailTab[] = ['dossier', 'materials', 'mail', 'funding', 'timeline', 'admissions', 'review']
 
 function readStartupSession(): AuthSession | null {
   const stored = safeParseJson<AuthSession>(localStorage.getItem(SESSION_KEY))
@@ -513,7 +546,8 @@ function DeferredAside({
 
 function getAccountPlan(session: AuthSession | null): AccountPlan {
   if (!session) return 'free'
-  return session.usage?.plan
+  return (
+    session.usage?.plan
     ?? (session.user.role === 'admin'
       ? 'admin'
       : session.user.settings.membershipPlan === 'team'
@@ -521,6 +555,7 @@ function getAccountPlan(session: AuthSession | null): AccountPlan {
         : session.user.settings.membershipPlan === 'pro'
           ? 'pro'
           : 'free')
+  )
 }
 
 function createOfflineCommunication(input: CommunicationInput): ApplicationRecord['communications'][number] | null {
@@ -541,10 +576,7 @@ function createOfflineCommunication(input: CommunicationInput): ApplicationRecor
   }
 }
 
-function languageNamespacesForScreen(
-  screen: Screen,
-  tab: DetailTab,
-) {
+function languageNamespacesForScreen(screen: Screen, tab: DetailTab) {
   const namespaces = new Set<string>(['core', 'shared'])
 
   if (screen === 'dashboard') {
@@ -563,6 +595,9 @@ function languageNamespacesForScreen(
   } else if (screen === 'discover') {
     namespaces.add('discover')
     // Organization Discover surfaces show Team ownership and assignment copy.
+    namespaces.add('team')
+  } else if (screen === 'interview') {
+    namespaces.add('interview')
     namespaces.add('team')
   } else if (screen === 'profile') {
     namespaces.add('profile')
@@ -659,7 +694,9 @@ function createTourSampleApplication(ownerId: string | undefined, lang: Language
         type: 'PDF',
         status: 'Ready',
         group: 'Core materials',
-        details: localize('Keep one polished CV version here, upload revisions, and copy the latest file name when needed.'),
+        details: localize(
+          'Keep one polished CV version here, upload revisions, and copy the latest file name when needed.',
+        ),
         reminderEnabled: true,
         reminderDate: '2026-07-12',
         reminderTime: '09:00',
@@ -684,7 +721,11 @@ function createTourSampleApplication(ownerId: string | undefined, lang: Language
         requiredCount: 3,
         recommenders: [
           { id: 'tour-rec-1', name: 'Dr. Lin', contact: 'lin@example.edu' },
-          { id: 'tour-rec-2', name: 'Prof. Patel', contact: 'patel@example.edu' },
+          {
+            id: 'tour-rec-2',
+            name: 'Prof. Patel',
+            contact: 'patel@example.edu',
+          },
           { id: 'tour-rec-3', name: '', contact: '' },
         ],
         version: 'v0',
@@ -741,13 +782,29 @@ function createTourSampleApplication(ownerId: string | undefined, lang: Language
         status: 'Preparing',
         notes: localize('Use funding cards to track award requirements beside the main application.'),
         materials: [
-          { id: 'tour-fellowship-proposal', name: localize('Research statement'), status: 'Draft', due: '2026-10-01', details: localize('Two-page statement') },
+          {
+            id: 'tour-fellowship-proposal',
+            name: localize('Research statement'),
+            status: 'Draft',
+            due: '2026-10-01',
+            details: localize('Two-page statement'),
+          },
         ],
         tasks: [
-          { id: 'tour-fellowship-task', title: localize('Ask department about nomination route'), due: '2026-08-05', done: false },
+          {
+            id: 'tour-fellowship-task',
+            title: localize('Ask department about nomination route'),
+            due: '2026-08-05',
+            done: false,
+          },
         ],
         timeline: [
-          { id: 'tour-fellowship-event', title: localize('Funding shortlist'), date: '2026-09-10', note: localize('Department review starts.') },
+          {
+            id: 'tour-fellowship-event',
+            title: localize('Funding shortlist'),
+            date: '2026-09-10',
+            note: localize('Department review starts.'),
+          },
         ],
       },
     ],
@@ -768,7 +825,7 @@ function createTourSampleApplication(ownerId: string | undefined, lang: Language
         title: localize('Finalize research fit paragraph'),
         due: '2026-07-15',
         done: false,
-        details: localize('Tie prior work to Prof. Chen\'s current lab direction.'),
+        details: localize("Tie prior work to Prof. Chen's current lab direction."),
         reminderEnabled: true,
         reminderOffsets: ['3d'],
         reminderTime: '09:00',
@@ -832,18 +889,35 @@ function readInitialLanguage(): Language {
 
 const criticalScreenWarmups = new Map<string, Promise<void>>()
 
-async function warmCriticalScreenAssets(
-  screen: Screen,
-  tab: DetailTab,
-  lang: Language,
-  viewMode: 'list' | 'kanban',
-) {
+async function preloadCriticalWorkspaceAssets(applicationCount: number, lang: Language) {
+  // Only preload if there are applications to view
+  if (applicationCount === 0) return
+
+  const tasks: Array<() => Promise<unknown>> = []
+
+  // Preload DossierView namespace (most likely next screen)
+  tasks.push(() => preloadLanguage(lang, ['dossier']))
+
+  // Preload Dashboard namespace if not already loaded
+  tasks.push(() => preloadLanguage(lang, ['dashboard']))
+
+  // Preload Profile namespace if user has assets
+  tasks.push(() => preloadLanguage(lang, ['profile']))
+
+  // Preload the first application's DossierView chunk
+  tasks.push(() => import('./components/screens/DossierView').catch(() => {}))
+
+  await Promise.all(tasks.map((task) => task().catch(() => undefined)))
+}
+
+async function warmCriticalScreenAssets(screen: Screen, tab: DetailTab, lang: Language, viewMode: 'list' | 'kanban') {
   const cacheKey = `${screen}:${tab}:${lang}:${viewMode}`
   const inFlight = criticalScreenWarmups.get(cacheKey)
   if (inFlight) return inFlight
 
+  const namespaces = languageNamespacesForScreen(screen, tab)
   const tasks: Array<() => Promise<unknown>> = [
-    () => preloadLanguage(lang, languageNamespacesForScreen(screen, tab)),
+    () => Promise.all(namespaces.map((ns) => preloadLanguage(lang, [ns]))),
   ]
 
   if (screen === 'dashboard') {
@@ -852,6 +926,8 @@ async function warmCriticalScreenAssets(
     tasks.push(loadApplicationPane, loadInspector, viewMode === 'kanban' ? loadKanbanBoard : loadDossierView)
   } else if (screen === 'discover') {
     tasks.push(loadDiscoverScreen)
+  } else if (screen === 'interview') {
+    tasks.push(loadInterviewPrepScreen)
   } else if (screen === 'profile') {
     tasks.push(loadProfileScreen)
   } else if (screen === 'settings') {
@@ -877,7 +953,7 @@ type ConfirmDialogState = {
   message: string
   confirmLabel?: string
   variant?: 'danger' | 'default'
-  onConfirm: () => void
+  onConfirm: () => void | Promise<void>
 }
 
 type NavigationGuard = (proceed: () => void) => boolean
@@ -922,12 +998,11 @@ function pathForRoute(
 ): string {
   if (screen === 'workspace') {
     if (interfaceMode === 'team') {
-      return selectedId
-        ? `/team/applications/${encodeURIComponent(selectedId)}/${tab}`
-        : '/team/applications'
+      return selectedId ? `/team/applications/${encodeURIComponent(selectedId)}/${tab}` : '/team/applications'
     }
     if (selectedId) return `/applications/${encodeURIComponent(selectedId)}/${tab}`
   }
+  if (screen === 'interview' && interfaceMode === 'team') return '/team/interview'
   if (screen === 'team') {
     return teamSection === 'overview' ? '/team' : `/team/${teamSection}`
   }
@@ -947,7 +1022,13 @@ type ParsedRoute = {
 function parseRoute(pathname: string): ParsedRoute | null {
   const parts = pathname.split('/').filter(Boolean)
   if (parts.length === 0) {
-    return { screen: 'dashboard', selectedId: null, tab: 'dossier', teamSection: 'overview', interfaceMode: null }
+    return {
+      screen: 'dashboard',
+      selectedId: null,
+      tab: 'dossier',
+      teamSection: 'overview',
+      interfaceMode: null,
+    }
   }
   const screen = screenForSegment(parts[0])
   if (!screen) return null
@@ -955,14 +1036,32 @@ function parseRoute(pathname: string): ParsedRoute | null {
     if (parts.length > 3) return null
     const id = parts[1] ? decodeRouteSegment(parts[1]) : null
     if (isTourSampleApplicationId(id)) {
-      return { screen: 'dashboard', selectedId: null, tab: 'dossier', teamSection: 'overview', interfaceMode: null }
+      return {
+        screen: 'dashboard',
+        selectedId: null,
+        tab: 'dossier',
+        teamSection: 'overview',
+        interfaceMode: null,
+      }
     }
-    return { screen, selectedId: id, tab: parseRouteTab(parts[2]), teamSection: 'overview', interfaceMode: 'personal' }
+    return {
+      screen,
+      selectedId: id,
+      tab: parseRouteTab(parts[2]),
+      teamSection: 'overview',
+      interfaceMode: 'personal',
+    }
   }
   if (screen === 'team') {
     const teamSegment = parts[1]
     if (!teamSegment) {
-      return { screen, selectedId: null, tab: 'dossier', teamSection: 'overview', interfaceMode: 'team' }
+      return {
+        screen,
+        selectedId: null,
+        tab: 'dossier',
+        teamSection: 'overview',
+        interfaceMode: 'team',
+      }
     }
     if (teamSegment === 'applications' && !parts[2]) {
       return {
@@ -977,13 +1076,28 @@ function parseRoute(pathname: string): ParsedRoute | null {
       if (parts.length > 4) return null
       const id = decodeRouteSegment(parts[2])
       if (isTourSampleApplicationId(id)) {
-        return { screen: 'dashboard', selectedId: null, tab: 'dossier', teamSection: 'overview', interfaceMode: null }
+        return {
+          screen: 'dashboard',
+          selectedId: null,
+          tab: 'dossier',
+          teamSection: 'overview',
+          interfaceMode: null,
+        }
       }
       return {
         screen: 'workspace',
         selectedId: id,
         tab: parseRouteTab(parts[3]),
         teamSection: 'applications',
+        interfaceMode: 'team',
+      }
+    }
+    if (teamSegment === 'interview' && parts.length === 2) {
+      return {
+        screen: 'interview',
+        selectedId: null,
+        tab: 'dossier',
+        teamSection: 'interview',
         interfaceMode: 'team',
       }
     }
@@ -999,7 +1113,13 @@ function parseRoute(pathname: string): ParsedRoute | null {
     return null
   }
   if (parts.length > 1) return null
-  return { screen, selectedId: null, tab: 'dossier', teamSection: 'overview', interfaceMode: null }
+  return {
+    screen,
+    selectedId: null,
+    tab: 'dossier',
+    teamSection: 'overview',
+    interfaceMode: null,
+  }
 }
 
 function loadStoredScreen(): Screen {
@@ -1028,7 +1148,9 @@ function loadStoredRecentOpenedIds(): string[] {
   try {
     const stored = safeParseJson<unknown>(localStorage.getItem(RECENT_OPENED_KEY))
     return Array.isArray(stored)
-      ? stored.filter((id): id is string => typeof id === 'string' && !isTourSampleApplicationId(id)).slice(0, RECENT_OPENED_LIMIT)
+      ? stored
+          .filter((id): id is string => typeof id === 'string' && !isTourSampleApplicationId(id))
+          .slice(0, RECENT_OPENED_LIMIT)
       : []
   } catch {
     return []
@@ -1070,26 +1192,62 @@ function normalizeError(error: unknown, lang: Language = 'en') {
   return normalizeErrorMessage(error, lang)
 }
 
+function notifyEnhancedError(
+  error: unknown,
+  lang: Language,
+  notify: ReturnType<typeof useToastQueue>['notify'],
+  retryAction?: () => void
+) {
+  const enhanced = enhanceErrorInfo(error, lang, isRetryableError(error))
+  const toastConfig = enhancedErrorToToast(
+    enhanced,
+    retryAction,
+    () => window.location.reload(),
+    () => {
+      // Contact/support action can be added here
+    }
+  )
+
+  notify(
+    toastConfig.message,
+    toastConfig.tone,
+    undefined,
+    undefined,
+    {
+      title: toastConfig.title,
+      category: toastConfig.category,
+      actions: toastConfig.actions,
+    }
+  )
+}
+
 function safeSetItem(key: string, value: string) {
-  try { localStorage.setItem(key, value) }
-  catch { console.warn('localStorage full:', key) }
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    console.warn('localStorage full:', key)
+  }
 }
 function safeSetJson(key: string, value: unknown) {
-  try { localStorage.setItem(key, JSON.stringify(value)) }
-  catch { console.warn('localStorage full:', key) }
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    console.warn('localStorage full:', key)
+  }
 }
 
 function readSessionReturnStack(): SessionReturnStackItem[] {
   try {
     const stored = safeParseJson<unknown>(localStorage.getItem(SESSION_RETURN_STACK_KEY))
     if (!Array.isArray(stored)) return []
-    return stored.filter((item): item is SessionReturnStackItem => (
-      Boolean(item) &&
-      typeof item === 'object' &&
-      Boolean((item as SessionReturnStackItem).session?.token) &&
-      validScreens.includes((item as SessionReturnStackItem).screen) &&
-      validTabs.includes((item as SessionReturnStackItem).tab)
-    ))
+    return stored.filter(
+      (item): item is SessionReturnStackItem =>
+        Boolean(item) &&
+        typeof item === 'object' &&
+        Boolean((item as SessionReturnStackItem).session?.token) &&
+        validScreens.includes((item as SessionReturnStackItem).screen) &&
+        validTabs.includes((item as SessionReturnStackItem).tab),
+    )
   } catch {
     return []
   }
@@ -1107,6 +1265,7 @@ function loadStoredTeamSection(): TeamSection {
 }
 
 function loadStoredActiveTeamId(): string | null {
+  if (PUBLIC_EDITION) return null
   try {
     const stored = localStorage.getItem(ACTIVE_TEAM_ID_KEY)
     return stored && stored.trim() ? stored : null
@@ -1132,9 +1291,186 @@ function popSessionReturnStack() {
 }
 
 function isAuthExpired(error: unknown) {
-  return error instanceof ApiError &&
+  return (
+    error instanceof ApiError &&
     error.status === 401 &&
     ['TOKEN_EXPIRED', 'UNAUTHORIZED', 'UNKNOWN_USER', 'ACCOUNT_DISABLED'].includes(error.code)
+  )
+}
+
+type WorkspaceBootstrapFailure = {
+  error: unknown
+  sessionEpoch: number
+  userId: string
+}
+
+type WorkspaceBootstrapRecoveryTask = {
+  execute: (signal: AbortSignal) => Promise<void>
+  onLoaded?: () => void
+  session: AuthSession
+  sessionEpoch: number
+}
+
+type WorkspaceBootstrapOutcome =
+  | { status: 'loaded' | 'superseded' }
+  | { status: 'deferred'; error: unknown }
+
+// A normal local API replacement takes roughly five seconds on Windows. Keep
+// the authenticated shell under its resident launch curtain through that
+// bounded handoff instead of flashing the terminal recovery screen after only
+// two seconds. The attempts remain serialized and honor the server hint, so
+// this extends patience without creating a retry wave.
+const WORKSPACE_BOOTSTRAP_RETRY_DELAYS_MS = [350, 750, 1_500, 3_000] as const
+const WORKSPACE_BOOTSTRAP_RETRY_BUDGET_MS = 12_000
+
+function isSessionSuperseded(error: unknown) {
+  return error instanceof ApiError && error.code === 'SESSION_SUPERSEDED'
+}
+
+function isWorkspaceIdentityMismatch(error: unknown) {
+  return error instanceof ApiError && error.code === 'SESSION_IDENTITY_MISMATCH'
+}
+
+function isTransientWorkspaceBootstrapError(error: unknown) {
+  if (error instanceof TypeError) return true
+  if (!(error instanceof ApiError)) return false
+  if (
+    [
+      'REQUEST_TIMEOUT',
+      'SERVER_BUSY',
+      'SERVER_STARTING',
+      'SERVER_UNAVAILABLE',
+      'MEMORY_PRESSURE',
+      'MEMORY_PRESSURE_SOFT',
+      'MEMORY_PRESSURE_HARD',
+      'WORK_DEADLINE_EXCEEDED',
+      'WORKSPACE_BOOTSTRAP_UNAVAILABLE',
+      'WORKSPACE_SECTION_STREAM_INVALID',
+      'WORKSPACE_STREAM_RETRY_REQUIRED',
+      'WORKSPACE_STREAM_IDLE_TIMEOUT',
+      'WORKSPACE_REVISION_CHANGED',
+    ].includes(error.code)
+  ) return true
+  return error.status === 408 || error.status === 429 || (error.status >= 500 && error.status <= 504)
+}
+
+function workspaceBootstrapRetryDelayMs(error: unknown, attempt: number, elapsedMs: number) {
+  if (!isTransientWorkspaceBootstrapError(error)) return null
+  // The sectional transport owns restart frames that arrive after a stream
+  // has begun. Once that bounded recovery is exhausted, do not multiply it by
+  // the App-level cold-start loop; the explicit recovery action remains
+  // available to the user.
+  if (error instanceof ApiError && error.retryExhausted) return null
+  const baseDelay = WORKSPACE_BOOTSTRAP_RETRY_DELAYS_MS[attempt]
+  if (baseDelay === undefined) return null
+  const retryAfterMs = error instanceof ApiError && Number.isFinite(error.retryAfterMs)
+    ? Math.max(0, Number(error.retryAfterMs))
+    : 0
+  // Full clients behind one NAT should not all re-enter the admission queue on
+  // the exact same millisecond. Never retry earlier than the server's hint.
+  const jitteredDelay = Math.round(baseDelay * (1 + Math.random() * 0.2))
+  const delay = Math.max(jitteredDelay, retryAfterMs)
+  return elapsedMs + delay <= WORKSPACE_BOOTSTRAP_RETRY_BUDGET_MS ? delay : null
+}
+
+function workspaceBootstrapAbortReason() {
+  const error = new Error('Workspace bootstrap was cancelled.')
+  error.name = 'AbortError'
+  return error
+}
+
+function waitForWorkspaceBootstrapRetry(delayMs: number, signal: AbortSignal) {
+  signal.throwIfAborted()
+  if (delayMs <= 0) return Promise.resolve()
+  return new Promise<void>((resolve, reject) => {
+    const finish = () => {
+      signal.removeEventListener('abort', handleAbort)
+      resolve()
+    }
+    const handleAbort = () => {
+      window.clearTimeout(timer)
+      signal.removeEventListener('abort', handleAbort)
+      reject(signal.reason ?? workspaceBootstrapAbortReason())
+    }
+    const timer = window.setTimeout(finish, delayMs)
+    signal.addEventListener('abort', handleAbort, { once: true })
+  })
+}
+
+function isBusyWorkspaceBootstrapError(error: unknown) {
+  return error instanceof ApiError && (
+    [
+      'SERVER_BUSY',
+      'SERVER_STARTING',
+      'MEMORY_PRESSURE',
+      'MEMORY_PRESSURE_SOFT',
+      'MEMORY_PRESSURE_HARD',
+      'WORK_DEADLINE_EXCEEDED',
+      'WORKSPACE_STREAM_RETRY_REQUIRED',
+      'WORKSPACE_REVISION_CHANGED',
+    ].includes(error.code)
+    || error.status === 429
+  )
+}
+
+function workspaceBootstrapRequestId(error: unknown) {
+  if (!(error instanceof ApiError) || typeof error.requestId !== 'string') return null
+  const requestId = error.requestId.trim()
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(requestId) ? requestId : null
+}
+
+function WorkspaceBootstrapRecoveryScreen({
+  title,
+  message,
+  requestId,
+  retrying,
+  onRetry,
+  onExit,
+  tx,
+}: {
+  title: string
+  message: string
+  requestId: string | null
+  retrying: boolean
+  onRetry: () => Promise<void>
+  onExit: () => void
+  tx: (path: string, fallback?: string) => string
+}) {
+  return (
+    <main className="offline-launch-canvas">
+      <section className="offline-launch-content" aria-labelledby="workspace-recovery-title">
+        <div className="offline-launch-state-icon">
+          <TriangleAlert size={24} aria-hidden="true" />
+        </div>
+        <h1 id="workspace-recovery-title">{title}</h1>
+        <p className="offline-launch-detail" role="alert">{message}</p>
+        {requestId ? (
+          <p className="offline-launch-request-reference">
+            {tx('offlineStatus.requestReference', 'Request reference')}: <code>{requestId}</code>
+          </p>
+        ) : null}
+        <div className="offline-launch-actions">
+          <button
+            type="button"
+            className="primary-action offline-launch-retry"
+            onClick={() => { void onRetry() }}
+            disabled={retrying}
+            aria-busy={retrying}
+          >
+            <LoaderCircle className={retrying ? 'spin' : ''} size={15} aria-hidden="true" />
+            {retrying ? tx('offlineStatus.checking') : tx('offlineStatus.retry')}
+          </button>
+          <button type="button" className="quiet-action offline-launch-exit" onClick={onExit}>
+            {tx('signOut')}
+          </button>
+        </div>
+        <div className="offline-launch-security">
+          <ShieldCheck size={16} aria-hidden="true" />
+          <span>{tx('offlineStatus.permissionProtected')}</span>
+        </div>
+      </section>
+    </main>
+  )
 }
 
 const FILE_SEGMENT_RESERVED_CHARACTERS = new Set(Array.from('<>:"/\\|?*'))
@@ -1142,15 +1478,9 @@ const FILE_SEGMENT_RESERVED_CHARACTERS = new Set(Array.from('<>:"/\\|?*'))
 function safeFileSegment(value: string) {
   const sanitized = Array.from(value.trim(), (character) => {
     const codePoint = character.codePointAt(0) ?? 0
-    return codePoint <= 0x1f || FILE_SEGMENT_RESERVED_CHARACTERS.has(character)
-      ? '-'
-      : character
+    return codePoint <= 0x1f || FILE_SEGMENT_RESERVED_CHARACTERS.has(character) ? '-' : character
   }).join('')
-  return sanitized
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 80) || 'application'
+  return sanitized.replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || 'application'
 }
 
 function expiresAtForShare(expiry: ShareExpiry) {
@@ -1193,56 +1523,24 @@ function WorkspaceLayoutToolbar({
   applicationsHidden,
   inspectorHidden,
   tx,
-  viewMode,
   onToggleApplications,
   onToggleInspector,
   onSwap,
   onReset,
-  onViewModeChange,
-  showViewModeToggle = true,
 }: {
   applicationsHidden: boolean
   inspectorHidden: boolean
   tx: (path: string, fallback?: string) => string
-  viewMode: 'list' | 'kanban'
   onToggleApplications: () => void
   onToggleInspector: () => void
   onSwap: () => void
   onReset: () => void
-  onViewModeChange: (mode: 'list' | 'kanban') => void
-  // False in the team-scoped workspace — the kanban board assumes single-owner bulk status
-  // changes, which doesn't fit "browsing my team's applications."
-  showViewModeToggle?: boolean
 }) {
   const ApplicationIcon = applicationsHidden ? PanelLeftOpen : PanelLeftClose
   const InspectorIcon = inspectorHidden ? PanelRightOpen : PanelRightClose
 
   return (
     <div className="workspace-layout-toolbar">
-      {showViewModeToggle ? (
-        <div className={`mobile-workspace-view-toggle ${viewMode === 'kanban' ? 'is-board' : 'is-list'}`}>
-          <button
-            type="button"
-            className={viewMode === 'list' ? 'active' : ''}
-            onClick={() => onViewModeChange('list')}
-            aria-label={tx('kanban.listView', 'List view')}
-            aria-pressed={viewMode === 'list'}
-          >
-            <List size={16} aria-hidden="true" />
-            <span>{tx('kanban.list', 'List')}</span>
-          </button>
-          <button
-            type="button"
-            className={viewMode === 'kanban' ? 'active' : ''}
-            onClick={() => onViewModeChange('kanban')}
-            aria-label={tx('kanban.boardView', 'Kanban view')}
-            aria-pressed={viewMode === 'kanban'}
-          >
-            <Columns size={16} aria-hidden="true" />
-            <span>{tx('kanban.board', 'Board')}</span>
-          </button>
-        </div>
-      ) : null}
       <div className="workspace-layout-toolbar-panel">
         <div className="workspace-layout-toolbar-body">
           <div className="workspace-layout-toolbar-body-inner">
@@ -1255,7 +1553,9 @@ function WorkspaceLayoutToolbar({
                 aria-pressed={!applicationsHidden}
               >
                 <ApplicationIcon size={14} aria-hidden="true" />
-                <span>{applicationsHidden ? tx('explorer.showApplicationsShort') : tx('explorer.hideApplicationsShort')}</span>
+                <span>
+                  {applicationsHidden ? tx('explorer.showApplicationsShort') : tx('explorer.hideApplicationsShort')}
+                </span>
               </button>
               <button
                 type="button"
@@ -1276,35 +1576,8 @@ function WorkspaceLayoutToolbar({
                 <span>{tx('explorer.resetLayoutShort')}</span>
               </button>
             </div>
-            {showViewModeToggle ? (
-              <div className={`view-mode-toggle ${viewMode === 'kanban' ? 'is-board' : 'is-list'}`}>
-                <button
-                  type="button"
-                  className={viewMode === 'list' ? 'active' : ''}
-                  onClick={() => onViewModeChange('list')}
-                  title={tx('kanban.listView', 'List view')}
-                  aria-label={tx('kanban.listView', 'List view')}
-                  aria-pressed={viewMode === 'list'}
-                >
-                  <List size={13} aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  className={viewMode === 'kanban' ? 'active' : ''}
-                  onClick={() => onViewModeChange('kanban')}
-                  title={tx('kanban.boardView', 'Kanban view')}
-                  aria-label={tx('kanban.boardView', 'Kanban view')}
-                  aria-pressed={viewMode === 'kanban'}
-                >
-                  <Columns size={13} aria-hidden="true" />
-                </button>
-              </div>
-            ) : null}
           </div>
         </div>
-        <button type="button" className="workspace-toolbar-toggle" aria-label={tx('explorer.layout')}>
-          <SlidersHorizontal size={16} aria-hidden="true" />
-        </button>
       </div>
     </div>
   )
@@ -1322,25 +1595,26 @@ function ApplicationSaveIndicator({
   if (status.phase === 'idle' || status.phase === 'pending') return null
   const errorMessage = status.phase === 'error' ? status.message : undefined
 
-  const content = status.phase === 'saving'
-    ? {
-        icon: <LoaderCircle className="spin-icon" size={12} aria-hidden="true" />,
-        label: tx('dossier.saving', 'Saving…'),
-      }
-    : status.phase === 'saved'
+  const content =
+    status.phase === 'saving'
       ? {
-          icon: <Check size={12} aria-hidden="true" />,
-          label: tx('toast.appSaved', 'Application saved'),
+          icon: <LoaderCircle className="spin-icon" size={12} aria-hidden="true" />,
+          label: tx('dossier.saving', 'Saving…'),
         }
-      : status.phase === 'queued'
+      : status.phase === 'saved'
         ? {
-            icon: <CloudOff size={12} aria-hidden="true" />,
-            label: tpl(tx('toast.offlineChangeQueued', '{count} offline change(s) waiting to sync'), { count: 1 }),
+            icon: <Check size={12} aria-hidden="true" />,
+            label: tx('toast.appSaved', 'Application saved'),
           }
-        : {
-            icon: <TriangleAlert size={12} aria-hidden="true" />,
-            label: errorMessage || tx('toast.offlineSaveNeedsOnline', 'This change needs an online connection.'),
-          }
+        : status.phase === 'queued'
+          ? {
+              icon: <CloudOff size={12} aria-hidden="true" />,
+              label: tpl(tx('toast.offlineChangeQueued', '{count} offline change(s) waiting to sync'), { count: 1 }),
+            }
+          : {
+              icon: <TriangleAlert size={12} aria-hidden="true" />,
+              label: errorMessage || tx('toast.offlineSaveNeedsOnline', 'This change needs an online connection.'),
+            }
 
   return (
     <div
@@ -1366,30 +1640,66 @@ function ApplicationSaveIndicator({
   )
 }
 
+const MAIL_SYNC_POLL_BACKOFF = 1.35
+const MAIL_SYNC_POLL_CEILING_MS = 20_000
+/** Safety-net cadence used while the realtime stream owns job transitions. */
+const MAIL_SYNC_STREAMED_INTERVAL_MS = 15_000
+const MAIL_SYNC_STREAMED_RETRY_INTERVAL_MS = 30_000
+const MAIL_SYNC_STREAMED_CEILING_MS = 60_000
+/** Bounded so a record under continuous background writes still reports rather than spinning. */
+const APPLICATION_SAVE_REBASE_ATTEMPTS = 3
+const APPLICATION_SAVE_BUSY_RETRY_DELAYS_MS = [600, 1_400, 2_800] as const
+
 function MailSyncJobWatcher({
   job,
+  realtimeConnected,
   onPoll,
 }: {
   job?: MailSyncJob | null
+  /**
+   * With the stream up, the server announces every job transition, so this
+   * watcher is only a safety net for a dropped event. Polling every ~2s then
+   * is a visible request flood for a job that runs for half a minute.
+   */
+  realtimeConnected: boolean
   onPoll: (jobId: string, signal: AbortSignal) => Promise<boolean>
 }) {
   const jobId = job?.id
   const jobStatus = job?.status
   const active = Boolean(jobId && jobStatus && ['queued', 'running'].includes(jobStatus))
   const nextAttemptMs = Date.parse(job?.nextAttemptAt ?? '')
-  const delayedRetryMs = jobStatus === 'queued' && Number.isFinite(nextAttemptMs)
-    ? Math.max(0, nextAttemptMs - Date.now())
-    : 0
+  const delayedRetryMs =
+    jobStatus === 'queued' && Number.isFinite(nextAttemptMs) ? Math.max(0, nextAttemptMs - Date.now()) : 0
+  const restartKey = `${jobId ?? ''}:${jobStatus ?? ''}:${job?.nextAttemptAt ?? ''}:${realtimeConnected}`
+  const baseIntervalMs = delayedRetryMs > 5_000
+    ? (realtimeConnected ? MAIL_SYNC_STREAMED_RETRY_INTERVAL_MS : 15_000)
+    : (realtimeConnected ? MAIL_SYNC_STREAMED_INTERVAL_MS : 1_800)
+  const ceilingMs = realtimeConnected ? MAIL_SYNC_STREAMED_CEILING_MS : MAIL_SYNC_POLL_CEILING_MS
+  // A history import or a stuck job can stay `running` for minutes. Poll
+  // quickly while the result is plausibly imminent, then decay towards a
+  // background cadence so one long job never becomes a request flood.
+  const pollCountRef = useRef(0)
+
+  useEffect(() => {
+    pollCountRef.current = 0
+  }, [restartKey])
 
   useVisibilityAwarePolling({
     enabled: active,
-    initialDelayMs: delayedRetryMs > 5_000 ? Math.min(delayedRetryMs, 30_000) : 900,
-    intervalMs: delayedRetryMs > 5_000 ? 15_000 : 1_800,
-    restartKey: `${jobId ?? ''}:${jobStatus ?? ''}:${job?.nextAttemptAt ?? ''}`,
+    initialDelayMs: delayedRetryMs > 5_000
+      ? Math.min(delayedRetryMs, 30_000)
+      : (realtimeConnected ? MAIL_SYNC_STREAMED_INTERVAL_MS : 900),
+    intervalMs: baseIntervalMs,
+    restartKey,
     poll: async (signal) => {
       if (!jobId) return false
       const keepPolling = await onPoll(jobId, signal).catch(() => true)
-      return keepPolling ? undefined : false
+      if (!keepPolling) return false
+      pollCountRef.current += 1
+      return Math.min(
+        ceilingMs,
+        Math.round(baseIntervalMs * MAIL_SYNC_POLL_BACKOFF ** Math.max(0, pollCountRef.current - 1)),
+      )
     },
   })
 
@@ -1399,6 +1709,23 @@ function MailSyncJobWatcher({
 type WorkspaceRefreshScope = 'all' | 'team'
 type ApplicationSaveOptions = {
   feedback?: 'toast' | 'quiet'
+}
+
+function createMailClassificationRequestId() {
+  return globalThis.crypto?.randomUUID?.()
+    ?? `mail-classification-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
+function shouldRetainMailClassificationRequestId(error: unknown) {
+  return isNetworkLikeError(error)
+    || (
+      error instanceof ApiError
+      && [
+        'MAIL_CLASSIFICATION_IN_PROGRESS',
+        'MAIL_CLASSIFICATION_SAVE_FAILED',
+        'MAIL_CLASSIFICATION_TASK_FAILED',
+      ].includes(error.code)
+    )
 }
 
 export default function App() {
@@ -1428,11 +1755,12 @@ export default function App() {
   const [offlineAccessExpiresAt, setOfflineAccessExpiresAt] = useState<string | null>(
     initialOfflineMetadata?.expiresAt ?? null,
   )
-  const [offlineQueueCount, setOfflineQueueCount] = useState(() =>
-    session ? offlineQueueSize(session.user.id) : 0,
-  )
+  const [offlineQueueCount, setOfflineQueueCount] = useState(() => (session ? offlineQueueSize(session.user.id) : 0))
   const [blockedOfflineCount, setBlockedOfflineCount] = useState(() =>
     session ? blockedOfflineQueueSize(session.user.id) : 0,
+  )
+  const [blockedOfflineReason, setBlockedOfflineReason] = useState<string | null>(() =>
+    session ? firstBlockedOfflineReason(session.user.id) : null,
   )
   const [syncingOffline, setSyncingOffline] = useState(false)
   const [pwaUpdateReady, setPwaUpdateReady] = useState(false)
@@ -1463,6 +1791,7 @@ export default function App() {
   // Personal ⇄ Team nav context for institution-admin/teacher/student roles — see teamViewerRole
   // below, which clamps this back to 'personal' for students and non-team users.
   const [interfaceMode, setInterfaceMode] = useState<InterfaceMode>(() => {
+    if (PUBLIC_EDITION) return 'personal'
     const parsed = parseRoute(window.location.pathname)
     if (parsed?.interfaceMode) return parsed.interfaceMode
     try {
@@ -1481,6 +1810,8 @@ export default function App() {
   // Data
   const [applications, setApplications] = useState<ApplicationRecord[]>([])
   const [applicationsLoaded, setApplicationsLoaded] = useState(false)
+  const [workspaceBootstrapFailure, setWorkspaceBootstrapFailure] = useState<WorkspaceBootstrapFailure | null>(null)
+  const [workspaceBootstrapRetrying, setWorkspaceBootstrapRetrying] = useState(false)
   /** True only after the first shell paint under the boot curtain — prevents post-load jank. */
   const [shellPaintReady, setShellPaintReady] = useState(false)
   /** Full-screen handoff while switching personal ⇄ team (or active team). */
@@ -1495,12 +1826,34 @@ export default function App() {
   // feeling after a destructive confirmation.
   const [removingProfileAssetIds, setRemovingProfileAssetIds] = useState<Set<string>>(() => new Set())
   const [aiKeys, setAiKeys] = useState<AiKey[]>([])
+  const enabledAiKeys = useMemo(() => aiKeys.filter((key) => key.enabled !== false), [aiKeys])
+  const [classifyingCommunicationIds, setClassifyingCommunicationIds] = useState<Set<string>>(
+    () => new Set(),
+  )
+  const mailClassificationIdempotencyKeysRef = useRef(new Map<string, string>())
+  const [interviewWorkspaces, setInterviewWorkspaces] = useState<Record<string, InterviewPrepWorkspace>>({})
+  const [interviewSelectedStudentId, setInterviewSelectedStudentId] = useState<string | null>(null)
+  const [interviewLoadingScope, setInterviewLoadingScope] = useState<string | null>(null)
+  const interviewLoadSequenceRef = useRef(0)
+  const dirtyInterviewScopeKeysRef = useRef(new Set<string>())
   const [teamSummary, setTeamSummary] = useState<TeamSummary | null>(null)
   const [teamWorkspaces, setTeamWorkspaces] = useState<TeamWorkspaceOption[]>([])
   const [activeTeamId, setActiveTeamId] = useState<string | null>(loadStoredActiveTeamId)
   const [teamLookupComplete, setTeamLookupComplete] = useState(false)
   // Only populated for active team roles — see the teamApplications fetch effect below.
   const [teamApplications, setTeamApplications] = useState<TeamApplicationRecord[]>([])
+  const [teamRecommenderDirectory, setTeamRecommenderDirectory] = useState<{
+    scopeKey: string
+    profilesByStudent: Record<string, ProfileRecommender[]>
+  }>(() => ({ scopeKey: '', profilesByStudent: {} }))
+  const personalRecommenderDirectoryRevisionRef = useRef({ scopeKey: '', revision: 0 })
+  const teamRecommenderDirectoryRevisionRef = useRef<{
+    scopeKey: string
+    revisionsByDirectory: Map<string, number>
+  }>({ scopeKey: '', revisionsByDirectory: new Map() })
+  const [teamRecommenderLoadingKeys, setTeamRecommenderLoadingKeys] = useState<Set<string>>(
+    () => new Set(),
+  )
   const [backups, setBackups] = useState<BackupRecord[]>([])
   const [removingBackupFileNames, setRemovingBackupFileNames] = useState<Set<string>>(() => new Set())
   const [applicationTrash, setApplicationTrash] = useState<ApplicationTrashItem[]>([])
@@ -1529,11 +1882,14 @@ export default function App() {
   // launched the dossier so Back returns to that surface instead of always
   // forcing the Kanban board.
   const mobileDetailOriginRef = useRef<'dashboard' | 'list' | 'kanban'>('list')
-  const [compactWorkspaceViewport, setCompactWorkspaceViewport] = useState(() => (
-    typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 820px)').matches
-  ))
+  const [compactWorkspaceViewport, setCompactWorkspaceViewport] = useState(
+    () => typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 820px)').matches,
+  )
   const [recentOpenedIds, setRecentOpenedIds] = useState<string[]>(loadStoredRecentOpenedIds)
   const [draft, setDraft] = useState<ApplicationRecord | null>(null)
+  const [pendingRecommenderDraftsByApplication, setPendingRecommenderDraftsByApplication] = useState<
+    Record<string, MaterialRecommender[]>
+  >({})
   const [draftDirty, setDraftDirty] = useState(false)
   const draftRef = useRef<ApplicationRecord | null>(null)
   const draftBaselineRef = useRef<string | null>(null)
@@ -1541,104 +1897,123 @@ export default function App() {
   const draftMutationVersionRef = useRef(0)
   const draftDirtyCheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const draftBaselineTaskRef = useRef<{ handle: number; idle: boolean } | null>(null)
-  const draftBaselinePendingRef = useRef<{ draft: ApplicationRecord | null; version: number } | null>(null)
-  const schoolLogoInFlightRef = useRef(new Map<string, Promise<boolean>>())
+  const draftBaselinePendingRef = useRef<{
+    draft: ApplicationRecord | null
+    version: number
+  } | null>(null)
+  const schoolLogoRequestsRef = useRef(new SchoolLogoRequestCoordinator())
   const schoolLogoManualRevisionRef = useRef(new Map<string, number>())
 
   const clearDraftBaselineTask = useCallback(() => {
     const pending = draftBaselineTaskRef.current
     if (!pending) return
-    const idleWindow = window as Window & { cancelIdleCallback?: (handle: number) => void }
+    const idleWindow = window as Window & {
+      cancelIdleCallback?: (handle: number) => void
+    }
     if (pending.idle) idleWindow.cancelIdleCallback?.(pending.handle)
     else window.clearTimeout(pending.handle)
     draftBaselineTaskRef.current = null
   }, [])
 
-  const scheduleDraftBaseline = useCallback((nextDraft: ApplicationRecord | null, version: number) => {
-    clearDraftBaselineTask()
+  const scheduleDraftBaseline = useCallback(
+    (nextDraft: ApplicationRecord | null, version: number) => {
+      clearDraftBaselineTask()
 
-    const commitBaseline = () => {
-      draftBaselineTaskRef.current = null
-      if (draftBaselineVersionRef.current !== version) return
+      const commitBaseline = () => {
+        draftBaselineTaskRef.current = null
+        if (draftBaselineVersionRef.current !== version) return
 
-      const baseline = nextDraft ? JSON.stringify(nextDraft) : null
-      if (draftBaselineVersionRef.current !== version) return
+        const baseline = nextDraft ? JSON.stringify(nextDraft) : null
+        if (draftBaselineVersionRef.current !== version) return
 
-      draftBaselineRef.current = baseline
-      if (draftBaselinePendingRef.current?.version === version) {
-        draftBaselinePendingRef.current = null
+        draftBaselineRef.current = baseline
+        if (draftBaselinePendingRef.current?.version === version) {
+          draftBaselinePendingRef.current = null
+        }
+
+        const currentDraft = draftRef.current
+        setDraftDirty(Boolean(currentDraft && baseline && JSON.stringify(currentDraft) !== baseline))
       }
 
-      const currentDraft = draftRef.current
-      setDraftDirty(Boolean(currentDraft && baseline && JSON.stringify(currentDraft) !== baseline))
-    }
-
-    if (isJsdomRuntime()) {
-      commitBaseline()
-      return
-    }
-
-    const idleWindow = window as Window & {
-      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
-    }
-    draftBaselineTaskRef.current = idleWindow.requestIdleCallback
-      ? { handle: idleWindow.requestIdleCallback(commitBaseline, { timeout: 900 }), idle: true }
-      : { handle: window.setTimeout(commitBaseline, 220), idle: false }
-  }, [clearDraftBaselineTask])
-
-  const setDraftState = useCallback((
-    nextDraft: ApplicationRecord | null,
-    options?: { clean?: boolean; dirty?: boolean; deferBaseline?: boolean },
-  ) => {
-    if (draftDirtyCheckTimerRef.current) {
-      clearTimeout(draftDirtyCheckTimerRef.current)
-      draftDirtyCheckTimerRef.current = null
-    }
-    draftMutationVersionRef.current += 1
-    draftRef.current = nextDraft
-    setDraft(nextDraft)
-    if (options?.clean) {
-      draftBaselineVersionRef.current += 1
-      const baselineVersion = draftBaselineVersionRef.current
-      setDraftDirty(false)
-      if (options.deferBaseline && nextDraft) {
-        draftBaselineRef.current = null
-        draftBaselinePendingRef.current = { draft: nextDraft, version: baselineVersion }
-        scheduleDraftBaseline(nextDraft, baselineVersion)
+      if (isJsdomRuntime()) {
+        commitBaseline()
         return
       }
+
+      const idleWindow = window as Window & {
+        requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
+      }
+      draftBaselineTaskRef.current = idleWindow.requestIdleCallback
+        ? {
+            handle: idleWindow.requestIdleCallback(commitBaseline, {
+              timeout: 900,
+            }),
+            idle: true,
+          }
+        : { handle: window.setTimeout(commitBaseline, 220), idle: false }
+    },
+    [clearDraftBaselineTask],
+  )
+
+  const setDraftState = useCallback(
+    (nextDraft: ApplicationRecord | null, options?: { clean?: boolean; dirty?: boolean; deferBaseline?: boolean }) => {
+      if (draftDirtyCheckTimerRef.current) {
+        clearTimeout(draftDirtyCheckTimerRef.current)
+        draftDirtyCheckTimerRef.current = null
+      }
+      draftMutationVersionRef.current += 1
+      draftRef.current = nextDraft
+      setDraft(nextDraft)
+      if (options?.clean) {
+        draftBaselineVersionRef.current += 1
+        const baselineVersion = draftBaselineVersionRef.current
+        setDraftDirty(false)
+        if (options.deferBaseline && nextDraft) {
+          draftBaselineRef.current = null
+          draftBaselinePendingRef.current = {
+            draft: nextDraft,
+            version: baselineVersion,
+          }
+          scheduleDraftBaseline(nextDraft, baselineVersion)
+          return
+        }
+        clearDraftBaselineTask()
+        draftBaselinePendingRef.current = null
+        draftBaselineRef.current = nextDraft ? JSON.stringify(nextDraft) : null
+        return
+      }
+      if (typeof options?.dirty === 'boolean') {
+        setDraftDirty(options.dirty)
+        return
+      }
+      const baselinePending = draftBaselinePendingRef.current
+      if (!nextDraft || (!draftBaselineRef.current && !baselinePending)) {
+        setDraftDirty(false)
+        return
+      }
+
+      // Editing large dossiers used to stringify the complete application on every
+      // keystroke. Mark the draft dirty synchronously for navigation safety, then
+      // perform the exact baseline comparison once the input burst has settled.
+      setDraftDirty(true)
+      if (!draftBaselineRef.current) return
+      const baselineVersion = draftBaselineVersionRef.current
+      draftDirtyCheckTimerRef.current = setTimeout(() => {
+        draftDirtyCheckTimerRef.current = null
+        if (draftBaselineVersionRef.current !== baselineVersion || draftRef.current !== nextDraft) return
+        setDraftDirty(JSON.stringify(nextDraft) !== draftBaselineRef.current)
+      }, 180)
+    },
+    [clearDraftBaselineTask, scheduleDraftBaseline],
+  )
+
+  useEffect(
+    () => () => {
+      if (draftDirtyCheckTimerRef.current) clearTimeout(draftDirtyCheckTimerRef.current)
       clearDraftBaselineTask()
-      draftBaselinePendingRef.current = null
-      draftBaselineRef.current = nextDraft ? JSON.stringify(nextDraft) : null
-      return
-    }
-    if (typeof options?.dirty === 'boolean') {
-      setDraftDirty(options.dirty)
-      return
-    }
-    const baselinePending = draftBaselinePendingRef.current
-    if (!nextDraft || (!draftBaselineRef.current && !baselinePending)) {
-      setDraftDirty(false)
-      return
-    }
-
-    // Editing large dossiers used to stringify the complete application on every
-    // keystroke. Mark the draft dirty synchronously for navigation safety, then
-    // perform the exact baseline comparison once the input burst has settled.
-    setDraftDirty(true)
-    if (!draftBaselineRef.current) return
-    const baselineVersion = draftBaselineVersionRef.current
-    draftDirtyCheckTimerRef.current = setTimeout(() => {
-      draftDirtyCheckTimerRef.current = null
-      if (draftBaselineVersionRef.current !== baselineVersion || draftRef.current !== nextDraft) return
-      setDraftDirty(JSON.stringify(nextDraft) !== draftBaselineRef.current)
-    }, 180)
-  }, [clearDraftBaselineTask, scheduleDraftBaseline])
-
-  useEffect(() => () => {
-    if (draftDirtyCheckTimerRef.current) clearTimeout(draftDirtyCheckTimerRef.current)
-    clearDraftBaselineTask()
-  }, [clearDraftBaselineTask])
+    },
+    [clearDraftBaselineTask],
+  )
 
   // Workspace state
   const [query, setQuery] = useState('')
@@ -1661,7 +2036,27 @@ export default function App() {
   const [viewModeDirection, setViewModeDirection] = useState<'to-list' | 'to-kanban'>(
     viewMode === 'kanban' ? 'to-kanban' : 'to-list',
   )
+  // Keep the outgoing workspace surface alive for the urgent click frame. The
+  // destination is allowed to render on React's deferred lane, so a large
+  // Kanban mount cannot block the toolbar, pointer feedback, or the shell.
+  const previousScreenRef = useRef(screen)
+  const deferredWorkspaceViewMode = useDeferredValue(viewMode)
+  const hasWorkspaceViewContinuity = screen === 'workspace' && previousScreenRef.current === 'workspace'
+  const reducedWorkspaceMotion = typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const renderedWorkspaceViewMode = hasWorkspaceViewContinuity && !reducedWorkspaceMotion
+    ? deferredWorkspaceViewMode
+    : viewMode
+  useLayoutEffect(() => {
+    previousScreenRef.current = screen
+  }, [screen])
   const [workspaceViewExit, setWorkspaceViewExit] = useState<'to-kanban' | null>(null)
+  // Once the board has been opened in the current workspace visit, retain its
+  // bounded DOM behind React Activity. Returning to a dossier must not make the
+  // next Board click rebuild the complete pipeline from scratch.
+  const [workspaceBoardResident, setWorkspaceBoardResident] = useState(
+    () => screen === 'workspace' && viewMode === 'kanban',
+  )
   const [tab, setTab] = useState<DetailTab>(loadStoredTab)
   const [workspaceLayout, setWorkspaceLayout] = useState<WorkspaceLayoutState>(loadStoredWorkspaceLayout)
   const workspaceShellRef = useRef<HTMLDivElement | null>(null)
@@ -1669,49 +2064,57 @@ export default function App() {
   const [workspaceJumpIntent, setWorkspaceJumpIntent] = useState<DossierJumpIntent | null>(null)
   const workspaceJumpTokenRef = useRef(0)
   const consumeWorkspaceJumpIntent = useCallback((token: number) => {
-    setWorkspaceJumpIntent((current) => current?.token === token ? null : current)
+    setWorkspaceJumpIntent((current) => (current?.token === token ? null : current))
   }, [])
   const workspaceViewExitTimerRef = useRef<number | null>(null)
-  const detailDraftHydrationRef = useRef<{ handle: number; idle: boolean } | null>(null)
+  const detailDraftHydrationRef = useRef<{
+    handle: number
+    idle: boolean
+  } | null>(null)
   const detailDraftHydrationGenerationRef = useRef(0)
-  const applicationSelectionFrameRef = useRef<{ first: number; second: number } | null>(null)
-  const dossierTransitionSourceRef = useRef<ApplicationRecord | null>(null)
-
   const clearDetailDraftHydration = useCallback(() => {
     detailDraftHydrationGenerationRef.current += 1
     const scheduled = detailDraftHydrationRef.current
     if (!scheduled) return
-    const idleWindow = window as Window & { cancelIdleCallback?: (handle: number) => void }
+    const idleWindow = window as Window & {
+      cancelIdleCallback?: (handle: number) => void
+    }
     if (scheduled.idle) idleWindow.cancelIdleCallback?.(scheduled.handle)
     else window.clearTimeout(scheduled.handle)
     detailDraftHydrationRef.current = null
   }, [])
 
-  const scheduleDetailDraftHydration = useCallback((application: ApplicationRecord) => {
-    clearDetailDraftHydration()
-    const generation = ++detailDraftHydrationGenerationRef.current
-    const hydrate = () => {
-      detailDraftHydrationRef.current = null
-      if (detailDraftHydrationGenerationRef.current !== generation) return
-      const nextDraft = cloneApplication(application)
-      // This callback already runs in idle time (or the jsdom fast path). Commit the
-      // lightweight draft pointer immediately so it cannot be starved behind an
-      // earlier navigation transition while the dossier chunk is resolving.
-      setDraftState(nextDraft, { clean: true })
-    }
+  const scheduleDetailDraftHydration = useCallback(
+    (application: ApplicationRecord) => {
+      clearDetailDraftHydration()
+      const generation = ++detailDraftHydrationGenerationRef.current
+      const hydrate = () => {
+        detailDraftHydrationRef.current = null
+        if (detailDraftHydrationGenerationRef.current !== generation) return
+        const nextDraft = cloneApplication(application)
+        // This callback already runs in idle time (or the jsdom fast path). Commit the
+        // lightweight draft pointer immediately so it cannot be starved behind an
+        // earlier navigation transition while the dossier chunk is resolving.
+        setDraftState(nextDraft, { clean: true })
+      }
 
-    if (isJsdomRuntime()) {
-      hydrate()
-      return
-    }
+      if (isJsdomRuntime()) {
+        hydrate()
+        return
+      }
 
-    const idleWindow = window as Window & {
-      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
-    }
-    detailDraftHydrationRef.current = idleWindow.requestIdleCallback
-      ? { handle: idleWindow.requestIdleCallback(hydrate, { timeout: 240 }), idle: true }
-      : { handle: window.setTimeout(hydrate, 190), idle: false }
-  }, [clearDetailDraftHydration, setDraftState])
+      const idleWindow = window as Window & {
+        requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
+      }
+      detailDraftHydrationRef.current = idleWindow.requestIdleCallback
+        ? {
+            handle: idleWindow.requestIdleCallback(hydrate, { timeout: 240 }),
+            idle: true,
+          }
+        : { handle: window.setTimeout(hydrate, 190), idle: false }
+    },
+    [clearDetailDraftHydration, setDraftState],
+  )
 
   // UI state
   const [busy, setBusy] = useState(false)
@@ -1721,7 +2124,10 @@ export default function App() {
   const [shareDialogOpen, setShareDialogOpen] = useState(false)
   const [dossierEnrichmentOpen, setDossierEnrichmentOpen] = useState(false)
   const [teamWorkspaceChooserOpen, setTeamWorkspaceChooserOpen] = useState(false)
-  const [pendingTeamWorkspaceEntry, setPendingTeamWorkspaceEntry] = useState<{ screen?: Screen; teamSection?: TeamSection } | null>(null)
+  const [pendingTeamWorkspaceEntry, setPendingTeamWorkspaceEntry] = useState<{
+    screen?: Screen
+    teamSection?: TeamSection
+  } | null>(null)
   const [shareExpiry, setShareExpiry] = useState<ShareExpiry>('7d')
   const [sharePermission, setSharePermission] = useState<SharePermission>('view')
   const [shareScopeSections, setShareScopeSections] = useState<ShareSection[]>([...allShareSections])
@@ -1738,13 +2144,10 @@ export default function App() {
     media.addEventListener?.('change', update)
     return () => media.removeEventListener?.('change', update)
   }, [])
-  const i18nNamespaces = useMemo(() => session
-    ? languageNamespacesForScreen(screen, tab)
-    : ['core', 'shared', 'settings', 'resetPassword'], [
-    screen,
-    session,
-    tab,
-  ])
+  const i18nNamespaces = useMemo(
+    () => (session ? languageNamespacesForScreen(screen, tab) : ['core', 'shared', 'settings', 'resetPassword']),
+    [screen, session, tab],
+  )
   const i18nValue = useI18nValue(lang, i18nNamespaces)
   const {
     status: applicationSaveStatus,
@@ -1758,11 +2161,10 @@ export default function App() {
     failExternalSave: failExternalApplicationSave,
   } = useApplicationAutoSave({
     enabled: Boolean(session),
-    persist: (application) => saveApplication(
-      application,
-      i18nValue.tx('toast.appSaved'),
-      { feedback: 'quiet' },
-    ),
+    persist: (application) =>
+      saveApplication(application, i18nValue.tx('toast.appSaved'), {
+        feedback: 'quiet',
+      }),
   })
 
   useEffect(() => {
@@ -1797,18 +2199,59 @@ export default function App() {
   // Stable account identity for the mounted session. Token rotation is allowed;
   // swapping to another user's id is not (except intentional login/impersonate).
   const currentSessionUserIdRef = useRef<string | null>(session?.user.id ?? null)
+  // Highest canonical Settings revision accepted for the mounted identity.
+  // Response-bound mutation ids prove which request replied; this monotonic
+  // watermark additionally prevents an older successful request from arriving
+  // last and rolling the resident Settings snapshot backwards.
+  const settingsCommitVersionRef = useRef({
+    userId: session?.user.id ?? null,
+    version: Number.isSafeInteger(session?.user.settingsVersion)
+      ? Number(session?.user.settingsVersion)
+      : 0,
+  })
   // Bumps on every intentional identity change so in-flight async commits that
   // captured an older generation can never rewrite the newly mounted account.
   const sessionIdentityEpochRef = useRef(0)
+  // The last authentication attempt started by this tab owns the handoff. A
+  // slower password/passkey/register result must never replace a newer account.
+  const authenticationHandoffGenerationRef = useRef(0)
+  const appMountedRef = useRef(true)
+  // Id of the mail sync job this tab watched running. Only that job may report a
+  // result: every /api/auth/me body carries the last finished job, including the
+  // one served right after login.
+  const watchedMailSyncJobIdRef = useRef<string | null>(null)
+  const workspaceBootstrapRunRef = useRef(0)
+  const workspaceBootstrapAbortRef = useRef<AbortController | null>(null)
+  const workspaceBootstrapRecoveryRef = useRef<WorkspaceBootstrapRecoveryTask | null>(null)
+  const workspaceBootstrapManualRetryRef = useRef<Promise<void> | null>(null)
+  // Every SESSION_KEY event supersedes every earlier cross-tab handoff, even
+  // while all callers are sharing the same asynchronous safe-reload flush.
+  const crossTabSessionTransitionGenerationRef = useRef(0)
   const sessionTokenLineageRef = useRef<Set<string>>(new Set(session?.token ? [session.token] : []))
+  const offlineSyncSequenceRef = useRef(0)
+  const offlineSyncRunRef = useRef<{
+    id: number
+    userId: string
+    sessionEpoch: number
+  } | null>(null)
+  const invalidateOfflineSync = useCallback(() => {
+    offlineSyncSequenceRef.current += 1
+    offlineSyncRunRef.current = null
+    setSyncingOffline(false)
+  }, [])
   const navigationGuardRef = useRef<NavigationGuard | null>(null)
+  /** Field path named by the most recent refused application save, if any. */
+  const lastSaveErrorFieldRef = useRef<string | null>(null)
   const activeTeamIdRef = useRef(activeTeamId)
-  const workspaceRefreshTasksRef = useRef(
-    new SupersedingTaskCoordinator<WorkspaceRefreshScope>(),
-  )
+  const teamRecommenderLoadsRef = useRef(new Map<string, Promise<ProfileRecommender[]>>())
+  const workspaceRefreshTasksRef = useRef(new SupersedingTaskCoordinator<WorkspaceRefreshScope>())
   const applicationWriteQueueRef = useRef(new Map<string, Promise<unknown>>())
+  const settingsWriteQueueRef = useRef(new Map<string, Promise<unknown>>())
   const pendingSaveCountRef = useRef(0)
-  const offlineSnapshotSaveRef = useRef<{ handle: number; idle: boolean } | null>(null)
+  const offlineSnapshotSaveRef = useRef<{
+    handle: number
+    idle: boolean
+  } | null>(null)
   const taskToggleRequestRef = useRef(new Map<string, number>())
   // Exit motion is applied imperatively so a click never has to re-render the
   // whole application before the first composited frame can move. Enter motion
@@ -1825,6 +2268,71 @@ export default function App() {
   const cssFallbackMotionRef = useRef<CssFallbackMotion | null>(null)
   const railNavigationSequenceRef = useRef(0)
   const deferredQuery = useDeferredValue(query)
+
+  const loadTeamStudentRecommenders = useCallback((studentUserId: string) => {
+    const requestSession = session
+    const teamId = activeTeamId ?? teamSummary?.team.id ?? null
+    if (!requestSession || !teamId || !studentUserId) return Promise.resolve([])
+
+    const scopeKey = `${requestSession.user.id}:${teamId}`
+    const loadingKey = `${scopeKey}:${studentUserId}`
+    const existing = teamRecommenderLoadsRef.current.get(loadingKey)
+    if (existing) return existing
+
+    const requestEpoch = sessionIdentityEpochRef.current
+    const requestStillOwnsSession = () => (
+      sessionIdentityEpochRef.current === requestEpoch
+      && currentSessionUserIdRef.current === requestSession.user.id
+      && sessionTokenLineageRef.current.has(requestSession.token)
+    )
+    setTeamRecommenderLoadingKeys((current) => {
+      if (current.has(loadingKey)) return current
+      const next = new Set(current)
+      next.add(loadingKey)
+      return next
+    })
+
+    const load = phdApi
+      .listTeamMemberProfileRecommenders(requestSession.token, teamId, studentUserId)
+      .then((profiles) => {
+        if (
+          !requestStillOwnsSession()
+          || (activeTeamIdRef.current ?? teamSummary?.team.id ?? null) !== teamId
+        ) {
+          return profiles
+        }
+        setTeamRecommenderDirectory((current) => ({
+          scopeKey,
+          profilesByStudent: {
+            ...(current.scopeKey === scopeKey ? current.profilesByStudent : {}),
+            [studentUserId]: profiles.map((profile) => ({ ...profile })),
+          },
+        }))
+        return profiles
+      })
+      .catch((error) => {
+        if (requestStillOwnsSession()) {
+          notifyEnhancedError(error, languageRef.current, notify)
+        }
+        throw error
+      })
+      .finally(() => {
+        teamRecommenderLoadsRef.current.delete(loadingKey)
+        setTeamRecommenderLoadingKeys((current) => {
+          if (!current.has(loadingKey)) return current
+          const next = new Set(current)
+          next.delete(loadingKey)
+          return next
+        })
+      })
+
+    teamRecommenderLoadsRef.current.set(loadingKey, load)
+    return load
+  }, [activeTeamId, notify, session, teamSummary?.team.id])
+
+  const requestTeamStudentRecommenders = useCallback(async (studentUserId: string): Promise<void> => {
+    await loadTeamStudentRecommenders(studentUserId)
+  }, [loadTeamStudentRecommenders])
 
   const applyCssFallbackMotion = useCallback((motion: CssFallbackMotion) => {
     const transitionRoot = document.documentElement
@@ -1861,7 +2369,7 @@ export default function App() {
       if (animationSequenceRef.current !== token) return
       clearCssFallbackMotion(token)
       startTransition(() => {
-        setCssFallbackCommit((current) => current?.token === token ? null : current)
+        setCssFallbackCommit((current) => (current?.token === token ? null : current))
       })
       onTransitionFinished?.()
     }, cssFallbackEnterDuration(scope))
@@ -1875,214 +2383,219 @@ export default function App() {
     }
   }, [applyCssFallbackMotion, clearCssFallbackMotion, cssFallbackCommit])
 
-  useEffect(() => () => {
-    animationFallbackTimersRef.current.forEach((timer) => window.clearTimeout(timer))
-    animationFallbackTimersRef.current = []
-    if (dossierContentRevealTimerRef.current !== null) {
-      window.clearTimeout(dossierContentRevealTimerRef.current)
-      dossierContentRevealTimerRef.current = null
-    }
-    const pendingSelection = applicationSelectionFrameRef.current
-    if (pendingSelection) {
-      if (pendingSelection.first) window.cancelAnimationFrame(pendingSelection.first)
-      if (pendingSelection.second) window.cancelAnimationFrame(pendingSelection.second)
-      applicationSelectionFrameRef.current = null
-    }
-    clearCssFallbackMotion()
-  }, [clearCssFallbackMotion])
-
-  const runAnimatedScreenUpdate = useCallback((
-    update: () => void,
-    {
-      scope = 'screen',
-      direction,
-      onTransitionFinished,
-      ready,
-      readinessGate,
-      forceCssFallback = false,
-    }: AnimatedScreenTransitionOptions = {},
-  ) => {
-    const pendingSelection = applicationSelectionFrameRef.current
-    if (pendingSelection) {
-      if (pendingSelection.first) window.cancelAnimationFrame(pendingSelection.first)
-      if (pendingSelection.second) window.cancelAnimationFrame(pendingSelection.second)
-      applicationSelectionFrameRef.current = null
-    }
-    const reduceMotion = typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    const transitionRoot = document.documentElement
-    const sequence = ++animationSequenceRef.current
-
-    animationFallbackTimersRef.current.forEach((timer) => window.clearTimeout(timer))
-    animationFallbackTimersRef.current = []
-    clearCssFallbackMotion()
-    clearNativeTransitionAttributes(transitionRoot)
-    if (reduceMotion || isJsdomRuntime()) {
-      markTransitionedSurface(transitionRoot, scope)
-      update()
-      if (isJsdomRuntime()) onTransitionFinished?.()
-      else window.requestAnimationFrame(() => onTransitionFinished?.())
-      return
-    }
-
-    const resolvedDirection = direction ?? 'forward'
-    const beginNativeTransition = () => {
-      if (animationSequenceRef.current !== sequence) return
-
-      if (forceCssFallback) {
-        beginExit()
-        return
+  useEffect(
+    () => () => {
+      animationFallbackTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+      animationFallbackTimersRef.current = []
+      if (dossierContentRevealTimerRef.current !== null) {
+        window.clearTimeout(dossierContentRevealTimerRef.current)
+        dossierContentRevealTimerRef.current = null
       }
+      clearCssFallbackMotion()
+    },
+    [clearCssFallbackMotion],
+  )
 
-      const nativeDocument = document as ViewTransitionDocument
-      const startViewTransition = nativeDocument.startViewTransition
-      if (!startViewTransition) {
-        beginExit()
-        return
-      }
+  const runAnimatedScreenUpdate = useCallback(
+    (
+      update: () => void,
+      {
+        scope = 'screen',
+        direction,
+        onTransitionFinished,
+        ready,
+        readinessGate,
+        forceCssFallback = false,
+      }: AnimatedScreenTransitionOptions = {},
+    ) => {
+      const reduceMotion =
+        typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      const transitionRoot = document.documentElement
+      const sequence = ++animationSequenceRef.current
 
-      markTransitionedSurface(transitionRoot, scope)
-      setNativeTransitionAttributes(transitionRoot, scope, resolvedDirection, sequence)
-
-      try {
-        const transition = startViewTransition.call(nativeDocument, () => {
-          if (animationSequenceRef.current !== sequence) return
-          // The browser retains the old bitmap while React commits the next
-          // surface. This prevents a large tab or dashboard render from
-          // freezing the outgoing page midway through a CSS-only handoff.
-          flushSync(update)
-        })
-
-        void transition.finished.then(
-          () => {
-            if (animationSequenceRef.current !== sequence) return
-            if (transitionRoot.dataset.atlasTransitionToken === String(sequence)) {
-              clearNativeTransitionAttributes(transitionRoot)
-            }
-            onTransitionFinished?.()
-          },
-          () => {
-            if (animationSequenceRef.current !== sequence) return
-            if (transitionRoot.dataset.atlasTransitionToken === String(sequence)) {
-              clearNativeTransitionAttributes(transitionRoot)
-            }
-            onTransitionFinished?.()
-          },
-        )
-      } catch {
-        clearNativeTransitionAttributes(transitionRoot)
-        beginExit()
-      }
-    }
-
-    const beginExit = (destinationReady?: Promise<unknown>) => {
-      if (animationSequenceRef.current !== sequence) return
-      // Mark the surface so child mount animations do not double-fire after the
-      // handoff, then swap immediately. Sequential exit holds felt laggy.
-      markTransitionedSurface(transitionRoot, scope)
-
-      const commit = () => {
-        if (animationSequenceRef.current !== sequence) return
+      animationFallbackTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+      animationFallbackTimersRef.current = []
+      clearCssFallbackMotion()
+      clearNativeTransitionAttributes(transitionRoot)
+      if (reduceMotion || isJsdomRuntime()) {
+        markTransitionedSurface(transitionRoot, scope)
         update()
-        setCssFallbackCommit({
+        if (isJsdomRuntime()) onTransitionFinished?.()
+        else window.requestAnimationFrame(() => onTransitionFinished?.())
+        return
+      }
+
+      const resolvedDirection = direction ?? 'forward'
+      const beginNativeTransition = () => {
+        if (animationSequenceRef.current !== sequence) return
+
+        if (forceCssFallback) {
+          beginExit()
+          return
+        }
+
+        const nativeDocument = document as ViewTransitionDocument
+        const startViewTransition = nativeDocument.startViewTransition
+        if (!startViewTransition) {
+          beginExit()
+          return
+        }
+
+        markTransitionedSurface(transitionRoot, scope)
+        setNativeTransitionAttributes(transitionRoot, scope, resolvedDirection, sequence)
+
+        try {
+          const transition = startViewTransition.call(nativeDocument, () => {
+            if (animationSequenceRef.current !== sequence) return
+            // The browser retains the old bitmap while React commits the next
+            // surface. This prevents a large tab or dashboard render from
+            // freezing the outgoing page midway through a CSS-only handoff.
+            flushSync(update)
+          })
+
+          void transition.finished.then(
+            () => {
+              if (animationSequenceRef.current !== sequence) return
+              if (transitionRoot.dataset.atlasTransitionToken === String(sequence)) {
+                clearNativeTransitionAttributes(transitionRoot)
+              }
+              onTransitionFinished?.()
+            },
+            () => {
+              if (animationSequenceRef.current !== sequence) return
+              if (transitionRoot.dataset.atlasTransitionToken === String(sequence)) {
+                clearNativeTransitionAttributes(transitionRoot)
+              }
+              onTransitionFinished?.()
+            },
+          )
+        } catch {
+          clearNativeTransitionAttributes(transitionRoot)
+          beginExit()
+        }
+      }
+
+      const beginExit = (destinationReady?: Promise<unknown>) => {
+        if (animationSequenceRef.current !== sequence) return
+        // Mark the surface so child mount animations do not double-fire after the
+        // handoff, then swap immediately. Sequential exit holds felt laggy.
+        markTransitionedSurface(transitionRoot, scope)
+
+        const commit = () => {
+          if (animationSequenceRef.current !== sequence) return
+          const nextCssFallbackCommit: CssFallbackMotion = {
+            token: sequence,
+            scope,
+            direction: resolvedDirection,
+            phase: 'enter',
+            onTransitionFinished,
+          }
+          // A dossier-tab handoff has an urgent local highlight in the tab
+          // strip. Commit the new panel and arm its CSS entrance in one
+          // interruptible transition so the root animation never runs against
+          // the outgoing panel while React is still preparing the destination.
+          if (scope === 'dossier-tab' && !reduceMotion && !isJsdomRuntime()) {
+            startTransition(() => {
+              if (animationSequenceRef.current !== sequence) return
+              update()
+              setCssFallbackCommit(nextCssFallbackCommit)
+            })
+            return
+          }
+          update()
+          setCssFallbackCommit(nextCssFallbackCommit)
+        }
+
+        const commitWhenDestinationReady = () => {
+          if (animationSequenceRef.current !== sequence) return
+          // Prefer an urgent commit so the destination paints with the click, not
+          // a frame later behind React's transition scheduler.
+          if (
+            forceCssFallback ||
+            ready ||
+            readinessGate ||
+            scope === 'dossier-tab' ||
+            scope === 'dossier-record' ||
+            scope === 'screen' ||
+            scope === 'workspace-view'
+          ) {
+            commit()
+            return
+          }
+          startTransition(commit)
+        }
+
+        const exitMs = cssFallbackExitDuration(scope)
+        if (exitMs <= 0) {
+          if (destinationReady) {
+            void destinationReady.then(commitWhenDestinationReady, commitWhenDestinationReady)
+            return
+          }
+          commitWhenDestinationReady()
+          return
+        }
+
+        // CSS motion path: optional short exit hold (currently disabled via duration 0).
+        applyCssFallbackMotion({
           token: sequence,
           scope,
           direction: resolvedDirection,
-          phase: 'enter',
+          phase: 'exit',
           onTransitionFinished,
         })
+        const commitTimer = window.setTimeout(() => {
+          if (animationSequenceRef.current !== sequence) return
+          animationFallbackTimersRef.current = []
+          if (destinationReady) {
+            void destinationReady.then(commitWhenDestinationReady, commitWhenDestinationReady)
+            return
+          }
+          commitWhenDestinationReady()
+        }, exitMs)
+        animationFallbackTimersRef.current = [commitTimer]
       }
 
-      const commitWhenDestinationReady = () => {
-        if (animationSequenceRef.current !== sequence) return
-        // Prefer an urgent commit so the destination paints with the click, not
-        // a frame later behind React's transition scheduler.
-        if (
-          forceCssFallback
-          || ready
-          || readinessGate
-          || scope === 'dossier-tab'
-          || scope === 'dossier-record'
-          || scope === 'screen'
-          || scope === 'workspace-view'
-        ) {
-          commit()
-          return
-        }
-        startTransition(commit)
+      const waitForConcreteDestination = async () => {
+        await ready
+        if (!readinessGate || readinessGate.isReady()) return
+
+        // A shared warmup can complete after an optional asset failed or was
+        // cancelled. Confirm the exact lazy screen has resolved before taking a
+        // native snapshot, otherwise Suspense can publish its full-page fallback.
+        await readinessGate.preload()
       }
 
-      const exitMs = cssFallbackExitDuration(scope)
-      if (exitMs <= 0) {
-        if (destinationReady) {
-          void destinationReady.then(commitWhenDestinationReady, commitWhenDestinationReady)
-          return
+      const destinationReady = ready || readinessGate ? waitForConcreteDestination().catch(() => undefined) : undefined
+
+      if (forceCssFallback) {
+        // Hot destinations start moving immediately. For a truly cold lazy
+        // screen, keep the current page steady until its concrete host exists;
+        // this retains the no-skeleton guarantee without penalizing routine taps.
+        if (!readinessGate || readinessGate.isReady()) {
+          beginExit(destinationReady)
+        } else {
+          void destinationReady?.then(
+            () => beginExit(),
+            () => beginExit(),
+          )
         }
-        commitWhenDestinationReady()
         return
       }
 
-      // Legacy path: optional short exit hold (currently disabled via duration 0).
-      applyCssFallbackMotion({
-        token: sequence,
-        scope,
-        direction: resolvedDirection,
-        phase: 'exit',
-        onTransitionFinished,
-      })
-      const commitTimer = window.setTimeout(() => {
-        if (animationSequenceRef.current !== sequence) return
-        animationFallbackTimersRef.current = []
-        if (destinationReady) {
-          void destinationReady.then(commitWhenDestinationReady, commitWhenDestinationReady)
-          return
-        }
-        commitWhenDestinationReady()
-      }, exitMs)
-      animationFallbackTimersRef.current = [commitTimer]
-    }
-
-    const waitForConcreteDestination = async () => {
-      await ready
-      if (!readinessGate || readinessGate.isReady()) return
-
-      // A shared warmup can complete after an optional asset failed or was
-      // cancelled. Confirm the exact lazy screen has resolved before taking a
-      // native snapshot, otherwise Suspense can publish its full-page fallback.
-      await readinessGate.preload()
-    }
-
-    const destinationReady = ready || readinessGate
-      ? waitForConcreteDestination().catch(() => undefined)
-      : undefined
-
-    if (forceCssFallback) {
-      // Hot destinations start moving immediately. For a truly cold lazy
-      // screen, keep the current page steady until its concrete host exists;
-      // this retains the no-skeleton guarantee without penalizing routine taps.
-      if (!readinessGate || readinessGate.isReady()) {
-        beginExit(destinationReady)
-      } else {
-        void destinationReady?.then(
-          () => beginExit(),
-          () => beginExit(),
-        )
+      if (destinationReady) {
+        // Leave the current surface intact while a cold target is prepared. The
+        // rail indicator still responds immediately, and a newer click cancels
+        // this preparation through its sequence token. Starting a View Transition
+        // before a lazy route resolves can otherwise capture the generic Suspense
+        // fallback, which reads like a full-page refresh.
+        void destinationReady.then(beginNativeTransition, beginNativeTransition)
+        return
       }
-      return
-    }
 
-    if (destinationReady) {
-      // Leave the current surface intact while a cold target is prepared. The
-      // rail indicator still responds immediately, and a newer click cancels
-      // this preparation through its sequence token. Starting a View Transition
-      // before a lazy route resolves can otherwise capture the generic Suspense
-      // fallback, which reads like a full-page refresh.
-      void destinationReady.then(beginNativeTransition, beginNativeTransition)
-      return
-    }
-
-    beginNativeTransition()
-  }, [applyCssFallbackMotion, clearCssFallbackMotion])
+      beginNativeTransition()
+    },
+    [applyCssFallbackMotion, clearCssFallbackMotion],
+  )
 
   const scheduleScreenProgressiveReveal = useCallback(() => {
     const reveal = () => {
@@ -2095,123 +2608,94 @@ export default function App() {
     window.requestAnimationFrame(reveal)
   }, [])
 
-  const runAnimatedDossierUpdate = useCallback((
-    update: () => void,
-    options: AnimatedScreenTransitionOptions = {},
-  ) => {
-    const { onTransitionFinished, deferDossierContent = false, ...transitionOptions } = options
-    const reduceMotion = typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    const shouldDeferContent = deferDossierContent && !reduceMotion && !isJsdomRuntime()
-    const contentTransition = ++dossierContentTransitionRef.current
-    if (dossierContentRevealTimerRef.current !== null) {
-      window.clearTimeout(dossierContentRevealTimerRef.current)
-      dossierContentRevealTimerRef.current = null
-    }
-    let contentCommitted = false
-    let contentRevealed = false
-
-    const revealDeferredContent = () => {
-      if (dossierContentTransitionRef.current !== contentTransition) return
-      if (!contentCommitted || contentRevealed) return
-      contentRevealed = true
+  const runAnimatedDossierUpdate = useCallback(
+    (update: () => void, options: AnimatedScreenTransitionOptions = {}) => {
+      const { onTransitionFinished, deferDossierContent = false, ...transitionOptions } = options
+      const reduceMotion =
+        typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      const shouldDeferContent = deferDossierContent && !reduceMotion && !isJsdomRuntime()
+      const contentTransition = ++dossierContentTransitionRef.current
       if (dossierContentRevealTimerRef.current !== null) {
         window.clearTimeout(dossierContentRevealTimerRef.current)
         dossierContentRevealTimerRef.current = null
       }
-      dossierTransitionSourceRef.current = null
-      if (shouldDeferContent) {
-        startTransition(() => setDossierContentDeferred(false))
-      }
-      onTransitionFinished?.()
-    }
+      let contentCommitted = false
+      let contentRevealed = false
 
-    // Record switches publish only the identity, summary, and first editable
-    // cards into the transition snapshot. Dense tab-derived rows are mounted
-    // after the compositor handoff, keeping that 210ms interval free of a
-    // second large React commit.
-    runAnimatedScreenUpdate(() => {
-      contentCommitted = true
-      setDossierContentDeferred(shouldDeferContent)
-      update()
-    }, {
-      ...transitionOptions,
-      // Scoped native snapshots let record changes and board-to-dossier changes
-      // overlap as one local cross-fade without mounting duplicate interactive
-      // trees. Tabs remain on the lighter CSS path.
-      forceCssFallback: transitionOptions.forceCssFallback
-        ?? (
-          transitionOptions.scope !== 'dossier-record'
-          && transitionOptions.scope !== 'workspace-view'
-        ),
-      onTransitionFinished: revealDeferredContent,
-    })
-
-    if (shouldDeferContent) {
-      // View Transition promises are normally finite, but an interrupted or
-      // vendor-buggy implementation must never strand the secondary dossier
-      // content. The token makes this fallback latest-request-wins.
-      dossierContentRevealTimerRef.current = window.setTimeout(revealDeferredContent, 480)
-    }
-  }, [runAnimatedScreenUpdate])
-
-  const cancelPendingApplicationSelection = useCallback(() => {
-    const pending = applicationSelectionFrameRef.current
-    if (!pending) return
-    if (pending.first) window.cancelAnimationFrame(pending.first)
-    if (pending.second) window.cancelAnimationFrame(pending.second)
-    applicationSelectionFrameRef.current = null
-  }, [])
-
-  const scheduleApplicationSelectionAfterPaint = useCallback((commit: () => void) => {
-    cancelPendingApplicationSelection()
-
-    const reduceMotion = typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (reduceMotion || isJsdomRuntime() || typeof window.requestAnimationFrame !== 'function') {
-      commit()
-      return
-    }
-
-    // pointerdown has already moved the selection layer. Crossing one paint
-    // boundary before the keyed dossier commit lets the browser promote and
-    // start that transform on the compositor instead of queuing it behind the
-    // large React render triggered by click.
-    const scheduled = { first: 0, second: 0 }
-    applicationSelectionFrameRef.current = scheduled
-    scheduled.first = window.requestAnimationFrame(() => {
-      if (applicationSelectionFrameRef.current !== scheduled) return
-      scheduled.first = 0
-      scheduled.second = window.requestAnimationFrame(() => {
-        if (applicationSelectionFrameRef.current !== scheduled) return
-        applicationSelectionFrameRef.current = null
-        commit()
-      })
-    })
-  }, [cancelPendingApplicationSelection])
-
-  const runAnimatedRailScreenUpdate = useCallback((
-    update: () => void,
-    options: AnimatedScreenTransitionOptions = {},
-  ) => {
-    const { onTransitionFinished, ...transitionOptions } = options
-    runAnimatedScreenUpdate(update, {
-      ...transitionOptions,
-      forceCssFallback: true,
-      onTransitionFinished: () => {
-        scheduleScreenProgressiveReveal()
+      const revealDeferredContent = () => {
+        if (dossierContentTransitionRef.current !== contentTransition) return
+        if (!contentCommitted || contentRevealed) return
+        contentRevealed = true
+        if (dossierContentRevealTimerRef.current !== null) {
+          window.clearTimeout(dossierContentRevealTimerRef.current)
+          dossierContentRevealTimerRef.current = null
+        }
+        if (shouldDeferContent) {
+          startTransition(() => setDossierContentDeferred(false))
+        }
         onTransitionFinished?.()
-      },
-    })
-  }, [runAnimatedScreenUpdate, scheduleScreenProgressiveReveal])
+      }
+
+      // Record switches publish only the identity, summary, and first editable
+      // cards into the transition snapshot. Dense tab-derived rows are mounted
+      // after the compositor handoff, keeping that 230ms interval free of a
+      // second large React commit.
+      runAnimatedScreenUpdate(
+        () => {
+          contentCommitted = true
+          setDossierContentDeferred(shouldDeferContent)
+          update()
+        },
+        {
+          ...transitionOptions,
+          // Scoped native snapshots let record changes and board-to-dossier changes
+          // overlap as one local cross-fade without mounting duplicate interactive
+          // trees. Tabs remain on the lighter CSS path.
+          forceCssFallback:
+            transitionOptions.forceCssFallback ??
+            (transitionOptions.scope !== 'dossier-record' && transitionOptions.scope !== 'workspace-view'),
+          onTransitionFinished: revealDeferredContent,
+        },
+      )
+
+      if (shouldDeferContent) {
+        // View Transition promises are normally finite, but an interrupted or
+        // vendor-buggy implementation must never strand the secondary dossier
+        // content. The token makes this fallback latest-request-wins.
+        dossierContentRevealTimerRef.current = window.setTimeout(revealDeferredContent, 480)
+      }
+    },
+    [runAnimatedScreenUpdate],
+  )
+
+  const runAnimatedRailScreenUpdate = useCallback(
+    (update: () => void, options: AnimatedScreenTransitionOptions = {}) => {
+      const { onTransitionFinished, ...transitionOptions } = options
+      runAnimatedScreenUpdate(update, {
+        ...transitionOptions,
+        forceCssFallback: true,
+        onTransitionFinished: () => {
+          scheduleScreenProgressiveReveal()
+          onTransitionFinished?.()
+        },
+      })
+    },
+    [runAnimatedScreenUpdate, scheduleScreenProgressiveReveal],
+  )
 
   const prefetchDossierAssets = useCallback(() => {
-    return Promise.all([
-      loadDossierView(),
-      loadInspector(),
-      preloadLanguage(lang, ['core', 'shared', 'dossier']),
-    ]).then(() => undefined, () => undefined)
+    return Promise.all([loadDossierView(), loadInspector(), preloadLanguage(lang, ['core', 'shared', 'dossier'])]).then(
+      () => undefined,
+      () => undefined,
+    )
   }, [lang])
+
+  const prefetchWorkspaceBoardAssets = useCallback(() => {
+    // The board action is compact enough that a pointer/focus prefetch can
+    // usually finish before activation. The same keyed warmup is reused by
+    // the navigation readiness gate, so this never starts duplicate work.
+    void warmCriticalScreenAssets('workspace', tab, lang, 'kanban')
+  }, [lang, tab])
 
   const rememberSessionToken = useCallback((token: string) => {
     sessionTokenLineageRef.current.add(token)
@@ -2249,6 +2733,112 @@ export default function App() {
     return latestFromRequest === current || latestFromRequest === latestCurrent
   }, [])
 
+  const abortWorkspaceBootstrapRun = useCallback(() => {
+    workspaceBootstrapRunRef.current += 1
+    const controller = workspaceBootstrapAbortRef.current
+    workspaceBootstrapAbortRef.current = null
+    controller?.abort(workspaceBootstrapAbortReason())
+    workspaceRefreshTasksRef.current.cancel()
+    workspaceBootstrapRecoveryRef.current = null
+    workspaceBootstrapManualRetryRef.current = null
+  }, [])
+
+  const resetWorkspaceBootstrapRecovery = useCallback(() => {
+    abortWorkspaceBootstrapRun()
+    if (!appMountedRef.current) return
+    setWorkspaceBootstrapFailure(null)
+    setWorkspaceBootstrapRetrying(false)
+  }, [abortWorkspaceBootstrapRun])
+
+  const workspaceBootstrapStillOwnsSession = useCallback((requestSession: AuthSession, requestEpoch: number) => (
+    appMountedRef.current
+    && sessionIdentityEpochRef.current === requestEpoch
+    && currentSessionUserIdRef.current === requestSession.user.id
+    && isCurrentSessionToken(requestSession.token)
+  ), [isCurrentSessionToken])
+
+  const runWorkspaceBootstrapWithRecovery = useCallback(async (
+    task: WorkspaceBootstrapRecoveryTask,
+    options: { preserveFailure?: boolean } = {},
+  ): Promise<WorkspaceBootstrapOutcome> => {
+    if (!workspaceBootstrapStillOwnsSession(task.session, task.sessionEpoch)) {
+      return { status: 'superseded' }
+    }
+    workspaceBootstrapAbortRef.current?.abort(workspaceBootstrapAbortReason())
+    workspaceRefreshTasksRef.current.cancel()
+    const controller = new AbortController()
+    const runId = workspaceBootstrapRunRef.current + 1
+    workspaceBootstrapRunRef.current = runId
+    workspaceBootstrapAbortRef.current = controller
+    workspaceBootstrapRecoveryRef.current = task
+    if (!options.preserveFailure) setWorkspaceBootstrapFailure(null)
+    const startedAt = Date.now()
+    let latestRequestId: string | null = null
+    const runStillOwnsSession = () => (
+      workspaceBootstrapRunRef.current === runId
+      && workspaceBootstrapAbortRef.current === controller
+      && !controller.signal.aborted
+      && workspaceBootstrapStillOwnsSession(task.session, task.sessionEpoch)
+    )
+
+    for (let attempt = 0; ; attempt += 1) {
+      if (!runStillOwnsSession()) return { status: 'superseded' }
+
+      try {
+        await task.execute(controller.signal)
+        if (!runStillOwnsSession()) return { status: 'superseded' }
+        workspaceBootstrapRecoveryRef.current = null
+        setWorkspaceBootstrapFailure(null)
+        task.onLoaded?.()
+        if (workspaceBootstrapAbortRef.current === controller) {
+          workspaceBootstrapAbortRef.current = null
+        }
+        return { status: 'loaded' }
+      } catch (error) {
+        latestRequestId = workspaceBootstrapRequestId(error) ?? latestRequestId
+        if (
+          !runStillOwnsSession()
+          || isAbortLike(error)
+          || isSessionSuperseded(error)
+        ) return { status: 'superseded' }
+        if (isAuthExpired(error) || isWorkspaceIdentityMismatch(error)) throw error
+
+        const delay = workspaceBootstrapRetryDelayMs(error, attempt, Date.now() - startedAt)
+        if (delay === null) {
+          if (!runStillOwnsSession()) return { status: 'superseded' }
+          if (error instanceof ApiError && !workspaceBootstrapRequestId(error) && latestRequestId) {
+            error.requestId = latestRequestId
+          }
+          setWorkspaceBootstrapFailure({
+            error,
+            sessionEpoch: task.sessionEpoch,
+            userId: task.session.user.id,
+          })
+          return { status: 'deferred', error }
+        }
+        try {
+          await waitForWorkspaceBootstrapRetry(delay, controller.signal)
+        } catch (waitError) {
+          if (!runStillOwnsSession() || isAbortLike(waitError)) return { status: 'superseded' }
+          throw waitError
+        }
+      }
+    }
+  }, [workspaceBootstrapStillOwnsSession])
+
+  useEffect(() => {
+    appMountedRef.current = true
+    return () => {
+      appMountedRef.current = false
+      // React StrictMode immediately replays setup after its development-only
+      // cleanup. Deferring the ownership check one microtask cancels real
+      // unmounts without aborting the only cold-start request during that replay.
+      queueMicrotask(() => {
+        if (!appMountedRef.current) abortWorkspaceBootstrapRun()
+      })
+    }
+  }, [abortWorkspaceBootstrapRun])
+
   useEffect(() => {
     languageRef.current = lang
     applyDocumentLanguage(lang)
@@ -2269,11 +2859,7 @@ export default function App() {
       preloadLanguage(pair.primary, CONTENT_LANGUAGE_NAMESPACES),
       preloadLanguage(pair.secondary, CONTENT_LANGUAGE_NAMESPACES),
     ])
-  }, [
-    sessionContentLanguagePrimary,
-    sessionContentLanguageSecondary,
-    sessionUserId,
-  ])
+  }, [sessionContentLanguagePrimary, sessionContentLanguageSecondary, sessionUserId])
 
   useEffect(() => {
     setShowPastInspectorDeadlines(loadStoredPastDeadlineVisibility(session?.user.id))
@@ -2292,43 +2878,76 @@ export default function App() {
     }
   }, [activeTeamId])
 
+  const teamRecommenderScopeKey = `${session?.user.id ?? ''}:${activeTeamId ?? teamSummary?.team.id ?? ''}`
+  const teamRecommenderProfilesByStudent =
+    teamRecommenderDirectory.scopeKey === teamRecommenderScopeKey
+      ? teamRecommenderDirectory.profilesByStudent
+      : EMPTY_TEAM_RECOMMENDER_PROFILES
+  const teamRecommenderLoadingIds = useMemo(() => {
+    const prefix = `${teamRecommenderScopeKey}:`
+    return new Set(
+      [...teamRecommenderLoadingKeys]
+        .filter((key) => key.startsWith(prefix))
+        .map((key) => key.slice(prefix.length)),
+    )
+  }, [teamRecommenderLoadingKeys, teamRecommenderScopeKey])
+
+  useEffect(() => {
+    setTeamRecommenderDirectory((current) => (
+      current.scopeKey === teamRecommenderScopeKey
+        ? current
+        : { scopeKey: teamRecommenderScopeKey, profilesByStudent: {} }
+    ))
+    setTeamRecommenderLoadingKeys((current) => {
+      const prefix = `${teamRecommenderScopeKey}:`
+      const next = new Set([...current].filter((key) => key.startsWith(prefix)))
+      return next.size === current.size ? current : next
+    })
+  }, [teamRecommenderScopeKey])
+
   const refreshOfflineQueueCounts = useCallback((userId?: string | null) => {
     if (!userId) {
       setOfflineQueueCount(0)
       setBlockedOfflineCount(0)
+      setBlockedOfflineReason(null)
       return
     }
-    setOfflineQueueCount(offlineQueueSize(userId))
-    setBlockedOfflineCount(blockedOfflineQueueSize(userId))
+    const queue = readOfflineQueue(userId)
+    const blocked = queue.filter((item) => item.status === 'blocked')
+    setOfflineQueueCount(queue.length)
+    setBlockedOfflineCount(blocked.length)
+    setBlockedOfflineReason(blocked[0]?.blockedReason ?? null)
   }, [])
 
   // Derived
   // Team role context (owner/admin/member), mirroring the site-admin override already
   // used in SettingsScreen (a site admin inspecting a team is always treated as its 'owner').
   // null when the user has no team at all.
-  const canUseTeamFeatures = !PUBLIC_EDITION && Boolean(
-    teamSummary &&
-    (session?.user.role === 'admin' || teamSummary.team.ownerId === session?.user.id || teamSummary.membership?.status === 'active'),
-  )
+  const canUseTeamFeatures =
+    !PUBLIC_EDITION &&
+    Boolean(
+      teamSummary &&
+      (session?.user.role === 'admin' ||
+        teamSummary.team.ownerId === session?.user.id ||
+        teamSummary.membership?.status === 'active'),
+    )
   const visibleTeamSummary = canUseTeamFeatures ? teamSummary : null
   const teamViewerRole: TeamRole | null = visibleTeamSummary
-    ? (session?.user.role === 'admin' || visibleTeamSummary.team.ownerId === session?.user.id ? 'owner' : (visibleTeamSummary.membership?.role ?? null))
+    ? session?.user.role === 'admin' || visibleTeamSummary.team.ownerId === session?.user.id
+      ? 'owner'
+      : (visibleTeamSummary.membership?.role ?? null)
     : null
   // Every team role has a team-mode workspace. Students still keep their personal workspace
   // for private applications, but can switch into the team system for shared work.
   const canEnterTeamJoinSurface = !PUBLIC_EDITION && screen === 'team'
-  const effectiveInterfaceMode: InterfaceMode = (teamViewerRole || canEnterTeamJoinSurface)
-    ? interfaceMode
-    : 'personal'
+  const effectiveInterfaceMode: InterfaceMode = teamViewerRole || canEnterTeamJoinSurface ? interfaceMode : 'personal'
   const isTeamMode = effectiveInterfaceMode === 'team'
   const canUseWorkspaceBoard = !isTeamMode || teamViewerRole !== 'member'
   const canUsePersonalDiscover = hasPersonalDiscoverAccess(session)
   const teamMembershipRelationships = visibleTeamSummary?.membership?.relationships
-  const canUseTeamDiscover = isTeamMode && hasTeamDiscoverAccess(
-    teamViewerRole,
-    teamMembershipRelationships,
-    visibleTeamSummary?.team.permissionDefaults,
-  )
+  const canUseTeamDiscover =
+    isTeamMode &&
+    hasTeamDiscoverAccess(teamViewerRole, teamMembershipRelationships, visibleTeamSummary?.team.permissionDefaults)
   const canUseDiscover = canAccessDiscover(
     effectiveInterfaceMode,
     session,
@@ -2336,29 +2955,28 @@ export default function App() {
     teamMembershipRelationships,
     visibleTeamSummary?.team.permissionDefaults,
   )
-  const canCreateInCurrentTeam = !isTeamMode || canCreateTeamApplication(
+  const canUseInterview = !isTeamMode || canUseTeamInterviewPrep(
     teamViewerRole,
     visibleTeamSummary?.membership,
     visibleTeamSummary?.team.permissionDefaults,
   )
-  const canEditInCurrentTeam = !isTeamMode || canEditTeamApplication(
-    teamViewerRole,
-    visibleTeamSummary?.membership,
-    visibleTeamSummary?.team.permissionDefaults,
-  )
-  const canShareInCurrentTeam = !isTeamMode || canCreateTeamShare(
-    teamViewerRole,
-    visibleTeamSummary?.membership,
-    visibleTeamSummary?.team.permissionDefaults,
-  )
+  const canCreateInCurrentTeam =
+    !isTeamMode ||
+    canCreateTeamApplication(
+      teamViewerRole,
+      visibleTeamSummary?.membership,
+      visibleTeamSummary?.team.permissionDefaults,
+    )
+  const canEditInCurrentTeam =
+    !isTeamMode ||
+    canEditTeamApplication(teamViewerRole, visibleTeamSummary?.membership, visibleTeamSummary?.team.permissionDefaults)
+  const canShareInCurrentTeam =
+    !isTeamMode ||
+    canCreateTeamShare(teamViewerRole, visibleTeamSummary?.membership, visibleTeamSummary?.team.permissionDefaults)
   const teamDiscoverScope = useMemo(() => {
-    const targetUserId = teamViewerRole === 'member'
-      ? session?.user.id
-      : teamDiscoverTargetUserId
+    const targetUserId = teamViewerRole === 'member' ? session?.user.id : teamDiscoverTargetUserId
     const teamId = activeTeamId || visibleTeamSummary?.team.id
-    return isTeamMode && canUseTeamDiscover && targetUserId && teamId
-      ? { teamId, targetUserId }
-      : undefined
+    return isTeamMode && canUseTeamDiscover && targetUserId && teamId ? { teamId, targetUserId } : undefined
   }, [
     activeTeamId,
     canUseTeamDiscover,
@@ -2382,13 +3000,46 @@ export default function App() {
   }, [applicationsLoaded, canUseDiscover, isTeamMode, screen, teamDiscoverScope, teamViewerRole])
 
   useEffect(() => {
+    if (!applicationsLoaded || screen !== 'interview' || canUseInterview) return
+    setTeamSection('overview')
+    setScreen(isTeamMode && teamViewerRole ? 'team' : 'dashboard')
+  }, [applicationsLoaded, canUseInterview, isTeamMode, screen, teamViewerRole])
+
+  useEffect(() => {
     if (!teamViewerRole || teamViewerRole === 'owner' || teamSection !== 'settings') return
     setTeamSection('overview')
   }, [teamSection, teamViewerRole])
 
   // Which application list backs the dashboard/workspace right now — team-scoped browsing reuses
   // the exact same screens and state machinery as the personal workspace, just fed a different list.
-  const workspaceApplications: ApplicationRecord[] = isTeamMode ? teamApplications : applications
+  const workspaceApplications = useMemo<ApplicationRecord[]>(
+    () => (isTeamMode ? teamApplications : applications).map(normalizeApplicationRecord),
+    [applications, isTeamMode, teamApplications],
+  )
+  const applicationTrashScope = useMemo<ApplicationTrashScope>(
+    () => (isTeamMode ? { kind: 'team', teamId: activeTeamId } : { kind: 'personal' }),
+    [activeTeamId, isTeamMode],
+  )
+
+  const replacePendingRecommenderDrafts = useCallback(
+    (applicationId: string, drafts: MaterialRecommender[]) => {
+      setPendingRecommenderDraftsByApplication((current) => {
+        if (drafts.length > 0) {
+          if (current[applicationId] === drafts) return current
+          return { ...current, [applicationId]: drafts }
+        }
+        if (!current[applicationId]) return current
+        const next = { ...current }
+        delete next[applicationId]
+        return next
+      })
+    },
+    [],
+  )
+  const visibleApplicationTrash = useMemo(
+    () => applicationTrashForScope(applicationTrash, applicationTrashScope),
+    [applicationTrash, applicationTrashScope],
+  )
   const workspaceApplicationById = useMemo(
     () => new Map(workspaceApplications.map((application) => [application.id, application])),
     [workspaceApplications],
@@ -2408,9 +3059,8 @@ export default function App() {
       const ownerId = application.ownerId
       if (!ownerId) continue
       if (!directory[ownerId]) {
-        directory[ownerId] = ownerId === session?.user.id
-          ? (session?.user.name ?? application.ownerName)
-          : application.ownerName
+        directory[ownerId] =
+          ownerId === session?.user.id ? (session?.user.name ?? application.ownerName) : application.ownerName
       }
     }
     return directory
@@ -2427,18 +3077,15 @@ export default function App() {
     if (!visibleTeamSummary || teamViewerRole !== 'member') return undefined
     const activeMembers = visibleTeamSummary.members.filter((member) => member.status === 'active')
     const membersByUserId = new Map(
-      activeMembers
-        .filter((member) => member.userId)
-        .map((member) => [member.userId!, member]),
+      activeMembers.filter((member) => member.userId).map((member) => [member.userId!, member]),
     )
     const studentMember = session?.user.id ? membersByUserId.get(session.user.id) : undefined
     const assignedTeachers = teachersForStudent(studentMember, membersByUserId)
     const organizationOwners = activeMembers.filter((member) => member.role === 'owner')
-    const guidanceMembers = [...assignedTeachers, ...organizationOwners]
-      .filter((member, index, items) => (
-        member.userId !== session?.user.id
-        && items.findIndex((candidate) => candidate.id === member.id) === index
-      ))
+    const guidanceMembers = [...assignedTeachers, ...organizationOwners].filter(
+      (member, index, items) =>
+        member.userId !== session?.user.id && items.findIndex((candidate) => candidate.id === member.id) === index,
+    )
     const members = guidanceMembers
       .sort((left, right) => {
         if (left.role !== right.role) return left.role === 'admin' ? -1 : 1
@@ -2480,10 +3127,18 @@ export default function App() {
     }
     return names
   }, [teamApplications, session?.user.id])
+  const teamTrashOwnerNames = useMemo(() => {
+    const names: Record<string, string> = {}
+    for (const member of visibleTeamSummary?.members ?? []) {
+      if (!member.userId || member.userId === session?.user.id) continue
+      names[member.userId] = member.displayName ?? member.invitedEmail
+    }
+    return names
+  }, [session?.user.id, visibleTeamSummary?.members])
   const ownerFilterOptions = useMemo(() => {
-    const membersByUserId = new Map((visibleTeamSummary?.members ?? [])
-      .filter((member) => member.userId)
-      .map((member) => [member.userId!, member]))
+    const membersByUserId = new Map(
+      (visibleTeamSummary?.members ?? []).filter((member) => member.userId).map((member) => [member.userId!, member]),
+    )
     return Object.entries(ownerDirectory)
       .map(([id, name]) => {
         const member = membersByUserId.get(id)
@@ -2499,9 +3154,9 @@ export default function App() {
       .sort((a, b) => a.name.localeCompare(b.name))
   }, [applicationCountsByOwner, ownerDirectory, visibleTeamSummary?.members])
   const teamCreateStudentOptions = useMemo<NewApplicationStudentOption[]>(() => {
-    const membersByUserId = new Map((visibleTeamSummary?.members ?? [])
-      .filter((member) => member.userId)
-      .map((member) => [member.userId!, member]))
+    const membersByUserId = new Map(
+      (visibleTeamSummary?.members ?? []).filter((member) => member.userId).map((member) => [member.userId!, member]),
+    )
     return discoverStudentMembers(visibleTeamSummary?.members ?? [], teamViewerRole, session?.user.id)
       .map((member) => {
         const teachers = teachersForStudent(member, membersByUserId)
@@ -2517,18 +3172,65 @@ export default function App() {
       })
       .sort((a, b) => a.name.localeCompare(b.name))
   }, [applicationCountsByOwner, session?.user.id, teamViewerRole, visibleTeamSummary?.members])
+  const interviewStudents = useMemo<InterviewPrepStudent[]>(() => (
+    teamCreateStudentOptions.map((student) => ({
+      id: student.id,
+      displayName: student.name,
+      email: visibleTeamSummary?.members.find((member) => member.userId === student.id)?.invitedEmail,
+      avatarUrl: student.avatarUrl,
+      interviewCount: Object.values(interviewWorkspaces).find((workspace) => (
+        workspace.subjectUserId === student.id
+      ))?.interviews.length ?? 0,
+      nextInterviewAt: Object.values(interviewWorkspaces)
+        .find((workspace) => workspace.subjectUserId === student.id)
+        ?.interviews
+        .filter((interview) => interview.status !== 'completed' && interview.scheduledAt)
+        .map((interview) => interview.scheduledAt as string)
+        .sort()[0] ?? null,
+    }))
+  ), [interviewWorkspaces, teamCreateStudentOptions, visibleTeamSummary?.members])
+  const interviewTeamId = isTeamMode ? (activeTeamId || visibleTeamSummary?.team.id || null) : null
+  const interviewSubjectUserId = isTeamMode
+    ? teamViewerRole === 'member'
+      ? session?.user.id ?? ''
+      : interviewStudents.some((student) => student.id === interviewSelectedStudentId)
+        ? interviewSelectedStudentId ?? ''
+        : interviewStudents[0]?.id ?? ''
+    : session?.user.id ?? ''
+  const interviewScopeKey = `${interviewTeamId ?? 'personal'}:${interviewSubjectUserId}`
+  const interviewSubjectName = interviewSubjectUserId === session?.user.id
+    ? session.user.name
+    : interviewStudents.find((student) => student.id === interviewSubjectUserId)?.displayName ?? ''
+  const interviewWorkspace = interviewWorkspaces[interviewScopeKey] ?? null
+  const interviewCanonicalWorkspace = useMemo(() => (
+    interviewWorkspace ?? (interviewSubjectUserId
+      ? createEmptyInterviewPrepWorkspace(interviewSubjectUserId, interviewSubjectName)
+      : null)
+  ), [interviewSubjectName, interviewSubjectUserId, interviewWorkspace])
+  const interviewAiKey = useMemo(() => selectInterviewPrepAiKey(
+    aiKeys,
+    session?.user.id ?? '',
+    interviewTeamId,
+  ), [aiKeys, interviewTeamId, session?.user.id])
   const newApplicationTeamMode: NewApplicationTeamMode = isTeamMode
-    ? (teamViewerRole === 'member' ? 'team-self' : (teamViewerRole ? 'team-student-picker' : 'none'))
-    : (teamViewerRole === 'member' ? 'student-toggle' : 'none')
-  const defaultNewApplicationStudentId = newApplicationTeamMode === 'team-student-picker' &&
+    ? teamViewerRole === 'member'
+      ? 'team-self'
+      : teamViewerRole
+        ? 'team-student-picker'
+        : 'none'
+    : teamViewerRole === 'member'
+      ? 'student-toggle'
+      : 'none'
+  const defaultNewApplicationStudentId =
+    newApplicationTeamMode === 'team-student-picker' &&
     (newApplicationOwnerHint || ownerFilter) &&
     teamCreateStudentOptions.some((student) => student.id === (newApplicationOwnerHint || ownerFilter))
-    ? (newApplicationOwnerHint || ownerFilter)
-    : null
+      ? newApplicationOwnerHint || ownerFilter
+      : null
   const teamApplicationRelations = useMemo(() => {
-    const membersByUserId = new Map((visibleTeamSummary?.members ?? [])
-      .filter((member) => member.userId)
-      .map((member) => [member.userId!, member]))
+    const membersByUserId = new Map(
+      (visibleTeamSummary?.members ?? []).filter((member) => member.userId).map((member) => [member.userId!, member]),
+    )
     const relations: Record<string, { studentName: string; advisorName?: string | null }> = {}
     for (const application of teamApplications) {
       if (!application.ownerId) continue
@@ -2543,9 +3245,10 @@ export default function App() {
     return relations
   }, [teamApplications, visibleTeamSummary?.members])
   const readOnlyApplicationIds = useMemo(
-    () => isTeamMode && !canEditInCurrentTeam
-      ? new Set(teamApplications.map((application) => application.id))
-      : new Set<string>(),
+    () =>
+      isTeamMode && !canEditInCurrentTeam
+        ? new Set(teamApplications.map((application) => application.id))
+        : new Set<string>(),
     [canEditInCurrentTeam, isTeamMode, teamApplications],
   )
   const effectiveOwnerFilter = isTeamMode ? ownerFilter : null
@@ -2573,14 +3276,10 @@ export default function App() {
 
   useEffect(() => {
     if (!session?.impersonation?.teamId) return
-    if (interfaceMode === 'team' && (screen === 'team' || screen === 'workspace')) return
+    if (interfaceMode === 'team' && (screen === 'team' || screen === 'workspace' || screen === 'interview')) return
     startTransition(() => {
       setInterfaceMode('team')
-      setTeamSection(screen === 'settings'
-        ? 'settings'
-        : screen === 'workspace'
-          ? 'applications'
-          : teamSection)
+      setTeamSection(screen === 'settings' ? 'settings' : screen === 'workspace' ? 'applications' : teamSection)
       if (screen === 'workspace') {
         setSelectedId(null)
         setDraftState(null, { clean: true })
@@ -2594,43 +3293,48 @@ export default function App() {
 
   function viewMemberApplications(ownerId: string) {
     runWithNavigationGuard(() => {
-      runAnimatedRailScreenUpdate(() => {
-        const memberApplications = teamApplications.filter((application) => application.ownerId === ownerId)
-        setInterfaceMode('team')
-        setTeamSection('applications')
-        setQuery('')
-        setStatusFilters([])
-        setSort('deadline')
-        setOwnerFilter(ownerId)
-        setViewModeDirection('to-list')
-        setViewMode('list')
-        setSelectedId(memberApplications[0]?.id ?? teamApplications[0]?.id ?? null)
-        setScreen('workspace')
-        setMobileDetailOpen(true)
-      }, {
-        direction: 'forward',
-        ready: warmCriticalScreenAssets('workspace', tab, lang, 'list'),
-        readinessGate: readinessGateForScreen('workspace', 'list'),
-      })
+      runAnimatedRailScreenUpdate(
+        () => {
+          const memberApplications = teamApplications.filter((application) => application.ownerId === ownerId)
+          setInterfaceMode('team')
+          setTeamSection('applications')
+          setQuery('')
+          setStatusFilters([])
+          setSort('deadline')
+          setOwnerFilter(ownerId)
+          setViewModeDirection('to-list')
+          setViewMode('list')
+          setSelectedId(memberApplications[0]?.id ?? teamApplications[0]?.id ?? null)
+          setScreen('workspace')
+          setMobileDetailOpen(true)
+        },
+        {
+          direction: 'forward',
+          ready: warmCriticalScreenAssets('workspace', tab, lang, 'list'),
+          readinessGate: readinessGateForScreen('workspace', 'list'),
+        },
+      )
     })
   }
 
   function openPersonalWorkspaceForTeamTransfer() {
-    runWithNavigationGuard(() => startTransition(() => {
-      const firstPersonalApplicationId = defaultSelectedIdForMode('personal')
-      setInterfaceMode('personal')
-      setQuery('')
-      setStatusFilters([])
-      setSort('deadline')
-      setOwnerFilter(null)
-      setSelectedId(firstPersonalApplicationId)
-      setDraftState(null, { clean: true })
-      setTab('dossier')
-      setViewModeDirection('to-list')
-      setViewMode('list')
-      setScreen('workspace')
-      setMobileDetailOpen(Boolean(firstPersonalApplicationId))
-    }))
+    runWithNavigationGuard(() =>
+      startTransition(() => {
+        const firstPersonalApplicationId = defaultSelectedIdForMode('personal')
+        setInterfaceMode('personal')
+        setQuery('')
+        setStatusFilters([])
+        setSort('deadline')
+        setOwnerFilter(null)
+        setSelectedId(firstPersonalApplicationId)
+        setDraftState(null, { clean: true })
+        setTab('dossier')
+        setViewModeDirection('to-list')
+        setViewMode('list')
+        setScreen('workspace')
+        setMobileDetailOpen(Boolean(firstPersonalApplicationId))
+      }),
+    )
   }
 
   function defaultSelectedIdForMode(mode: InterfaceMode) {
@@ -2677,7 +3381,10 @@ export default function App() {
     if (session.impersonation?.teamId && nextMode === 'personal') return
     if (nextMode === 'team' && effectiveInterfaceMode !== 'team' && teamWorkspaces.length > 1 && !options?.teamId) {
       void preloadLanguage(lang, ['core', 'shared', 'team'])
-      setPendingTeamWorkspaceEntry({ screen: options?.screen, teamSection: options?.teamSection })
+      setPendingTeamWorkspaceEntry({
+        screen: options?.screen,
+        teamSection: options?.teamSection,
+      })
       setTeamWorkspaceChooserOpen(true)
       return
     }
@@ -2687,16 +3394,21 @@ export default function App() {
     }
 
     const seq = ++workspaceHandoffSeqRef.current
-    const defaultPersonalScreen: Screen = (screen === 'team' || (screen === 'workspace' && isTeamMode))
-      ? 'dashboard'
-      : screen
-    const nextScreen: Screen = options?.screen
-      ?? (nextMode === 'team' ? 'team' : defaultPersonalScreen)
-    const destinationViewMode = nextMode === 'team'
-      ? (nextScreen === 'workspace' && teamViewerRole !== 'member' ? 'kanban' as const : 'list' as const)
-      : (nextScreen === 'workspace' ? 'kanban' as const : viewMode)
+    const defaultPersonalScreen: Screen =
+      screen === 'team' || (screen === 'workspace' && isTeamMode) ? 'dashboard' : screen
+    const nextScreen: Screen = options?.screen ?? (
+      nextMode === 'team' ? (screen === 'interview' ? 'interview' : 'team') : defaultPersonalScreen
+    )
+    const destinationViewMode =
+      nextMode === 'team'
+        ? nextScreen === 'workspace' && teamViewerRole !== 'member'
+          ? ('kanban' as const)
+          : ('list' as const)
+        : nextScreen === 'workspace'
+          ? ('kanban' as const)
+          : viewMode
     const variant = handoffVariantForMode(nextMode, nextScreen)
-    const requestedTeamId = nextMode === 'team' ? options?.teamId ?? activeTeamIdRef.current : null
+    const requestedTeamId = nextMode === 'team' ? (options?.teamId ?? activeTeamIdRef.current) : null
     const teamChanged = Boolean(requestedTeamId && requestedTeamId !== activeTeamIdRef.current)
 
     setWorkspaceHandoff({ target: nextMode, variant })
@@ -2711,8 +3423,8 @@ export default function App() {
         setTeamSummary(null)
         setTeamApplications([])
       }
-      setTeamSection(options?.teamSection ?? 'overview')
-      setScreen(nextScreen === 'workspace' ? 'workspace' : 'team')
+      setTeamSection(options?.teamSection ?? (nextScreen === 'interview' ? 'interview' : 'overview'))
+      setScreen(nextScreen === 'workspace' || nextScreen === 'interview' ? nextScreen : 'team')
       if (nextScreen === 'workspace') {
         setViewModeDirection(destinationViewMode === 'kanban' ? 'to-kanban' : 'to-list')
         setViewMode(destinationViewMode)
@@ -2724,7 +3436,7 @@ export default function App() {
 
     try {
       const warm = warmCriticalScreenAssets(
-        nextMode === 'team' && nextScreen !== 'workspace' ? 'team' : nextScreen,
+        nextMode === 'team' && nextScreen !== 'workspace' && nextScreen !== 'interview' ? 'team' : nextScreen,
         tab,
         lang,
         destinationViewMode,
@@ -2732,10 +3444,11 @@ export default function App() {
 
       // Team data can be cold or stale after long personal sessions — refresh when needed.
       if (nextMode === 'team') {
-        const needsTeamRefresh = teamChanged
-          || !teamLookupComplete
-          || Boolean(activeTeamIdRef.current && !teamSummary)
-          || (Boolean(activeTeamIdRef.current) && teamApplications.length === 0)
+        const needsTeamRefresh =
+          teamChanged ||
+          !teamLookupComplete ||
+          Boolean(activeTeamIdRef.current && !teamSummary) ||
+          (Boolean(activeTeamIdRef.current) && teamApplications.length === 0)
         if (needsTeamRefresh) {
           await refreshTeamWorkspace(session, requestedTeamId)
         }
@@ -2750,7 +3463,7 @@ export default function App() {
         return
       }
       if (workspaceHandoffSeqRef.current === seq) {
-        notify(normalizeError(error, languageRef.current), 'error')
+        notifyEnhancedError(error, languageRef.current, notify)
       }
     } finally {
       if (workspaceHandoffSeqRef.current === seq) {
@@ -2760,96 +3473,242 @@ export default function App() {
   }
 
   const selected = useMemo(
-    () => selectedId ? workspaceApplicationById.get(selectedId) ?? null : null,
+    () => (selectedId ? (workspaceApplicationById.get(selectedId) ?? null) : null),
     [selectedId, workspaceApplicationById],
   )
-  const isDraftDirty = useMemo(
-    () => {
-      if (!draft || !selected || draft.id !== selected.id) return false
-      return draftDirty
-    },
-    [draft, draftDirty, selected],
-  )
-  const currentInspectorApplication = viewMode === 'kanban'
+  const applicationDetailPrefetchTimerRef = useRef<number | null>(null)
+  const queuedApplicationDetailPrefetchRef = useRef<string | null>(null)
+  const activeApplicationDetailPrefetchRef = useRef<Promise<ApplicationRecord> | null>(null)
+  const drainApplicationDetailPrefetchRef = useRef<() => void>(() => undefined)
+  const applicationDetailNavigationControllerRef = useRef<AbortController | null>(null)
+  const loadApplicationDetailForNavigation = useCallback((applicationId: string, signal?: AbortSignal) => {
+    const application = workspaceApplicationById.get(applicationId) as (
+      ApplicationRecord & { __listSlim?: boolean }
+    ) | undefined
+    if (!application?.__listSlim || !session?.token) return null
+    return phdApi.getApplicationForNavigation(session.token, applicationId, { signal })
+  }, [session?.token, workspaceApplicationById])
+  const drainApplicationDetailPrefetch = useCallback(() => {
+    applicationDetailPrefetchTimerRef.current = null
+    if (activeApplicationDetailPrefetchRef.current) return
+    const applicationId = queuedApplicationDetailPrefetchRef.current
+    queuedApplicationDetailPrefetchRef.current = null
+    if (!applicationId) return
+    const request = loadApplicationDetailForNavigation(applicationId)
+    if (!request) return
+    activeApplicationDetailPrefetchRef.current = request
+    void request.catch(() => undefined).finally(() => {
+      if (activeApplicationDetailPrefetchRef.current === request) {
+        activeApplicationDetailPrefetchRef.current = null
+      }
+      if (
+        queuedApplicationDetailPrefetchRef.current
+        && applicationDetailPrefetchTimerRef.current === null
+      ) {
+        applicationDetailPrefetchTimerRef.current = window.setTimeout(
+          () => drainApplicationDetailPrefetchRef.current(),
+          80,
+        )
+      }
+    })
+  }, [loadApplicationDetailForNavigation])
+  drainApplicationDetailPrefetchRef.current = drainApplicationDetailPrefetch
+  const prefetchApplicationEntry = useCallback((applicationId?: string) => {
+    void prefetchDossierAssets()
+    const application = applicationId
+      ? workspaceApplicationById.get(applicationId) as (ApplicationRecord & { __listSlim?: boolean }) | undefined
+      : undefined
+    if (!applicationId || !application?.__listSlim || !session?.token) return
+    // Hovering across a dense table must never fan out one full-record request
+    // per row. Keep only the latest dwell target and allow one speculative
+    // detail read at a time; an actual click bypasses this short delay below.
+    queuedApplicationDetailPrefetchRef.current = applicationId
+    if (applicationDetailPrefetchTimerRef.current !== null) {
+      window.clearTimeout(applicationDetailPrefetchTimerRef.current)
+    }
+    if (activeApplicationDetailPrefetchRef.current) {
+      applicationDetailPrefetchTimerRef.current = null
+      return
+    }
+    applicationDetailPrefetchTimerRef.current = window.setTimeout(
+      drainApplicationDetailPrefetch,
+      100,
+    )
+  }, [drainApplicationDetailPrefetch, prefetchDossierAssets, session?.token, workspaceApplicationById])
+  useEffect(() => () => {
+    if (applicationDetailPrefetchTimerRef.current !== null) {
+      window.clearTimeout(applicationDetailPrefetchTimerRef.current)
+      applicationDetailPrefetchTimerRef.current = null
+    }
+    queuedApplicationDetailPrefetchRef.current = null
+    applicationDetailNavigationControllerRef.current?.abort()
+    applicationDetailNavigationControllerRef.current = null
+  }, [session?.token])
+  const isDraftDirty = useMemo(() => {
+    if (!draft || !selected || draft.id !== selected.id) return false
+    return draftDirty
+  }, [draft, draftDirty, selected])
+  const draftDirtyForReloadRef = useRef(isDraftDirty)
+  draftDirtyForReloadRef.current = isDraftDirty
+
+  useEffect(() => registerSafeReloadGuard('application-autosave', {
+    prepare: async () => (
+      !draftDirtyForReloadRef.current || await flushApplicationAutoSave()
+    ),
+  }), [flushApplicationAutoSave])
+
+  useLayoutEffect(() => {
+    const handleBlockedReload = () => {
+      notify(i18nValue.tx('localRecoveryUnavailable'), 'warning')
+    }
+    // A lazy-route failure can be reported immediately after the first screen
+    // commits. Register before paint so that recovery never outruns the warning
+    // surface on a cold start or after a language-pack load.
+    window.addEventListener(SAFE_RELOAD_BLOCKED_EVENT, handleBlockedReload)
+    return () => window.removeEventListener(SAFE_RELOAD_BLOCKED_EVENT, handleBlockedReload)
+  }, [i18nValue, notify])
+  const currentInspectorApplication = renderedWorkspaceViewMode === 'kanban'
     ? null
     : draft?.id === selected?.id
       ? draft
       : selected
-  const transitionInspectorApplication = (
-    dossierContentDeferred
-    && dossierTransitionSourceRef.current
-    && dossierTransitionSourceRef.current.id !== currentInspectorApplication?.id
-  )
-    ? dossierTransitionSourceRef.current
-    : currentInspectorApplication
-  // Inspector deadline/version derivation is useful but not interaction
-  // critical. Let the dossier identity commit first, then update this separate
-  // pane concurrently after the record handoff.
-  const deferredInspectorApplication = useDeferredValue(transitionInspectorApplication)
+  // The inspector is part of the same urgent record handoff as the Dossier.
+  // Deferring this identity made the right pane wait for the center transition
+  // to finish, which read as a delayed second navigation step.
+  const inspectorApplication = currentInspectorApplication
   // Team-only metadata (viewer's role on this specific app, owner display name) for the currently
   // selected application — undefined in personal mode, where DossierView behaves exactly as before.
   const selectedTeamMeta = isTeamMode ? teamApplications.find((a) => a.id === selected?.id) : undefined
+  const addCommunicationToInterviewPrep = useCallback(async (input: {
+    applicationId: string
+    communicationId: string
+    subject: string
+    school: string
+    program: string
+    advisor: string
+  }) => {
+    if (!session) return false
+    const teamId = isTeamMode ? (activeTeamId || visibleTeamSummary?.team.id || null) : null
+    const ownerId = isTeamMode
+      ? (teamApplications.find((application) => application.id === input.applicationId)?.ownerId
+        ?? session.user.id)
+      : session.user.id
+    const subjectName = ownerId === session.user.id
+      ? session.user.name
+      : interviewStudents.find((student) => student.id === ownerId)?.displayName
+        || ownerDirectory[ownerId]
+        || selectedTeamMeta?.ownerName
+        || input.school
+        || ''
+    const scopeKey = `${teamId ?? 'personal'}:${ownerId}`
+    const now = new Date().toISOString()
+    const base = interviewWorkspaces[scopeKey] ?? createEmptyInterviewPrepWorkspace(ownerId, subjectName)
+    const interview = {
+      ...createInterviewEvent({
+        ownerUserId: ownerId,
+        createdByUserId: session.user.id,
+        teamId,
+        now,
+      }),
+      applicationId: input.applicationId,
+      sourceCommunicationId: input.communicationId,
+      title: input.subject,
+      school: input.school,
+      program: input.program,
+      advisor: input.advisor,
+    }
+    const nextWorkspace = upsertInterviewEvent(base, interview, now)
+    setInterviewWorkspaces((current) => ({ ...current, [scopeKey]: nextWorkspace }))
+    const saved = saveRecoverableInterviewPrepDraft(
+      { sessionUserId: session.user.id, subjectUserId: ownerId, teamId },
+      {
+        workspace: nextWorkspace,
+        activeInterviewId: interview.id,
+        activeTab: 'plan',
+        selectedQuestionId: null,
+        activeSessionId: null,
+        mobilePane: 'interviews',
+        dirty: true,
+      },
+    )
+    if (!saved) notify(i18nValue.tx('localRecoveryUnavailable'), 'warning')
+    setInterviewSelectedStudentId(ownerId === session.user.id ? null : ownerId)
+    setTeamSection('interview')
+    setMobileDetailOpen(false)
+    startTransition(() => setScreen('interview'))
+    notify(i18nValue.tx('dossier.mailAddedToInterviewPrep'), 'success')
+    return true
+  }, [
+    activeTeamId,
+    interviewStudents,
+    interviewWorkspaces,
+    i18nValue,
+    isTeamMode,
+    notify,
+    ownerDirectory,
+    selectedTeamMeta?.ownerName,
+    session,
+    setInterviewSelectedStudentId,
+    setMobileDetailOpen,
+    setScreen,
+    setTeamSection,
+    teamApplications,
+    visibleTeamSummary?.team.id,
+  ])
   const studentTeamTransferOptions = useMemo(
     () => teamWorkspaces.filter((workspace) => workspace.viewerRole === 'member'),
     [teamWorkspaces],
   )
   const selectedManagerTeamWorkspace = useMemo(
-    () => (
+    () =>
       selected?.teamId && selected.ownerId !== session?.user.id
-        ? teamWorkspaces.find((workspace) => (
-            workspace.teamId === selected.teamId &&
-            (workspace.viewerRole === 'owner' || workspace.viewerRole === 'admin')
-          )) ?? null
-        : null
-    ),
+        ? (teamWorkspaces.find(
+            (workspace) =>
+              workspace.teamId === selected.teamId &&
+              (workspace.viewerRole === 'owner' || workspace.viewerRole === 'admin'),
+          ) ?? null)
+        : null,
     [selected?.ownerId, selected?.teamId, session?.user.id, teamWorkspaces],
   )
-  const canDirectlyMoveSelectedTeamApplication = Boolean(
-    isTeamMode &&
-    selectedManagerTeamWorkspace,
-  )
+  const canDirectlyMoveSelectedTeamApplication = Boolean(isTeamMode && selectedManagerTeamWorkspace)
   const selectedTeamTransferOptions = useMemo(
-    () => (
+    () =>
       canDirectlyMoveSelectedTeamApplication && selectedManagerTeamWorkspace
         ? [selectedManagerTeamWorkspace]
-        : studentTeamTransferOptions
-    ),
-    [
-      canDirectlyMoveSelectedTeamApplication,
-      selectedManagerTeamWorkspace,
-      studentTeamTransferOptions,
-    ],
+        : studentTeamTransferOptions,
+    [canDirectlyMoveSelectedTeamApplication, selectedManagerTeamWorkspace, studentTeamTransferOptions],
   )
   useEffect(() => {
     if (!isTeamMode && tab === 'review') setTab('dossier')
   }, [isTeamMode, tab])
   const canToggleSelectedTeamVisibility = Boolean(
     selected &&
-    (
-      (selected.ownerId === session?.user.id && studentTeamTransferOptions.length > 0) ||
-      canDirectlyMoveSelectedTeamApplication
-    ),
+    ((selected.ownerId === session?.user.id && studentTeamTransferOptions.length > 0) ||
+      canDirectlyMoveSelectedTeamApplication),
   )
 
   const normalizedApplicationQuery = deferredQuery.trim().toLowerCase()
-  const applicationMatchesDeferredQuery = useCallback((application: ApplicationRecord) => {
-    if (!normalizedApplicationQuery) return true
-    const relation = teamApplicationRelations[application.id]
-    return [
-      application.school.name,
-      application.program,
-      application.professor.english,
-      application.professor.chinese,
-      application.professor.email,
-      application.tags.join(' '),
-      application.ownerId ? ownerDirectory[application.ownerId] ?? '' : '',
-      relation?.studentName ?? '',
-      relation?.advisorName ?? '',
+  const applicationMatchesDeferredQuery = useCallback(
+    (application: ApplicationRecord) => {
+      if (!normalizedApplicationQuery) return true
+      const relation = teamApplicationRelations[application.id]
+      return [
+        application.school.name,
+        application.program,
+        application.professor.english,
+        application.professor.chinese,
+        application.professor.email,
+        application.tags.join(' '),
+        application.ownerId ? (ownerDirectory[application.ownerId] ?? '') : '',
+        relation?.studentName ?? '',
+        relation?.advisorName ?? '',
       ]
-      .join(' ')
-      .toLowerCase()
-      .includes(normalizedApplicationQuery)
-  }, [normalizedApplicationQuery, ownerDirectory, teamApplicationRelations])
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedApplicationQuery)
+    },
+    [normalizedApplicationQuery, ownerDirectory, teamApplicationRelations],
+  )
 
   const filteredApplications = useMemo(() => {
     const filtered: ApplicationRecord[] = []
@@ -2860,33 +3719,21 @@ export default function App() {
       filtered.push(application)
     }
     return filtered
-  }, [
-    applicationMatchesDeferredQuery,
-    effectiveOwnerFilter,
-    statusFilters,
-    workspaceApplications,
-  ])
+  }, [applicationMatchesDeferredQuery, effectiveOwnerFilter, statusFilters, workspaceApplications])
   const filteredApplicationIds = useMemo(
     () => new Set(filteredApplications.map((application) => application.id)),
     [filteredApplications],
   )
 
   const visibleApplications = useMemo(() => {
-    if (
-      !selected
-      || filteredApplicationIds.has(selected.id)
-      || !applicationMatchesDeferredQuery(selected)
-    ) {
+    if (!selected || filteredApplicationIds.has(selected.id) || !applicationMatchesDeferredQuery(selected)) {
       // Returning the exact filtered collection is important: ordinary record
       // switches then leave ApplicationPane's sort/page inputs referentially
       // stable instead of rebuilding the whole 131-row explorer pipeline.
       return filteredApplications
     }
 
-    return [
-      selected,
-      ...filteredApplications.filter((application) => application.id !== selected.id),
-    ]
+    return [selected, ...filteredApplications.filter((application) => application.id !== selected.id)]
   }, [applicationMatchesDeferredQuery, filteredApplicationIds, filteredApplications, selected])
   const visibleApplicationIndexById = useMemo(
     () => new Map(visibleApplications.map((application, index) => [application.id, index])),
@@ -2918,16 +3765,18 @@ export default function App() {
       if (effectiveOwnerFilter && student.id !== effectiveOwnerFilter) return []
       const studentVisibleApplications = visibleApplicationsByOwner.get(student.id) ?? []
       if (hasActiveNarrowing && !effectiveOwnerFilter && studentVisibleApplications.length === 0) return []
-      return [{
-        id: student.id,
-        name: student.name,
-        email: student.email,
-        avatarUrl: student.avatarUrl ?? undefined,
-        advisorName: student.advisorName,
-        applications: studentVisibleApplications,
-        allApplications: allApplicationsByOwner.get(student.id) ?? [],
-        canCreateApplication: true,
-      }]
+      return [
+        {
+          id: student.id,
+          name: student.name,
+          email: student.email,
+          avatarUrl: student.avatarUrl ?? undefined,
+          advisorName: student.advisorName,
+          applications: studentVisibleApplications,
+          allApplications: allApplicationsByOwner.get(student.id) ?? [],
+          canCreateApplication: true,
+        },
+      ]
     })
 
     for (const [ownerId, ownerApplications] of allApplicationsByOwner) {
@@ -2969,6 +3818,78 @@ export default function App() {
     [applications],
   )
 
+  const personalRecommenderApplications = useMemo(
+    () => applicationsWithActiveRecommenderDraft(realApplications, draft),
+    [draft, realApplications],
+  )
+  const personalRecommenderAggregation = useProfileRecommenderAggregation(
+    session?.user.settings.profileRecommenders ?? [],
+    personalRecommenderApplications,
+    session?.user.id,
+  )
+
+  const personalRecommenderOptions = useMemo(() => {
+    const ownerId = session?.user.id
+    if (!ownerId) return []
+
+    return profileRecommenderSuggestions(personalRecommenderAggregation.directory)
+      .map((suggestion) => ({
+        key: suggestion.key,
+        ...(suggestion.profileId ? { profileId: suggestion.profileId } : {}),
+        name: suggestion.name,
+        email: suggestion.email,
+        phone: suggestion.phone,
+        title: suggestion.title,
+        institution: suggestion.institution,
+        relationship: suggestion.relationship,
+        notes: suggestion.notes,
+        updatedAt: suggestion.updatedAt,
+      }))
+  }, [personalRecommenderAggregation, session?.user.id])
+
+  const selectedTeamRecommenderOwnerId = isTeamMode ? selectedTeamMeta?.ownerId ?? null : null
+  const selectedTeamOwnerApplications = useMemo(() => {
+    if (!selectedTeamRecommenderOwnerId) return []
+    const ownerApplications = teamApplications.filter(
+      (application) => application.ownerId === selectedTeamRecommenderOwnerId,
+    )
+    return applicationsWithActiveRecommenderDraft(ownerApplications, draft)
+  }, [draft, selectedTeamRecommenderOwnerId, teamApplications])
+  const selectedTeamRecommenderProfiles = selectedTeamRecommenderOwnerId
+    ? teamRecommenderProfilesByStudent[selectedTeamRecommenderOwnerId] ?? EMPTY_RECOMMENDER_OPTIONS
+    : EMPTY_RECOMMENDER_OPTIONS
+  const selectedTeamRecommenderAggregation = useProfileRecommenderAggregation(
+    selectedTeamRecommenderProfiles,
+    selectedTeamOwnerApplications,
+    selectedTeamRecommenderOwnerId ?? undefined,
+  )
+  const selectedTeamRecommenderOptions = useMemo(() => {
+    if (!selectedTeamRecommenderOwnerId) return []
+    return profileRecommenderSuggestions(selectedTeamRecommenderAggregation.directory).map((suggestion) => ({
+      key: suggestion.key,
+      ...(suggestion.profileId ? { profileId: suggestion.profileId } : {}),
+      name: suggestion.name,
+      email: suggestion.email,
+      phone: suggestion.phone,
+      title: suggestion.title,
+      institution: suggestion.institution,
+      relationship: suggestion.relationship,
+      notes: suggestion.notes,
+      updatedAt: suggestion.updatedAt,
+    }))
+  }, [selectedTeamRecommenderAggregation, selectedTeamRecommenderOwnerId])
+
+  useEffect(() => {
+    if (!isTeamMode || !selectedTeamRecommenderOwnerId) return
+    if (Object.prototype.hasOwnProperty.call(teamRecommenderProfilesByStudent, selectedTeamRecommenderOwnerId)) return
+    void loadTeamStudentRecommenders(selectedTeamRecommenderOwnerId).catch(() => undefined)
+  }, [
+    isTeamMode,
+    loadTeamStudentRecommenders,
+    selectedTeamRecommenderOwnerId,
+    teamRecommenderProfilesByStudent,
+  ])
+
   const allShares = useMemo<SharedLinkInfo[]>(
     () => [
       ...realApplications.flatMap((application) =>
@@ -2996,29 +3917,33 @@ export default function App() {
   )
 
   const selectedBackups = useMemo(
-    () => backups.filter((backup) => (
-      !deferredInspectorApplication?.id
-      || backup.applicationId === deferredInspectorApplication.id
-    )),
-    [backups, deferredInspectorApplication?.id],
+    () =>
+      backups.filter(
+        (backup) => !inspectorApplication?.id || backup.applicationId === inspectorApplication.id,
+      ),
+    [backups, inspectorApplication?.id],
   )
 
-  function applyWorkspaceSnapshot(
-    data: OfflineSnapshotData,
-    options: { offline?: boolean } = {},
-  ) {
+  function applyWorkspaceSnapshot(data: OfflineSnapshotData, options: { offline?: boolean } = {}) {
     setApplications(data.applications)
     setProfileAssets(data.profileAssets)
     setBackups(data.backups)
     setApplicationTrash(data.applicationTrash)
-    const nextTeamId = options.offline
-      ? null
-      : data.activeTeamId ?? data.teamSummary?.team.id ?? null
-    setTeamWorkspaces(options.offline ? [] : data.teamWorkspaces ?? [])
+    const teamDataUnavailable = Boolean(options.offline) || PUBLIC_EDITION
+    const nextTeamId = teamDataUnavailable ? null : (data.activeTeamId ?? data.teamSummary?.team.id ?? null)
+    setTeamWorkspaces(teamDataUnavailable ? [] : (data.teamWorkspaces ?? []))
     setActiveTeamId(nextTeamId)
     activeTeamIdRef.current = nextTeamId
-    setTeamSummary(options.offline ? null : data.teamSummary)
-    setTeamApplications(options.offline ? [] : data.teamApplications)
+    setTeamSummary(teamDataUnavailable ? null : data.teamSummary)
+    setTeamApplications(teamDataUnavailable ? [] : data.teamApplications)
+    if (PUBLIC_EDITION) {
+      setInterfaceMode('personal')
+      setOwnerFilter(null)
+      if (screen === 'team' || interfaceMode === 'team') {
+        setScreen('dashboard')
+        setTeamSection('overview')
+      }
+    }
     if (options.offline) {
       setAiKeys([])
       setPasskeys([])
@@ -3035,11 +3960,16 @@ export default function App() {
     }
     setTeamLookupComplete(true)
     setApplicationsLoaded(true)
-    setSelectedId((current) => (
+    setSelectedId((current) =>
       current && data.applications.some((application) => application.id === current)
         ? current
-        : data.applications[0]?.id ?? null
-    ))
+        : (data.applications[0]?.id ?? null),
+    )
+
+    // Preload critical assets after workspace data is applied
+    if (!options.offline && data.applications.length > 0) {
+      void preloadCriticalWorkspaceAssets(data.applications.length, languageRef.current)
+    }
   }
 
   function currentSnapshotData(nextApplications = applications): OfflineSnapshotData {
@@ -3056,10 +3986,7 @@ export default function App() {
   }
 
   function activateSecureOfflineWorkspace(activeSession: AuthSession) {
-    const personalData = personalOfflineSnapshotDataForSession(
-      activeSession,
-      currentSnapshotData(),
-    )
+    const personalData = personalOfflineSnapshotDataForSession(activeSession, currentSnapshotData())
     if (!personalData) return false
 
     const saved = saveOfflineSnapshot(activeSession, personalData)
@@ -3076,7 +4003,9 @@ export default function App() {
   function cancelScheduledOfflineSnapshotSave() {
     const scheduled = offlineSnapshotSaveRef.current
     if (!scheduled) return
-    const idleWindow = window as Window & { cancelIdleCallback?: (handle: number) => void }
+    const idleWindow = window as Window & {
+      cancelIdleCallback?: (handle: number) => void
+    }
     if (scheduled.idle) {
       idleWindow.cancelIdleCallback?.(scheduled.handle)
     } else {
@@ -3090,13 +4019,37 @@ export default function App() {
     const idleWindow = window as Window & {
       requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
     }
-    const runSave = () => {
-      offlineSnapshotSaveRef.current = null
-      const saved = saveOfflineSnapshot(nextSession, snapshotData)
+    const commit = (data: OfflineSnapshotData) => {
+      const saved = saveOfflineSnapshot(nextSession, data)
       if (saved) {
         setOfflineSnapshotSavedAt(saved.savedAt)
         setOfflineAccessExpiresAt(saved.authorization.expiresAt)
       }
+    }
+    const runSave = () => {
+      offlineSnapshotSaveRef.current = null
+      // First paint deliberately receives list-shaped applications without
+      // correspondence bodies or file histories. Persisting those verbatim
+      // would leave the offline workspace showing empty dossiers for every
+      // record the user had not opened while online, so fetch the complete
+      // set once here -- on idle, off the startup path -- and store that.
+      // A failure keeps the lighter snapshot, which is still better than none.
+      const hasSlimApplications = snapshotData.applications.some(
+        (application) => (application as ApplicationRecord & { __listSlim?: boolean }).__listSlim === true,
+      )
+      if (!hasSlimApplications) {
+        commit(snapshotData)
+        return
+      }
+      phdApi.listApplications(nextSession.token)
+        .then((full) => {
+          if (currentSessionTokenRef.current !== nextSession.token) return
+          commit({ ...snapshotData, applications: full })
+        })
+        .catch(() => {
+          if (currentSessionTokenRef.current !== nextSession.token) return
+          commit(snapshotData)
+        })
     }
     if (idleWindow.requestIdleCallback) {
       offlineSnapshotSaveRef.current = {
@@ -3113,41 +4066,49 @@ export default function App() {
 
   const ensureTourSampleApplication = useCallback(() => {
     const sample = createTourSampleApplication(session?.user.id, lang)
-    try { localStorage.setItem(ONBOARDING_SAMPLE_ACTIVE_KEY, '1') } catch {}
+    try {
+      localStorage.setItem(ONBOARDING_SAMPLE_ACTIVE_KEY, '1')
+    } catch {}
     setApplications((items) => [sample, ...items.filter((item) => !isTourSampleApplication(item))])
     setDraftState(cloneApplication(sample), { clean: true })
     setSelectedId(sample.id)
   }, [lang, session?.user.id, setDraftState])
 
-  const cleanupTourSampleApplication = useCallback((markDone = true) => {
-    const fallbackId = realApplications[0]?.id ?? null
-    setApplications((items) => items.filter((item) => !isTourSampleApplication(item)))
-    if (draftRef.current && isTourSampleApplicationId(draftRef.current.id)) {
-      setDraftState(null, { clean: true })
-    }
-    setSelectedId((current) => isTourSampleApplicationId(current) ? fallbackId : current)
-    setRecentOpenedIds((items) => items.filter((id) => !isTourSampleApplicationId(id)))
-    try {
-      localStorage.removeItem(ONBOARDING_SAMPLE_ACTIVE_KEY)
-      const storedSelected = localStorage.getItem(SELECTED_ID_KEY)
-      if (isTourSampleApplicationId(storedSelected)) localStorage.removeItem(SELECTED_ID_KEY)
-      const storedRecent = safeParseJson<unknown>(localStorage.getItem(RECENT_OPENED_KEY))
-      if (Array.isArray(storedRecent)) {
-        safeSetJson(RECENT_OPENED_KEY, storedRecent.filter((id) => !isTourSampleApplicationId(typeof id === 'string' ? id : null)))
+  const cleanupTourSampleApplication = useCallback(
+    (markDone = true) => {
+      const fallbackId = realApplications[0]?.id ?? null
+      setApplications((items) => items.filter((item) => !isTourSampleApplication(item)))
+      if (draftRef.current && isTourSampleApplicationId(draftRef.current.id)) {
+        setDraftState(null, { clean: true })
       }
-      if (markDone) localStorage.setItem(ONBOARDING_DONE_KEY, '1')
-    } catch {
-      // Storage cleanup is best effort; the sample itself never leaves local React state.
-    }
-    if (isTourSampleApplicationId(selectedId)) {
-      setScreen('dashboard')
-      setTab('dossier')
-      setMobileDetailOpen(false)
-    }
-    if (window.location.pathname.includes(encodeURIComponent(TOUR_SAMPLE_APPLICATION_ID))) {
-      window.history.replaceState(null, '', '/')
-    }
-  }, [realApplications, selectedId, setDraftState])
+      setSelectedId((current) => (isTourSampleApplicationId(current) ? fallbackId : current))
+      setRecentOpenedIds((items) => items.filter((id) => !isTourSampleApplicationId(id)))
+      try {
+        localStorage.removeItem(ONBOARDING_SAMPLE_ACTIVE_KEY)
+        const storedSelected = localStorage.getItem(SELECTED_ID_KEY)
+        if (isTourSampleApplicationId(storedSelected)) localStorage.removeItem(SELECTED_ID_KEY)
+        const storedRecent = safeParseJson<unknown>(localStorage.getItem(RECENT_OPENED_KEY))
+        if (Array.isArray(storedRecent)) {
+          safeSetJson(
+            RECENT_OPENED_KEY,
+            storedRecent.filter((id) => !isTourSampleApplicationId(typeof id === 'string' ? id : null)),
+          )
+        }
+        if (markDone) localStorage.setItem(ONBOARDING_DONE_KEY, '1')
+      } catch {
+        // Storage cleanup is best effort; the sample itself never leaves local React state.
+      }
+      if (isTourSampleApplicationId(selectedId)) {
+        setScreen('dashboard')
+        setTab('dossier')
+        setMobileDetailOpen(false)
+      }
+      if (window.location.pathname.includes(encodeURIComponent(TOUR_SAMPLE_APPLICATION_ID))) {
+        window.history.replaceState(null, '', '/')
+      }
+    },
+    [realApplications, selectedId, setDraftState],
+  )
 
   const startOnboardingTour = useCallback(() => {
     setDialogOpen(false)
@@ -3169,7 +4130,16 @@ export default function App() {
     // Start the cold work, but publish the open state in the click task so the
     // lightweight overlay cue paints immediately.
     void Promise.all([
-      preloadLanguage(languageRef.current, ['core', 'shared', 'tour', 'dashboard', 'workspace', 'dossier', 'profile', 'settings']),
+      preloadLanguage(languageRef.current, [
+        'core',
+        'shared',
+        'tour',
+        'dashboard',
+        'workspace',
+        'dossier',
+        'profile',
+        'settings',
+      ]),
       loadOnboardingTour(),
       loadProfileScreen(),
       loadSettingsScreen(),
@@ -3178,23 +4148,44 @@ export default function App() {
   }, [ensureTourSampleApplication])
 
   const browserNotificationsEnabled = session?.user.settings.browserNotificationsEnabled !== false
-  const verifiedOnlineSessionToken = applicationsLoaded && !offlineDataActive && isOnline
-    ? session?.token
-    : undefined
-  const webPushNotifications = useWebPushNotifications(verifiedOnlineSessionToken, browserNotificationsEnabled, (notification) => {
-    const sourceToken = currentSessionTokenRef.current
-    if (!sourceToken || !isCurrentSessionToken(sourceToken)) return
-    const token = getLatestSessionToken(sourceToken)
-    void phdApi.unreadNotificationCount(token)
-      .then((result) => setUnreadNotificationCount(result.count))
-      .catch(() => {})
-    if (notificationCenterOpen) {
-      void phdApi.listNotifications(token)
-        .then(setNotifications)
+  const verifiedOnlineSessionToken = applicationsLoaded && !offlineDataActive && isOnline ? session?.token : undefined
+  const webPushNotifications = useWebPushNotifications(
+    verifiedOnlineSessionToken,
+    browserNotificationsEnabled,
+    (notification) => {
+      const sourceToken = currentSessionTokenRef.current
+      const sourceUserId = currentSessionUserIdRef.current
+      const sourceEpoch = sessionIdentityEpochRef.current
+      if (
+        !sourceToken
+        || !sourceUserId
+        || !isMountedSessionIdentity(sourceUserId, sourceToken, sourceEpoch)
+      ) return
+      const token = getLatestSessionToken(sourceToken)
+      void phdApi
+        .unreadNotificationCount(token)
+        .then((result) => {
+          if (isMountedSessionIdentity(sourceUserId, sourceToken, sourceEpoch)) {
+            setUnreadNotificationCount(result.count)
+          }
+        })
         .catch(() => {})
-    }
-    if (notification.title) notify(notification.title, 'info')
-  })
+      if (notificationCenterOpen) {
+        void phdApi
+          .listNotifications(token)
+          .then((items) => {
+            if (isMountedSessionIdentity(sourceUserId, sourceToken, sourceEpoch)) {
+              setNotifications(items)
+            }
+          })
+          .catch(() => {})
+      }
+      if (
+        notification.title
+        && isMountedSessionIdentity(sourceUserId, sourceToken, sourceEpoch)
+      ) notify(notification.title, 'info')
+    },
+  )
 
   useEffect(() => {
     const handleUpdateReady = () => setPwaUpdateReady(true)
@@ -3223,8 +4214,14 @@ export default function App() {
   }, [refreshOfflineQueueCounts, session?.user.id])
 
   const clearSessionState = useCallback(() => {
+    // Start the signed-out surface and its scoped marketing CSS before the
+    // session state commit, so logout/expiry never exposes a cold blank frame.
+    void loadAuthScreen()
     cancelledRef.current = true
+    authenticationHandoffGenerationRef.current += 1
     workspaceRefreshTasksRef.current.cancel()
+    resetWorkspaceBootstrapRecovery()
+    invalidateOfflineSync()
     currentSessionTokenRef.current = null
     currentSessionUserIdRef.current = null
     sessionIdentityEpochRef.current += 1
@@ -3241,14 +4238,25 @@ export default function App() {
     localStorage.removeItem(ONBOARDING_SAMPLE_ACTIVE_KEY)
     setSession(null)
     setApplications([])
+    setPendingRecommenderDraftsByApplication({})
     setProfileAssets([])
+    setAiKeys([])
+    setNotifications([])
+    setNotificationsLoading(false)
+    setUnreadNotificationCount(0)
+    setNotificationCenterOpen(false)
+    setDiscoverRealtimeRevision(0)
+    setTeamWorkspaces([])
     setTeamSummary(null)
     setTeamApplications([])
+    setActiveTeamId(null)
+    activeTeamIdRef.current = null
     setInterfaceMode('personal')
     setOwnerFilter(null)
     setBackups([])
     setApplicationTrash([])
     setApplicationsLoaded(false)
+    setBusy(false)
     setShellPaintReady(false)
     setWorkspaceHandoff(null)
     workspaceHandoffSeqRef.current += 1
@@ -3258,8 +4266,9 @@ export default function App() {
     setOfflineAccessExpiresAt(null)
     setOfflineQueueCount(0)
     setBlockedOfflineCount(0)
-    setSyncingOffline(false)
+    setBlockedOfflineReason(null)
     setPasskeys([])
+    setRemovingPasskeyIds(new Set())
     setSelectedId(null)
     setMobileDetailOpen(false)
     setRecentOpenedIds([])
@@ -3267,27 +4276,35 @@ export default function App() {
     setScreen('dashboard')
     setTab('dossier')
     setTeamSection('overview')
-  }, [resetSessionTokenLineage, setDraftState])
+  }, [invalidateOfflineSync, resetSessionTokenLineage, resetWorkspaceBootstrapRecovery, setDraftState])
 
-  const expireSession = useCallback((requestToken?: string) => {
-    // Ignore late 401s from a previous login (or another account). Only the live
-    // session's own token chain may surface "session expired" and clear state.
-    if (!isActiveSessionRequestToken(requestToken)) return
-    if (sessionExpiredRef.current) return
-    sessionExpiredRef.current = true
-    clearSessionState()
-    notify(t(languageRef.current, 'toast.sessionExpired'), 'error')
-  }, [clearSessionState, isActiveSessionRequestToken, notify])
+  const expireSession = useCallback(
+    (requestToken?: string) => {
+      // Ignore late 401s from a previous login (or another account). Only the live
+      // session's own token chain may surface "session expired" and clear state.
+      if (!isActiveSessionRequestToken(requestToken)) return
+      if (sessionExpiredRef.current) return
+      sessionExpiredRef.current = true
+      clearSessionState()
+      notify(t(languageRef.current, 'toast.sessionExpired'), 'error')
+    },
+    [clearSessionState, isActiveSessionRequestToken, notify],
+  )
 
   const offlineConnectivityUnavailable = connectivityUnavailable(connectivity)
   useEffect(() => {
-    if (!session || !offlineConnectivityUnavailable) return undefined
+    // This timer governs an offline snapshot that has actually been mounted. A
+    // transport failure during post-auth bootstrap has no offline authorization
+    // to expire and must remain under the workspace recovery owner.
+    if (!session || !offlineConnectivityUnavailable || !offlineDataActive) return undefined
+    // A verified session that is still completing its read-only workspace
+    // bootstrap must survive gateway/restart evidence. The recovery task owns
+    // the retry UI; only an authoritative auth response may clear this handoff.
+    if (!applicationsLoaded && workspaceBootstrapRecoveryRef.current) return undefined
 
     const access = offlineAccessForSession(session)
     const accessExpiryMs = access.expiresAt ? Date.parse(access.expiresAt) : Number.NaN
-    const snapshotExpiryMs = offlineAccessExpiresAt
-      ? Date.parse(offlineAccessExpiresAt)
-      : Number.NaN
+    const snapshotExpiryMs = offlineAccessExpiresAt ? Date.parse(offlineAccessExpiresAt) : Number.NaN
     const effectiveExpiryMs = Number.isFinite(snapshotExpiryMs)
       ? Math.min(snapshotExpiryMs, accessExpiryMs)
       : accessExpiryMs
@@ -3309,10 +4326,62 @@ export default function App() {
     )
     return () => window.clearTimeout(timeout)
   }, [
+    applicationsLoaded,
     clearSessionState,
     notify,
     offlineConnectivityUnavailable,
     offlineAccessExpiresAt,
+    offlineDataActive,
+    session,
+  ])
+
+  useEffect(() => {
+    setInterviewWorkspaces({})
+    setInterviewSelectedStudentId(null)
+    setInterviewLoadingScope(null)
+    dirtyInterviewScopeKeysRef.current.clear()
+    interviewLoadSequenceRef.current += 1
+  }, [session?.user.id])
+
+  useEffect(() => {
+    if (
+      screen !== 'interview'
+      || !session
+      || !canUseInterview
+      || !interviewSubjectUserId
+      || interviewWorkspaces[interviewScopeKey]
+      || offlineConnectivityUnavailable
+    ) return undefined
+
+    const sequence = ++interviewLoadSequenceRef.current
+    const controller = new AbortController()
+    setInterviewLoadingScope(interviewScopeKey)
+    void phdApi.getInterviewPrepWorkspace(
+      getLatestSessionToken(session.token),
+      { subjectUserId: interviewSubjectUserId, teamId: interviewTeamId },
+      { signal: controller.signal },
+    ).then((workspace) => {
+      if (controller.signal.aborted || interviewLoadSequenceRef.current !== sequence) return
+      setInterviewWorkspaces((current) => ({ ...current, [interviewScopeKey]: workspace }))
+    }).catch((error) => {
+      if (!controller.signal.aborted && interviewLoadSequenceRef.current === sequence && !isAuthExpired(error)) {
+        notifyEnhancedError(error, languageRef.current, notify)
+      }
+    }).finally(() => {
+      if (!controller.signal.aborted && interviewLoadSequenceRef.current === sequence) {
+        setInterviewLoadingScope((current) => current === interviewScopeKey ? null : current)
+      }
+    })
+    return () => controller.abort()
+  }, [
+    canUseInterview,
+    interviewScopeKey,
+    interviewSubjectUserId,
+    interviewTeamId,
+    interviewWorkspaces,
+    notify,
+    offlineConnectivityUnavailable,
+    screen,
     session,
   ])
 
@@ -3320,7 +4389,8 @@ export default function App() {
   useEffect(() => {
     if (!settingsSessionToken) return
     let cancelled = false
-    void phdApi.listPasskeys(getLatestSessionToken(settingsSessionToken))
+    void phdApi
+      .listPasskeys(getLatestSessionToken(settingsSessionToken))
       .then((items) => {
         if (!cancelled) setPasskeys(items)
       })
@@ -3349,6 +4419,34 @@ export default function App() {
       setDraftState(null, { clean: true })
     }
   }, [clearDetailDraftHydration, scheduleDetailDraftHydration, selected, setDraftState])
+
+  // The first-screen bootstrap intentionally omits correspondence bodies and
+  // nested file histories. Hydrate the full record once a project is selected
+  // so Dossier/Inspector receive the complete application without downloading
+  // every record's private detail during startup.
+  useEffect(() => {
+    const selectedRecord = selected as (ApplicationRecord & { __listSlim?: boolean }) | null
+    if (!selectedRecord?.__listSlim || !session?.token) return
+    let cancelled = false
+    const requestToken = session.token
+    const selectedApplicationId = selectedRecord.id
+    const controller = new AbortController()
+    const detailRequest = loadApplicationDetailForNavigation(selectedApplicationId, controller.signal)
+    if (!detailRequest) return undefined
+    detailRequest
+      .then((full) => {
+        if (cancelled || controller.signal.aborted || !isCurrentSessionToken(requestToken)) return
+        setApplications((items) => items.map((item) => item.id === full.id ? full : item))
+      })
+      .catch((error: unknown) => {
+        if (cancelled || controller.signal.aborted || isAbortLike(error) || isAuthExpired(error)) return
+        notify(normalizeError(error, languageRef.current), 'error')
+      })
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [isCurrentSessionToken, loadApplicationDetailForNavigation, notify, selected, session?.token])
 
   // Jump intents are transient and application-scoped. Any ordinary route or
   // record change invalidates an unconsumed intent so it cannot replay when a
@@ -3383,90 +4481,96 @@ export default function App() {
     safeSetJson(SESSION_KEY, initialSession)
     void (async () => {
       try {
-        const criticalAssets = warmCriticalScreenAssets(
-          initialScreenRef.current,
-          initialTabRef.current,
-          initialLanguageRef.current,
-          initialViewModeRef.current,
-        )
-        const data = await fetchWorkspaceData(initialSession)
-        await criticalAssets
-        // Identity moved away (logout / re-login) — abandon without touching UI.
-        if (
-          sessionIdentityEpochRef.current !== requestEpoch
-          || currentSessionUserIdRef.current !== initialSession.user.id
-        ) {
-          return
-        }
-        // Re-seed only while this boot's token is still the live session tip (or
-        // chains to it). Never re-introduce an expired token after a fresh login.
-        const liveToken = currentSessionTokenRef.current
-        if (
-          liveToken
-          && (
-            liveToken === initialSession.token
-            || getLatestSessionToken(initialSession.token) === liveToken
-          )
-        ) {
-          rememberSessionToken(initialSession.token)
-        }
-        const applied = await applyWorkspaceDataRef.current(initialSession, data, requestEpoch)
-        if (!applied) {
-          // Never leave the signed-in shell stuck on the loading curtain.
-          if (
-            sessionIdentityEpochRef.current === requestEpoch
-            && currentSessionUserIdRef.current === initialSession.user.id
-          ) {
-            sessionExpiredRef.current = true
-            clearSessionState()
-            notify(t(languageRef.current, 'toast.sessionExpired'), 'error')
-          }
-          return
-        }
-        try { localStorage.removeItem(ONBOARDING_SAMPLE_ACTIVE_KEY) } catch {}
-        var onboardingDone = false
-        try { onboardingDone = localStorage.getItem(ONBOARDING_DONE_KEY) === '1' } catch {}
-        const initialRoute = parseRoute(window.location.pathname)
-        const shouldShowPersonalOnboarding = !initialSession.impersonation?.teamId
-          && initialRoute?.interfaceMode !== 'team'
-          && initialRoute?.screen !== 'team'
-        if (shouldShowPersonalOnboarding && !onboardingDone && data.nextApps.length === 0) setShowOnboarding(true)
+        const outcome = await runWorkspaceBootstrapWithRecovery({
+          session: initialSession,
+          sessionEpoch: requestEpoch,
+          execute: async (signal) => {
+            const criticalAssets = warmCriticalScreenAssets(
+              initialScreenRef.current,
+              initialTabRef.current,
+              initialLanguageRef.current,
+              initialViewModeRef.current,
+            )
+            const data = await fetchWorkspaceData(initialSession, signal)
+            await criticalAssets
+            signal.throwIfAborted()
+            if (!workspaceBootstrapStillOwnsSession(initialSession, requestEpoch)) {
+              throw new ApiError(
+                'The authenticated session changed before the workspace finished loading.',
+                'SESSION_SUPERSEDED',
+                409,
+              )
+            }
+            if (data.me?.user?.id !== initialSession.user.id) {
+              throw new ApiError('Session identity mismatch. Please sign in again.', 'SESSION_IDENTITY_MISMATCH', 409)
+            }
+            // Re-seed only while this boot's token is still the live session tip
+            // (or chains to it). Never re-introduce a token after a fresh login.
+            const liveToken = currentSessionTokenRef.current
+            if (
+              liveToken
+              && (liveToken === initialSession.token || getLatestSessionToken(initialSession.token) === liveToken)
+            ) rememberSessionToken(initialSession.token)
+
+            const applied = await applyWorkspaceDataRef.current(initialSession, data, requestEpoch)
+            if (!applied) {
+              throw new ApiError(
+                'The authenticated session changed before the workspace finished loading.',
+                'SESSION_SUPERSEDED',
+                409,
+              )
+            }
+            try {
+              localStorage.removeItem(ONBOARDING_SAMPLE_ACTIVE_KEY)
+            } catch {}
+            let onboardingDone = false
+            try {
+              onboardingDone = localStorage.getItem(ONBOARDING_DONE_KEY) === '1'
+            } catch {}
+            const initialRoute = parseRoute(window.location.pathname)
+            const shouldShowPersonalOnboarding =
+              !initialSession.impersonation?.teamId
+              && initialRoute?.interfaceMode !== 'team'
+              && initialRoute?.screen !== 'team'
+            if (shouldShowPersonalOnboarding && !onboardingDone && data.nextApps.length === 0) {
+              setShowOnboarding(true)
+            }
+          },
+        })
+        if (outcome.status !== 'deferred' || !isNetworkLikeError(outcome.error)) return
+
+        const snapshot = loadOfflineSnapshot(initialSession)
+        if (!snapshot || !workspaceBootstrapStillOwnsSession(initialSession, requestEpoch)) return
+        applyWorkspaceSnapshotRef.current(snapshot.data, { offline: true })
+        setOfflineDataActive(true)
+        setOfflineSnapshotSavedAt(snapshot.savedAt)
+        setOfflineAccessExpiresAt(snapshot.authorization.expiresAt)
+        refreshOfflineQueueCounts(initialSession.user.id)
+        resetWorkspaceBootstrapRecovery()
+        notify(t(languageRef.current, 'toast.offlineSnapshotLoaded'), 'info')
       } catch (error) {
         if (isAuthExpired(error)) {
           expireSession(initialSession.token)
-        } else if (isNetworkLikeError(error)) {
-          const snapshot = loadOfflineSnapshot(initialSession)
-          if (
-            snapshot
-            && sessionIdentityEpochRef.current === requestEpoch
-            && currentSessionUserIdRef.current === initialSession.user.id
-          ) {
-            applyWorkspaceSnapshotRef.current(snapshot.data, { offline: true })
-            setOfflineDataActive(true)
-            setOfflineSnapshotSavedAt(snapshot.savedAt)
-            setOfflineAccessExpiresAt(snapshot.authorization.expiresAt)
-            refreshOfflineQueueCounts(initialSession.user.id)
-            notify(t(languageRef.current, 'toast.offlineSnapshotLoaded'), 'info')
-          } else if (
-            sessionIdentityEpochRef.current === requestEpoch
-            && currentSessionUserIdRef.current === initialSession.user.id
-          ) {
-            clearSessionState()
-            notify(normalizeError(error, languageRef.current), 'error')
-          }
         } else if (
-          sessionIdentityEpochRef.current === requestEpoch
-          && currentSessionUserIdRef.current === initialSession.user.id
+          isWorkspaceIdentityMismatch(error)
+          && workspaceBootstrapStillOwnsSession(initialSession, requestEpoch)
         ) {
-          // Nothing was ever loaded for this session (applicationsLoaded is still false), so
-          // leaving `session` set would strand the user on the loading skeleton indefinitely —
-          // AuthScreen only renders once session is null again. Fall back to the sign-in screen.
+          sessionExpiredRef.current = true
           clearSessionState()
           notify(normalizeError(error, languageRef.current), 'error')
         }
       }
     })()
-  }, [expireSession, rememberSessionToken, clearSessionState, notify, refreshOfflineQueueCounts])
+  }, [
+    clearSessionState,
+    expireSession,
+    notify,
+    refreshOfflineQueueCounts,
+    rememberSessionToken,
+    resetWorkspaceBootstrapRecovery,
+    runWorkspaceBootstrapWithRecovery,
+    workspaceBootstrapStillOwnsSession,
+  ])
 
   const persistSessionRef = useRef(persistSession)
   persistSessionRef.current = persistSession
@@ -3477,16 +4581,41 @@ export default function App() {
   useEffect(() => {
     function onStorage(event: StorageEvent) {
       if (event.key !== SESSION_KEY) return
+      if (event.storageArea && event.storageArea !== localStorage) return
+
+      const transitionGeneration = ++crossTabSessionTransitionGenerationRef.current
+      const mountedUserId = currentSessionUserIdRef.current
+      const mountedIdentityEpoch = sessionIdentityEpochRef.current
+      const eventValue = event.newValue
+      const transitionIsStillLatest = () => {
+        if (crossTabSessionTransitionGenerationRef.current !== transitionGeneration) return false
+        if (sessionIdentityEpochRef.current !== mountedIdentityEpoch) return false
+        if (currentSessionUserIdRef.current !== mountedUserId) return false
+        try {
+          // Storage may already contain a newer value before its queued event is
+          // delivered. Exact comparison prevents the older callback from ever
+          // being persisted during that gap.
+          return localStorage.getItem(SESSION_KEY) === eventValue
+        } catch {
+          return false
+        }
+      }
+
       if (event.newValue == null) {
-        if (currentSessionUserIdRef.current) {
-          clearSessionState()
+        if (mountedUserId) {
+          void prepareForSafeReload({ reason: 'remote-logout' }).then((allowed) => {
+            if (!transitionIsStillLatest()) return
+            if (allowed) clearSessionState()
+            else clearClientSessionCaches()
+          })
         }
         return
       }
       const remote = safeParseJson<AuthSession>(event.newValue)
       if (!remote?.user?.id || !remote.token) return
-      if (remote.user.id === currentSessionUserIdRef.current) {
+      if (remote.user.id === mountedUserId) {
         // Same account: adopt a fresher token from the other tab without swapping user.
+        if (!transitionIsStillLatest()) return
         if (remote.token !== currentSessionTokenRef.current) {
           rememberSessionToken(remote.token)
           currentSessionTokenRef.current = remote.token
@@ -3498,10 +4627,14 @@ export default function App() {
         }
         return
       }
-      // Different account in another tab — hard-reset this tab onto that identity.
-      clearClientSessionCaches()
-      persistSessionRef.current(remote)
-      window.location.reload()
+      // Flush under the old account before changing any identity-owned state.
+      // A blocked reload leaves the resident editor mounted and keeps its
+      // recovery namespace isolated from the account opened in the other tab.
+      void prepareForSafeReload({ reason: 'identity-change' }).then((allowed) => {
+        if (!allowed || !transitionIsStillLatest()) return
+        persistSessionRef.current(remote)
+        reloadPage()
+      })
     }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
@@ -3529,12 +4662,7 @@ export default function App() {
   }, [applicationsLoaded, ensureTourSampleApplication, session, showOnboarding])
 
   useEffect(() => {
-    if (
-      !session
-      || !applicationsLoaded
-      || connectivity.manualOffline
-      || connectivity.serverReachable !== true
-    ) return
+    if (!session || !applicationsLoaded || connectivity.manualOffline || connectivity.serverReachable !== true) return
     if (offlineQueueSize(session.user.id) > 0) {
       void syncOfflineQueue(session)
     } else if (offlineDataActive) {
@@ -3558,13 +4686,8 @@ export default function App() {
   ])
 
   useEffect(() => {
-    if (
-      !session
-      || !applicationsLoaded
-      || offlineDataActive
-      || !connectivityUnavailable(connectivity)
-    ) return
-    activateSecureOfflineWorkspace(session)
+    if (!session || !applicationsLoaded || offlineDataActive || !connectivityUnavailable(connectivity)) return
+    runWithNavigationGuard(() => activateSecureOfflineWorkspace(session))
     // Entering offline mode is a security transition. Mount a freshly filtered
     // personal-only workspace even when the full online workspace was already
     // in memory; Team, admin-adjacent and capability data must not linger.
@@ -3588,10 +4711,7 @@ export default function App() {
   const realtimeUpdates = useRealtimeUpdates({
     token: session?.token ?? null,
     enabled: Boolean(
-      session
-      && applicationsLoaded
-      && !connectivityUnavailable(connectivity)
-      && !connectivity.manualOffline
+      session && applicationsLoaded && !connectivityUnavailable(connectivity) && !connectivity.manualOffline,
     ),
     onInvalidate: (scopes) => {
       const active = session
@@ -3600,21 +4720,28 @@ export default function App() {
       const token = getLatestSessionToken(sourceToken)
 
       if (scopes.has('applications')) {
-        void phdApi.listApplications(token)
+        void phdApi
+          .listApplications(token)
           .then((items) => {
-            if (isCurrentSessionToken(sourceToken)) setApplications(items)
+            if (!isCurrentSessionToken(sourceToken)) return
+            // The editor's own save echoes back through this stream. Reuse the
+            // records it already holds so an echo cannot re-render the open
+            // application and close whatever popover is being typed into.
+            setApplications((current) => mergeApplicationListPreservingIdentity(current, items))
           })
           .catch(() => {})
       }
       if (scopes.has('profile-assets')) {
-        void phdApi.listProfileAssets(token)
+        void phdApi
+          .listProfileAssets(token)
           .then((items) => {
             if (isCurrentSessionToken(sourceToken)) setProfileAssets(items)
           })
           .catch(() => {})
       }
       if (scopes.has('backups')) {
-        void phdApi.listBackups(token)
+        void phdApi
+          .listBackups(token)
           .then((items) => {
             if (isCurrentSessionToken(sourceToken)) setBackups(items)
           })
@@ -3626,7 +4753,8 @@ export default function App() {
         void refreshSessionMetadata({ ...active, token }).catch(() => {})
       }
       if (scopes.has('ai-keys')) {
-        void phdApi.listAiKeys(token)
+        void phdApi
+          .listAiKeys(token)
           .then((items) => {
             if (isCurrentSessionToken(sourceToken)) setAiKeys(items)
           })
@@ -3635,8 +4763,34 @@ export default function App() {
       if (scopes.has('discover')) {
         setDiscoverRealtimeRevision((revision) => revision + 1)
       }
+      if (
+        scopes.has('interview')
+        && screen === 'interview'
+        && canUseInterview
+        && interviewSubjectUserId
+        && !dirtyInterviewScopeKeysRef.current.has(interviewScopeKey)
+      ) {
+        const sequence = ++interviewLoadSequenceRef.current
+        const scopeKey = interviewScopeKey
+        void phdApi
+          .getInterviewPrepWorkspace(token, {
+            subjectUserId: interviewSubjectUserId,
+            teamId: interviewTeamId,
+          })
+          .then((workspace) => {
+            if (
+              isCurrentSessionToken(sourceToken)
+              && interviewLoadSequenceRef.current === sequence
+              && !dirtyInterviewScopeKeysRef.current.has(scopeKey)
+            ) {
+              setInterviewWorkspaces((current) => ({ ...current, [scopeKey]: workspace }))
+            }
+          })
+          .catch(() => {})
+      }
       if (scopes.has('notifications')) {
-        void phdApi.unreadNotificationCount(token)
+        void phdApi
+          .unreadNotificationCount(token)
           .then((result) => {
             if (isCurrentSessionToken(sourceToken)) setUnreadNotificationCount(result.count)
           })
@@ -3648,14 +4802,11 @@ export default function App() {
     },
   })
 
-  // The stream is the primary badge refresh path. A single shared poller owns
-  // the slow compatibility fallback for proxies that block streaming responses.
+  // The stream is the primary badge refresh path. A single shared poller keeps
+  // current installations usable when an intermediary blocks streaming responses.
   useVisibilityAwarePolling({
     enabled: Boolean(
-      session
-      && applicationsLoaded
-      && !realtimeUpdates.connected
-      && !connectivityUnavailable(connectivity)
+      session && applicationsLoaded && !realtimeUpdates.connected && !connectivityUnavailable(connectivity),
     ),
     initialDelayMs: 3_000,
     intervalMs: 5 * 60_000,
@@ -3664,10 +4815,7 @@ export default function App() {
       const sourceToken = currentSessionTokenRef.current
       if (!sourceToken || !isCurrentSessionToken(sourceToken)) return
       try {
-        const result = await phdApi.unreadNotificationCount(
-          getLatestSessionToken(sourceToken),
-          { signal },
-        )
+        const result = await phdApi.unreadNotificationCount(getLatestSessionToken(sourceToken), { signal })
         if (!signal.aborted && isCurrentSessionToken(sourceToken)) {
           setUnreadNotificationCount(result.count)
         }
@@ -3711,7 +4859,7 @@ export default function App() {
   }
 
   // Keyboard shortcuts stay global but avoid hijacking rich text editing keys.
-  useEffect(function() {
+  useEffect(function () {
     function isEditingText(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null
       if (!target) return false
@@ -3779,7 +4927,9 @@ export default function App() {
             if (runtime.activeImpersonationTeamId) return
             navigateWithShortcut(() => {
               if (runtime.isTeamMode) {
-                void runtime.switchWorkspaceMode('personal', { screen: 'profile' })
+                void runtime.switchWorkspaceMode('personal', {
+                  screen: 'profile',
+                })
               } else {
                 setScreen('profile')
               }
@@ -3792,7 +4942,10 @@ export default function App() {
           }
           if (key === 't' && !PUBLIC_EDITION) {
             navigateWithShortcut(() => {
-              void runtime.switchWorkspaceMode('team', { screen: 'team', teamSection: 'overview' })
+              void runtime.switchWorkspaceMode('team', {
+                screen: 'team',
+                teamSection: 'overview',
+              })
             })
             return
           }
@@ -3809,17 +4962,23 @@ export default function App() {
         const accessibleShortcutTabs = runtime.isTeamMode ? shortcutTabs : shortcutTabs.slice(0, -1)
         const tabIndex = Number(event.key) - 1
         if (
-          tabIndex >= 0
-          && tabIndex < accessibleShortcutTabs.length
-          && !editingText
-          && runtime.screen === 'workspace'
-          && runtime.viewMode === 'list'
-          && Boolean(runtime.selectedId)
+          tabIndex >= 0 &&
+          tabIndex < accessibleShortcutTabs.length &&
+          !editingText &&
+          runtime.screen === 'workspace' &&
+          runtime.viewMode === 'list' &&
+          Boolean(runtime.selectedId)
         ) {
           event.preventDefault()
           const nextTab = accessibleShortcutTabs[tabIndex]
-          const direction = accessibleShortcutTabs.indexOf(nextTab) >= accessibleShortcutTabs.indexOf(runtime.tab) ? 'forward' : 'backward'
-          runtime.runAnimatedDossierUpdate(() => setTab(nextTab), { scope: 'dossier-tab', direction })
+          const direction =
+            accessibleShortcutTabs.indexOf(nextTab) >= accessibleShortcutTabs.indexOf(runtime.tab)
+              ? 'forward'
+              : 'backward'
+          runtime.runAnimatedDossierUpdate(() => setTab(nextTab), {
+            scope: 'dossier-tab',
+            direction,
+          })
         }
         return
       }
@@ -3851,7 +5010,10 @@ export default function App() {
       if (key === 'b' && runtime.screen === 'workspace') {
         event.preventDefault()
         runtime.runAnimatedScreenUpdate(() => {
-          setWorkspaceLayout((current) => ({ ...current, applicationsHidden: !current.applicationsHidden }))
+          setWorkspaceLayout((current) => ({
+            ...current,
+            applicationsHidden: !current.applicationsHidden,
+          }))
         })
         return
       }
@@ -3859,116 +5021,36 @@ export default function App() {
       if (key === 'i' && runtime.screen === 'workspace') {
         event.preventDefault()
         runtime.runAnimatedScreenUpdate(() => {
-          setWorkspaceLayout((current) => ({ ...current, inspectorHidden: !current.inspectorHidden }))
+          setWorkspaceLayout((current) => ({
+            ...current,
+            inspectorHidden: !current.inspectorHidden,
+          }))
         })
       }
     }
 
     window.addEventListener('keydown', handleKey)
-    return function() { window.removeEventListener('keydown', handleKey) }
+    return function () {
+      window.removeEventListener('keydown', handleKey)
+    }
   }, [])
 
   useEffect(() => {
     if (!session?.user.id || !applicationsLoaded) return undefined
     if (isJsdomRuntime()) return undefined
-
-    let cancelled = false
-    type WarmupTask = () => Promise<unknown>
-    const idleWindow = window as Window & {
-      requestIdleCallback?: (callback: (deadline: IdleDeadline) => void, options?: { timeout?: number }) => number
-      cancelIdleCallback?: (handle: number) => void
-    }
-
-    const scheduleWarmup = (tasks: WarmupTask[], initialDelay: number, idleTimeout: number) => {
-      let index = 0
-      let timer: number | null = null
-      let idleHandle: number | null = null
-
-      const scheduleNext = () => {
-        if (cancelled || index >= tasks.length) return
-        if (idleWindow.requestIdleCallback) {
-          idleHandle = idleWindow.requestIdleCallback(runNext, { timeout: idleTimeout })
-        } else {
-          timer = window.setTimeout(() => runNext(), 120)
-        }
-      }
-
-      const runNext = (deadline?: IdleDeadline) => {
-        idleHandle = null
-        timer = null
-        if (cancelled || index >= tasks.length) return
-        if (deadline && !deadline.didTimeout && deadline.timeRemaining() < 6) {
-          scheduleNext()
-          return
-        }
-
-        const task = tasks[index]
-        index += 1
-        void task().catch(() => undefined).finally(() => {
-          if (!cancelled && index < tasks.length) {
-            timer = window.setTimeout(scheduleNext, 90)
-          }
-        })
-      }
-
-      timer = window.setTimeout(scheduleNext, initialDelay)
-      return () => {
-        if (timer !== null) window.clearTimeout(timer)
-        if (idleHandle !== null) idleWindow.cancelIdleCallback?.(idleHandle)
-      }
-    }
-
-    // The rail can move from the dashboard straight into this group of surfaces.
-    // Starting these imports one-by-one through rIC left a cold first click
-    // waiting behind several 800ms idle deadlines on a busy dashboard. This
-    // effect runs after React has committed the initial surface, so start the
-    // independent rail targets in the next task rather than adding another
-    // visible delay. Their preload handles dedupe later pointer/focus requests.
-    const railCriticalTimer = window.setTimeout(() => {
-      if (cancelled) return
-      void Promise.all([
-        loadApplicationPane(),
-        loadKanbanBoard(),
-        loadInspector(),
-        loadDiscoverScreen(),
-        loadProfileScreen(),
-        loadSettingsScreen(),
-      ]).catch(() => undefined)
-    }, 0)
-
-    // Dossier detail and the remaining language packs are lower-priority. Keep
-    // them in the cooperative queue so the initial workspace warmup cannot make
-    // the dashboard's first interactive paint feel heavy on modest devices.
-    const navigationTasks: WarmupTask[] = [
-      loadDossierView,
-      () => preloadLanguage(lang, ['core', 'shared', 'dashboard', 'workspace', 'discover', 'profile', 'settings', 'team']),
+    // Optional route chunks are intentionally absent from the HTML entry. Warm
+    // them one at a time only during a visible, online, unmetered idle window;
+    // Rail pointer/focus intent still bypasses this background queue.
+    const warmupTasks: RouteWarmupTask[] = [
+      loadApplicationPane,
+      loadKanbanBoard,
+      loadInspector,
     ]
-    // Click-open overlays are interaction-critical even though they are not part
-    // of first paint. Warm them cooperatively soon after the shell settles; the
-    // former 3.2s delay left early clicks waiting on cold chunks.
-    const overlayTasks: WarmupTask[] = [
-      loadNewApplicationDialog,
-      loadShareDialog,
-      loadNotificationCenter,
-      loadKeyboardShortcuts,
-      loadOnboardingTour,
-      loadCommandPalette,
-      () => preloadLanguage(lang, ['dossier', 'share', 'tour']),
-    ]
-    if (!PUBLIC_EDITION) {
-      overlayTasks.push(loadTeamScreen, () => preloadLanguage(lang, ['team', 'workspace']))
-    }
-
-    const cancelNavigation = scheduleWarmup(navigationTasks, 160, 800)
-    const cancelOverlays = scheduleWarmup(overlayTasks, 700, 1_800)
-
-    return () => {
-      cancelled = true
-      window.clearTimeout(railCriticalTimer)
-      cancelNavigation()
-      cancelOverlays()
-    }
-  }, [applicationsLoaded, canUseTeamFeatures, lang, session?.user.id])
+    // Keep automatic transfer to three small, frequently adjacent workspace
+    // surfaces. Heavy routes and rich editors load on navigation or explicit
+    // Rail pointer/focus intent instead of consuming a background data budget.
+    return scheduleIdleRouteWarmups(warmupTasks, { maxTasks: 3 })
+  }, [applicationsLoaded, session?.user.id])
 
   useEffect(() => {
     if (!session || screen !== 'workspace' || !applicationsLoaded) return
@@ -3977,21 +5059,39 @@ export default function App() {
       if (draftRef.current !== null) setDraftState(null, { clean: true })
       return
     }
-    if (viewMode === 'kanban' && canUseWorkspaceBoard) {
-      if (selectedId !== null) setSelectedId(null)
-      if (draftRef.current !== null) setDraftState(null, { clean: true })
+    if (renderedWorkspaceViewMode === 'kanban' && canUseWorkspaceBoard) {
+      // Cleanup is bookkeeping after the board has painted, never part of the
+      // board's first interactive commit.
+      startTransition(() => {
+        if (selectedId !== null) setSelectedId(null)
+        if (draftRef.current !== null) setDraftState(null, { clean: true })
+        setWorkspaceJumpIntent(null)
+      })
       return
     }
-    if (viewMode === 'kanban') {
+    if (viewMode === 'kanban' && !canUseWorkspaceBoard) {
       setViewModeDirection('to-list')
       setViewMode('list')
       return
     }
     if (!selectedId || !workspaceApplicationById.has(selectedId)) {
-      const myApps = workspaceApplications.filter(function (a) { return a.ownerId === session.user.id })
+      const myApps = workspaceApplications.filter(function (a) {
+        return a.ownerId === session.user.id
+      })
       setSelectedId(myApps[0]?.id ?? workspaceApplications[0]?.id ?? null)
     }
-  }, [applicationsLoaded, canUseWorkspaceBoard, screen, selectedId, session, setDraftState, viewMode, workspaceApplicationById, workspaceApplications])
+  }, [
+    applicationsLoaded,
+    canUseWorkspaceBoard,
+    screen,
+    selectedId,
+    session,
+    setDraftState,
+    renderedWorkspaceViewMode,
+    viewMode,
+    workspaceApplicationById,
+    workspaceApplications,
+  ])
 
   useEffect(() => {
     if (!workspaceOpeningFromDashboard) return undefined
@@ -4000,12 +5100,20 @@ export default function App() {
     return () => window.clearTimeout(timer)
   }, [workspaceOpeningFromDashboard])
 
-  useEffect(() => () => {
-    if (workspaceViewExitTimerRef.current !== null) {
-      window.clearTimeout(workspaceViewExitTimerRef.current)
-    }
-    clearDetailDraftHydration()
-  }, [clearDetailDraftHydration])
+  useEffect(() => {
+    if (screen === 'workspace' || !workspaceBoardResident) return
+    setWorkspaceBoardResident(false)
+  }, [screen, workspaceBoardResident])
+
+  useEffect(
+    () => () => {
+      if (workspaceViewExitTimerRef.current !== null) {
+        window.clearTimeout(workspaceViewExitTimerRef.current)
+      }
+      clearDetailDraftHydration()
+    },
+    [clearDetailDraftHydration],
+  )
 
   // Persist navigation state across refreshes without storing private payloads.
   useEffect(() => {
@@ -4116,37 +5224,53 @@ export default function App() {
 
   useEffect(() => {
     function handlePopState() {
+      const targetPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
       const parsed = parseRoute(window.location.pathname)
-      if (!parsed) {
-        setRouteNotFound(true)
+      const proceed = () => {
+        // A guarded popstate temporarily restores the resident route below.
+        // Re-apply the user's original destination only after Save/Discard has
+        // acknowledged the editor exit, then commit the matching React state.
+        window.history.replaceState(null, '', targetPath)
+        if (!parsed) {
+          setRouteNotFound(true)
+          return
+        }
+        setRouteNotFound(false)
+        startTransition(() => {
+          if (parsed.interfaceMode) setInterfaceMode(parsed.interfaceMode)
+          setTeamSection(parsed.teamSection)
+          setScreen(parsed.screen)
+          if (parsed.screen === 'workspace' && parsed.selectedId) {
+            setViewModeDirection('to-list')
+            setViewMode('list')
+            setSelectedId(parsed.selectedId)
+            setMobileDetailOpen(true)
+          } else if (parsed.screen === 'workspace') {
+            const teamWorkspace = parsed.interfaceMode === 'team'
+            setViewModeDirection(teamWorkspace ? 'to-list' : 'to-kanban')
+            setViewMode(teamWorkspace ? 'list' : 'kanban')
+            setSelectedId(null)
+            setDraftState(null, { clean: true })
+            setMobileDetailOpen(false)
+          } else {
+            setMobileDetailOpen(false)
+          }
+          setTab(parsed.tab)
+        })
+      }
+
+      const guard = navigationGuardRef.current
+      if (guard?.(proceed)) {
+        // popstate has already changed the address bar. Keep the resident
+        // editor and URL aligned while its Save/Discard/Cancel choice is open.
+        window.history.pushState(null, '', pathForRoute(screen, selectedId, tab, teamSection, interfaceMode))
         return
       }
-      setRouteNotFound(false)
-      startTransition(() => {
-        if (parsed.interfaceMode) setInterfaceMode(parsed.interfaceMode)
-        setTeamSection(parsed.teamSection)
-        setScreen(parsed.screen)
-        if (parsed.screen === 'workspace' && parsed.selectedId) {
-          setViewModeDirection('to-list')
-          setViewMode('list')
-          setSelectedId(parsed.selectedId)
-          setMobileDetailOpen(true)
-        } else if (parsed.screen === 'workspace') {
-          const teamWorkspace = parsed.interfaceMode === 'team'
-          setViewModeDirection(teamWorkspace ? 'to-list' : 'to-kanban')
-          setViewMode(teamWorkspace ? 'list' : 'kanban')
-          setSelectedId(null)
-          setDraftState(null, { clean: true })
-          setMobileDetailOpen(false)
-        } else {
-          setMobileDetailOpen(false)
-        }
-        setTab(parsed.tab)
-      })
+      proceed()
     }
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
-  }, [setDraftState])
+  }, [interfaceMode, screen, selectedId, setDraftState, tab, teamSection])
 
   useEffect(() => {
     try {
@@ -4173,18 +5297,6 @@ export default function App() {
     }
   }, [workspaceLayout])
 
-  useEffect(function() {
-    function handlePopstate(_e: PopStateEvent) {
-      if (navigationGuardRef.current) {
-        if (!navigationGuardRef.current(function() {})) {
-          window.history.pushState(null, '', window.location.href)
-        }
-      }
-    }
-    window.addEventListener('popstate', handlePopstate)
-    return function() { window.removeEventListener('popstate', handlePopstate) }
-  }, [])
-
   useEffect(() => {
     const accent = normalizeThemeAccent(session?.user.settings.themeAccent ?? localStorage.getItem('phd-atlas-accent'))
     applyThemePreset(accent)
@@ -4195,9 +5307,28 @@ export default function App() {
     }
   }, [session?.user.settings.themeAccent])
 
-  function persistSession(nextSession: AuthSession) {
+  useEffect(() => {
+    const userId = session?.user.id ?? null
+    const version = Number.isSafeInteger(session?.user.settingsVersion)
+      ? Number(session?.user.settingsVersion)
+      : 0
+    const tracked = settingsCommitVersionRef.current
+    settingsCommitVersionRef.current = tracked.userId === userId
+      ? { userId, version: Math.max(tracked.version, version) }
+      : { userId, version }
+  }, [session?.user.id, session?.user.settingsVersion])
+
+  function persistSession(nextSession: AuthSession, handoffGeneration?: number) {
+    if (
+      handoffGeneration !== undefined
+      && authenticationHandoffGenerationRef.current !== handoffGeneration
+    ) return false
+    if (handoffGeneration === undefined) authenticationHandoffGenerationRef.current += 1
     sessionExpiredRef.current = false
     cancelledRef.current = false
+    const identityChanged = currentSessionUserIdRef.current !== nextSession.user.id
+    resetWorkspaceBootstrapRecovery()
+    invalidateOfflineSync()
     // Always bump identity epoch on login/register/impersonation handoff — including
     // same-account re-login after expiry. Otherwise in-flight workspace commits from
     // the previous session (same userId) can still pass isMountedSessionIdentity and
@@ -4210,7 +5341,26 @@ export default function App() {
     clearClientSessionCaches()
     currentSessionUserIdRef.current = nextSession.user.id
     currentSessionTokenRef.current = nextSession.token
+    settingsCommitVersionRef.current = {
+      userId: nextSession.user.id,
+      version: Number.isSafeInteger(nextSession.user.settingsVersion)
+        ? Number(nextSession.user.settingsVersion)
+        : 0,
+    }
     resetSessionTokenLineage(nextSession.token)
+    if (identityChanged) {
+      setAiKeys([])
+      setNotifications([])
+      setNotificationsLoading(false)
+      setUnreadNotificationCount(0)
+      setNotificationCenterOpen(false)
+      setPasskeys([])
+      setTeamWorkspaces([])
+      setTeamSummary(null)
+      setTeamApplications([])
+      setActiveTeamId(null)
+      activeTeamIdRef.current = null
+    }
     // Keep the cancelled flag off so a fresh login after a failed boot can load.
     cancelledRef.current = false
     // Authentication is a semantic boundary: expiry/error notices from the
@@ -4218,6 +5368,7 @@ export default function App() {
     clearToasts()
     setSession(nextSession)
     safeSetJson(SESSION_KEY, nextSession)
+    return true
   }
 
   function isMountedSessionIdentity(requestUserId: string, requestToken: string, requestEpoch: number) {
@@ -4280,11 +5431,7 @@ export default function App() {
     }
 
     setSession((current) => {
-      if (
-        !current
-        || current.user.id !== requestUserId
-        || sessionIdentityEpochRef.current !== requestEpoch
-      ) {
+      if (!current || current.user.id !== requestUserId || sessionIdentityEpochRef.current !== requestEpoch) {
         return current
       }
       const committed = {
@@ -4314,11 +5461,7 @@ export default function App() {
       if (sourceToken && !isCurrentSessionToken(sourceToken)) return false
       const tokenSubject = readSessionTokenSubject(token)
       // Refuse to attach another account's rotated JWT onto the mounted session.
-      if (
-        tokenSubject
-        && currentSessionUserIdRef.current
-        && tokenSubject !== currentSessionUserIdRef.current
-      ) {
+      if (tokenSubject && currentSessionUserIdRef.current && tokenSubject !== currentSessionUserIdRef.current) {
         return false
       }
       rememberSessionToken(token)
@@ -4359,6 +5502,24 @@ export default function App() {
     }
   }
 
+  async function runOrThrow(action: () => Promise<void>, success?: string) {
+    try {
+      setBusy(true)
+      await action()
+      if (success) notify(success)
+    } catch (error) {
+      if (isAuthExpired(error)) return Promise.reject(error)
+      if (isNetworkLikeError(error)) {
+        notify(i18nValue.tx('toast.offlineActionNeedsOnline'), 'error')
+      } else {
+        notify(normalizeError(error, languageRef.current), 'error')
+      }
+      throw error
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function runInteractive<T>(action: () => Promise<T>, success?: string): Promise<T> {
     try {
       setBusy(true)
@@ -4379,10 +5540,7 @@ export default function App() {
     }
   }
 
-  async function runApplicationMutation<T>(
-    applicationId: string,
-    action: () => Promise<T>,
-  ): Promise<T | undefined> {
+  async function runApplicationMutation<T>(applicationId: string, action: () => Promise<T>): Promise<T | undefined> {
     const saveToken = beginExternalApplicationSave()
     try {
       const result = await enqueueApplicationWrite(applicationId, action)
@@ -4408,12 +5566,9 @@ export default function App() {
     action: () => Promise<T>,
     successMessage?: string,
   ) {
-    return run(
-      async () => {
-        await enqueueApplicationWrite(applicationId, action)
-      },
-      successMessage,
-    )
+    return runInteractive(async () => {
+      await enqueueApplicationWrite(applicationId, action)
+    }, successMessage)
   }
 
   async function fetchWorkspaceData(
@@ -4422,84 +5577,35 @@ export default function App() {
     requestedTeamId = activeTeamIdRef.current,
   ) {
     const requestToken = activeSession.token
-    const lockedTeamId = activeSession.impersonation?.teamId ?? null
-    const preferredTeamId = lockedTeamId ?? requestedTeamId
-    try {
-      const bootstrap = await phdApi.workspaceBootstrap(
-        requestToken,
-        preferredTeamId,
-        { signal },
-      )
-      if (!bootstrap || !Array.isArray(bootstrap.applications) || !Array.isArray(bootstrap.teamWorkspaces)) {
-        throw new ApiError(
-          'Workspace bootstrap payload is unavailable.',
-          'WORKSPACE_BOOTSTRAP_UNAVAILABLE',
-          502,
-        )
-      }
-      return {
-        me: bootstrap.me,
-        nextApps: bootstrap.applications,
-        assets: bootstrap.profileAssets,
-        nextBackups: bootstrap.backups,
-        trash: bootstrap.applicationTrash,
-        teamWorkspaces: bootstrap.teamWorkspaces,
-        activeTeamId: bootstrap.activeTeamId,
-        team: bootstrap.teamSummary,
-        teamApps: bootstrap.teamApplications,
-        aiKeys: Array.isArray(bootstrap.aiKeys) ? bootstrap.aiKeys : [],
-      }
-    } catch (error) {
-      signal?.throwIfAborted()
-      if (isAbortLike(error)) throw error
-      if (isAuthExpired(error)) throw error
-      if (!shouldUseGranularWorkspaceFallback(error)) throw error
-      // A rolling deployment can briefly serve a frontend whose aggregate
-      // bootstrap route does not exist on the previous API version. Preserve
-      // the established granular path only for that explicit compatibility
-      // shape; transport/server failures stay one failed request.
-      const [me, nextApps, assets, nextBackups, trash, workspaces, nextAiKeys] = await Promise.all([
-        phdApi.me(requestToken, { signal }),
-        lockedTeamId ? Promise.resolve([]) : phdApi.listApplications(requestToken, { signal }),
-        lockedTeamId ? Promise.resolve([]) : phdApi.listProfileAssets(requestToken, { signal }),
-        lockedTeamId ? Promise.resolve([]) : phdApi.listBackups(requestToken, undefined, { signal }),
-        lockedTeamId ? Promise.resolve([]) : phdApi.listApplicationTrash(requestToken, { signal }),
-        phdApi.myTeamWorkspaces(requestToken, { signal }),
-        phdApi.listAiKeys(requestToken, { signal }).catch((aiError) => {
-          signal?.throwIfAborted()
-          if (isAuthExpired(aiError)) throw aiError
-          return []
-        }),
-      ])
-      signal?.throwIfAborted()
-      const availableTeamIds = new Set(workspaces.map((workspace) => workspace.teamId))
-      const resolvedTeamId = lockedTeamId && availableTeamIds.has(lockedTeamId)
-        ? lockedTeamId
-        : preferredTeamId && availableTeamIds.has(preferredTeamId)
-          ? preferredTeamId
-          : workspaces[0]?.teamId ?? null
-      let team: TeamSummary | null = null
-      let teamApps: TeamApplicationRecord[] = []
-      if (resolvedTeamId) {
-        ;[team, teamApps] = await Promise.all([
-          phdApi.myTeam(requestToken, resolvedTeamId, { signal }),
-          phdApi.listTeamApplications(requestToken, resolvedTeamId, { signal }),
-        ])
-      }
-      signal?.throwIfAborted()
-      return {
-        me,
-        nextApps,
-        assets,
-        nextBackups,
-        trash,
-        teamWorkspaces: workspaces,
-        activeTeamId: resolvedTeamId,
-        team,
-        teamApps,
-        aiKeys: Array.isArray(nextAiKeys) ? nextAiKeys : [],
-      }
+    const lockedTeamId = PUBLIC_EDITION ? null : (activeSession.impersonation?.teamId ?? null)
+    const preferredTeamId = PUBLIC_EDITION ? null : (lockedTeamId ?? requestedTeamId)
+    const bootstrap = await phdApi.workspaceBootstrap(requestToken, preferredTeamId, { signal })
+    if (!bootstrap || !Array.isArray(bootstrap.applications) || !Array.isArray(bootstrap.teamWorkspaces)) {
+      throw new ApiError('Workspace bootstrap payload is unavailable.', 'WORKSPACE_BOOTSTRAP_UNAVAILABLE', 502)
     }
+    return {
+      me: bootstrap.me,
+      nextApps: bootstrap.applications,
+      assets: bootstrap.profileAssets,
+      nextBackups: bootstrap.backups,
+      trash: bootstrap.applicationTrash,
+      teamWorkspaces: bootstrap.teamWorkspaces,
+      activeTeamId: bootstrap.activeTeamId,
+      team: bootstrap.teamSummary,
+      teamApps: bootstrap.teamApplications,
+      aiKeys: Array.isArray(bootstrap.aiKeys) ? bootstrap.aiKeys : [],
+    }
+  }
+
+  async function waitForRemovalHandoff<T>(mutation: Promise<T>): Promise<T> {
+    const [mutationResult] = await Promise.allSettled([
+      mutation,
+      new Promise<void>((resolve) => {
+        window.setTimeout(resolve, getMotionDelay(380))
+      }),
+    ])
+    if (mutationResult.status === 'rejected') throw mutationResult.reason
+    return mutationResult.value
   }
 
   async function applyWorkspaceData(
@@ -4513,9 +5619,9 @@ export default function App() {
       // Soft recovery for same-account boot: me/settings commit can fail on a
       // transient token-lineage race, but the workspace payload is still valid.
       if (
-        sessionIdentityEpochRef.current !== requestEpoch
-        || currentSessionUserIdRef.current !== activeSession.user.id
-        || data.me?.user?.id !== activeSession.user.id
+        sessionIdentityEpochRef.current !== requestEpoch ||
+        currentSessionUserIdRef.current !== activeSession.user.id ||
+        data.me?.user?.id !== activeSession.user.id
       ) {
         return false
       }
@@ -4539,10 +5645,10 @@ export default function App() {
       profileAssets: data.assets,
       backups: data.nextBackups,
       applicationTrash: data.trash,
-      teamWorkspaces: data.teamWorkspaces,
-      activeTeamId: data.activeTeamId,
-      teamSummary: data.team,
-      teamApplications: data.teamApps,
+      teamWorkspaces: PUBLIC_EDITION ? [] : data.teamWorkspaces,
+      activeTeamId: PUBLIC_EDITION ? null : data.activeTeamId,
+      teamSummary: PUBLIC_EDITION ? null : data.team,
+      teamApplications: PUBLIC_EDITION ? [] : data.teamApps,
     }
     startTransition(() => {
       setAiKeys(data.aiKeys)
@@ -4564,48 +5670,76 @@ export default function App() {
     const data = await fetchWorkspaceData(activeSession, signal, expectedTeamId)
     await criticalAssets
     signal.throwIfAborted()
-    if (requestEpoch !== sessionIdentityEpochRef.current) return
-    if (currentSessionUserIdRef.current !== activeSession.user.id) return
-    if ((activeSession.impersonation?.teamId ?? activeTeamIdRef.current) !== expectedTeamId) return
-    await applyWorkspaceData(activeSession, data, requestEpoch)
+    if (requestEpoch !== sessionIdentityEpochRef.current) return false
+    if (currentSessionUserIdRef.current !== activeSession.user.id) return false
+    if ((activeSession.impersonation?.teamId ?? activeTeamIdRef.current) !== expectedTeamId) return false
+    if (data.me?.user?.id !== activeSession.user.id) {
+      throw new ApiError('Session identity mismatch. Please sign in again.', 'SESSION_IDENTITY_MISMATCH', 409)
+    }
+    return applyWorkspaceData(activeSession, data, requestEpoch)
   }
 
   async function refreshAll(activeSession = session) {
-    if (!activeSession || cancelledRef.current) return
+    if (!activeSession || cancelledRef.current) return false
     const requestToken = activeSession.token
     const requestEpoch = sessionIdentityEpochRef.current
+    if (!isMountedSessionIdentity(activeSession.user.id, requestToken, requestEpoch)) return false
     rememberSessionToken(requestToken)
-    if (
-      sessionIdentityEpochRef.current !== requestEpoch
-      || currentSessionUserIdRef.current !== activeSession.user.id
-    ) {
-      return
-    }
+    if (!isMountedSessionIdentity(activeSession.user.id, requestToken, requestEpoch)) return false
     const expectedTeamId = activeSession.impersonation?.teamId ?? activeTeamIdRef.current
     const requestKey = `${activeSession.user.id}:${requestToken}:${expectedTeamId ?? ''}:${requestEpoch}`
     try {
-      await workspaceRefreshTasksRef.current.run(
-        'all',
-        requestKey,
-        (signal) => performRefreshAll(activeSession, requestEpoch, expectedTeamId, signal),
+      return await workspaceRefreshTasksRef.current.run('all', requestKey, (signal) =>
+        performRefreshAll(activeSession, requestEpoch, expectedTeamId, signal),
       )
     } catch (error) {
-      if (isAbortLike(error)) return
+      if (isAbortLike(error)) return false
       throw error
     }
   }
 
-  async function refreshSessionMetadata(
-    activeSession = session,
-    options: { signal?: AbortSignal } = {},
+  async function bootstrapEstablishedSession(
+    activeSession: AuthSession,
+    sessionEpoch: number,
+    onLoaded: () => void,
   ) {
+    return runWorkspaceBootstrapWithRecovery({
+      session: activeSession,
+      sessionEpoch,
+      execute: async (signal) => {
+        signal.throwIfAborted()
+        const cancelRefresh = () => workspaceRefreshTasksRef.current.cancel()
+        signal.addEventListener('abort', cancelRefresh, { once: true })
+        try {
+          const loaded = await refreshAll(activeSession)
+          signal.throwIfAborted()
+          if (!loaded) {
+            throw new ApiError(
+              'The authenticated session changed before the workspace finished loading.',
+              'SESSION_SUPERSEDED',
+              409,
+            )
+          }
+        } finally {
+          signal.removeEventListener('abort', cancelRefresh)
+        }
+      },
+      onLoaded,
+    })
+  }
+
+  async function refreshSessionMetadata(activeSession = session, options: { signal?: AbortSignal } = {}) {
     if (!activeSession || cancelledRef.current) return
     const requestToken = activeSession.token
     const requestEpoch = sessionIdentityEpochRef.current
     if (!isMountedSessionIdentity(activeSession.user.id, requestToken, requestEpoch)) return
     const me = await phdApi.me(requestToken, options)
     if (options.signal?.aborted) return
-    commitSessionMetadata(activeSession, me, requestToken, requestEpoch)
+    const committedSession = commitSessionMetadata(activeSession, me, requestToken, requestEpoch)
+    const job = observeMailSyncJob(me.mailFetchStatus?.syncJob)
+    // The stream publishes mail sync transitions, so a background sync now
+    // usually completes through this ordinary session refresh — no poll needed.
+    if (job && committedSession) void settleMailSyncJob(committedSession, job).catch(() => {})
   }
 
   async function refreshTrashAndSessionMetadata(activeSession = session) {
@@ -4667,10 +5801,16 @@ export default function App() {
     })
   }
 
-  async function refreshTeamWorkspace(
-    activeSession = session,
-    preferredTeamId = activeTeamIdRef.current,
-  ) {
+  async function refreshTeamWorkspace(activeSession = session, preferredTeamId = activeTeamIdRef.current) {
+    if (PUBLIC_EDITION) {
+      setTeamWorkspaces([])
+      setActiveTeamId(null)
+      activeTeamIdRef.current = null
+      setTeamSummary(null)
+      setTeamApplications([])
+      setTeamLookupComplete(true)
+      return
+    }
     if (!activeSession || cancelledRef.current) return
     const requestToken = activeSession.token
     const requestEpoch = sessionIdentityEpochRef.current
@@ -4688,17 +5828,20 @@ export default function App() {
         if (!isMountedSessionIdentity(activeSession.user.id, requestToken, requestEpoch)) return
 
         const availableTeamIds = new Set(workspaces.map((workspace) => workspace.teamId))
-        const resolvedTeamId = lockedTeamId && availableTeamIds.has(lockedTeamId)
-          ? lockedTeamId
-          : expectedTeamId && availableTeamIds.has(expectedTeamId)
-            ? expectedTeamId
-            : workspaces[0]?.teamId ?? null
+        const resolvedTeamId =
+          lockedTeamId && availableTeamIds.has(lockedTeamId)
+            ? lockedTeamId
+            : expectedTeamId && availableTeamIds.has(expectedTeamId)
+              ? expectedTeamId
+              : (workspaces[0]?.teamId ?? null)
         let team: TeamSummary | null = null
         let nextTeamApplications: TeamApplicationRecord[] = []
         if (resolvedTeamId) {
           ;[team, nextTeamApplications] = await Promise.all([
             phdApi.myTeam(requestToken, resolvedTeamId, { signal }),
-            phdApi.listTeamApplications(requestToken, resolvedTeamId, { signal }),
+            phdApi.listTeamApplications(requestToken, resolvedTeamId, {
+              signal,
+            }),
           ])
         }
         signal.throwIfAborted()
@@ -4765,49 +5908,75 @@ export default function App() {
     })
   }
 
-  async function syncOfflineQueue(activeSession = session, options: { force?: boolean } = {}) {
+  async function syncOfflineQueue(
+    activeSession = session,
+    options: { force?: boolean; userInitiated?: boolean } = {},
+  ) {
+    const requestEpoch = sessionIdentityEpochRef.current
     if (
-      !activeSession
-      || cancelledRef.current
-      || (!options.force && connectivityUnavailable(connectivity))
-      || syncingOffline
-    ) return
+      !activeSession ||
+      cancelledRef.current ||
+      (!options.force && connectivityUnavailable(connectivity)) ||
+      !isMountedSessionIdentity(activeSession.user.id, activeSession.token, requestEpoch) ||
+      offlineSyncRunRef.current
+    )
+      return 0
 
-    // Revisit older blocked entries as well. Personal offline edits now merge
-    // automatically, with same-field conflicts resolved by the later local or
-    // server timestamp instead of opening a separate review draft.
+    // Every entry is retried, including ones an older build parked as blocked.
+    // Disjoint personal edits merge; a divergent same-field edit is settled by
+    // authoring time so reconnecting is always enough to drain the queue.
     const pendingQueue = readOfflineQueue(activeSession.user.id)
-    if (pendingQueue.length === 0) return
+    if (pendingQueue.length === 0) return 0
 
+    const run = {
+      id: ++offlineSyncSequenceRef.current,
+      userId: activeSession.user.id,
+      sessionEpoch: requestEpoch,
+    }
+    offlineSyncRunRef.current = run
+    const isCurrentRun = () => (
+      offlineSyncRunRef.current?.id === run.id
+      && offlineSyncRunRef.current.userId === run.userId
+      && sessionIdentityEpochRef.current === run.sessionEpoch
+      && currentSessionUserIdRef.current === run.userId
+    )
     setSyncingOffline(true)
     let synced = 0
+    let autoMerged = 0
+    let discarded = 0
+    let deferred = 0
     const syncedIds: string[] = []
+    // A queued change whose target no longer accepts writes can never sync, no
+    // matter how many times the server comes back. Those leave the queue here
+    // instead of sitting behind a button that cannot do anything.
+    const discardedIds: string[] = []
 
     try {
       let requestToken = getLatestSessionToken(activeSession.token)
       let serverApplications = await phdApi.listApplications(requestToken)
+      if (!isCurrentRun()) return synced
       requestToken = getLatestSessionToken(requestToken)
 
       for (const operation of pendingQueue) {
-        if (!isCurrentSessionToken(requestToken)) return
+        if (!isCurrentRun() || !isCurrentSessionToken(requestToken)) return synced
         const current = serverApplications.find((application) => application.id === operation.applicationId)
-        const block = (reason: string) => {
-          markOfflineQueueItemBlocked(activeSession.user.id, operation.id, reason)
+        const discard = () => {
+          discardedIds.push(operation.id)
+          discarded += 1
         }
 
-        if (!current) {
-          block('missing')
+        if (!current || (current.ownerId && current.ownerId !== activeSession.user.id)) {
+          discard()
           continue
         }
-        if (current.ownerId && current.ownerId !== activeSession.user.id) {
-          block('permission')
-          continue
-        }
-        const mergeResult = mergeOfflineApplicationUpdate(operation, current)
+        // Same person, two devices: settle any same-field divergence by
+        // authoring time rather than parking the change for manual recovery.
+        const mergeResult = mergeOfflineApplicationUpdate(operation, current, { autoResolve: true })
         if (!mergeResult) {
-          block('conflict')
+          discard()
           continue
         }
+        if (mergeResult.autoResolved.length > 0) autoMerged += 1
         if (!mergeResult.replayRequired) {
           // The server already owns every winning value. Clearing the queued
           // operation is the save: do not write an identical record merely to
@@ -4816,61 +5985,105 @@ export default function App() {
           synced += 1
           continue
         }
-        if (!current.updatedAt) {
-          block('unverifiable')
-          continue
-        }
 
-        const saved = await phdApi.replayOfflineApplicationUpdate(
-          requestToken,
-          mergeResult.application,
-          current.updatedAt,
-        )
-        requestToken = getLatestSessionToken(requestToken)
-        serverApplications = serverApplications.map((application) =>
-          application.id === saved.id ? saved : application,
-        )
-        syncedIds.push(operation.id)
-        synced += 1
+        try {
+          const mutation = await phdApi.replayOfflineApplicationUpdate(
+            requestToken,
+            mergeResult.application,
+            // Without a server timestamp there is no delta baseline to verify
+            // against, so replay the whole record rather than refusing to sync.
+            current.updatedAt ? current : null,
+          )
+          const saved = mutation.application
+          if (!isCurrentRun()) return synced
+          requestToken = getLatestSessionToken(requestToken)
+          serverApplications = serverApplications.map((application) =>
+            application.id === saved.id ? saved : application,
+          )
+          syncedIds.push(operation.id)
+          synced += 1
+        } catch (error) {
+          if (!isCurrentRun() || isAuthExpired(error)) throw error
+          // One rejected replay must not abandon the rest of the queue, and it
+          // must not surface as a bare "request failed" banner. The entry stays
+          // pending so the next reconnect retries it against a fresh baseline.
+          deferred += 1
+        }
       }
 
-      removeOfflineQueueItems(activeSession.user.id, syncedIds)
-      refreshOfflineQueueCounts(activeSession.user.id)
+      if (!isCurrentRun()) return synced
+      removeOfflineQueueItems(activeSession.user.id, [...syncedIds, ...discardedIds])
+      refreshOfflineQueueCounts(run.userId)
 
       if (synced > 0) {
         notify(tpl(i18nValue.tx('toast.offlineSyncComplete'), { count: synced }), 'success')
+      }
+      // Auto-merging is a silent overwrite unless it is named. Say that a
+      // divergence was settled so the person can check the result.
+      if (autoMerged > 0) {
+        notify(tpl(i18nValue.tx('toast.offlineSyncAutoMerged'), { count: autoMerged }), 'info')
+      }
+      if (discarded > 0) {
+        notify(tpl(i18nValue.tx('toast.offlineSyncDiscarded'), { count: discarded }), 'warning')
+      }
+      // Deferred entries retry on their own; only say so when the person asked
+      // for this run and nothing at all moved.
+      if (deferred > 0 && synced === 0 && options.userInitiated) {
+        notify(tpl(i18nValue.tx('toast.offlineSyncDeferred'), { count: deferred }), 'info')
+      }
+      if (synced > 0 || discarded > 0) {
         await refreshAll({ ...activeSession, token: requestToken })
       }
     } catch (error) {
-      if (isAuthExpired(error)) return
+      if (!isCurrentRun()) return synced
+      if (isAuthExpired(error)) return synced
       if (!isNetworkLikeError(error)) {
-        notify(normalizeError(error, languageRef.current), 'error')
+        // The queue survives; this run just could not finish. Keep the wording
+        // in offline-sync terms instead of a generic request failure.
+        notify(i18nValue.tx('toast.offlineSyncRetryLater'), 'info')
       }
     } finally {
-      setSyncingOffline(false)
-      refreshOfflineQueueCounts(activeSession.user.id)
+      if (offlineSyncRunRef.current?.id === run.id) {
+        offlineSyncRunRef.current = null
+        if (
+          sessionIdentityEpochRef.current === run.sessionEpoch
+          && currentSessionUserIdRef.current === run.userId
+        ) {
+          setSyncingOffline(false)
+          refreshOfflineQueueCounts(run.userId)
+        }
+      }
     }
+    return synced
   }
 
   async function retryOfflineConnection() {
     if (connectivity.manualOffline) return
+    // The panel stays open while the server is reachable (a queued change keeps it
+    // there), so only announce a recovery that actually happened.
+    const wasUnreachable = connectivity.serverReachable !== true
     const result = await probeServerConnectivity({ force: true })
     if (!result.serverReachable || !activeSession) {
       notify(i18nValue.tx('toast.connectionStillUnavailable'), 'info')
       return
     }
 
-    notify(i18nValue.tx('toast.connectionRestored'), 'success')
+    if (wasUnreachable) notify(i18nValue.tx('toast.connectionRestored'), 'success')
     if (offlineQueueSize(activeSession.user.id) > 0) {
-      await syncOfflineQueue(activeSession, { force: true })
-      return
+      // syncOfflineQueue refreshes the workspace itself once anything syncs,
+      // and reports its own outcome in offline-sync wording.
+      const synced = await syncOfflineQueue(activeSession, { force: true, userInitiated: true })
+      if (synced !== 0) return
     }
     if (offlineDataActive) {
       try {
         await refreshAll(activeSession)
       } catch (error) {
+        // This button's job is the sync, not this opportunistic refresh. A bare
+        // "request failed" here reads as though retrying did nothing, which is
+        // exactly the dead-end the queue no longer has.
         if (!isNetworkLikeError(error) && !isAuthExpired(error)) {
-          notify(normalizeError(error, languageRef.current), 'error')
+          notify(i18nValue.tx('toast.offlineSyncRetryLater'), 'info')
         }
       }
     }
@@ -4879,13 +6092,14 @@ export default function App() {
   function toggleManualOffline() {
     const next = !connectivity.manualOffline
     if (next && activeSession) {
-      activateSecureOfflineWorkspace(activeSession)
-    }
-    setManualOfflineMode(next)
-    if (next) {
-      notify(i18nValue.tx('toast.manualOfflineEnabled'), 'info')
+      runWithNavigationGuard(() => {
+        activateSecureOfflineWorkspace(activeSession)
+        setManualOfflineMode(true)
+        notify(i18nValue.tx('toast.manualOfflineEnabled'), 'info')
+      })
       return
     }
+    setManualOfflineMode(next)
     notify(i18nValue.tx('toast.manualOfflineDisabled'), 'info')
     void probeServerConnectivity({ force: true }).then((result) => {
       if (result.serverReachable && activeSession) {
@@ -4894,9 +6108,13 @@ export default function App() {
     })
   }
 
-  async function requestPwaUpdateInstall() {
-    if (isDraftDirty && !await flushApplicationAutoSave()) return
-    if (activatePwaUpdate()) setPwaUpdateReady(false)
+  function requestPwaUpdateInstall() {
+    runWithNavigationGuard(() => {
+      void (async () => {
+        if (isDraftDirty && !(await flushApplicationAutoSave())) return
+        if (activatePwaUpdate()) setPwaUpdateReady(false)
+      })()
+    })
   }
 
   function replaceApplication(saved: ApplicationRecord, expectedDraftMutationVersion?: number) {
@@ -4907,13 +6125,12 @@ export default function App() {
     // only this list carries (the saved ApplicationRecord from the API doesn't include them).
     setTeamApplications((items) => items.map((item) => (item.id === saved.id ? { ...item, ...saved } : item)))
     const currentDraftMatchesBaseline = Boolean(
-      draftRef.current
-      && draftBaselineRef.current
-      && JSON.stringify(draftRef.current) === draftBaselineRef.current,
+      draftRef.current && draftBaselineRef.current && JSON.stringify(draftRef.current) === draftBaselineRef.current,
     )
-    const draftStillMatchesRequest = expectedDraftMutationVersion === undefined
-      ? currentDraftMatchesBaseline
-      : draftMutationVersionRef.current === expectedDraftMutationVersion
+    const draftStillMatchesRequest =
+      expectedDraftMutationVersion === undefined
+        ? currentDraftMatchesBaseline
+        : draftMutationVersionRef.current === expectedDraftMutationVersion
     if (draftRef.current?.id !== saved.id) return
     if (draftStillMatchesRequest) {
       setDraftState(cloneApplication(saved), { clean: true })
@@ -4940,9 +6157,7 @@ export default function App() {
     updater: (application: ApplicationRecord) => ApplicationRecord,
   ) {
     const versionBefore = draftBaselineVersionRef.current
-    setApplications((items) =>
-      items.map((item) => (item.id === applicationId ? updater(item) : item)),
-    )
+    setApplications((items) => items.map((item) => (item.id === applicationId ? updater(item) : item)))
     // Mirror into teamApplications too, preserving its extra ownerName/ownerEmail/
     // currentUserApplicationRole fields that the plain ApplicationRecord updater doesn't know about.
     setTeamApplications((items) =>
@@ -4954,9 +6169,10 @@ export default function App() {
     // Granular endpoints (task, fee, communication, etc.) may complete while a
     // different field is still waiting for its debounced autosave. Advance only
     // the affected part of the baseline and preserve every newer local edit.
-    const currentBaseline = safeParseJson<ApplicationRecord>(draftBaselineRef.current)
-      ?? applications.find((application) => application.id === applicationId)
-      ?? currentDraft
+    const currentBaseline =
+      safeParseJson<ApplicationRecord>(draftBaselineRef.current) ??
+      applications.find((application) => application.id === applicationId) ??
+      currentDraft
     const nextBaseline = updater(currentBaseline)
     const nextDraft = updater(currentDraft)
     const remainsDirty = JSON.stringify(nextDraft) !== JSON.stringify(nextBaseline)
@@ -4966,15 +6182,14 @@ export default function App() {
 
   function commitSchoolLogoApplication(saved: ApplicationRecord) {
     setApplications((items) => items.map((item) => (item.id === saved.id ? saved : item)))
-    setTeamApplications((items) => items.map((item) => (
-      item.id === saved.id ? { ...item, ...saved } : item
-    )))
+    setTeamApplications((items) => items.map((item) => (item.id === saved.id ? { ...item, ...saved } : item)))
 
     const currentDraft = draftRef.current
     if (!currentDraft || currentDraft.id !== saved.id) return
-    const currentBaseline = safeParseJson<ApplicationRecord>(draftBaselineRef.current)
-      ?? applications.find((application) => application.id === saved.id)
-      ?? saved
+    const currentBaseline =
+      safeParseJson<ApplicationRecord>(draftBaselineRef.current) ??
+      applications.find((application) => application.id === saved.id) ??
+      saved
     const mergeLogoState = (application: ApplicationRecord): ApplicationRecord => {
       const { logo: _logo, logoAutoDetect: _logoAutoDetect, ...schoolIdentity } = application.school
       return {
@@ -5015,10 +6230,12 @@ export default function App() {
   ) {
     const saved = await enqueueApplicationWrite(application.id, async () => {
       if (
-        options.expectedManualRevision !== undefined
-        && (schoolLogoManualRevisionRef.current.get(application.id) ?? 0) !== options.expectedManualRevision
-      ) return null
-      return phdApi.updateSchoolLogo(activeSession.token, application.id, {
+        options.expectedManualRevision !== undefined &&
+        (schoolLogoManualRevisionRef.current.get(application.id) ?? 0) !== options.expectedManualRevision
+      )
+        return null
+      const acknowledgementBaseline = currentApplicationServerBaseline(application.id) ?? application
+      return phdApi.updateSchoolLogo(activeSession.token, acknowledgementBaseline, {
         logo,
         autoDetect,
       })
@@ -5027,35 +6244,34 @@ export default function App() {
     if (!isCurrentSessionToken(activeSession.token)) return false
     commitSchoolLogoApplication(saved)
     if (!options.silent) {
-      notify(i18nValue.tx(
-        options.removed ? 'dossier.schoolLogoRemoved' : 'dossier.schoolLogoSaved',
-      ), 'success')
+      notify(i18nValue.tx(options.removed ? 'dossier.schoolLogoRemoved' : 'dossier.schoolLogoSaved'), 'success')
     }
     return true
   }
 
   function resolveAndStoreSchoolLogo(
     application: ApplicationRecord,
-    input: { website?: string; imageUrl?: string; auto?: true; refresh?: boolean },
+    input: {
+      website?: string
+      imageUrl?: string
+      auto?: true
+      refresh?: boolean
+    },
     options: { silent?: boolean } = {},
   ) {
     const requestKind = input.imageUrl ? 'link' : input.auto ? 'auto' : 'website'
     const requestValue = input.auto
       ? `${application.school.name.trim()}::${input.website?.trim() || ''}`
       : input.imageUrl?.trim() || input.website?.trim() || ''
-    const requestKey = `${application.id}::${requestKind}::${input.refresh ? 'refresh' : 'cached'}::${requestValue}`
-    const inFlight = schoolLogoInFlightRef.current.get(requestKey)
-    if (inFlight) return inFlight
-    const currentManualRevision = schoolLogoManualRevisionRef.current.get(application.id) ?? 0
-    const expectedManualRevision = input.auto
-      ? currentManualRevision
-      : currentManualRevision + 1
-    if (!input.auto) {
-      schoolLogoManualRevisionRef.current.set(application.id, expectedManualRevision)
-    }
-
-    const promise = (async () => {
-      try {
+    const requestKey = `${activeSession.user.id}::${application.id}::${requestKind}::${input.refresh ? 'refresh' : 'cached'}::${requestValue}`
+    return schoolLogoRequestsRef.current.run(
+      requestKey,
+      async () => {
+        const currentManualRevision = schoolLogoManualRevisionRef.current.get(application.id) ?? 0
+        const expectedManualRevision = input.auto ? currentManualRevision : currentManualRevision + 1
+        if (!input.auto) {
+          schoolLogoManualRevisionRef.current.set(application.id, expectedManualRevision)
+        }
         const resolved = await phdApi.resolveSchoolLogo(activeSession.token, application.id, input)
         if (!resolved.found || !resolved.dataUrl || !resolved.sourceUrl) {
           if (!options.silent) notify(i18nValue.tx('dossier.schoolLogoNotFound'), 'warning')
@@ -5080,19 +6296,14 @@ export default function App() {
           Boolean(input.auto),
           { ...options, expectedManualRevision },
         )
-      } catch (error) {
+      },
+      { retainSettledResult: Boolean(input.auto && !input.refresh) },
+    ).catch((error) => {
         if (!isAuthExpired(error) && !options.silent) {
           notify(schoolLogoErrorMessage(error), 'error')
         }
         return false
-      }
-    })().finally(() => {
-      if (schoolLogoInFlightRef.current.get(requestKey) === promise) {
-        schoolLogoInFlightRef.current.delete(requestKey)
-      }
     })
-    schoolLogoInFlightRef.current.set(requestKey, promise)
-    return promise
   }
 
   async function uploadAndStoreSchoolLogo(application: ApplicationRecord, file: File) {
@@ -5100,11 +6311,16 @@ export default function App() {
     schoolLogoManualRevisionRef.current.set(application.id, expectedManualRevision)
     try {
       const dataUrl = await normalizeSchoolLogoFile(file)
-      return await persistSchoolLogo(application, {
-        dataUrl,
-        source: 'upload',
-        updatedAt: new Date().toISOString(),
-      }, false, { expectedManualRevision })
+      return await persistSchoolLogo(
+        application,
+        {
+          dataUrl,
+          source: 'upload',
+          updatedAt: new Date().toISOString(),
+        },
+        false,
+        { expectedManualRevision },
+      )
     } catch (error) {
       if (!isAuthExpired(error)) notify(schoolLogoErrorMessage(error), 'error')
       return false
@@ -5129,6 +6345,7 @@ export default function App() {
     const nextApplications = applications.filter((item) => item.id !== applicationId)
     setApplications(nextApplications)
     setTeamApplications((items) => items.filter((item) => item.id !== applicationId))
+    replacePendingRecommenderDrafts(applicationId, [])
     if (draftRef.current?.id === applicationId) {
       setDraftState(null, { clean: true })
     }
@@ -5137,7 +6354,7 @@ export default function App() {
       setViewMode('kanban')
       setMobileDetailOpen(false)
     }
-    setSelectedId((current) => current === applicationId ? null : current)
+    setSelectedId((current) => (current === applicationId ? null : current))
   }
 
   function removeApplicationsFromState(applicationIds: string[]) {
@@ -5145,6 +6362,16 @@ export default function App() {
     const nextApplications = applications.filter((item) => !targets.has(item.id))
     setApplications(nextApplications)
     setTeamApplications((items) => items.filter((item) => !targets.has(item.id)))
+    setPendingRecommenderDraftsByApplication((current) => {
+      const next = { ...current }
+      let changed = false
+      for (const applicationId of targets) {
+        if (!next[applicationId]) continue
+        delete next[applicationId]
+        changed = true
+      }
+      return changed ? next : current
+    })
     if (draftRef.current && targets.has(draftRef.current.id)) {
       setDraftState(null, { clean: true })
     }
@@ -5153,44 +6380,121 @@ export default function App() {
       setViewMode('kanban')
       setMobileDetailOpen(false)
     }
-    setSelectedId((current) => current && targets.has(current) ? null : current)
+    setSelectedId((current) => (current && targets.has(current) ? null : current))
   }
 
-  function isStillEstablishedLogin(establishedToken: string | null | undefined) {
-    if (!establishedToken) return false
-    return currentSessionTokenRef.current === establishedToken
-      || isCurrentSessionToken(establishedToken)
+  function authenticationHandoffStillOwnsSession(
+    handoffGeneration: number,
+    establishedSession: AuthSession,
+    sessionEpoch: number,
+  ) {
+    return authenticationHandoffGenerationRef.current === handoffGeneration
+      && workspaceBootstrapStillOwnsSession(establishedSession, sessionEpoch)
+  }
+
+  function handleAuthoritativeWorkspaceBootstrapError(
+    error: unknown,
+    establishedSession: AuthSession,
+    sessionEpoch: number,
+  ) {
+    if (!appMountedRef.current || !workspaceBootstrapStillOwnsSession(establishedSession, sessionEpoch)) return true
+    if (isAuthExpired(error)) {
+      expireSession(establishedSession.token)
+      return true
+    }
+    if (isWorkspaceIdentityMismatch(error)) {
+      sessionExpiredRef.current = true
+      clearSessionState()
+      notify(normalizeError(error, languageRef.current), 'error')
+      return true
+    }
+    return false
+  }
+
+  function retryWorkspaceBootstrap() {
+    const existing = workspaceBootstrapManualRetryRef.current
+    if (existing) return existing
+    const task = workspaceBootstrapRecoveryRef.current
+    if (!task || !workspaceBootstrapStillOwnsSession(task.session, task.sessionEpoch)) {
+      return Promise.resolve()
+    }
+
+    const retryOwner = { promise: null as Promise<void> | null }
+    const retryPromise = (async () => {
+      if (!workspaceBootstrapStillOwnsSession(task.session, task.sessionEpoch)) return
+      setWorkspaceBootstrapRetrying(true)
+      let retryRunId = -1
+      try {
+        const outcomePromise = runWorkspaceBootstrapWithRecovery(task, { preserveFailure: true })
+        retryRunId = workspaceBootstrapRunRef.current
+        const outcome = await outcomePromise
+        if (
+          outcome.status === 'loaded'
+          && !task.onLoaded
+          && workspaceBootstrapStillOwnsSession(task.session, task.sessionEpoch)
+        ) notify(i18nValue.tx('toast.connectionRestored'), 'success')
+      } catch (error) {
+        handleAuthoritativeWorkspaceBootstrapError(error, task.session, task.sessionEpoch)
+      } finally {
+        const ownsManualRetry = workspaceBootstrapManualRetryRef.current === retryOwner.promise
+        if (ownsManualRetry) {
+          workspaceBootstrapManualRetryRef.current = null
+        }
+        if (
+          ownsManualRetry
+          && appMountedRef.current
+          && workspaceBootstrapRunRef.current === retryRunId
+          && workspaceBootstrapStillOwnsSession(task.session, task.sessionEpoch)
+        ) setWorkspaceBootstrapRetrying(false)
+      }
+    })()
+    retryOwner.promise = retryPromise
+    workspaceBootstrapManualRetryRef.current = retryPromise
+    return retryPromise
+  }
+
+  function leaveWorkspaceBootstrapRecovery() {
+    // This is an identity exit, not destructive logout. Keep the account-scoped
+    // offline snapshot/queue so authored local work can be recovered after the
+    // user signs back into the correct account.
+    setManualOfflineMode(false)
+    clearSessionState()
   }
 
   async function handleLogin(email: string, password: string) {
+    const handoffGeneration = authenticationHandoffGenerationRef.current + 1
+    authenticationHandoffGenerationRef.current = handoffGeneration
     setBusy(true)
-    let sessionEstablished = false
-    let establishedToken: string | null = null
+    let establishedSession: AuthSession | null = null
+    let establishedEpoch = -1
     try {
       const nextSession = await phdApi.login(email, password)
-      persistSession(nextSession)
-      sessionEstablished = true
-      establishedToken = nextSession.token
-      await refreshAll(nextSession)
-      if (!isStillEstablishedLogin(establishedToken)) return
-      notify(t(languageRef.current, 'toast.signedIn'))
+      if (authenticationHandoffGenerationRef.current !== handoffGeneration) return
+      if (!persistSession(nextSession, handoffGeneration)) return
+      establishedSession = nextSession
+      establishedEpoch = sessionIdentityEpochRef.current
+      const outcome = await bootstrapEstablishedSession(nextSession, establishedEpoch, () => {
+        if (authenticationHandoffStillOwnsSession(handoffGeneration, nextSession, establishedEpoch)) {
+          notify(t(languageRef.current, 'toast.signedIn'))
+        }
+      })
+      if (outcome.status !== 'loaded') return
+      if (!authenticationHandoffStillOwnsSession(handoffGeneration, nextSession, establishedEpoch)) return
     } catch (error) {
-      if (sessionEstablished) {
-        // persistSession already made `session` truthy, but the data load that follows failed —
-        // without this, the user is stuck on the post-login loading skeleton forever (AuthScreen
-        // only renders when `session` is null, and nothing else ever retries applicationsLoaded).
-        //
-        // Same-account re-login: a late TOKEN_EXPIRED from the previous session must NOT
-        // tear down the fresh login. Only clear when this login's token is still live.
-        if (!isStillEstablishedLogin(establishedToken)) return
-        const alreadyExpired = sessionExpiredRef.current
-        clearSessionState()
-        if (!alreadyExpired) notify(normalizeError(error, languageRef.current), 'error')
-      } else {
-        notify(normalizeError(error, languageRef.current), 'error')
+      if (authenticationHandoffGenerationRef.current !== handoffGeneration) return
+      if (establishedSession) {
+        if (!authenticationHandoffStillOwnsSession(handoffGeneration, establishedSession, establishedEpoch)) return
+        if (handleAuthoritativeWorkspaceBootstrapError(error, establishedSession, establishedEpoch)) return
+        setWorkspaceBootstrapFailure({
+          error,
+          sessionEpoch: establishedEpoch,
+          userId: establishedSession.user.id,
+        })
+        return
       }
+      notify(normalizeError(error, languageRef.current), 'error')
     } finally {
-      setBusy(false)
+      if (appMountedRef.current && authenticationHandoffGenerationRef.current === handoffGeneration) setBusy(false)
     }
   }
 
@@ -5199,36 +6503,49 @@ export default function App() {
       notify(i18nValue.tx('passkeyUnavailable'), 'error')
       return
     }
+    const handoffGeneration = authenticationHandoffGenerationRef.current + 1
+    authenticationHandoffGenerationRef.current = handoffGeneration
     setBusy(true)
-    let sessionEstablished = false
-    let establishedToken: string | null = null
+    let establishedSession: AuthSession | null = null
+    let establishedEpoch = -1
     try {
       const [{ options }, { startAuthentication }] = await Promise.all([
         phdApi.beginPasskeyLogin(passkeyLoginEmailHint(email)),
         import('@simplewebauthn/browser'),
       ])
+      if (authenticationHandoffGenerationRef.current !== handoffGeneration) return
       const assertion = await startAuthentication({
         optionsJSON: options as Parameters<typeof startAuthentication>[0]['optionsJSON'],
       })
+      if (authenticationHandoffGenerationRef.current !== handoffGeneration) return
       const nextSession = await phdApi.finishPasskeyLogin(assertion)
-      persistSession(nextSession)
-      sessionEstablished = true
-      establishedToken = nextSession.token
-      await refreshAll(nextSession)
-      if (!isStillEstablishedLogin(establishedToken)) return
-      notify(t(languageRef.current, 'toast.signedIn'))
+      if (authenticationHandoffGenerationRef.current !== handoffGeneration) return
+      if (!persistSession(nextSession, handoffGeneration)) return
+      establishedSession = nextSession
+      establishedEpoch = sessionIdentityEpochRef.current
+      const outcome = await bootstrapEstablishedSession(nextSession, establishedEpoch, () => {
+        if (authenticationHandoffStillOwnsSession(handoffGeneration, nextSession, establishedEpoch)) {
+          notify(t(languageRef.current, 'toast.signedIn'))
+        }
+      })
+      if (outcome.status !== 'loaded') return
+      if (!authenticationHandoffStillOwnsSession(handoffGeneration, nextSession, establishedEpoch)) return
     } catch (error) {
+      if (authenticationHandoffGenerationRef.current !== handoffGeneration) return
       const cancelled = isPasskeyAbort(error)
-      if (sessionEstablished) {
-        if (!isStillEstablishedLogin(establishedToken)) return
-        const alreadyExpired = sessionExpiredRef.current
-        clearSessionState()
-        if (!alreadyExpired) notify(cancelled ? i18nValue.tx('passkeyCancelled') : normalizeError(error, languageRef.current), 'error')
-      } else {
-        notify(cancelled ? i18nValue.tx('passkeyCancelled') : normalizeError(error, languageRef.current), 'error')
+      if (establishedSession) {
+        if (!authenticationHandoffStillOwnsSession(handoffGeneration, establishedSession, establishedEpoch)) return
+        if (handleAuthoritativeWorkspaceBootstrapError(error, establishedSession, establishedEpoch)) return
+        setWorkspaceBootstrapFailure({
+          error,
+          sessionEpoch: establishedEpoch,
+          userId: establishedSession.user.id,
+        })
+        return
       }
+      notify(cancelled ? i18nValue.tx('passkeyCancelled') : normalizeError(error, languageRef.current), 'error')
     } finally {
-      setBusy(false)
+      if (appMountedRef.current && authenticationHandoffGenerationRef.current === handoffGeneration) setBusy(false)
     }
   }
 
@@ -5244,30 +6561,48 @@ export default function App() {
   ) {
     const resolvedLanguage = language ?? emailCodeTokenOrLanguage
     const resolvedEmailCodeToken = language ? emailCodeTokenOrLanguage : ''
+    const handoffGeneration = authenticationHandoffGenerationRef.current + 1
+    authenticationHandoffGenerationRef.current = handoffGeneration
     setBusy(true)
-    let sessionEstablished = false
-    let establishedToken: string | null = null
+    let establishedSession: AuthSession | null = null
+    let establishedEpoch = -1
     try {
-      const nextSession = await phdApi.register(name, email, password, captchaToken, captchaAnswer, resolvedEmailCodeToken, emailCode, resolvedLanguage)
-      persistSession(nextSession)
-      sessionEstablished = true
-      establishedToken = nextSession.token
-      await refreshAll(nextSession)
-      if (!isStillEstablishedLogin(establishedToken)) return
-      notify(t(languageRef.current, 'toast.accountCreated'))
+      const nextSession = await phdApi.register(
+        name,
+        email,
+        password,
+        captchaToken,
+        captchaAnswer,
+        resolvedEmailCodeToken,
+        emailCode,
+        resolvedLanguage,
+      )
+      if (authenticationHandoffGenerationRef.current !== handoffGeneration) return
+      if (!persistSession(nextSession, handoffGeneration)) return
+      establishedSession = nextSession
+      establishedEpoch = sessionIdentityEpochRef.current
+      const outcome = await bootstrapEstablishedSession(nextSession, establishedEpoch, () => {
+        if (authenticationHandoffStillOwnsSession(handoffGeneration, nextSession, establishedEpoch)) {
+          notify(t(languageRef.current, 'toast.accountCreated'))
+        }
+      })
+      if (outcome.status !== 'loaded') return
+      if (!authenticationHandoffStillOwnsSession(handoffGeneration, nextSession, establishedEpoch)) return
     } catch (error) {
-      if (sessionEstablished) {
-        // See handleLogin: without this the user is stuck on the post-signup loading skeleton
-        // forever if the data load right after registration fails.
-        if (!isStillEstablishedLogin(establishedToken)) return
-        const alreadyExpired = sessionExpiredRef.current
-        clearSessionState()
-        if (!alreadyExpired) notify(normalizeError(error, languageRef.current), 'error')
-      } else {
-        notify(normalizeError(error, languageRef.current), 'error')
+      if (authenticationHandoffGenerationRef.current !== handoffGeneration) return
+      if (establishedSession) {
+        if (!authenticationHandoffStillOwnsSession(handoffGeneration, establishedSession, establishedEpoch)) return
+        if (handleAuthoritativeWorkspaceBootstrapError(error, establishedSession, establishedEpoch)) return
+        setWorkspaceBootstrapFailure({
+          error,
+          sessionEpoch: establishedEpoch,
+          userId: establishedSession.user.id,
+        })
+        return
       }
+      notify(normalizeError(error, languageRef.current), 'error')
     } finally {
-      setBusy(false)
+      if (appMountedRef.current && authenticationHandoffGenerationRef.current === handoffGeneration) setBusy(false)
     }
   }
 
@@ -5299,23 +6634,61 @@ export default function App() {
   }
 
   function handleReplayTutorial() {
-    try { localStorage.removeItem(ONBOARDING_DONE_KEY) } catch {}
+    try {
+      localStorage.removeItem(ONBOARDING_DONE_KEY)
+    } catch {}
     startOnboardingTour()
   }
 
+  const startApplicationResize = useLatestCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    startWorkspaceResize('applications', event)
+  })
+  const resizeApplicationWithKeyboard = useLatestCallback((event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    handleWorkspaceResizeKey('applications', event)
+  })
+  const startInspectorResize = useLatestCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    startWorkspaceResize('inspector', event)
+  })
+  const resizeInspectorWithKeyboard = useLatestCallback((event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    handleWorkspaceResizeKey('inspector', event)
+  })
+  const applicationResizeLabel = i18nValue.tx('explorer.resizeApplications')
+  const inspectorResizeLabel = i18nValue.tx('explorer.resizeInspector')
+  const applicationResizeHandle = useMemo(
+    () => (
+      <WorkspaceResizeHandle
+        label={applicationResizeLabel}
+        onPointerDown={startApplicationResize}
+        onKeyDown={resizeApplicationWithKeyboard}
+      />
+    ),
+    [applicationResizeLabel, resizeApplicationWithKeyboard, startApplicationResize],
+  )
+  const inspectorResizeHandle = useMemo(
+    () => (
+      <WorkspaceResizeHandle
+        label={inspectorResizeLabel}
+        onPointerDown={startInspectorResize}
+        onKeyDown={resizeInspectorWithKeyboard}
+      />
+    ),
+    [inspectorResizeLabel, resizeInspectorWithKeyboard, startInspectorResize],
+  )
+
   if (!session) {
-    const showOfflineUnavailable = connectivity.mode === 'offline'
-      && !connectivity.browserOnline
+    const showOfflineUnavailable = connectivity.mode === 'offline' && !connectivity.browserOnline
     return (
       <ThemeContext.Provider value={themeProvider}>
         <I18nContext.Provider value={i18nValue}>
           <FormValidationPrompt />
           <GlobalOverflowReveal />
+          <UpdateReadyBanner
+            updateReady={pwaUpdateReady}
+            tx={i18nValue.tx}
+            onInstall={() => void requestPwaUpdateInstall()}
+          />
           {showOfflineUnavailable ? (
-            <OfflineUnavailableScreen
-              onRetry={() => probeServerConnectivity({ force: true })}
-              tx={i18nValue.tx}
-            />
+            <OfflineUnavailableScreen onRetry={() => probeServerConnectivity({ force: true })} tx={i18nValue.tx} />
           ) : (
             <>
               <AuthScreen
@@ -5340,8 +6713,12 @@ export default function App() {
                 blockedCount={0}
                 syncing={false}
                 updateReady={pwaUpdateReady}
-                onRetry={() => { void probeServerConnectivity({ force: true }) }}
-                onInstallUpdate={() => { void requestPwaUpdateInstall() }}
+                onRetry={() => {
+                  void probeServerConnectivity({ force: true })
+                }}
+                onInstallUpdate={() => {
+                  void requestPwaUpdateInstall()
+                }}
                 onToggleOffline={() => undefined}
                 tx={i18nValue.tx}
                 authSurface
@@ -5355,17 +6732,47 @@ export default function App() {
     )
   }
 
+  const activeWorkspaceBootstrapFailure = workspaceBootstrapFailure
+    && workspaceBootstrapFailure.userId === session.user.id
+    && workspaceBootstrapFailure.sessionEpoch === sessionIdentityEpochRef.current
+    ? workspaceBootstrapFailure
+    : null
+  if (!applicationsLoaded && activeWorkspaceBootstrapFailure) {
+    return (
+      <ThemeContext.Provider value={themeProvider}>
+        <I18nContext.Provider value={i18nValue}>
+          <FormValidationPrompt />
+          <GlobalOverflowReveal />
+          <WorkspaceBootstrapRecoveryScreen
+            title={i18nValue.tx(
+              isBusyWorkspaceBootstrapError(activeWorkspaceBootstrapFailure.error)
+                ? 'offlineStatus.slow'
+                : 'offlineStatus.serverUnavailable',
+            )}
+            message={normalizeError(activeWorkspaceBootstrapFailure.error, languageRef.current)}
+            requestId={workspaceBootstrapRequestId(activeWorkspaceBootstrapFailure.error)}
+            retrying={workspaceBootstrapRetrying}
+            onRetry={retryWorkspaceBootstrap}
+            onExit={leaveWorkspaceBootstrapRecovery}
+            tx={i18nValue.tx}
+          />
+          <ToastStack toasts={toasts} onClose={dismissToast} onPause={pauseToast} onResume={resumeToast} />
+        </I18nContext.Provider>
+      </ThemeContext.Provider>
+    )
+  }
+
   const activeSession = session
   const accountPlan = getAccountPlan(activeSession)
   const isAdminUser = accountPlan === 'admin'
   const isProUser = accountPlan !== 'free'
-  const applicationLimit = activeSession.usage?.applicationQuota
-    ?? (isAdminUser ? Number.MAX_SAFE_INTEGER : isProUser ? 300 : 3)
-  const applicationCreateLimit = activeSession.usage?.applicationCreateQuota
-    ?? (isProUser ? Number.MAX_SAFE_INTEGER : 3)
+  const applicationLimit =
+    activeSession.usage?.applicationQuota ?? (isAdminUser ? Number.MAX_SAFE_INTEGER : isProUser ? 300 : 3)
+  const applicationCreateLimit =
+    activeSession.usage?.applicationCreateQuota ?? (isProUser ? Number.MAX_SAFE_INTEGER : 3)
   const applicationLimitUsageCount = isProUser
     ? realApplications.length
-    : activeSession.usage?.applicationCreatedCount ?? realApplications.length
+    : (activeSession.usage?.applicationCreatedCount ?? realApplications.length)
 
   function clearWorkspaceForSessionSwitch() {
     setApplications([])
@@ -5388,6 +6795,7 @@ export default function App() {
     setOfflineAccessExpiresAt(null)
     setOfflineQueueCount(0)
     setBlockedOfflineCount(0)
+    setBlockedOfflineReason(null)
     setSyncingOffline(false)
     setPasskeys([])
     setSelectedId(null)
@@ -5407,20 +6815,19 @@ export default function App() {
         // Hard identity checks: never mount a foreign temporary session that does
         // not match the requested member (prevents silent demo → teacher 串号).
         if (
-          nextSession.user.id !== userId
-          || nextSession.impersonation?.targetUserId !== userId
-          || nextSession.impersonation?.actorId !== actorSession.user.id
+          nextSession.user.id !== userId ||
+          nextSession.impersonation?.targetUserId !== userId ||
+          nextSession.impersonation?.actorId !== actorSession.user.id
         ) {
-          throw new ApiError(
-            'Session identity mismatch. Please sign in again.',
-            'SESSION_IDENTITY_MISMATCH',
-            409,
-          )
+          throw new ApiError('Session identity mismatch. Please sign in again.', 'SESSION_IDENTITY_MISMATCH', 409)
         }
         if (!isCurrentSessionToken(actorSession.token)) return
         const lockedTeamId = nextSession.impersonation?.teamId ?? requestedTeamId
         const returnPoint: SessionReturnStackItem = {
-          session: { ...actorSession, token: getLatestSessionToken(actorSession.token) },
+          session: {
+            ...actorSession,
+            token: getLatestSessionToken(actorSession.token),
+          },
           screen,
           selectedId,
           tab,
@@ -5441,9 +6848,12 @@ export default function App() {
         setViewMode('list')
         persistSession(nextSession)
         await refreshAll(nextSession)
-        notify(tpl(i18nValue.tx('toast.impersonationStarted'), {
-          name: nextSession.impersonation?.targetName ?? nextSession.user.name,
-        }), 'info')
+        notify(
+          tpl(i18nValue.tx('toast.impersonationStarted'), {
+            name: nextSession.impersonation?.targetName ?? nextSession.user.name,
+          }),
+          'info',
+        )
       })
     })
   }
@@ -5464,9 +6874,9 @@ export default function App() {
         }
         // Only restore the stacked actor identity — never a third account.
         if (
-          returnPoint.session.user.id
-          && activeSession.impersonation?.actorId
-          && returnPoint.session.user.id !== activeSession.impersonation.actorId
+          returnPoint.session.user.id &&
+          activeSession.impersonation?.actorId &&
+          returnPoint.session.user.id !== activeSession.impersonation.actorId
         ) {
           logout()
           return
@@ -5478,9 +6888,12 @@ export default function App() {
         setInterfaceMode(returnPoint.interfaceMode)
         persistSession(returnPoint.session)
         await refreshAll(returnPoint.session)
-        notify(tpl(i18nValue.tx('toast.impersonationEnded'), {
-          name: returnPoint.session.user.name,
-        }), 'info')
+        notify(
+          tpl(i18nValue.tx('toast.impersonationEnded'), {
+            name: returnPoint.session.user.name,
+          }),
+          'info',
+        )
       })
     })
   }
@@ -5489,11 +6902,64 @@ export default function App() {
     return 'autoBackup' in patch || 'backupFrequency' in patch || 'maxBackupsPerApp' in patch
   }
 
+  function settingsValueEqual(left: unknown, right: unknown) {
+    if (Object.is(left, right)) return true
+    try {
+      return JSON.stringify(left) === JSON.stringify(right)
+    } catch {
+      return false
+    }
+  }
+
+  function rollbackOptimisticSettings(
+    requestToken: string,
+    requestUserId: string,
+    requestEpoch: number,
+    patch: UserSettingsPatch,
+    previousSettings: UserSettings,
+  ) {
+    setSession((current) => {
+      if (
+        !current
+        || current.user.id !== requestUserId
+        || !isCurrentSessionToken(requestToken)
+        || sessionIdentityEpochRef.current !== requestEpoch
+      ) return current
+
+      const nextSettings = { ...current.user.settings } as UserSettings
+      const mutableSettings = nextSettings as unknown as Record<string, unknown>
+      const savedSettings = previousSettings as Record<string, unknown>
+      let changed = false
+      for (const keyName of Object.keys(patch)) {
+        const optimisticValue = (patch as Record<string, unknown>)[keyName]
+        // Do not overwrite a newer user action that has already replaced this
+        // field. Only revert the value painted by this failed request.
+        if (!settingsValueEqual(mutableSettings[keyName], optimisticValue)) continue
+        const previousValue = savedSettings[keyName]
+        if (previousValue === undefined) {
+          if (!(keyName in mutableSettings)) continue
+          delete mutableSettings[keyName]
+        } else {
+          mutableSettings[keyName] = previousValue
+        }
+        changed = true
+      }
+      if (!changed) return current
+      const nextSession = {
+        ...current,
+        user: { ...current.user, settings: nextSettings },
+      }
+      safeSetJson(SESSION_KEY, nextSession)
+      return nextSession
+    })
+  }
+
   function commitSettingsUser(
     requestSession: AuthSession,
     user: AuthSession['user'],
-    patch: Partial<UserSettings>,
+    patch: UserSettingsPatch,
     requestEpoch = sessionIdentityEpochRef.current,
+    requireDurableReceipt = true,
   ): AuthSession | null {
     const requestToken = requestSession.token
     const requestUserId = requestSession.user.id
@@ -5508,13 +6974,33 @@ export default function App() {
     if (!sessionIdentityMatches(requestUserId, user.id, nextToken)) return null
     if (!isMountedSessionIdentity(requestUserId, requestToken, requestEpoch)) return null
 
+    assertSettingsPersistenceAcknowledged({
+      previous: requestSession.user,
+      patch,
+      response: user,
+      requireDurableReceipt,
+    })
+
+    const responseSettingsVersion = Number(user.settingsVersion)
+    const requestSettingsVersion = Number(requestSession.user.settingsVersion)
+    const trackedSettingsVersion = settingsCommitVersionRef.current.userId === requestUserId
+      ? settingsCommitVersionRef.current.version
+      : (Number.isSafeInteger(requestSettingsVersion) ? requestSettingsVersion : 0)
+    if (!isNewerSettingsPersistenceVersion(trackedSettingsVersion, responseSettingsVersion)) return null
+    settingsCommitVersionRef.current = {
+      userId: requestUserId,
+      version: responseSettingsVersion,
+    }
+
     rememberSessionToken(nextToken)
     currentSessionTokenRef.current = nextToken
+    const canonicalUser = { ...user } as AuthSession['user'] & { settingsAcknowledgement?: unknown }
+    // The mutation receipt is transport metadata, not account/session state.
+    delete canonicalUser.settingsAcknowledgement
     const nextUser = {
-      ...user,
+      ...canonicalUser,
       settings: {
         ...requestSession.user.settings,
-        ...patch,
         ...user.settings,
       },
     }
@@ -5527,10 +7013,10 @@ export default function App() {
 
     setSession((current) => {
       if (
-        !current
-        || current.user.id !== requestUserId
-        || !isCurrentSessionToken(current.token)
-        || sessionIdentityEpochRef.current !== requestEpoch
+        !current ||
+        current.user.id !== requestUserId ||
+        !isCurrentSessionToken(current.token) ||
+        sessionIdentityEpochRef.current !== requestEpoch
       ) {
         return current
       }
@@ -5541,7 +7027,6 @@ export default function App() {
           ...nextUser,
           settings: {
             ...current.user.settings,
-            ...patch,
             ...user.settings,
           },
         },
@@ -5554,7 +7039,11 @@ export default function App() {
     return nextSession
   }
 
-  function openUpgradePage(feature = 'application-limit', requested = String(applications.length + 1), limit = String(applicationLimit)) {
+  function openUpgradePage(
+    feature = 'application-limit',
+    requested = String(applications.length + 1),
+    limit = String(applicationLimit),
+  ) {
     const params = new URLSearchParams({ feature, requested, limit })
     window.open(`/upgrade-pro?${params.toString()}`, '_blank', 'noopener,noreferrer')
   }
@@ -5566,67 +7055,210 @@ export default function App() {
     options: ApplicationSaveOptions,
   ): Promise<ApplicationAutoSaveResult> {
     if (!isCurrentSessionToken(queuedSession.token)) return { status: 'ignored' }
-    const applicationToSave = draftRef.current?.id === nextApp.id
-      ? cloneApplication(draftRef.current)
-      : nextApp
+    const applicationToSave = draftRef.current?.id === nextApp.id ? cloneApplication(draftRef.current) : nextApp
     const draftMutationVersion = draftMutationVersionRef.current
-    const baseApplication = draftRef.current?.id === applicationToSave.id
-      ? safeParseJson<ApplicationRecord>(draftBaselineRef.current)
-      : applications.find((application) => application.id === applicationToSave.id) ?? null
-    const queueForSync = (): ApplicationAutoSaveResult => {
-      const baseUpdatedAt = baseApplication?.updatedAt ?? applicationToSave.updatedAt ?? null
-      const nextQueue = enqueueApplicationUpdate(
-        queuedSession,
-        applicationToSave,
-        baseUpdatedAt,
-        baseApplication,
-      )
+    const baseApplication =
+      draftRef.current?.id === applicationToSave.id
+        ? safeParseJson<ApplicationRecord>(draftBaselineRef.current)
+        : (applications.find((application) => application.id === applicationToSave.id) ?? null)
+    const queueForSync = (queueOptions: { busy?: boolean } = {}): ApplicationAutoSaveResult => {
+      const busy = queueOptions.busy === true
       const nextApplications = applications.map((application) =>
         application.id === applicationToSave.id ? applicationToSave : application,
       )
-      replaceApplication(applicationToSave, draftMutationVersion)
-      const saved = saveOfflineSnapshot(queuedSession, currentSnapshotData(nextApplications))
-      if (saved) {
+      try {
+        const baseUpdatedAt = baseApplication?.updatedAt ?? applicationToSave.updatedAt ?? null
+        const nextQueue = enqueueApplicationUpdate(queuedSession, applicationToSave, baseUpdatedAt, baseApplication)
+        const saved = saveOfflineSnapshot(queuedSession, currentSnapshotData(nextApplications))
+        if (!saved) throw new Error('Offline snapshot storage did not acknowledge the application update.')
+
+        replaceApplication(applicationToSave, draftMutationVersion)
         setOfflineSnapshotSavedAt(saved.savedAt)
         setOfflineAccessExpiresAt(saved.authorization.expiresAt)
+        // A transport outage switches to the offline workspace; a busy server
+        // keeps the normal online surface and only the change is parked for
+        // the automatic replay.
+        if (!busy) setOfflineDataActive(true)
+        const blockedAfterQueueing = nextQueue.filter((item) => item.status === 'blocked')
+        setOfflineQueueCount(nextQueue.length)
+        setBlockedOfflineCount(blockedAfterQueueing.length)
+        setBlockedOfflineReason(blockedAfterQueueing[0]?.blockedReason ?? null)
+        if (options.feedback !== 'quiet') {
+          notify(
+            tpl(i18nValue.tx('toast.offlineChangeQueued'), {
+              count: pendingOfflineQueueSize(queuedSession.user.id),
+            }),
+            'info',
+          )
+        }
+        void requestOfflineSync()
+        return { status: 'queued' }
+      } catch {
+        refreshOfflineQueueCounts(queuedSession.user.id)
+        const errorMessage = i18nValue.tx('apiErrors.REQUEST_FAILED')
+        if (options.feedback !== 'quiet') notify(errorMessage, 'error')
+        return { status: 'error', message: errorMessage }
       }
-      setOfflineDataActive(true)
-      setOfflineQueueCount(nextQueue.length)
-      setBlockedOfflineCount(nextQueue.filter((item) => item.status === 'blocked').length)
-      if (options.feedback !== 'quiet') {
-        notify(tpl(i18nValue.tx('toast.offlineChangeQueued'), {
-          count: pendingOfflineQueueSize(queuedSession.user.id),
-        }), 'info')
-      }
-      void requestOfflineSync()
-      return { status: 'queued' }
     }
 
-    if (connectivityUnavailable() && canQueueApplicationUpdate(queuedSession, applicationToSave, { isTeamMode })) {
+    if (
+      connectivityUnavailable() &&
+      canQueueApplicationUpdate(queuedSession, applicationToSave, {
+        isTeamMode,
+      })
+    ) {
       return queueForSync()
     }
 
-    try {
-      const saved = await phdApi.updateApplication(queuedSession.token, applicationToSave, baseApplication)
+    const commitOnce = async (
+      target: ApplicationRecord,
+      base: ApplicationRecord | null,
+    ): Promise<ApplicationAutoSaveResult> => {
+      // Wrap API call with smart retry for transient network issues
+      // while preserving session validity checks
+      const mutation = await withSmartRetry(
+        () => phdApi.updateApplication(queuedSession.token, target, base),
+        {
+          ...AGGRESSIVE_RETRY_CONFIG,
+          shouldRetry: (error, attempt) => {
+            // Don't retry if session changed
+            if (!isCurrentSessionToken(queuedSession.token)) return false
+            // Don't retry rebaseable conflicts (handled by outer loop)
+            if (isRebaseableApplicationConflict(error)) return false
+            // Don't retry busy errors (handled by outer busy retry logic)
+            if (isTransientBusyError(error)) return false
+            // Use default retry logic for other errors
+            return AGGRESSIVE_RETRY_CONFIG.shouldRetry?.(error, attempt) ?? false
+          },
+        }
+      )
       if (!isCurrentSessionToken(queuedSession.token)) return { status: 'ignored' }
+      if (!applicationPersistenceAcknowledged(target, mutation.application, base)) {
+        return {
+          status: 'error',
+          message: i18nValue.tx('apiErrors.REQUEST_FAILED'),
+        }
+      }
+      const saved = mutation.application
       removeOfflineApplicationUpdates(queuedSession.user.id, saved.id)
       refreshOfflineQueueCounts(queuedSession.user.id)
       replaceApplication(saved, draftMutationVersion)
       if (options.feedback !== 'quiet') notify(message)
       return { status: 'saved' }
+    }
+
+    try {
+      return await commitOnce(applicationToSave, baseApplication)
     } catch (error) {
       if (isAuthExpired(error)) {
         return { status: 'ignored' }
       }
 
-      if (isNetworkLikeError(error) && canQueueApplicationUpdate(queuedSession, applicationToSave, { isTeamMode })) {
-        return queueForSync()
+      // A structured busy response means the server admitted the request but
+      // cannot run it right now (admission queue full, memory pressure, a
+      // maintenance pass in flight). The edit is valid, so retry a few times
+      // with backoff before doing anything the author would read as failure.
+      let retryableError: unknown = error
+      if (isTransientBusyError(retryableError) && isCurrentSessionToken(queuedSession.token)) {
+        let busyAttempt = 0
+        while (
+          busyAttempt < APPLICATION_SAVE_BUSY_RETRY_DELAYS_MS.length
+          && isTransientBusyError(retryableError)
+          && isCurrentSessionToken(queuedSession.token)
+        ) {
+          const retryAfterMs = retryableError instanceof ApiError
+            && Number.isFinite(retryableError.retryAfterMs)
+            ? Math.max(0, Number(retryableError.retryAfterMs))
+            : 0
+          await new Promise((resolve) => {
+            window.setTimeout(resolve, Math.max(APPLICATION_SAVE_BUSY_RETRY_DELAYS_MS[busyAttempt], retryAfterMs))
+          })
+          busyAttempt += 1
+          try {
+            return await commitOnce(applicationToSave, baseApplication)
+          } catch (busyRetryError) {
+            if (isAuthExpired(busyRetryError)) return { status: 'ignored' }
+            retryableError = busyRetryError
+          }
+        }
       }
 
-      const errorMessage = isNetworkLikeError(error)
+      // A record can move under an editor without anyone else touching it: a
+      // recommender save, a logo resolve, an attachment or an incoming mail all
+      // write the same record through their own routes. The resident baseline
+      // is then stale and the next autosave is rejected. Rebase on the current
+      // server copy and replay, silently — a conflict dialog for edits the
+      // same person just made is never the right answer.
+      //
+      // Replaying only once was not enough. Background writers (mail sync
+      // filing correspondence, logo resolution, automatic backups) can move the
+      // record again inside the rebase round-trip, and that second collision
+      // surfaced a conflict toast for a save nobody was competing over. Each
+      // pass reads a fresh copy, so a bounded loop converges as soon as the
+      // record stops moving; a genuine same-field conflict is decided by the
+      // merge, not by exhausting the attempts.
+      let rebaseError: unknown = retryableError
+      for (
+        let attempt = 0;
+        attempt < APPLICATION_SAVE_REBASE_ATTEMPTS
+        && isRebaseableApplicationConflict(rebaseError)
+        && isCurrentSessionToken(queuedSession.token);
+        attempt += 1
+      ) {
+        const rebased = await rebaseApplicationForRetry(queuedSession, applicationToSave, baseApplication)
+        if (!rebased || !isCurrentSessionToken(queuedSession.token)) break
+        if (!rebased.replayRequired) {
+          // The server already holds everything this save carried.
+          removeOfflineApplicationUpdates(queuedSession.user.id, rebased.server.id)
+          refreshOfflineQueueCounts(queuedSession.user.id)
+          replaceApplication(rebased.server, draftMutationVersion)
+          if (options.feedback !== 'quiet') notify(message)
+          return { status: 'saved' }
+        }
+        try {
+          return await commitOnce(rebased.application, rebased.server)
+        } catch (retryError) {
+          if (isAuthExpired(retryError)) return { status: 'ignored' }
+          rebaseError = retryError
+          if (!isRebaseableApplicationConflict(retryError)) {
+            const retryMessage = isNetworkLikeError(retryError)
+              ? i18nValue.tx('toast.offlineSaveNeedsOnline')
+              : normalizeError(retryError, languageRef.current)
+            if (options.feedback !== 'quiet') notify(retryMessage, 'error')
+            return { status: 'error', message: retryMessage }
+          }
+        }
+      }
+      if (rebaseError !== retryableError) {
+        const retryMessage = isNetworkLikeError(rebaseError)
+          ? i18nValue.tx('toast.offlineSaveNeedsOnline')
+          : normalizeError(rebaseError, languageRef.current)
+        if (options.feedback !== 'quiet') notify(retryMessage, 'error')
+        return { status: 'error', message: retryMessage }
+      }
+
+      if (
+        (isNetworkLikeError(rebaseError) || isTransientBusyError(rebaseError)) &&
+        canQueueApplicationUpdate(queuedSession, applicationToSave, {
+          isTeamMode,
+        })
+      ) {
+        return queueForSync({ busy: isTransientBusyError(rebaseError) })
+      }
+
+      const errorMessage = isNetworkLikeError(rebaseError)
         ? i18nValue.tx('toast.offlineSaveNeedsOnline')
-        : normalizeError(error, languageRef.current)
-      if (isNetworkLikeError(error)) {
+        : normalizeError(rebaseError, languageRef.current)
+      // Naming the field in a toast still leaves it to be found. Mark it too,
+      // and remember it so the leave dialog's "review" action can point at the
+      // same field later, once the toast is long gone.
+      if (rebaseError instanceof ApiError) {
+        lastSaveErrorFieldRef.current = rebaseError.field ?? null
+        flashInvalidField(rebaseError.field)
+      } else {
+        lastSaveErrorFieldRef.current = null
+      }
+      if (isNetworkLikeError(rebaseError)) {
         if (options.feedback !== 'quiet') notify(errorMessage, 'error')
       } else if (options.feedback !== 'quiet') {
         notify(errorMessage, 'error')
@@ -5635,14 +7267,48 @@ export default function App() {
     }
   }
 
-  function enqueueApplicationWrite<T>(
-    applicationId: string,
-    action: () => Promise<T>,
-  ): Promise<T> {
+  async function rebaseApplicationForRetry(
+    session: AuthSession,
+    local: ApplicationRecord,
+    base: ApplicationRecord | null,
+  ): Promise<{ application: ApplicationRecord; server: ApplicationRecord; replayRequired: boolean } | null> {
+    try {
+      const server = await phdApi.getApplication(session.token, local.id)
+      if (!server || server.id !== local.id) return null
+      const authoredAt = new Date().toISOString()
+      const merge = mergeOfflineApplicationUpdate(
+        {
+          id: `rebase:${local.id}:${authoredAt}`,
+          type: 'updateApplication',
+          userId: session.user.id,
+          applicationId: local.id,
+          baseUpdatedAt: base?.updatedAt ?? null,
+          ...(base ? { baseApplication: base } : {}),
+          createdAt: authoredAt,
+          updatedAt: authoredAt,
+          localEditedAt: authoredAt,
+          application: local,
+        },
+        server,
+        { autoResolve: true },
+      )
+      if (!merge) return null
+      // The recommender directory is only ever written by its own atomic route,
+      // so the server copy is authoritative by construction. Carrying a local
+      // one into the replay is what made the retry fail identically.
+      // Adopting the server copy can only remove a difference, so the merge's
+      // own verdict stays correct; a replay that turns out to be a no-op builds
+      // an empty delta and never reaches the network.
+      const rebased = { ...merge.application, recommenders: server.recommenders ?? [] }
+      return { application: rebased, server, replayRequired: merge.replayRequired }
+    } catch {
+      return null
+    }
+  }
+
+  function enqueueApplicationWrite<T>(applicationId: string, action: () => Promise<T>): Promise<T> {
     const previous = applicationWriteQueueRef.current.get(applicationId) ?? Promise.resolve()
-    const queued = previous
-      .catch(() => undefined)
-      .then(action)
+    const queued = previous.catch(() => undefined).then(action)
     applicationWriteQueueRef.current.set(applicationId, queued)
     const release = () => {
       if (applicationWriteQueueRef.current.get(applicationId) === queued) {
@@ -5651,6 +7317,14 @@ export default function App() {
     }
     void queued.then(release, release)
     return queued
+  }
+
+  function deleteApplicationAfterPendingWrites(applicationId: string) {
+    const requestSession = activeSession
+    return enqueueApplicationWrite(
+      applicationId,
+      () => phdApi.deleteApplication(requestSession.token, applicationId),
+    )
   }
 
   async function saveApplication(
@@ -5662,9 +7336,8 @@ export default function App() {
     pendingSaveCountRef.current += 1
     if (pendingSaveCountRef.current === 1) setSaving(true)
 
-    const queued = enqueueApplicationWrite(
-      nextApp.id,
-      () => performSaveApplication(nextApp, message, queuedSession, options),
+    const queued = enqueueApplicationWrite(nextApp.id, () =>
+      performSaveApplication(nextApp, message, queuedSession, options),
     )
 
     try {
@@ -5692,7 +7365,9 @@ export default function App() {
       await flushApplicationAutoSave()
     }
     const saveToken = beginExternalApplicationSave()
-    const result = await saveApplication(nextApp, message, { feedback: 'quiet' })
+    const result = await saveApplication(nextApp, message, {
+      feedback: 'quiet',
+    })
     if (result.status === 'saved' || result.status === 'queued') {
       finishExternalApplicationSave(saveToken, result)
     } else if (result.status === 'error') {
@@ -5711,22 +7386,41 @@ export default function App() {
     return draftRef.current?.id === application.id ? draftRef.current : application
   }
 
+  function currentApplicationServerBaseline(applicationId: string): ApplicationRecord | null {
+    if (draftRef.current?.id === applicationId) {
+      const residentBaseline = safeParseJson<ApplicationRecord>(draftBaselineRef.current)
+      if (residentBaseline?.id === applicationId) return residentBaseline
+    }
+    return applications.find((application) => application.id === applicationId)
+      ?? teamApplications.find((application) => application.id === applicationId)
+      ?? null
+  }
+
   async function toggleApplicationTeamVisibility(applicationId: string, visibleToTeam: boolean, teamId?: string) {
     pendingSaveCountRef.current += 1
     if (pendingSaveCountRef.current === 1) setSaving(true)
     try {
-      const saved = await phdApi.updateApplicationTeamVisibility(activeSession.token, applicationId, visibleToTeam, teamId)
+      const baseline = currentApplicationServerBaseline(applicationId)
+      if (!baseline) throw new Error('APPLICATION_NOT_FOUND')
+      const saved = await phdApi.updateApplicationTeamVisibility(
+        activeSession.token,
+        baseline,
+        visibleToTeam,
+        teamId,
+      )
       replaceApplication(saved)
       const approvalPending = saved.teamTransferRequest?.status === 'pending'
-      notify(i18nValue.tx(
-        approvalPending
-          ? visibleToTeam
-            ? 'toast.teamTransferJoinRequested'
-            : 'toast.teamTransferLeaveRequested'
-          : visibleToTeam
-            ? 'toast.teamVisibilityShared'
-            : 'toast.teamVisibilityPrivate',
-      ))
+      notify(
+        i18nValue.tx(
+          approvalPending
+            ? visibleToTeam
+              ? 'toast.teamTransferJoinRequested'
+              : 'toast.teamTransferLeaveRequested'
+            : visibleToTeam
+              ? 'toast.teamVisibilityShared'
+              : 'toast.teamVisibilityPrivate',
+        ),
+      )
       await refreshTeamWorkspace(activeSession)
       return true
     } catch (error) {
@@ -5743,34 +7437,37 @@ export default function App() {
   function discardDraft() {
     if (!selected) return
     resetApplicationAutoSave()
+    replacePendingRecommenderDrafts(selected.id, [])
     setDraftState(cloneApplication(selected), { clean: true })
     notify(i18nValue.tx('toast.changesDiscarded'))
   }
 
   function confirmDeleteApplications(applicationIds: string[]) {
-    const targets = applications.filter((application) => applicationIds.includes(application.id))
+    const targets = workspaceApplications.filter((application) => applicationIds.includes(application.id))
     if (targets.length === 0) return
     runWithNavigationGuard(() => {
       setConfirmDialog({
         title: i18nValue.tx('explorer.deleteSelected'),
-        message: tpl(i18nValue.tx('confirmDeleteApplications'), { count: targets.length }),
+        message: tpl(i18nValue.tx('confirmDeleteApplications'), {
+          count: targets.length,
+        }),
         confirmLabel: i18nValue.tx('dossier.delete'),
         variant: 'danger',
         onConfirm: () => {
-          setConfirmDialog(null)
           const targetIds = targets.map((application) => application.id)
           setRemovingApplicationIds((current) => new Set([...current, ...targetIds]))
-          void (async () => {
-            await new Promise<void>((resolve) => {
-              window.setTimeout(resolve, getMotionDelay(380))
-            })
-            await run(async () => {
-              await Promise.all(targets.map((application) => phdApi.deleteApplication(activeSession.token, application.id)))
+          return runOrThrow(async () => {
+              await waitForRemovalHandoff(Promise.all(
+                targets.map((application) => deleteApplicationAfterPendingWrites(application.id)),
+              ))
               removeApplicationsFromState(targetIds)
-              notify(tpl(i18nValue.tx('toast.applicationsDeleted'), { count: targets.length }))
+              notify(
+                tpl(i18nValue.tx('toast.applicationsDeleted'), {
+                  count: targets.length,
+                }),
+              )
               await refreshTrashAndSessionMetadata(activeSession)
-            })
-          })().finally(() => {
+            }).finally(() => {
             setRemovingApplicationIds((current) => {
               const next = new Set(current)
               targetIds.forEach((id) => next.delete(id))
@@ -5795,46 +7492,51 @@ export default function App() {
     const uniqueIds = Array.from(new Set(applicationIds))
     const targets = applications.filter((application) => uniqueIds.includes(application.id))
     if (targets.length === 0) return
-    void run(async () => {
-      for (const target of targets) {
-        const blob = await phdApi.downloadExport(activeSession.token, 'json', target.id)
-        downloadBlob(blob, `phd-application-${safeFileSegment(target.school.name)}.json`)
-      }
-    }, tpl(i18nValue.tx('toast.exported'), { format: 'JSON' }))
+    void run(
+      async () => {
+        for (const target of targets) {
+          const blob = await phdApi.downloadExport(activeSession.token, 'json', target.id)
+          downloadBlob(blob, `phd-application-${safeFileSegment(target.school.name)}.json`)
+        }
+      },
+      tpl(i18nValue.tx('toast.exported'), { format: 'JSON' }),
+    )
   }
 
   function restoreTrashItem(item: ApplicationTrashItem) {
     void run(async () => {
-      const restored = await phdApi.restoreApplicationFromTrash(activeSession.token, item.id)
-      setApplications((items) => [restored, ...items.filter((application) => application.id !== restored.id)])
+      const restored = await phdApi.restoreApplicationFromTrash(activeSession.token, item.id, item.application)
       setApplicationTrash((items) => items.filter((candidate) => candidate.id !== item.id))
+      if (restored.teamId) {
+        await refreshTeamWorkspace(activeSession, restored.teamId)
+      } else {
+        setApplications((items) => [restored, ...items.filter((application) => application.id !== restored.id)])
+        await refreshSessionMetadata(activeSession)
+      }
       setSelectedId(restored.id)
       setDraftState(cloneApplication(restored), { clean: true })
       setScreen('workspace')
       setMobileDetailOpen(true)
-      await refreshSessionMetadata(activeSession)
     }, i18nValue.tx('toast.applicationRestored'))
   }
 
   function confirmDeleteTrashItem(item: ApplicationTrashItem) {
     setConfirmDialog({
       title: i18nValue.tx('trash.deleteForever'),
-      message: tpl(i18nValue.tx('trash.confirmDeleteForever'), { name: item.application.school.name }),
+      message: tpl(i18nValue.tx('trash.confirmDeleteForever'), {
+        name: item.application.school.name,
+      }),
       confirmLabel: i18nValue.tx('trash.deleteForever'),
       variant: 'danger',
       onConfirm: () => {
-        setConfirmDialog(null)
         setRemovingTrashItemIds((current) => new Set(current).add(item.id))
-        void (async () => {
-          await new Promise<void>((resolve) => {
-            window.setTimeout(resolve, getMotionDelay(380))
-          })
-          await run(async () => {
-            await phdApi.deleteApplicationTrashItem(activeSession.token, item.id)
+        return runOrThrow(async () => {
+            await waitForRemovalHandoff(
+              phdApi.deleteApplicationTrashItem(activeSession.token, item.id),
+            )
             setApplicationTrash((items) => items.filter((candidate) => candidate.id !== item.id))
             await refreshSessionMetadata(activeSession)
-          }, i18nValue.tx('toast.trashDeleted'))
-        })().finally(() => {
+          }, i18nValue.tx('toast.trashDeleted')).finally(() => {
           setRemovingTrashItemIds((current) => {
             const next = new Set(current)
             next.delete(item.id)
@@ -5846,7 +7548,7 @@ export default function App() {
   }
 
   function confirmEmptyTrash() {
-    const itemIds = applicationTrash.map((item) => item.id)
+    const itemIds = visibleApplicationTrash.map((item) => item.id)
     if (itemIds.length === 0) return
     setConfirmDialog({
       title: i18nValue.tx('trash.empty'),
@@ -5854,18 +7556,14 @@ export default function App() {
       confirmLabel: i18nValue.tx('trash.empty'),
       variant: 'danger',
       onConfirm: () => {
-        setConfirmDialog(null)
         setRemovingTrashItemIds((current) => new Set([...current, ...itemIds]))
-        void (async () => {
-          await new Promise<void>((resolve) => {
-            window.setTimeout(resolve, getMotionDelay(380))
-          })
-          await run(async () => {
-            await phdApi.emptyApplicationTrash(activeSession.token)
-            setApplicationTrash([])
+        return runOrThrow(async () => {
+            await waitForRemovalHandoff(
+              phdApi.emptyApplicationTrash(activeSession.token, applicationTrashScope),
+            )
+            setApplicationTrash((items) => items.filter((item) => !itemIds.includes(item.id)))
             await refreshSessionMetadata(activeSession)
-          }, i18nValue.tx('toast.trashEmptied'))
-        })().finally(() => {
+          }, i18nValue.tx('toast.trashEmptied')).finally(() => {
           setRemovingTrashItemIds((current) => {
             const next = new Set(current)
             itemIds.forEach((id) => next.delete(id))
@@ -5895,10 +7593,7 @@ export default function App() {
       const requestSession = activeSession
       const requestEpoch = sessionIdentityEpochRef.current
       const patch = { [key]: value } as Partial<UserSettings>
-      const user = await phdApi.updateSettings(
-        requestSession.token,
-        patch,
-      )
+      const user = await persistSettingsPatch(requestSession, patch, requestEpoch)
       const nextSession = commitSettingsUser(requestSession, user, patch, requestEpoch)
       if (!nextSession) return
       if (touchesBackupSettings(patch)) {
@@ -5907,55 +7602,458 @@ export default function App() {
     }, message)
   }
 
-  function updateUserSettings(patch: UserSettingsPatch, message = i18nValue.tx('toast.settingsUpdated')) {
-    return run(async () => {
+  function updateUserSettings(
+    patch: UserSettingsPatch,
+    message = i18nValue.tx('toast.settingsUpdated'),
+    options: { throwOnError?: boolean } = {},
+  ) {
+    const execute = options.throwOnError ? runOrThrow : run
+    return execute(async () => {
       const requestSession = activeSession
       const requestToken = requestSession.token
       const requestUserId = requestSession.user.id
       const requestEpoch = sessionIdentityEpochRef.current
-      // Optimistic merge so dual-language / other settings selects update before the network returns.
+      const previousSettings = requestSession.user.settings
+      // Strict interactive saves (the profile preset editor is one) must not
+      // paint an item as saved before the server acknowledges it. Otherwise a
+      // rejected request leaves a phantom preset in the current session and a
+      // later reopen looks successful until the next full reload. Background
+      // settings controls retain their existing optimistic response.
+      if (!options.throwOnError) {
+        setSession((current) => {
+          if (
+            !current ||
+            current.user.id !== requestUserId ||
+            !isCurrentSessionToken(requestToken) ||
+            sessionIdentityEpochRef.current !== requestEpoch
+          )
+            return current
+          return {
+            ...current,
+            user: {
+              ...current.user,
+              settings: {
+                ...current.user.settings,
+                ...patch,
+              },
+            },
+          }
+        })
+      }
+      try {
+        const user = await persistSettingsPatch(requestSession, patch, requestEpoch)
+        const nextSession = commitSettingsUser(requestSession, user, patch, requestEpoch)
+        if (!nextSession) return
+        if (touchesBackupSettings(patch)) {
+          await refreshApplicationsAndBackups(nextSession)
+        }
+      } catch (error) {
+        if (!options.throwOnError) {
+          rollbackOptimisticSettings(requestToken, requestUserId, requestEpoch, patch, previousSettings)
+        }
+        throw error
+      }
+    }, message)
+  }
+
+  function enqueueSettingsWrite<T>(userId: string, action: () => Promise<T>): Promise<T> {
+    const previous = settingsWriteQueueRef.current.get(userId) ?? Promise.resolve()
+    const queued = previous.catch(() => undefined).then(action)
+    settingsWriteQueueRef.current.set(userId, queued)
+    const release = () => {
+      if (settingsWriteQueueRef.current.get(userId) === queued) {
+        settingsWriteQueueRef.current.delete(userId)
+      }
+    }
+    void queued.then(release, release)
+    return queued
+  }
+
+  function persistSettingsPatch(
+    requestSession: AuthSession,
+    patch: UserSettingsPatch,
+    requestEpoch = sessionIdentityEpochRef.current,
+  ) {
+    return enqueueSettingsWrite(requestSession.user.id, async () => {
+      if (!isMountedSessionIdentity(requestSession.user.id, requestSession.token, requestEpoch)) {
+        throw new ApiError(
+          'The settings write belongs to a session which is no longer active.',
+          'SETTINGS_MUTATION_SUPERSEDED',
+          409,
+        )
+      }
+      return phdApi.updateSettings(getLatestSessionToken(requestSession.token), patch)
+    })
+  }
+
+  function mergeRecommenderApplicationSnapshots(savedApplications: readonly ApplicationRecommenderSlice[]) {
+    const latestById = new Map(savedApplications.map((application) => [application.id, application]))
+    for (const saved of latestById.values()) {
+      updateApplicationInState(saved.id, (current) => {
+        const currentVersion = Date.parse(String(current.updatedAt ?? ''))
+        const savedVersion = Date.parse(String(saved.updatedAt ?? ''))
+        // Concurrent granular writes share one monotonic application version.
+        // A late recommender response must not roll a newer resident snapshot
+        // (or its draft baseline) back to an older canonical slice.
+        if (Number.isFinite(currentVersion) && Number.isFinite(savedVersion) && currentVersion > savedVersion) {
+          return current
+        }
+        return {
+          ...current,
+          recommenders: saved.recommenders.map((recommender) => ({ ...recommender })),
+          updatedAt: saved.updatedAt,
+        }
+      })
+    }
+  }
+
+  function commitPersonalRecommenderMutation(
+    requestSession: AuthSession,
+    requestEpoch: number,
+    result: ApplicationRecommenderMutationResult | ProfileRecommenderMutationResult,
+  ) {
+    const requestToken = requestSession.token
+    const requestUserId = requestSession.user.id
+    if (result.ownerId !== requestUserId || !isMountedSessionIdentity(requestUserId, requestToken, requestEpoch)) {
+      return false
+    }
+
+    const directoryScopeKey = `${requestUserId}:${requestEpoch}`
+    const directoryRevision = personalRecommenderDirectoryRevisionRef.current
+    const directoryIsNewer = directoryRevision.scopeKey !== directoryScopeKey
+      || result.directoryRevision > directoryRevision.revision
+    if (directoryIsNewer) {
+      personalRecommenderDirectoryRevisionRef.current = {
+        scopeKey: directoryScopeKey,
+        revision: result.directoryRevision,
+      }
+      // Merge only the recommender directory into the mounted identity. A whole
+      // session replacement here would be able to roll back unrelated settings
+      // authored while this request was in flight.
       setSession((current) => {
         if (
-          !current
-          || current.user.id !== requestUserId
-          || !isCurrentSessionToken(requestToken)
-          || sessionIdentityEpochRef.current !== requestEpoch
-        ) return current
-        return {
+          !current ||
+          current.user.id !== requestUserId ||
+          !isCurrentSessionToken(current.token) ||
+          sessionIdentityEpochRef.current !== requestEpoch
+        ) {
+          return current
+        }
+        const nextSession: AuthSession = {
           ...current,
           user: {
             ...current.user,
             settings: {
               ...current.user.settings,
-              ...patch,
+              profileRecommenders: result.profiles.map((profile) => ({ ...profile })),
+              profileRecommendersTotal: result.profiles.length,
+              profileRecommendersNextCursor: null,
             },
           },
         }
+        safeSetJson(SESSION_KEY, nextSession)
+        return nextSession
       })
-      const user = await phdApi.updateSettings(requestToken, patch)
-      const nextSession = commitSettingsUser(requestSession, user, patch, requestEpoch)
-      if (!nextSession) return
-      if (touchesBackupSettings(patch)) {
-        await refreshApplicationsAndBackups(nextSession)
+    }
+
+    const applicationSnapshots = [
+      ...('application' in result ? [result.application] : []),
+      ...(result.applications ?? []),
+    ]
+    mergeRecommenderApplicationSnapshots(applicationSnapshots)
+    return true
+  }
+
+  async function replacePersonalProfileRecommenders(
+    nextProfiles: ProfileRecommender[],
+    baseProfiles: ProfileRecommender[],
+  ) {
+    const requestSession = activeSession
+    const requestEpoch = sessionIdentityEpochRef.current
+    await runOrThrow(async () => {
+      const result = await phdApi.replaceProfileRecommenders(
+        requestSession.token,
+        nextProfiles,
+        baseProfiles,
+      )
+      commitPersonalRecommenderMutation(requestSession, requestEpoch, result)
+    }, i18nValue.tx('profile.recommenders.saved'))
+  }
+
+  async function resolvePersonalApplicationRecommender(
+    applicationId: string,
+    recommender: MaterialRecommender,
+    decision: ApplicationRecommenderDecision,
+  ) {
+    // Flush unrelated resident fields first so the atomic recommender route
+    // starts from the current durable application version. This uses the same
+    // per-application write queue, keeping a late autosave from overtaking it.
+    if (!(await flushApplicationAutoSave())) {
+      throw new Error(i18nValue.tx('apiErrors.REQUEST_FAILED'))
+    }
+
+    const requestSession = activeSession
+    const requestEpoch = sessionIdentityEpochRef.current
+    const saveToken = beginExternalApplicationSave()
+    pendingSaveCountRef.current += 1
+    if (pendingSaveCountRef.current === 1) setSaving(true)
+
+    const submitResolve = (
+      profilesOverride?: AuthSession['user']['settings']['profileRecommenders'],
+    ) => enqueueApplicationWrite(applicationId, async () => {
+      const durableDraft =
+        draftRef.current?.id === applicationId
+          ? safeParseJson<ApplicationRecord>(draftBaselineRef.current) ?? draftRef.current
+          : applications.find((application) => application.id === applicationId)
+      const applicationUpdatedAt = durableDraft?.updatedAt
+      if (!applicationUpdatedAt) {
+        throw new ApiError(
+          i18nValue.tx('apiErrors.REQUEST_FAILED'),
+          'APPLICATION_VERSION_REQUIRED',
+          409,
+        )
       }
-    }, message)
+      // The server resolves the referenced profile from the submitted row
+      // *or* the stored one, so the version has to be looked up the same way.
+      // Sending it only for an explicitly bound profileId made every edit of
+      // an already-linked row arrive without the version the server wanted.
+      const referencedProfileId = recommender.profileId
+        || (durableDraft?.recommenders ?? []).find((row) => row.id === recommender.id)?.profileId
+        || ''
+      // The retry passes the directory it just re-read. Reading React state
+      // here instead would still see the pre-refresh render's copy and send the
+      // same stale version the server already rejected.
+      const profiles = profilesOverride ?? requestSession.user.settings.profileRecommenders
+      const linkedProfile = referencedProfileId
+        ? profiles?.find((profile) => profile.id === referencedProfileId)
+        : undefined
+
+      return phdApi.resolveApplicationRecommender(
+        requestSession.token,
+        applicationId,
+        recommender,
+        {
+          applicationUpdatedAt,
+          ...(referencedProfileId ? { profileUpdatedAt: linkedProfile?.updatedAt ?? null } : {}),
+        },
+        decision,
+      )
+    })
+
+    try {
+      let result
+      try {
+        result = await submitResolve()
+      } catch (error) {
+        // The stale half of this save is the recommender directory this client
+        // holds, and nothing else refreshes it on failure — so every retry sent
+        // the same stale version and failed identically, leaving the edit
+        // permanently unsavable. Re-read the directory and replay once.
+        if (!isRecoverableRecommenderVersionError(error)) throw error
+        const refreshed = await phdApi.me(requestSession.token)
+        commitSessionMetadata(requestSession, refreshed, requestSession.token, requestEpoch)
+        result = await submitResolve(refreshed.user.settings.profileRecommenders)
+      }
+
+      commitPersonalRecommenderMutation(requestSession, requestEpoch, result)
+      finishExternalApplicationSave(saveToken, { status: 'saved' })
+    } catch (error) {
+      const message = isNetworkLikeError(error)
+        ? i18nValue.tx('toast.offlineSaveNeedsOnline')
+        : normalizeError(error, languageRef.current)
+      failExternalApplicationSave(saveToken, message)
+      // The decision-required response is handled inside Dossier by opening
+      // the three-way choice. Other failures need visible feedback while the
+      // resident row remains mounted and retryable.
+      if (!(error instanceof ApiError && error.code === 'RECOMMENDER_SYNC_DECISION_REQUIRED') && !isAuthExpired(error)) {
+        notify(message, 'error')
+      }
+      throw error
+    } finally {
+      pendingSaveCountRef.current = Math.max(0, pendingSaveCountRef.current - 1)
+      if (pendingSaveCountRef.current === 0) setSaving(false)
+    }
+  }
+
+  function commitTeamRecommenderMutation(
+    requestSession: AuthSession,
+    requestEpoch: number,
+    expectedTeamId: string,
+    studentUserId: string,
+    result: ApplicationRecommenderMutationResult | ProfileRecommenderMutationResult,
+  ) {
+    if (
+      result.ownerId !== studentUserId
+      || !isMountedSessionIdentity(requestSession.user.id, requestSession.token, requestEpoch)
+      || (activeTeamIdRef.current ?? visibleTeamSummary?.team.id ?? null) !== expectedTeamId
+    ) {
+      return false
+    }
+
+    const scopeKey = `${requestSession.user.id}:${expectedTeamId}`
+    const revisionScopeKey = `${requestSession.user.id}:${requestEpoch}`
+    let directoryRevisions = teamRecommenderDirectoryRevisionRef.current
+    if (directoryRevisions.scopeKey !== revisionScopeKey) {
+      directoryRevisions = {
+        scopeKey: revisionScopeKey,
+        revisionsByDirectory: new Map(),
+      }
+      teamRecommenderDirectoryRevisionRef.current = directoryRevisions
+    }
+    const directoryKey = `${expectedTeamId}:${studentUserId}`
+    const currentDirectoryRevision = directoryRevisions.revisionsByDirectory.get(directoryKey) ?? 0
+    if (result.directoryRevision > currentDirectoryRevision) {
+      directoryRevisions.revisionsByDirectory.set(directoryKey, result.directoryRevision)
+      setTeamRecommenderDirectory((current) => ({
+        scopeKey,
+        profilesByStudent: {
+          ...(current.scopeKey === scopeKey ? current.profilesByStudent : {}),
+          [studentUserId]: result.profiles.map((profile) => ({ ...profile })),
+        },
+      }))
+    }
+    const applicationSnapshots = [
+      ...('application' in result ? [result.application] : []),
+      ...(result.applications ?? []),
+    ]
+    mergeRecommenderApplicationSnapshots(applicationSnapshots)
+    return true
+  }
+
+  async function replaceTeamStudentProfileRecommenders(
+    studentUserId: string,
+    nextProfiles: ProfileRecommender[],
+  ) {
+    const requestSession = activeSession
+    const requestEpoch = sessionIdentityEpochRef.current
+    const expectedTeamId = activeTeamIdRef.current ?? visibleTeamSummary?.team.id ?? null
+    if (!expectedTeamId) throw new Error(i18nValue.tx('apiErrors.REQUEST_FAILED'))
+
+    let baseProfiles = teamRecommenderProfilesByStudent[studentUserId]
+    if (!baseProfiles) {
+      baseProfiles = await loadTeamStudentRecommenders(studentUserId)
+    }
+
+    await runOrThrow(async () => {
+      const result = await phdApi.replaceTeamMemberProfileRecommenders(
+        requestSession.token,
+        expectedTeamId,
+        studentUserId,
+        nextProfiles,
+        [...baseProfiles],
+      )
+      commitTeamRecommenderMutation(
+        requestSession,
+        requestEpoch,
+        expectedTeamId,
+        studentUserId,
+        result,
+      )
+    }, i18nValue.tx('profile.recommenders.saved'))
+  }
+
+  async function resolveTeamApplicationRecommender(
+    applicationId: string,
+    recommender: MaterialRecommender,
+    decision: ApplicationRecommenderDecision,
+  ) {
+    if (!(await flushApplicationAutoSave())) {
+      throw new Error(i18nValue.tx('apiErrors.REQUEST_FAILED'))
+    }
+
+    const application = teamApplications.find((candidate) => candidate.id === applicationId)
+    const studentUserId = application?.ownerId
+    const expectedTeamId = application?.teamId ?? null
+    if (
+      !studentUserId
+      || !expectedTeamId
+      || expectedTeamId !== (activeTeamIdRef.current ?? visibleTeamSummary?.team.id ?? null)
+    ) {
+      throw new ApiError(i18nValue.tx('apiErrors.REQUEST_FAILED'), 'TEAM_RECOMMENDER_SCOPE_REQUIRED', 409)
+    }
+
+    const requestSession = activeSession
+    const requestEpoch = sessionIdentityEpochRef.current
+    let profiles = teamRecommenderProfilesByStudent[studentUserId]
+    if (!profiles) profiles = await loadTeamStudentRecommenders(studentUserId)
+
+    const saveToken = beginExternalApplicationSave()
+    pendingSaveCountRef.current += 1
+    if (pendingSaveCountRef.current === 1) setSaving(true)
+
+    try {
+      const result = await enqueueApplicationWrite(applicationId, async () => {
+        const durableDraft =
+          draftRef.current?.id === applicationId
+            ? safeParseJson<ApplicationRecord>(draftBaselineRef.current) ?? draftRef.current
+            : teamApplications.find((candidate) => candidate.id === applicationId)
+        const applicationUpdatedAt = durableDraft?.updatedAt
+        if (!applicationUpdatedAt) {
+          throw new ApiError(
+            i18nValue.tx('apiErrors.REQUEST_FAILED'),
+            'APPLICATION_VERSION_REQUIRED',
+            409,
+          )
+        }
+        const referencedProfileId = recommender.profileId
+          || (durableDraft?.recommenders ?? []).find((row) => row.id === recommender.id)?.profileId
+          || ''
+        const linkedProfile = referencedProfileId
+          ? profiles.find((profile) => profile.id === referencedProfileId)
+          : undefined
+        return phdApi.resolveApplicationRecommender(
+          requestSession.token,
+          applicationId,
+          recommender,
+          {
+            applicationUpdatedAt,
+            ...(referencedProfileId ? { profileUpdatedAt: linkedProfile?.updatedAt ?? null } : {}),
+          },
+          decision,
+        )
+      })
+
+      commitTeamRecommenderMutation(
+        requestSession,
+        requestEpoch,
+        expectedTeamId,
+        studentUserId,
+        result,
+      )
+      finishExternalApplicationSave(saveToken, { status: 'saved' })
+    } catch (error) {
+      const message = isNetworkLikeError(error)
+        ? i18nValue.tx('toast.offlineSaveNeedsOnline')
+        : normalizeError(error, languageRef.current)
+      failExternalApplicationSave(saveToken, message)
+      if (!(error instanceof ApiError && error.code === 'RECOMMENDER_SYNC_DECISION_REQUIRED') && !isAuthExpired(error)) {
+        notify(message, 'error')
+      }
+      throw error
+    } finally {
+      pendingSaveCountRef.current = Math.max(0, pendingSaveCountRef.current - 1)
+      if (pendingSaveCountRef.current === 0) setSaving(false)
+    }
   }
 
   async function saveUserAvatar(avatarDataUrl: string) {
     const requestSession = activeSession
-    const requestToken = requestSession.token
     const requestEpoch = sessionIdentityEpochRef.current
     try {
       setBusy(true)
-      const user = await phdApi.updateSettings(requestToken, { avatarDataUrl })
+      const user = await persistSettingsPatch(requestSession, { avatarDataUrl }, requestEpoch)
       const nextSession = commitSettingsUser(requestSession, user, { avatarDataUrl }, requestEpoch)
       if (!nextSession) return false
-      setTeamSummary((current) => current ? {
-        ...current,
-        members: current.members.map((member) => member.userId === user.id
-          ? { ...member, avatarUrl: avatarDataUrl || undefined }
-          : member),
-      } : current)
+      setTeamSummary((current) =>
+        current
+          ? {
+              ...current,
+              members: current.members.map((member) =>
+                member.userId === user.id ? { ...member, avatarUrl: avatarDataUrl || undefined } : member,
+              ),
+            }
+          : current,
+      )
       notify(avatarDataUrl ? i18nValue.tx('toast.avatarUpdated') : i18nValue.tx('toast.avatarRemoved'))
       return true
     } catch (error) {
@@ -5979,9 +8077,9 @@ export default function App() {
     notify(i18nValue.tx('settings.ai.keyAdded'))
   }
 
-  async function editAiKey(id: string, input: Partial<Pick<AiKeyInput, 'label' | 'model' | 'baseUrl' | 'apiKey'>>) {
+  async function editAiKey(id: string, input: Partial<Pick<AiKeyInput, 'label' | 'model' | 'baseUrl' | 'apiKey' | 'maxConcurrency' | 'requestMode' | 'weight' | 'enabled'>>) {
     const updated = await phdApi.updateAiKey(activeSession.token, id, input)
-    setAiKeys((items) => items.map((item) => item.id === updated.id ? updated : item))
+    setAiKeys((items) => items.map((item) => (item.id === updated.id ? updated : item)))
     notify(i18nValue.tx('settings.ai.keyUpdated'))
   }
 
@@ -5993,16 +8091,73 @@ export default function App() {
 
   async function testAiKey(id: string) {
     const result = await phdApi.testAiKey(activeSession.token, id)
-    setAiKeys((items) => items.map((item) => (
-      item.id === id ? { ...item, lastUsedAt: result.testedAt } : item
-    )))
+    setAiKeys((items) => items.map((item) => (item.id === id ? { ...item, lastUsedAt: result.testedAt } : item)))
     return { latencyMs: result.latencyMs, model: result.model }
   }
 
   async function resetAiKeyUsage(id: string) {
     const updated = await phdApi.resetAiKeyUsage(activeSession.token, id)
-    setAiKeys((items) => items.map((item) => item.id === updated.id ? updated : item))
+    setAiKeys((items) => items.map((item) => (item.id === updated.id ? updated : item)))
     notify(i18nValue.tx('settings.ai.usageResetDone'))
+  }
+
+  /**
+   * Remembers a job while it is still running and returns it once it reaches a
+   * terminal state, so a result is reported only to the tab that watched it.
+   */
+  function observeMailSyncJob(job: MailSyncJob | null | undefined) {
+    if (!job) return null
+    if (['queued', 'running'].includes(job.status)) {
+      watchedMailSyncJobIdRef.current = job.id
+      return null
+    }
+    return job
+  }
+
+  /**
+   * Reports a finished mail sync exactly once, whichever channel observed it.
+   * The realtime stream now announces job transitions, so a terminal status can
+   * arrive through an ordinary `session` invalidation rather than a poll.
+   */
+  async function settleMailSyncJob(committedSession: AuthSession, job: MailSyncJob) {
+    if (!['succeeded', 'failed'].includes(job.status)) return
+    // Only a job this client watched running may report: a stale terminal job
+    // is present in every /api/auth/me body, including the one served at login.
+    if (watchedMailSyncJobIdRef.current !== job.id) return
+    watchedMailSyncJobIdRef.current = null
+    // Committing the terminal job status disables MailSyncJobWatcher and
+    // aborts its polling signal. The final application refresh must outlive
+    // that watcher-owned signal or newly imported correspondence can remain
+    // invisible until a later manual reload.
+    await refreshApplicationsAndSessionMetadata(committedSession)
+    refreshUnreadNotificationCount()
+    if (notificationCenterOpen) void refreshNotificationList()
+    if (job.status === 'failed') {
+      notify(
+        tpl(i18nValue.tx('toast.mailSyncBackgroundFailed'), {
+          code: job.errorCode ?? 'FETCH_FAILED',
+        }),
+        'error',
+      )
+      return
+    }
+    const result = job.result
+    if (result && result.filed > 0) {
+      notify(
+        tpl(i18nValue.tx(job.mode === 'history' ? 'toast.mailHistoryFiled' : 'toast.mailFetchFiled'), {
+          count: result.filed,
+          incoming: result.incoming,
+          outgoing: result.outgoing,
+        }),
+        'success',
+      )
+    } else {
+      notify(
+        i18nValue.tx(job.mode === 'history' ? 'toast.mailHistoryNoMail' : 'toast.mailFetchNoNewMail'),
+        'info',
+      )
+    }
+    if (result && !result.stateCommitted) notify(i18nValue.tx('toast.mailSyncNeedsRetry'), 'info')
   }
 
   async function pollMailSyncJob(jobId: string, signal: AbortSignal) {
@@ -6014,42 +8169,12 @@ export default function App() {
       if (signal.aborted) return false
       const committedSession = commitSessionMetadata(requestSession, me, requestToken)
       const currentJob = me.mailFetchStatus?.syncJob
-      if (currentJob?.id === jobId && ['queued', 'running'].includes(currentJob.status)) return true
-      if (
-        committedSession
-        && currentJob?.id === jobId
-        && ['succeeded', 'failed'].includes(currentJob.status)
-      ) {
-        await refreshApplicationsAndSessionMetadata(committedSession, { signal })
-        if (signal.aborted) return false
-        refreshUnreadNotificationCount()
-        if (notificationCenterOpen) void refreshNotificationList()
-        if (currentJob.status === 'failed') {
-          notify(
-            tpl(i18nValue.tx('toast.mailSyncBackgroundFailed'), {
-              code: currentJob.errorCode ?? 'FETCH_FAILED',
-            }),
-            'error',
-          )
-        } else {
-          const result = currentJob.result
-          if (result && result.filed > 0) {
-            notify(
-              tpl(i18nValue.tx(currentJob.mode === 'history' ? 'toast.mailHistoryFiled' : 'toast.mailFetchFiled'), {
-                count: result.filed,
-                incoming: result.incoming,
-                outgoing: result.outgoing,
-              }),
-              'success',
-            )
-          } else {
-            notify(
-              i18nValue.tx(currentJob.mode === 'history' ? 'toast.mailHistoryNoMail' : 'toast.mailFetchNoNewMail'),
-              'info',
-            )
-          }
-          if (result && !result.stateCommitted) notify(i18nValue.tx('toast.mailSyncNeedsRetry'), 'info')
-        }
+      if (currentJob?.id === jobId && ['queued', 'running'].includes(currentJob.status)) {
+        observeMailSyncJob(currentJob)
+        return true
+      }
+      if (committedSession && currentJob?.id === jobId) {
+        await settleMailSyncJob(committedSession, currentJob)
       }
       return false
     } catch (error) {
@@ -6065,18 +8190,16 @@ export default function App() {
       const requestSession = activeSession
       let nextSession = requestSession
       if (patch && Object.keys(patch).length > 0) {
-        const user = await phdApi.updateSettings(requestSession.token, patch)
+        const user = await persistSettingsPatch(requestSession, patch)
         const committedSession = commitSettingsUser(requestSession, user, patch)
         if (!committedSession) return
         nextSession = committedSession
       }
-      const result = mode === 'history'
-        ? await phdApi.syncMailHistory(nextSession.token)
-        : await phdApi.fetchMailNow(nextSession.token)
-      notify(
-        i18nValue.tx(result.alreadyQueued ? 'toast.mailSyncAlreadyRunning' : 'toast.mailSyncQueued'),
-        'info',
-      )
+      const result =
+        mode === 'history'
+          ? await phdApi.syncMailHistory(nextSession.token)
+          : await phdApi.fetchMailNow(nextSession.token)
+      notify(i18nValue.tx(result.alreadyQueued ? 'toast.mailSyncAlreadyRunning' : 'toast.mailSyncQueued'), 'info')
       await refreshSessionMetadata(nextSession)
     } catch (error) {
       if (!isAuthExpired(error)) {
@@ -6121,23 +8244,21 @@ export default function App() {
     }, i18nValue.tx('settings.passkeyRenamed'))
   }
 
-  function deletePasskey(id: string) {
+  async function deletePasskey(id: string) {
+    if (removingPasskeyIds.has(id)) return
     setRemovingPasskeyIds((current) => new Set(current).add(id))
-    void (async () => {
-      await new Promise<void>((resolve) => {
-        window.setTimeout(resolve, getMotionDelay(380))
-      })
-      await run(async () => {
-        await phdApi.deletePasskey(activeSession.token, id)
+    try {
+      await runOrThrow(async () => {
+        await waitForRemovalHandoff(phdApi.deletePasskey(activeSession.token, id))
         setPasskeys((items) => items.filter((item) => item.id !== id))
       }, i18nValue.tx('settings.passkeyRemoved'))
-    })().finally(() => {
+    } finally {
       setRemovingPasskeyIds((current) => {
         const next = new Set(current)
         next.delete(id)
         return next
       })
-    })
+    }
   }
 
   function registerNavigationGuard(guard: NavigationGuard | null) {
@@ -6163,15 +8284,13 @@ export default function App() {
     setWorkspaceViewExit(null)
   }
 
-  function commitWorkspaceBoardOpen({
-    synchronous = false,
-  }: { synchronous?: boolean } = {}) {
-    // The workspace data is already local, so retain mounted panes while the
-    // center stage changes between board and dossier views.
-    setDraftState(null, { clean: true })
+  function commitWorkspaceBoardOpen({ synchronous = false }: { synchronous?: boolean } = {}) {
     const commit = () => {
-      setSelectedId(null)
-      setWorkspaceJumpIntent(null)
+      // Keep the outgoing record mounted until the deferred center stage has
+      // committed the board. Clearing these values in the click commit made
+      // the list briefly render its empty fallback while the board was still
+      // being built, adding a second large App reconciliation.
+      setWorkspaceBoardResident(true)
       setViewMode('kanban')
       setScreen('workspace')
       setMobileDetailOpen(false)
@@ -6190,16 +8309,13 @@ export default function App() {
     setViewModeDirection('to-kanban')
     if (!synchronous && screen === 'workspace' && viewMode !== 'kanban' && selectedId) {
       clearWorkspaceViewExit()
-      runAnimatedScreenUpdate(
-        () => commitWorkspaceBoardOpen({ synchronous: true }),
-        {
-          scope: 'workspace-view',
-          direction,
-          ready: warmCriticalScreenAssets('workspace', tab, lang, 'kanban'),
-          readinessGate: readinessGateForScreen('workspace', 'kanban'),
-          forceCssFallback: true,
-        },
-      )
+      runAnimatedScreenUpdate(() => commitWorkspaceBoardOpen({ synchronous: true }), {
+        scope: 'workspace-view',
+        direction,
+        ready: warmCriticalScreenAssets('workspace', tab, lang, 'kanban'),
+        readinessGate: readinessGateForScreen('workspace', 'kanban'),
+        forceCssFallback: true,
+      })
       return
     }
     clearWorkspaceViewExit()
@@ -6209,11 +8325,14 @@ export default function App() {
   function closeMobileApplicationDetail() {
     const origin = mobileDetailOriginRef.current
     if (origin === 'dashboard') {
-      runAnimatedScreenUpdate(() => {
-        setMobileDetailOpen(false)
-        setWorkspaceOpeningFromDashboard(false)
-        setScreen('dashboard')
-      }, { scope: 'screen', direction: 'backward' })
+      runAnimatedScreenUpdate(
+        () => {
+          setMobileDetailOpen(false)
+          setWorkspaceOpeningFromDashboard(false)
+          setScreen('dashboard')
+        },
+        { scope: 'screen', direction: 'backward' },
+      )
       return
     }
     if (origin === 'kanban') {
@@ -6240,16 +8359,19 @@ export default function App() {
     const openingMobileList = window.matchMedia('(max-width: 820px)').matches
     if (nextMode === viewMode && (!openingMobileList || !mobileDetailOpen)) return
     if (openingMobileList) {
-      runAnimatedScreenUpdate(() => {
-        setViewModeDirection('to-list')
-        setViewMode('list')
-        setMobileDetailOpen(false)
-        setScreen('workspace')
-      }, {
-        scope: 'workspace-view',
-        direction: 'backward',
-        forceCssFallback: true,
-      })
+      runAnimatedScreenUpdate(
+        () => {
+          setViewModeDirection('to-list')
+          setViewMode('list')
+          setMobileDetailOpen(false)
+          setScreen('workspace')
+        },
+        {
+          scope: 'workspace-view',
+          direction: 'backward',
+          forceCssFallback: true,
+        },
+      )
       return
     }
     const firstApplicationId = selectedId ?? workspaceApplications[0]?.id
@@ -6257,10 +8379,13 @@ export default function App() {
       selectApplication(firstApplicationId)
       return
     }
-    runAnimatedScreenUpdate(() => {
-      setViewModeDirection('to-list')
-      setViewMode('list')
-    }, { scope: 'workspace-view', direction: 'backward' })
+    runAnimatedScreenUpdate(
+      () => {
+        setViewModeDirection('to-list')
+        setViewMode('list')
+      },
+      { scope: 'workspace-view', direction: 'backward' },
+    )
   }
 
   function selectApplication(applicationId: string, jumpTarget?: WorkspaceJumpTarget) {
@@ -6268,29 +8393,36 @@ export default function App() {
     // or View Transition can delay the next record commit.
     setWorkspaceJumpIntent(null)
     if (compactWorkspaceViewport && !mobileDetailOpen) {
-      mobileDetailOriginRef.current = screen === 'dashboard'
-        ? 'dashboard'
-        : viewMode === 'kanban'
-          ? 'kanban'
-          : 'list'
+      mobileDetailOriginRef.current = screen === 'dashboard' ? 'dashboard' : viewMode === 'kanban' ? 'kanban' : 'list'
     }
     const targetApplication = workspaceApplicationById.get(applicationId)
-    const currentIndex = selected ? visibleApplicationIndexById.get(selected.id) ?? -1 : -1
+    const currentIndex = selected ? (visibleApplicationIndexById.get(selected.id) ?? -1) : -1
     const nextIndex = visibleApplicationIndexById.get(applicationId) ?? -1
-    const rowDirection = currentIndex >= 0 && nextIndex >= 0 && nextIndex < currentIndex
-      ? 'backward'
-      : 'forward'
+    const rowDirection = currentIndex >= 0 && nextIndex >= 0 && nextIndex < currentIndex ? 'backward' : 'forward'
     // Opening a focused project is always a forward spatial move on phones;
     // row-relative direction remains useful for desktop record-to-record swaps.
-    const direction = compactWorkspaceViewport && !mobileDetailOpen
-      ? 'forward'
-      : rowDirection
+    const direction = compactWorkspaceViewport && !mobileDetailOpen ? 'forward' : rowDirection
     const needsScreenTransition = screen !== 'workspace'
-    const needsWorkspaceViewTransition = screen === 'workspace'
-      && (viewMode === 'kanban' || !selected || !draftRef.current)
+    const needsWorkspaceViewTransition =
+      screen === 'workspace' && (viewMode === 'kanban' || !selected || !draftRef.current)
     const nextJumpIntent = jumpTarget ? createWorkspaceJumpIntent(applicationId, jumpTarget) : null
     const draftAlreadyReady = draftRef.current?.id === applicationId
     if (!draftAlreadyReady) clearDetailDraftHydration()
+    // Begin the complete-record read in the activation turn. The selected
+    // effect below subscribes to the same keyed navigation request, so a hover
+    // prefetch, pointer activation, and React commit still use one transport.
+    queuedApplicationDetailPrefetchRef.current = null
+    if (applicationDetailPrefetchTimerRef.current !== null) {
+      window.clearTimeout(applicationDetailPrefetchTimerRef.current)
+      applicationDetailPrefetchTimerRef.current = null
+    }
+    applicationDetailNavigationControllerRef.current?.abort()
+    applicationDetailNavigationControllerRef.current = null
+    if ((targetApplication as (ApplicationRecord & { __listSlim?: boolean }) | undefined)?.__listSlim) {
+      const controller = new AbortController()
+      applicationDetailNavigationControllerRef.current = controller
+      void loadApplicationDetailForNavigation(applicationId, controller.signal)?.catch(() => undefined)
+    }
 
     const commitSelection = () => {
       clearWorkspaceViewExit()
@@ -6316,38 +8448,30 @@ export default function App() {
       : needsWorkspaceViewTransition
         ? 'workspace-view'
         : 'dossier-record'
-    if (transitionScope === 'dossier-record' && targetApplication) {
-      dossierTransitionSourceRef.current = (
-        draftRef.current?.id === selected?.id ? draftRef.current : selected
-      )
-    } else {
-      dossierTransitionSourceRef.current = null
-    }
-    const destinationReady = needsWorkspaceViewTransition || needsScreenTransition
-      ? prefetchDossierAssets()
-      : undefined
-    const beginSelection = () => runAnimatedDossierUpdate(commitSelection, {
-      scope: transitionScope,
-      direction,
-      ready: destinationReady,
-      deferDossierContent: (
-        transitionScope === 'dossier-record'
-        || (compactWorkspaceViewport && !mobileDetailOpen)
-      ),
-    })
+    const destinationReady = needsWorkspaceViewTransition || needsScreenTransition ? prefetchDossierAssets() : undefined
+    const beginSelection = () =>
+      runAnimatedDossierUpdate(commitSelection, {
+        scope: transitionScope,
+        direction,
+        ready: destinationReady,
+        // Cold dashboard/workspace entries and record swaps all publish the
+        // lightweight Dossier shell first. Dense tab-derived rows reveal after
+        // the handoff, keeping the click and inspector identity responsive.
+        deferDossierContent: true,
+        // A native record snapshot still has to rasterize the outgoing and
+        // incoming Dossier trees together. The local CSS opacity handoff keeps
+        // the same visual motion without freezing the pointer turn.
+        forceCssFallback: true,
+      })
 
-    if (transitionScope === 'dossier-record') {
-      scheduleApplicationSelectionAfterPaint(beginSelection)
-    } else {
-      cancelPendingApplicationSelection()
-      beginSelection()
-    }
+    // The application row has already primed its selection surface in the
+    // pointer handler. Commit the Dossier and inspector in that same click
+    // turn so neither pane waits for the row's visual settle.
+    beginSelection()
   }
 
   function openDashboardApplication(applicationId: string, jumpTarget?: WorkspaceJumpTarget) {
     setWorkspaceOpeningFromDashboard(true)
-    setViewModeDirection('to-list')
-    startTransition(() => setViewMode('list'))
     selectApplication(applicationId, jumpTarget)
   }
 
@@ -6360,9 +8484,7 @@ export default function App() {
     setStatusFilters([])
     setSort('deadline')
     setWorkspaceOpeningFromDashboard(true)
-    const nextJumpIntent = jumpTarget
-      ? createWorkspaceJumpIntent(TOUR_SAMPLE_APPLICATION_ID, jumpTarget)
-      : null
+    const nextJumpIntent = jumpTarget ? createWorkspaceJumpIntent(TOUR_SAMPLE_APPLICATION_ID, jumpTarget) : null
     startTransition(() => {
       setSelectedId(TOUR_SAMPLE_APPLICATION_ID)
       setViewMode('list')
@@ -6410,10 +8532,10 @@ export default function App() {
       return
     }
     if (
-      stepKey === 'open-mail-settings'
-      || stepKey === 'mail-overview'
-      || stepKey === 'open-ai-key'
-      || stepKey === 'ai-key-overview'
+      stepKey === 'open-mail-settings' ||
+      stepKey === 'mail-overview' ||
+      stepKey === 'open-ai-key' ||
+      stepKey === 'ai-key-overview'
     ) {
       setScreen('settings')
       return
@@ -6425,7 +8547,13 @@ export default function App() {
 
   function openNewApplicationDialog(ownerId: string | null) {
     if (isTeamMode && !canCreateInCurrentTeam) {
-      notify(i18nValue.tx('team.permissionCreateApplicationsDenied', 'Your Team permissions do not allow creating applications.'), 'info')
+      notify(
+        i18nValue.tx(
+          'team.permissionCreateApplicationsDenied',
+          'Your Team permissions do not allow creating applications.',
+        ),
+        'info',
+      )
       return
     }
     const limit = isProUser ? applicationLimit : applicationCreateLimit
@@ -6443,23 +8571,23 @@ export default function App() {
     runWithNavigationGuard(() => {
       // Do not make the click wait for code or locale I/O. LazyOverlayBoundary
       // owns the short pending cue while both resources warm concurrently.
-      void Promise.all([
-        preloadLanguage(lang, ['core', 'shared', 'dossier']),
-        loadNewApplicationDialog(),
-      ]).catch(() => undefined)
+      void Promise.all([preloadLanguage(lang, ['core', 'shared', 'dossier']), loadNewApplicationDialog()]).catch(
+        () => undefined,
+      )
       setDialogOpen(true)
     })
   }
 
-  function openShareDialog() {
+  function openShareDialog(permission: SharePermission = 'view') {
     if (isTeamMode && !canShareInCurrentTeam) {
-      notify(i18nValue.tx('team.permissionShareDenied', 'Your Team permissions do not allow creating share links.'), 'info')
+      notify(
+        i18nValue.tx('team.permissionShareDenied', 'Your Team permissions do not allow creating share links.'),
+        'info',
+      )
       return
     }
-    void Promise.all([
-      preloadLanguage(lang, ['core', 'shared', 'share']),
-      loadShareDialog(),
-    ]).catch(() => undefined)
+    void Promise.all([preloadLanguage(lang, ['core', 'shared', 'share']), loadShareDialog()]).catch(() => undefined)
+    setSharePermission(permission)
     setShareScopeSections([...allShareSections])
     setShareDialogOpen(true)
   }
@@ -6512,11 +8640,7 @@ export default function App() {
         return patchPaneLayout(current, pane, { hidden: false })
       }
       return patchPaneLayout(current, pane, {
-        width: clampNumber(
-          paneStoredWidth(current, pane) + adjustedDelta,
-          paneWidthMin(pane),
-          paneWidthMax(pane),
-        ),
+        width: clampNumber(paneStoredWidth(current, pane) + adjustedDelta, paneWidthMin(pane), paneWidthMax(pane)),
       })
     })
   }
@@ -6549,24 +8673,22 @@ export default function App() {
       const rawDelta = moveEvent.clientX - startX
       const adjustedDelta = resizeDeltaForPane(pane, rawDelta, startLayout.sidebarsSwapped)
       if (startHidden) {
-        previewLayout = adjustedDelta <= PANE_REVEAL_DISTANCE
-          ? patchPaneLayout(startLayout, pane, { hidden: true })
-          : patchPaneLayout(startLayout, pane, {
-              hidden: false,
-              width: clampNumber(
-                Math.max(paneStoredWidth(startLayout, pane), adjustedDelta),
-                minWidth,
-                maxWidth,
-              ),
-            })
+        previewLayout =
+          adjustedDelta <= PANE_REVEAL_DISTANCE
+            ? patchPaneLayout(startLayout, pane, { hidden: true })
+            : patchPaneLayout(startLayout, pane, {
+                hidden: false,
+                width: clampNumber(Math.max(paneStoredWidth(startLayout, pane), adjustedDelta), minWidth, maxWidth),
+              })
       } else {
         const rawWidth = paneStoredWidth(startLayout, pane) + adjustedDelta
-        previewLayout = rawWidth < minWidth - PANE_COLLAPSE_DISTANCE
-          ? patchPaneLayout(startLayout, pane, { hidden: true })
-          : patchPaneLayout(startLayout, pane, {
-              hidden: false,
-              width: clampNumber(rawWidth, minWidth, maxWidth),
-            })
+        previewLayout =
+          rawWidth < minWidth - PANE_COLLAPSE_DISTANCE
+            ? patchPaneLayout(startLayout, pane, { hidden: true })
+            : patchPaneLayout(startLayout, pane, {
+                hidden: false,
+                width: clampNumber(rawWidth, minWidth, maxWidth),
+              })
       }
 
       if (shell) {
@@ -6597,21 +8719,43 @@ export default function App() {
   }
 
   function refreshNotificationList() {
+    const requestToken = activeSession.token
+    const requestUserId = activeSession.user.id
+    const requestEpoch = sessionIdentityEpochRef.current
+    if (!isMountedSessionIdentity(requestUserId, requestToken, requestEpoch)) return Promise.resolve()
     setNotificationsLoading(true)
     return Promise.all([
-      phdApi.listNotifications(activeSession.token),
-      phdApi.listNotifications(activeSession.token, { archivedOnly: true }),
+      phdApi.listNotifications(requestToken),
+      phdApi.listNotifications(requestToken, { archivedOnly: true }),
     ])
-      .then(([active, archived]) => setNotifications(
-        [...active, ...archived].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
-      ))
-      .catch((error) => notify(normalizeError(error, languageRef.current), 'error'))
-      .finally(() => setNotificationsLoading(false))
+      .then(([active, archived]) => {
+        if (!isMountedSessionIdentity(requestUserId, requestToken, requestEpoch)) return
+        setNotifications([...active, ...archived].sort((left, right) => right.createdAt.localeCompare(left.createdAt)))
+      })
+      .catch((error) => {
+        if (isMountedSessionIdentity(requestUserId, requestToken, requestEpoch)) {
+          notify(normalizeError(error, languageRef.current), 'error')
+        }
+      })
+      .finally(() => {
+        if (isMountedSessionIdentity(requestUserId, requestToken, requestEpoch)) {
+          setNotificationsLoading(false)
+        }
+      })
   }
 
   function refreshUnreadNotificationCount() {
-    void phdApi.unreadNotificationCount(activeSession.token)
-      .then((result) => setUnreadNotificationCount(result.count))
+    const requestToken = activeSession.token
+    const requestUserId = activeSession.user.id
+    const requestEpoch = sessionIdentityEpochRef.current
+    if (!isMountedSessionIdentity(requestUserId, requestToken, requestEpoch)) return
+    void phdApi
+      .unreadNotificationCount(requestToken)
+      .then((result) => {
+        if (isMountedSessionIdentity(requestUserId, requestToken, requestEpoch)) {
+          setUnreadNotificationCount(result.count)
+        }
+      })
       .catch(() => {})
   }
 
@@ -6638,12 +8782,11 @@ export default function App() {
     const unreadCountBefore = notifications.filter((item) => idSet.has(item.id) && !item.readAt).length
     if (unreadCountBefore === 0) return
     const stamp = new Date().toISOString()
-    setNotifications((items) => items.map((item) => (
-      idSet.has(item.id) && !item.readAt ? { ...item, readAt: stamp } : item
-    )))
+    setNotifications((items) =>
+      items.map((item) => (idSet.has(item.id) && !item.readAt ? { ...item, readAt: stamp } : item)),
+    )
     setUnreadNotificationCount((count) => Math.max(0, count - unreadCountBefore))
-    void phdApi.updateNotificationsBulk(activeSession.token, targetIds, 'mark_read')
-      .catch(recoverNotificationAction)
+    void phdApi.updateNotificationsBulk(activeSession.token, targetIds, 'mark_read').catch(recoverNotificationAction)
   }
 
   function markNotificationsUnread(ids: string[]) {
@@ -6652,12 +8795,11 @@ export default function App() {
     const idSet = new Set(targetIds)
     const readCountBefore = notifications.filter((item) => idSet.has(item.id) && item.readAt).length
     if (readCountBefore === 0) return
-    setNotifications((items) => items.map((item) => (
-      idSet.has(item.id) && item.readAt ? { ...item, readAt: null } : item
-    )))
+    setNotifications((items) =>
+      items.map((item) => (idSet.has(item.id) && item.readAt ? { ...item, readAt: null } : item)),
+    )
     setUnreadNotificationCount((count) => count + readCountBefore)
-    void phdApi.updateNotificationsBulk(activeSession.token, targetIds, 'mark_unread')
-      .catch(recoverNotificationAction)
+    void phdApi.updateNotificationsBulk(activeSession.token, targetIds, 'mark_unread').catch(recoverNotificationAction)
   }
 
   function archiveNotifications(ids: string[]) {
@@ -6666,14 +8808,13 @@ export default function App() {
     const idSet = new Set(targetIds)
     const archivedUnreadCount = notifications.filter((item) => idSet.has(item.id) && !item.readAt).length
     const stamp = new Date().toISOString()
-    setNotifications((items) => items.map((item) => (
-      idSet.has(item.id) && !item.archivedAt
-        ? { ...item, archivedAt: stamp, readAt: item.readAt ?? stamp }
-        : item
-    )))
+    setNotifications((items) =>
+      items.map((item) =>
+        idSet.has(item.id) && !item.archivedAt ? { ...item, archivedAt: stamp, readAt: item.readAt ?? stamp } : item,
+      ),
+    )
     setUnreadNotificationCount((count) => Math.max(0, count - archivedUnreadCount))
-    void phdApi.updateNotificationsBulk(activeSession.token, targetIds, 'archive')
-      .catch(recoverNotificationAction)
+    void phdApi.updateNotificationsBulk(activeSession.token, targetIds, 'archive').catch(recoverNotificationAction)
   }
 
   function markAllNotificationsRead() {
@@ -6714,13 +8855,14 @@ export default function App() {
     const communicationId = notificationMetadataString(item, 'communicationId')
     const commentId = notificationMetadataString(item, 'commentId')
     const scholarshipId = notificationMetadataString(item, 'scholarshipId')
-    const targetId = item.targetId
-      ?? (tab === 'materials' && materialId ? `material-${materialId}` : null)
-      ?? (tab === 'materials' && taskId ? `task-${taskId}` : null)
-      ?? (tab === 'mail' && communicationId ? `communication-${communicationId}` : null)
-      ?? (tab === 'review' && commentId ? `review-comment-${commentId}` : null)
-      ?? (tab === 'funding' && scholarshipId ? `scholarship-${scholarshipId}` : null)
-      ?? 'dossier-config-card'
+    const targetId =
+      item.targetId ??
+      (tab === 'materials' && materialId ? `material-${materialId}` : null) ??
+      (tab === 'materials' && taskId ? `task-${taskId}` : null) ??
+      (tab === 'mail' && communicationId ? `communication-${communicationId}` : null) ??
+      (tab === 'review' && commentId ? `review-comment-${commentId}` : null) ??
+      (tab === 'funding' && scholarshipId ? `scholarship-${scholarshipId}` : null) ??
+      'dossier-config-card'
     let expand: WorkspaceJumpTarget['expand']
     if (tab === 'materials' && materialId) expand = { kind: 'material', id: materialId }
     if (tab === 'materials' && taskId) expand = { kind: 'task', id: taskId }
@@ -6736,18 +8878,13 @@ export default function App() {
   function openNotificationDestination(item: NotificationRecord) {
     setNotificationCenterOpen(false)
     const normalizedPath = normalizeNotificationPath(item.targetPath)
-    if (
-      normalizedPath.startsWith('/team/accept-invite/')
-      || normalizedPath.startsWith('/team/join/')
-    ) {
+    if (normalizedPath.startsWith('/team/accept-invite/') || normalizedPath.startsWith('/team/join/')) {
       window.location.assign(normalizedPath)
       return
     }
     const pathname = normalizedPath.split(/[?#]/)[0]
     const parsed = pathname ? parseRoute(pathname) : null
-    const applicationId = parsed?.screen === 'workspace' && parsed.selectedId
-      ? parsed.selectedId
-      : item.applicationId
+    const applicationId = parsed?.screen === 'workspace' && parsed.selectedId ? parsed.selectedId : item.applicationId
     if (applicationId) {
       const jumpTarget = notificationJumpTarget(item, parsed?.tab)
       runWithNavigationGuard(() => {
@@ -6871,10 +9008,8 @@ export default function App() {
 
   // Detect when the URL requested a specific application that doesn't exist (or isn't yet loaded).
   // Only fires once applications have actually been fetched so a loading blink doesn't flash 404.
-  const applicationNotFound = applicationsLoaded
-    && screen === 'workspace'
-    && selectedId !== null
-    && !workspaceApplicationById.has(selectedId)
+  const applicationNotFound =
+    applicationsLoaded && screen === 'workspace' && selectedId !== null && !workspaceApplicationById.has(selectedId)
 
   const commandPaletteActions: CommandPaletteAction[] = (() => {
     const modLabel = navigator.platform.toUpperCase().includes('MAC') ? '⌘' : 'Ctrl'
@@ -6951,7 +9086,10 @@ export default function App() {
         disabled: PUBLIC_EDITION,
         keywords: ['team', 'members', 'resources', 'audit'],
         onRun: navigate(() => {
-          void switchWorkspaceMode('team', { screen: 'team', teamSection: 'overview' })
+          void switchWorkspaceMode('team', {
+            screen: 'team',
+            teamSection: 'overview',
+          })
         }),
       },
       {
@@ -6990,7 +9128,11 @@ export default function App() {
         shortcut: `${modLabel} B`,
         disabled: screen !== 'workspace',
         keywords: ['pane', 'sidebar', 'applications'],
-        onRun: () => setWorkspaceLayout((current) => ({ ...current, applicationsHidden: !current.applicationsHidden })),
+        onRun: () =>
+          setWorkspaceLayout((current) => ({
+            ...current,
+            applicationsHidden: !current.applicationsHidden,
+          })),
       },
       {
         id: 'toggle-inspector-pane',
@@ -7000,7 +9142,11 @@ export default function App() {
         shortcut: `${modLabel} I`,
         disabled: screen !== 'workspace',
         keywords: ['inspector', 'sidebar'],
-        onRun: () => setWorkspaceLayout((current) => ({ ...current, inspectorHidden: !current.inspectorHidden })),
+        onRun: () =>
+          setWorkspaceLayout((current) => ({
+            ...current,
+            inspectorHidden: !current.inspectorHidden,
+          })),
       },
       {
         id: 'toggle-theme',
@@ -7049,7 +9195,7 @@ export default function App() {
   // target draft is ready, so no stale content can be edited or acted upon.
   const displayedDossierDraft = activeDraft ?? (selected ? draft : null)
   const displayedDossierApplication = displayedDossierDraft
-    ? workspaceApplicationById.get(displayedDossierDraft.id) ?? displayedDossierDraft
+    ? (workspaceApplicationById.get(displayedDossierDraft.id) ?? displayedDossierDraft)
     : null
   const dossierHandoffPending = Boolean(selected && !activeDraft && displayedDossierDraft)
   // Ordinary rail and desktop tab changes paint their full destination
@@ -7057,29 +9203,88 @@ export default function App() {
   // first; secondary cards and long tab-derived rows join after the handoff.
   const deferScreenProgressiveReveal = false
   const deferDossierHeavyContent = dossierContentDeferred
-  const isTeamStudentDashboard = (
-    screen === 'team'
-    && isTeamMode
-    && teamViewerRole === 'member'
-    && teamSection === 'overview'
-  )
+  const isTeamStudentDashboard =
+    screen === 'team' && isTeamMode && teamViewerRole === 'member' && teamSection === 'overview'
   const openAiKeyConfiguration = () => {
     setDossierEnrichmentOpen(false)
     if (isTeamMode && teamViewerRole === 'owner') {
-      runAnimatedScreenUpdate(() => {
-        setTeamSection('settings')
-        setScreen('team')
-        setMobileDetailOpen(false)
-      }, { scope: 'screen', direction: 'forward', readinessGate: screenReadinessGate(teamScreen) })
+      runAnimatedScreenUpdate(
+        () => {
+          setTeamSection('settings')
+          setScreen('team')
+          setMobileDetailOpen(false)
+        },
+        {
+          scope: 'screen',
+          direction: 'forward',
+          readinessGate: screenReadinessGate(teamScreen),
+        },
+      )
       return
     }
     setFocusAiKeys(true)
-    runAnimatedScreenUpdate(() => {
-      setInterfaceMode('personal')
-      setScreen('settings')
-      setMobileDetailOpen(false)
-    }, { scope: 'screen', direction: 'forward', readinessGate: screenReadinessGate(settingsScreen) })
+    runAnimatedScreenUpdate(
+      () => {
+        setInterfaceMode('personal')
+        setScreen('settings')
+        setMobileDetailOpen(false)
+      },
+      {
+        scope: 'screen',
+        direction: 'forward',
+        readinessGate: screenReadinessGate(settingsScreen),
+      },
+    )
   }
+
+  const returnToDashboardFromMissingRoute = () => {
+    runWithNavigationGuard(() => {
+      runAnimatedRailScreenUpdate(
+        () => {
+          setRouteNotFound(false)
+          setScreen('dashboard')
+          setMobileDetailOpen(false)
+        },
+        {
+          direction: 'backward',
+          ready: warmCriticalScreenAssets('dashboard', tab, lang, viewMode),
+          readinessGate: readinessGateForScreen('dashboard', viewMode),
+        },
+      )
+    })
+  }
+
+  const workspaceKanbanContent = canUseWorkspaceBoard ? (
+    <KanbanBoard
+      applications={visibleApplications}
+      customApplicationStatuses={activeSession.user.settings.customApplicationStatuses}
+      onNew={isTeamMode ? undefined : () => openNewApplicationDialog(null)}
+      teamStudents={isTeamMode ? teamBoardStudents : undefined}
+      onNewForStudent={
+        isTeamMode && canCreateInCurrentTeam ? (studentId) => openNewApplicationDialog(studentId) : undefined
+      }
+      onPrefetch={prefetchApplicationEntry}
+      onStatusChange={(id, status) => {
+        const app = workspaceApplicationById.get(id)
+        if (!app || app.status === status) return
+        void saveApplicationQuietly(
+          { ...currentApplicationDraft(app), status },
+          i18nValue.tx('toast.statusUpdated', 'Status updated'),
+        )
+      }}
+      onSelect={(id) => {
+        selectApplication(id)
+      }}
+      onOpenInNewPage={(id) => openApplicationsInTabs([id])}
+      onOpenMany={openApplicationsInTabs}
+      onExportApplication={isTeamMode ? undefined : (id) => exportSelectedApplications([id])}
+      onExportMany={isTeamMode ? undefined : exportSelectedApplications}
+      onCopy={copyValue}
+      onDeleteApplication={isTeamMode ? undefined : (id) => confirmDeleteApplications([id])}
+      onDeleteMany={isTeamMode ? undefined : confirmDeleteApplications}
+      deferInactiveView
+    />
+  ) : null
 
   // Main content based on screen
   const mainContent =
@@ -7095,167 +9300,196 @@ export default function App() {
         onOpenInNewPage={isTeamMode ? undefined : (id) => openApplicationsInTabs([id])}
         onExportApplication={isTeamMode ? undefined : (id) => exportSelectedApplications([id])}
         onCopy={copyValue}
-        onToggleTask={isTeamMode ? undefined : async (applicationId, taskId, done) => {
-          const beforeToggle = applications.find((application) => application.id === applicationId)
-          if (!beforeToggle) return
-          if (connectivityUnavailable()) {
-            await saveApplicationQuietly({
-              ...beforeToggle,
-              tasks: beforeToggle.tasks.map((task) => task.id === taskId ? { ...task, done } : task),
-            }, i18nValue.tx('toast.taskUpdated'))
-            return
-          }
-          await runApplicationMutation(applicationId, async () => {
-            const requestKey = `${applicationId}:${taskId}`
-            const requestId = (taskToggleRequestRef.current.get(requestKey) ?? 0) + 1
-            taskToggleRequestRef.current.set(requestKey, requestId)
-            updateApplicationInState(applicationId, (application) => ({
-              ...application,
-              tasks: application.tasks.map((task) => task.id === taskId ? { ...task, done } : task),
-            }))
-            try {
-              const task = await phdApi.patchTask(activeSession.token, applicationId, taskId, { done })
-              if (taskToggleRequestRef.current.get(requestKey) !== requestId) return
-              updateApplicationInState(applicationId, (application) => ({
-                ...application,
-                tasks: application.tasks.map((item) => item.id === task.id ? task : item),
-              }))
-            } catch (error) {
-              if (taskToggleRequestRef.current.get(requestKey) === requestId) {
-                const previousDone = beforeToggle.tasks.find((task) => task.id === taskId)?.done ?? !done
-                updateApplicationInState(applicationId, (application) => ({
-                  ...application,
-                  tasks: application.tasks.map((task) => (
-                    task.id === taskId ? { ...task, done: previousDone } : task
-                  )),
-                }))
+        onToggleTask={
+          isTeamMode
+            ? undefined
+            : async (applicationId, taskId, done) => {
+                const beforeToggle = applications.find((application) => application.id === applicationId)
+                if (!beforeToggle) return
+                if (connectivityUnavailable()) {
+                  await saveApplicationQuietly(
+                    {
+                      ...beforeToggle,
+                      tasks: beforeToggle.tasks.map((task) => (task.id === taskId ? { ...task, done } : task)),
+                    },
+                    i18nValue.tx('toast.taskUpdated'),
+                  )
+                  return
+                }
+                await runApplicationMutation(applicationId, async () => {
+                  const requestKey = `${applicationId}:${taskId}`
+                  const requestId = (taskToggleRequestRef.current.get(requestKey) ?? 0) + 1
+                  taskToggleRequestRef.current.set(requestKey, requestId)
+                  updateApplicationInState(applicationId, (application) => ({
+                    ...application,
+                    tasks: application.tasks.map((task) => (task.id === taskId ? { ...task, done } : task)),
+                  }))
+                  try {
+                    const task = await phdApi.patchTask(activeSession.token, applicationId, taskId, { done })
+                    if (taskToggleRequestRef.current.get(requestKey) !== requestId) return
+                    updateApplicationInState(applicationId, (application) => ({
+                      ...application,
+                      tasks: application.tasks.map((item) => (item.id === task.id ? task : item)),
+                    }))
+                  } catch (error) {
+                    if (taskToggleRequestRef.current.get(requestKey) === requestId) {
+                      const previousDone = beforeToggle.tasks.find((task) => task.id === taskId)?.done ?? !done
+                      updateApplicationInState(applicationId, (application) => ({
+                        ...application,
+                        tasks: application.tasks.map((task) =>
+                          task.id === taskId ? { ...task, done: previousDone } : task,
+                        ),
+                      }))
+                    }
+                    throw error
+                  } finally {
+                    if (taskToggleRequestRef.current.get(requestKey) === requestId) {
+                      taskToggleRequestRef.current.delete(requestKey)
+                    }
+                  }
+                })
               }
-              throw error
-            } finally {
-              if (taskToggleRequestRef.current.get(requestKey) === requestId) {
-                taskToggleRequestRef.current.delete(requestKey)
+        }
+        onPatchMaterialStatus={
+          isTeamMode
+            ? undefined
+            : async (applicationId, materialId, status) => {
+                const before = applications.find((application) => application.id === applicationId)
+                if (!before) return
+                const nextApplication = {
+                  ...before,
+                  materials: before.materials.map((material) =>
+                    material.id === materialId
+                      ? {
+                          ...material,
+                          status,
+                          updatedAt: material.updatedAt || new Date().toISOString().slice(0, 10),
+                        }
+                      : material,
+                  ),
+                }
+                if (connectivityUnavailable()) {
+                  await saveApplicationQuietly(
+                    nextApplication,
+                    i18nValue.tx('toast.materialUpdated', i18nValue.tx('toast.appSaved')),
+                  )
+                  return
+                }
+                await runApplicationMutation(applicationId, async () => {
+                  updateApplicationInState(applicationId, () => nextApplication)
+                  try {
+                    const saved = (
+                      await phdApi.updateApplication(activeSession.token, nextApplication, before)
+                    ).application
+                    replaceApplication(saved)
+                  } catch (error) {
+                    replaceApplication(before)
+                    throw error
+                  }
+                })
               }
-            }
-          })
-        }}
-        onPatchMaterialStatus={isTeamMode ? undefined : async (applicationId, materialId, status) => {
-          const before = applications.find((application) => application.id === applicationId)
-          if (!before) return
-          const nextApplication = {
-            ...before,
-            materials: before.materials.map((material) => (
-              material.id === materialId
-                ? {
-                    ...material,
-                    status,
-                    updatedAt: material.updatedAt || new Date().toISOString().slice(0, 10),
+        }
+        onToggleScholarshipTask={
+          isTeamMode
+            ? undefined
+            : async (applicationId, scholarshipId, taskId, done) => {
+                const before = applications.find((application) => application.id === applicationId)
+                if (!before) return
+                const nextApplication = {
+                  ...before,
+                  scholarships: before.scholarships.map((scholarship) =>
+                    scholarship.id === scholarshipId
+                      ? {
+                          ...scholarship,
+                          tasks: (scholarship.tasks ?? []).map((task) =>
+                            task.id === taskId ? { ...task, done } : task,
+                          ),
+                        }
+                      : scholarship,
+                  ),
+                }
+                if (connectivityUnavailable()) {
+                  await saveApplicationQuietly(nextApplication, i18nValue.tx('toast.taskUpdated'))
+                  return
+                }
+                await runApplicationMutation(applicationId, async () => {
+                  updateApplicationInState(applicationId, () => nextApplication)
+                  try {
+                    const saved = (
+                      await phdApi.updateApplication(activeSession.token, nextApplication, before)
+                    ).application
+                    replaceApplication(saved)
+                  } catch (error) {
+                    replaceApplication(before)
+                    throw error
                   }
-                : material
-            )),
-          }
-          if (connectivityUnavailable()) {
-            await saveApplicationQuietly(nextApplication, i18nValue.tx('toast.materialUpdated', i18nValue.tx('toast.appSaved')))
-            return
-          }
-          await runApplicationMutation(applicationId, async () => {
-            updateApplicationInState(applicationId, () => nextApplication)
-            try {
-              const saved = await phdApi.updateApplication(activeSession.token, nextApplication, before)
-              replaceApplication(saved)
-            } catch (error) {
-              replaceApplication(before)
-              throw error
-            }
-          })
-        }}
-        onToggleScholarshipTask={isTeamMode ? undefined : async (
-          applicationId,
-          scholarshipId,
-          taskId,
-          done,
-        ) => {
-          const before = applications.find((application) => application.id === applicationId)
-          if (!before) return
-          const nextApplication = {
-            ...before,
-            scholarships: before.scholarships.map((scholarship) => (
-              scholarship.id === scholarshipId
-                ? {
-                    ...scholarship,
-                    tasks: (scholarship.tasks ?? []).map((task) => (
-                      task.id === taskId ? { ...task, done } : task
-                    )),
+                })
+              }
+        }
+        onPatchScholarshipMaterialStatus={
+          isTeamMode
+            ? undefined
+            : async (applicationId, scholarshipId, materialId, status) => {
+                const before = applications.find((application) => application.id === applicationId)
+                if (!before) return
+                const nextApplication = {
+                  ...before,
+                  scholarships: before.scholarships.map((scholarship) =>
+                    scholarship.id === scholarshipId
+                      ? {
+                          ...scholarship,
+                          materials: (scholarship.materials ?? []).map((material) =>
+                            material.id === materialId ? { ...material, status } : material,
+                          ),
+                        }
+                      : scholarship,
+                  ),
+                }
+                if (connectivityUnavailable()) {
+                  await saveApplicationQuietly(
+                    nextApplication,
+                    i18nValue.tx('toast.materialUpdated', i18nValue.tx('toast.appSaved')),
+                  )
+                  return
+                }
+                await runApplicationMutation(applicationId, async () => {
+                  updateApplicationInState(applicationId, () => nextApplication)
+                  try {
+                    const saved = (
+                      await phdApi.updateApplication(activeSession.token, nextApplication, before)
+                    ).application
+                    replaceApplication(saved)
+                  } catch (error) {
+                    replaceApplication(before)
+                    throw error
                   }
-                : scholarship
-            )),
-          }
-          if (connectivityUnavailable()) {
-            await saveApplicationQuietly(nextApplication, i18nValue.tx('toast.taskUpdated'))
-            return
-          }
-          await runApplicationMutation(applicationId, async () => {
-            updateApplicationInState(applicationId, () => nextApplication)
-            try {
-              const saved = await phdApi.updateApplication(activeSession.token, nextApplication, before)
-              replaceApplication(saved)
-            } catch (error) {
-              replaceApplication(before)
-              throw error
-            }
-          })
-        }}
-        onPatchScholarshipMaterialStatus={isTeamMode ? undefined : async (
-          applicationId,
-          scholarshipId,
-          materialId,
-          status,
-        ) => {
-          const before = applications.find((application) => application.id === applicationId)
-          if (!before) return
-          const nextApplication = {
-            ...before,
-            scholarships: before.scholarships.map((scholarship) => (
-              scholarship.id === scholarshipId
-                ? {
-                    ...scholarship,
-                    materials: (scholarship.materials ?? []).map((material) => (
-                      material.id === materialId ? { ...material, status } : material
-                    )),
-                  }
-                : scholarship
-            )),
-          }
-          if (connectivityUnavailable()) {
-            await saveApplicationQuietly(nextApplication, i18nValue.tx('toast.materialUpdated', i18nValue.tx('toast.appSaved')))
-            return
-          }
-          await runApplicationMutation(applicationId, async () => {
-            updateApplicationInState(applicationId, () => nextApplication)
-            try {
-              const saved = await phdApi.updateApplication(activeSession.token, nextApplication, before)
-              replaceApplication(saved)
-            } catch (error) {
-              replaceApplication(before)
-              throw error
-            }
-          })
-        }}
+                })
+              }
+        }
         onNew={canCreateInCurrentTeam ? () => openNewApplicationDialog(null) : undefined}
         guidanceTeam={isTeamStudentDashboard ? studentGuidanceTeam : undefined}
-        onSendGuidanceMessage={isTeamStudentDashboard && visibleTeamSummary ? async (
-          memberId,
-          messageTitle,
-          messageBody,
-        ) => {
-          await phdApi.publishTeamNotification(activeSession.token, visibleTeamSummary.team.id, {
-            title: messageTitle,
-            body: messageBody,
-            channels: ['in_app'],
-            memberIds: [memberId],
-          })
-          const recipientName = studentGuidanceTeam?.members.find((member) => member.id === memberId)?.name ?? ''
-          notify(tpl(i18nValue.tx('dashboard.guidanceMessageSent', 'Message sent to {name}.'), { name: recipientName }), 'success')
-        } : undefined}
+        guidanceDraftScope={isTeamStudentDashboard && visibleTeamSummary
+          ? { userId: activeSession.user.id, workspaceId: visibleTeamSummary.team.id }
+          : undefined}
+        onSendGuidanceMessage={
+          isTeamStudentDashboard && visibleTeamSummary
+            ? async (memberId, messageTitle, messageBody) => {
+                await phdApi.publishTeamNotification(activeSession.token, visibleTeamSummary.team.id, {
+                  title: messageTitle,
+                  body: messageBody,
+                  channels: ['in_app'],
+                  memberIds: [memberId],
+                })
+                const recipientName = studentGuidanceTeam?.members.find((member) => member.id === memberId)?.name ?? ''
+                notify(
+                  tpl(i18nValue.tx('dashboard.guidanceMessageSent', 'Message sent to {name}.'), {
+                    name: recipientName,
+                  }),
+                  'success',
+                )
+              }
+            : undefined
+        }
         ownerNames={isTeamMode && !isTeamStudentDashboard ? teamApplicationOwnerNames : undefined}
         eyebrow={isTeamMode && !isTeamStudentDashboard ? i18nValue.tx('dashboard.teamEyebrow') : undefined}
         title={isTeamMode && !isTeamStudentDashboard ? i18nValue.tx('dashboard.teamTitle') : undefined}
@@ -7267,8 +9501,19 @@ export default function App() {
           isTeamMode || !canUsePersonalDiscover
             ? undefined
             : () => {
-                startTransition(() => setScreen('discover'))
-                setMobileDetailOpen(false)
+                runWithNavigationGuard(() => {
+                  runAnimatedRailScreenUpdate(
+                    () => {
+                      setScreen('discover')
+                      setMobileDetailOpen(false)
+                    },
+                    {
+                      direction: 'forward',
+                      ready: warmCriticalScreenAssets('discover', tab, lang, viewMode),
+                      readinessGate: readinessGateForScreen('discover', viewMode),
+                    },
+                  )
+                })
               }
         }
         deferProgressiveReveal={deferScreenProgressiveReveal}
@@ -7276,18 +9521,24 @@ export default function App() {
     ) : screen === 'discover' && activeSession && canUseDiscover && (!isTeamMode || teamDiscoverScope) ? (
       <DiscoverScreen
         token={activeSession.token}
-        applications={teamDiscoverScope
-          ? teamApplications.filter((application) => application.ownerId === teamDiscoverScope.targetUserId)
-          : applications}
+        applications={
+          teamDiscoverScope
+            ? teamApplications.filter((application) => application.ownerId === teamDiscoverScope.targetUserId)
+            : applications
+        }
         teamScope={teamDiscoverScope}
         teamTargetOptions={teamCreateStudentOptions}
         onTeamTargetChange={teamDiscoverScope ? setTeamDiscoverTargetUserId : undefined}
-        onExitTeamTarget={teamDiscoverScope ? () => {
-          setTeamDiscoverTargetUserId(null)
-          setTeamSection('discover')
-          startTransition(() => setScreen('team'))
-          setMobileDetailOpen(false)
-        } : undefined}
+        onExitTeamTarget={
+          teamDiscoverScope
+            ? () => {
+                setTeamDiscoverTargetUserId(null)
+                setTeamSection('discover')
+                startTransition(() => setScreen('team'))
+                setMobileDetailOpen(false)
+              }
+            : undefined
+        }
         onConfigureAiKeys={openAiKeyConfiguration}
         deferProgressiveReveal={deferScreenProgressiveReveal}
         realtimeConnected={realtimeUpdates.connected}
@@ -7295,59 +9546,177 @@ export default function App() {
         onNotify={(message, tone) => notify(message, tone ?? 'success')}
         onImported={(created) => {
           setApplications((items) => [created, ...items.filter((item) => item.id !== created.id)])
-          setDraftState(cloneApplication(created), { clean: true })
-          setSelectedId(created.id)
-          setViewModeDirection('to-list')
-          setViewMode('list')
-          setScreen('workspace')
-          setMobileDetailOpen(true)
-          setTab('dossier')
+          runAnimatedDossierUpdate(
+            () => {
+              setDraftState(cloneApplication(created), { clean: true })
+              setSelectedId(created.id)
+              setViewModeDirection('to-list')
+              setViewMode('list')
+              setScreen('workspace')
+              setMobileDetailOpen(true)
+              setTab('dossier')
+            },
+            {
+              scope: 'screen',
+              direction: 'forward',
+              ready: prefetchDossierAssets(),
+              deferDossierContent: true,
+              forceCssFallback: true,
+            },
+          )
         }}
+      />
+    ) : screen === 'interview' && !canUseInterview ? (
+      <DeferredPanel variant="dashboard" />
+    ) : screen === 'interview' && interviewLoadingScope === interviewScopeKey && !interviewWorkspace ? (
+      <DeferredPanel variant="dashboard" />
+    ) : screen === 'interview' ? (
+      <InterviewPrepScreen
+        key={interviewScopeKey}
+        viewer={{
+          userId: activeSession.user.id,
+          displayName: activeSession.user.name,
+          mode: isTeamMode ? (teamViewerRole === 'member' ? 'student' : 'teacher') : 'personal',
+          canEdit: canUseInterview && Boolean(interviewSubjectUserId),
+          teamId: interviewTeamId,
+        }}
+        workspace={interviewCanonicalWorkspace}
+        students={isTeamMode && teamViewerRole !== 'member' ? interviewStudents : []}
+        selectedStudentId={isTeamMode && teamViewerRole !== 'member' ? interviewSubjectUserId : null}
+        onSelectedStudentChange={setInterviewSelectedStudentId}
+        recoveryScope={{ sessionUserId: activeSession.user.id, teamId: interviewTeamId }}
+        onWorkspaceChange={(workspace) => {
+          setInterviewWorkspaces((current) => ({ ...current, [interviewScopeKey]: workspace }))
+        }}
+        onSave={async (workspace, expectedRevision) => {
+          if (connectivityUnavailable()) {
+            throw new Error(i18nValue.tx('toast.offlineActionNeedsOnline'))
+          }
+          const saved = await phdApi.saveInterviewPrepWorkspace(activeSession.token, {
+            subjectUserId: interviewSubjectUserId,
+            teamId: interviewTeamId,
+            workspace,
+            expectedRevision,
+          })
+          setInterviewWorkspaces((current) => ({ ...current, [interviewScopeKey]: saved }))
+          return saved
+        }}
+        onGenerateQuestions={interviewAiKey ? async (request) => {
+          return phdApi.generateInterviewQuestions(activeSession.token, {
+            ...request,
+            teamId: interviewTeamId,
+            keyId: interviewAiKey.id,
+          })
+        } : undefined}
+        onGenerateMockTurn={interviewAiKey ? async (request) => {
+          return phdApi.generateInterviewMockTurn(activeSession.token, {
+            ...request,
+            teamId: interviewTeamId,
+            keyId: interviewAiKey.id,
+          })
+        } : undefined}
+        aiCapabilityId={interviewAiKey?.id ?? null}
+        onGenerateFeedback={interviewAiKey ? async (request) => {
+          return phdApi.generateInterviewFeedback(activeSession.token, {
+            ...request,
+            teamId: interviewTeamId,
+            keyId: interviewAiKey.id,
+          })
+        } : undefined}
+        onDirtyChange={(dirty) => {
+          if (dirty) dirtyInterviewScopeKeysRef.current.add(interviewScopeKey)
+          else dirtyInterviewScopeKeysRef.current.delete(interviewScopeKey)
+          if (!dirty) {
+            registerNavigationGuard(null)
+            return
+          }
+          registerNavigationGuard((proceed) => {
+            setConfirmDialog({
+              title: i18nValue.tx('interview.leaveTitle'),
+              message: i18nValue.tx('interview.leaveMessage'),
+              confirmLabel: i18nValue.tx('interview.leaveConfirm'),
+              onConfirm: () => {
+                registerNavigationGuard(null)
+                proceed()
+              },
+            })
+            return true
+          })
+        }}
+        onNotify={(message, tone) => notify(message, tone ?? 'success')}
       />
     ) : screen === 'profile' ? (
       <ProfileScreen
         assets={profileAssets}
+        applications={personalRecommenderApplications}
         session={activeSession}
         deferProgressiveReveal={deferScreenProgressiveReveal}
         removingAssetIds={removingProfileAssetIds}
-        onUpdateSettings={(patch, message) => updateUserSettings(patch, message)}
+        onOpenRecommenderApplication={(use) =>
+          runWithNavigationGuard(() =>
+            selectApplication(use.applicationId, {
+              tab: 'dossier',
+              targetId: 'application-recommenders',
+              fallbackText: [use.schoolName, use.program].filter(Boolean),
+            }),
+          )
+        }
+        onUpdateSettings={(patch, message, options) => updateUserSettings(patch, message, options)}
+        onUpdateProfileRecommenders={replacePersonalProfileRecommenders}
         onCreateSnippet={(input: ProfileAssetInput, files: File[]) =>
-          void run(async () => {
+          runOrThrow(async () => {
             const created = await phdApi.addProfileAsset(activeSession.token, {
               ...input,
               // Files fulfill the reservation immediately.
               uploadReserved: files.length > 0 ? false : Boolean(input.uploadReserved),
             })
-            const asset = files.length > 0
-              ? await phdApi.uploadProfileAssetFiles(activeSession.token, created.id, files)
-              : created
-            setProfileAssets((items) => [asset, ...items.filter((item) => item.id !== asset.id)])
+            try {
+              const asset =
+                files.length > 0 ? await phdApi.uploadProfileAssetFiles(activeSession.token, created.id, files) : created
+              setProfileAssets((items) => [asset, ...items.filter((item) => item.id !== asset.id)])
+            } catch (error) {
+              // Creation and upload are two API calls. If the second call
+              // fails, remove the just-created shell before rethrowing so a
+              // retry cannot leave duplicate custom snippets behind.
+              try {
+                await phdApi.deleteProfileAsset(activeSession.token, created.id)
+              } catch {
+                // The original failure remains the user-facing error. A later
+                // profile refresh will reconcile an exceptionally failed
+                // cleanup request.
+              }
+              throw error
+            }
           }, i18nValue.tx('toast.profileAssetAdded'))
         }
         onUpdateAsset={(id, input) =>
-          void run(async () => {
+          runOrThrow(async () => {
             const asset = await phdApi.updateProfileAsset(activeSession.token, id, input)
             setProfileAssets((items) => items.map((item) => (item.id === asset.id ? asset : item)))
           }, i18nValue.tx('toast.profileAssetUpdated'))
         }
+        onExportAsset={(assetId, format) =>
+          runOrThrow(async () => {
+            const asset = profileAssets.find((item) => item.id === assetId)
+            const blob = await phdApi.downloadProfileAssetExport(activeSession.token, assetId, format, lang)
+            const extension = format === 'word' ? 'doc' : 'pdf'
+            downloadBlob(blob, `${safeFileSegment(asset?.name || 'profile-document')}.${extension}`)
+          }, i18nValue.tx('profile.exportReady'))
+        }
         onDeleteAsset={(asset) =>
           setConfirmDialog({
             title: i18nValue.tx('profile.deleteAsset', 'Delete snippet'),
-            message: tpl(i18nValue.tx('confirmDeleteProfileAsset'), { name: asset.name }),
+            message: tpl(i18nValue.tx('confirmDeleteProfileAsset'), {
+              name: asset.name,
+            }),
             confirmLabel: i18nValue.tx('dossier.delete'),
             variant: 'danger',
             onConfirm: () => {
-              setConfirmDialog(null)
               setRemovingProfileAssetIds((current) => new Set(current).add(asset.id))
-              void (async () => {
-                await new Promise<void>((resolve) => {
-                  window.setTimeout(resolve, getMotionDelay(380))
-                })
-                await run(async () => {
-                  await phdApi.deleteProfileAsset(activeSession.token, asset.id)
+              return runOrThrow(async () => {
+                  await waitForRemovalHandoff(phdApi.deleteProfileAsset(activeSession.token, asset.id))
                   setProfileAssets((items) => items.filter((item) => item.id !== asset.id))
-                }, i18nValue.tx('toast.profileAssetDeleted'))
-              })().finally(() => {
+                }, i18nValue.tx('toast.profileAssetDeleted')).finally(() => {
                 setRemovingProfileAssetIds((current) => {
                   const next = new Set(current)
                   next.delete(asset.id)
@@ -7358,19 +9727,19 @@ export default function App() {
           })
         }
         onUploadFiles={(assetId, files) =>
-          run(async () => {
+          runOrThrow(async () => {
             const asset = await phdApi.uploadProfileAssetFiles(activeSession.token, assetId, files)
             setProfileAssets((items) => items.map((item) => (item.id === asset.id ? asset : item)))
           })
         }
         onRenameFile={(assetId, fileId, fileName) =>
-          void run(async () => {
+          runOrThrow(async () => {
             const asset = await phdApi.renameProfileAssetFile(activeSession.token, assetId, fileId, fileName)
             setProfileAssets((items) => items.map((item) => (item.id === asset.id ? asset : item)))
           })
         }
         onDeleteFile={(assetId, fileId) =>
-          void run(async () => {
+          runOrThrow(async () => {
             const asset = await phdApi.deleteProfileAssetFile(activeSession.token, assetId, fileId)
             setProfileAssets((items) => items.map((item) => (item.id === asset.id ? asset : item)))
           })
@@ -7383,21 +9752,42 @@ export default function App() {
         }
         onLoadFile={(fileId) => phdApi.downloadFile(activeSession.token, fileId)}
         onCreateShare={(assetId, expiry, note) =>
-          void run(async () => {
+          runOrThrow(async () => {
             const share = await phdApi.shareProfileAsset(activeSession.token, assetId, expiresAtForShare(expiry), note)
-            setProfileAssets((items) => items.map((item) =>
-              item.id === assetId ? { ...item, shares: [...(item.shares ?? []), share] } : item,
-            ))
-            await refreshSessionMetadata(activeSession)
+            setProfileAssets((items) =>
+              items.map((item) => (item.id === assetId ? { ...item, shares: [...(item.shares ?? []), share] } : item)),
+            )
+            // Share creation is durably acknowledged by the POST itself. A
+            // metadata refresh is secondary and must not make the user retry
+            // a request that already succeeded (which would create a duplicate).
+            try {
+              await refreshSessionMetadata(activeSession)
+            } catch {
+              // The next normal session refresh will reconcile the quota/count.
+            }
           })
         }
         onRevokeShare={(assetId, shareId) =>
-          void run(async () => {
+          runOrThrow(async () => {
             await phdApi.revokeProfileAssetShare(activeSession.token, assetId, shareId)
-            setProfileAssets((items) => items.map((item) =>
-              item.id === assetId ? { ...item, shares: (item.shares ?? []).filter((share) => share.id !== shareId) } : item,
-            ))
-            await refreshSessionMetadata(activeSession)
+            setProfileAssets((items) =>
+              items.map((item) =>
+                item.id === assetId
+                  ? {
+                      ...item,
+                      shares: (item.shares ?? []).filter((share) => share.id !== shareId),
+                    }
+                : item,
+              ),
+            )
+            // The revoke request and local share removal are the durable
+            // acknowledgement.  A best-effort metadata refresh must not make
+            // the user retry a revoke that already succeeded.
+            try {
+              await refreshSessionMetadata(activeSession)
+            } catch {
+              // A later session refresh will reconcile the quota/count.
+            }
           })
         }
         onCopy={copyValue}
@@ -7417,7 +9807,9 @@ export default function App() {
           const requestSession = activeSession
           const requestEpoch = sessionIdentityEpochRef.current
           try {
-            const user = await phdApi.updateSettings(requestSession.token, { browserNotificationsEnabled: true })
+            const user = await persistSettingsPatch(requestSession, {
+              browserNotificationsEnabled: true,
+            }, requestEpoch)
             commitSettingsUser(requestSession, user, { browserNotificationsEnabled: true }, requestEpoch)
             return result
           } catch (error) {
@@ -7434,7 +9826,9 @@ export default function App() {
           await webPushNotifications.disable()
           const requestSession = activeSession
           const requestEpoch = sessionIdentityEpochRef.current
-          const user = await phdApi.updateSettings(requestSession.token, { browserNotificationsEnabled: false })
+          const user = await persistSettingsPatch(requestSession, {
+            browserNotificationsEnabled: false,
+          }, requestEpoch)
           commitSettingsUser(requestSession, user, { browserNotificationsEnabled: false }, requestEpoch)
           return true
         }}
@@ -7467,7 +9861,7 @@ export default function App() {
         }}
         onAvatarSave={saveUserAvatar}
         onUpdateSetting={(key, value) => updateUserSetting(key, value)}
-        onUpdateSettings={(patch, message) => updateUserSettings(patch, message)}
+        onUpdateSettings={(patch, message, options) => updateUserSettings(patch, message, options)}
         aiKeys={aiKeys}
         onCreateAiKey={addAiKey}
         onUpdateAiKey={editAiKey}
@@ -7486,7 +9880,7 @@ export default function App() {
             const requestSession = activeSession
             let nextSession = requestSession
             if (patch && Object.keys(patch).length > 0) {
-              const user = await phdApi.updateSettings(requestSession.token, patch)
+              const user = await persistSettingsPatch(requestSession, patch)
               const committedSession = commitSettingsUser(requestSession, user, patch)
               if (!committedSession) return
               nextSession = committedSession
@@ -7503,7 +9897,7 @@ export default function App() {
             const result = await phdApi.sendReceiveEmailVerification(requestSession.token, email)
             commitSettingsUser(requestSession, result.user, {
               receiveEmails: result.user.settings.receiveEmails,
-            })
+            }, sessionIdentityEpochRef.current, false)
             return result.verificationSentAt
           }, i18nValue.tx('toast.verificationEmailSent'))
         }
@@ -7512,7 +9906,7 @@ export default function App() {
             const requestSession = activeSession
             let nextSession = requestSession
             if (patch && Object.keys(patch).length > 0) {
-              const user = await phdApi.updateSettings(requestSession.token, patch)
+              const user = await persistSettingsPatch(requestSession, patch)
               const committedSession = commitSettingsUser(requestSession, user, patch)
               if (!committedSession) return
               nextSession = committedSession
@@ -7528,10 +9922,15 @@ export default function App() {
             notify(i18nValue.tx('settings.noApplicationsToExport'), 'info')
             return
           }
-          void run(async () => {
-            const blob = await phdApi.downloadExport(activeSession.token, format, undefined, lang)
-            downloadBlob(blob, `phd-applications-all.${format === 'excel' ? 'xls' : format}`)
-          }, tpl(i18nValue.tx('toast.exported'), { format: format.toUpperCase() }))
+          void run(
+            async () => {
+              const blob = await phdApi.downloadExport(activeSession.token, format, undefined, lang)
+              downloadBlob(blob, `phd-applications-all.${format === 'excel' ? 'xls' : format}`)
+            },
+            tpl(i18nValue.tx('toast.exported'), {
+              format: format.toUpperCase(),
+            }),
+          )
         }}
         onDeleteAccount={() =>
           setConfirmDialog({
@@ -7539,29 +9938,37 @@ export default function App() {
             message: i18nValue.tx('confirmDeleteAccount'),
             confirmLabel: i18nValue.tx('settings.deleteAccount'),
             variant: 'danger',
-            onConfirm: () => {
-              setConfirmDialog(null)
-              void run(async () => {
-                await phdApi.deleteAccount(activeSession.token)
-                logout()
-              }, i18nValue.tx('toast.accountDeleted'))
-            },
+            onConfirm: () => runOrThrow(async () => {
+              await phdApi.deleteAccount(activeSession.token)
+              logout()
+            }, i18nValue.tx('toast.accountDeleted')),
           })
         }
         allShares={allShares}
         onRevokeShare={(applicationId, shareId) =>
-          void run(async () => {
+          runOrThrow(async () => {
             await phdApi.revokeShare(activeSession.token, applicationId, shareId)
             updateApplicationInState(applicationId, (application) => ({
               ...application,
               shares: (application.shares ?? []).filter((share) => share.id !== shareId),
             }))
-            await refreshSessionMetadata(activeSession)
+            try {
+              await refreshSessionMetadata(activeSession)
+            } catch {
+              // The share mutation already succeeded; do not force a retry.
+            }
           }, i18nValue.tx('toast.shareRevoked'))
         }
         onUpdateShare={(applicationId, shareId, expiresAt, permission, sections) =>
           void run(async () => {
-            const share = await phdApi.updateShare(activeSession.token, applicationId, shareId, expiresAt, permission, sections)
+            const share = await phdApi.updateShare(
+              activeSession.token,
+              applicationId,
+              shareId,
+              expiresAt,
+              permission,
+              sections,
+            )
             updateApplicationInState(applicationId, (application) => ({
               ...application,
               shares: (application.shares ?? []).map((item) =>
@@ -7580,27 +9987,38 @@ export default function App() {
           }, i18nValue.tx('toast.shareUpdated'))
         }
         onRevokeAssetShare={(assetId, shareId) =>
-          void run(async () => {
+          runOrThrow(async () => {
             await phdApi.revokeProfileAssetShare(activeSession.token, assetId, shareId)
-            setProfileAssets((items) => items.map((asset) =>
-              asset.id === assetId
-                ? { ...asset, shares: (asset.shares ?? []).filter((share) => share.id !== shareId) }
+            setProfileAssets((items) =>
+              items.map((asset) =>
+                asset.id === assetId
+                  ? {
+                      ...asset,
+                      shares: (asset.shares ?? []).filter((share) => share.id !== shareId),
+                    }
                 : asset,
-            ))
-            await refreshSessionMetadata(activeSession)
+              ),
+            )
+            try {
+              await refreshSessionMetadata(activeSession)
+            } catch {
+              // The share mutation already succeeded; do not force a retry.
+            }
           }, i18nValue.tx('toast.shareRevoked'))
         }
         onUpdateAssetShare={(assetId, shareId, expiresAt) =>
           void run(async () => {
             const share = await phdApi.updateProfileAssetShare(activeSession.token, assetId, shareId, expiresAt)
-            setProfileAssets((items) => items.map((asset) =>
-              asset.id === assetId
-                ? {
-                    ...asset,
-                    shares: (asset.shares ?? []).map((item) => item.id === share.id ? share : item),
-                  }
-                : asset,
-            ))
+            setProfileAssets((items) =>
+              items.map((asset) =>
+                asset.id === assetId
+                  ? {
+                      ...asset,
+                      shares: (asset.shares ?? []).map((item) => (item.id === share.id ? share : item)),
+                    }
+                  : asset,
+              ),
+            )
             await refreshSessionMetadata(activeSession)
           }, i18nValue.tx('toast.shareUpdated'))
         }
@@ -7608,6 +10026,7 @@ export default function App() {
       />
     ) : screen === 'team' && !PUBLIC_EDITION ? (
       <TeamScreen
+        key={`team-screen:${activeSession.user.id}:${activeTeamId ?? visibleTeamSummary?.team.id ?? 'default'}`}
         session={activeSession}
         aiKeys={aiKeys}
         onCreateAiKey={addAiKey}
@@ -7623,8 +10042,32 @@ export default function App() {
         onSwitchTeam={switchActiveTeam}
         applicationCounts={applicationCountsByOwner}
         applications={teamApplications}
+        studentRecommenderProfiles={teamRecommenderProfilesByStudent}
+        studentRecommenderLoadingIds={teamRecommenderLoadingIds}
+        onLoadStudentRecommenders={requestTeamStudentRecommenders}
+        onUpdateStudentRecommenders={replaceTeamStudentProfileRecommenders}
+        canEditStudentRecommenders={() => canEditInCurrentTeam}
         activeSection={teamSection}
         hideTabs
+        personalProfileAssets={profileAssets}
+        onCreatePersonalProfileAsset={async (input) => {
+          const created = await phdApi.addProfileAsset(activeSession.token, {
+            ...input,
+            uploadReserved: false,
+          })
+          setProfileAssets((items) => [created, ...items.filter((item) => item.id !== created.id)])
+          notify(i18nValue.tx('toast.profileAssetAdded'), 'success')
+        }}
+        onUpdatePersonalProfileAsset={async (assetId, input) => {
+          const saved = await phdApi.updateProfileAsset(activeSession.token, assetId, input)
+          setProfileAssets((items) => items.map((item) => (item.id === saved.id ? saved : item)))
+          notify(i18nValue.tx('toast.profileAssetUpdated'), 'success')
+        }}
+        onDeletePersonalProfileAsset={async (assetId) => {
+          await phdApi.deleteProfileAsset(activeSession.token, assetId)
+          setProfileAssets((items) => items.filter((item) => item.id !== assetId))
+          notify(i18nValue.tx('toast.profileAssetDeleted'), 'success')
+        }}
         onSectionChange={(section) => {
           // Applications is a routed workspace surface, so it must still hand off
           // from a team tab. Other already-active team tabs need no transition.
@@ -7632,27 +10075,29 @@ export default function App() {
           // Route through the same animated path as the rail team section control.
           // (In-team swaps animate inside TeamScreen; applications uses rail handoff.)
           if (section === 'applications') {
-            const destinationViewMode = teamViewerRole === 'member' ? 'list' as const : 'kanban' as const
-            const direction = validTeamSections.indexOf(section) >= validTeamSections.indexOf(teamSection)
-              ? 'forward'
-              : 'backward'
+            const destinationViewMode = teamViewerRole === 'member' ? ('list' as const) : ('kanban' as const)
+            const direction =
+              validTeamSections.indexOf(section) >= validTeamSections.indexOf(teamSection) ? 'forward' : 'backward'
             runWithNavigationGuard(() => {
-              runAnimatedRailScreenUpdate(() => {
-                setTeamSection('applications')
-                if (destinationViewMode === 'kanban') {
-                  commitWorkspaceBoardOpen({ synchronous: true })
-                } else {
-                  setViewModeDirection('to-list')
-                  setViewMode('list')
-                  setSelectedId((current) => current ?? defaultSelectedIdForMode('team'))
-                  setMobileDetailOpen(false)
-                  setScreen('workspace')
-                }
-              }, {
-                direction,
-                ready: warmCriticalScreenAssets('workspace', tab, lang, destinationViewMode),
-                readinessGate: readinessGateForScreen('workspace', destinationViewMode),
-              })
+              runAnimatedRailScreenUpdate(
+                () => {
+                  setTeamSection('applications')
+                  if (destinationViewMode === 'kanban') {
+                    commitWorkspaceBoardOpen({ synchronous: true })
+                  } else {
+                    setViewModeDirection('to-list')
+                    setViewMode('list')
+                    setSelectedId((current) => current ?? defaultSelectedIdForMode('team'))
+                    setMobileDetailOpen(false)
+                    setScreen('workspace')
+                  }
+                },
+                {
+                  direction,
+                  ready: warmCriticalScreenAssets('workspace', tab, lang, destinationViewMode),
+                  readinessGate: readinessGateForScreen('workspace', destinationViewMode),
+                },
+              )
             })
             return
           }
@@ -7672,11 +10117,15 @@ export default function App() {
         }}
         onOpenApplicationInNewPage={(applicationId) => openApplicationsInTabs([applicationId])}
         onImpersonateMember={enterTemporaryUserView}
-        onCreateApplication={canCreateInCurrentTeam ? (ownerId) => {
-            setInterfaceMode('team')
-            setTeamSection('applications')
-            openNewApplicationDialog(ownerId ?? null)
-          } : undefined}
+        onCreateApplication={
+          canCreateInCurrentTeam
+            ? (ownerId) => {
+                setInterfaceMode('team')
+                setTeamSection('applications')
+                openNewApplicationDialog(ownerId ?? null)
+              }
+            : undefined
+        }
         onSwitchToPersonal={openPersonalWorkspaceForTeamTransfer}
         onCopy={copyValue}
         onOpenTeamDiscover={(studentUserId) => {
@@ -7689,35 +10138,10 @@ export default function App() {
       />
     ) : screen === 'team' ? (
       <DeferredPanel variant="team" />
-    ) : screen === 'workspace' && viewMode === 'list' && compactWorkspaceViewport && !mobileDetailOpen ? (
+    ) : screen === 'workspace' && renderedWorkspaceViewMode === 'list' && compactWorkspaceViewport && !mobileDetailOpen ? (
       <DeferredPanel />
-    ) : screen === 'workspace' && viewMode === 'kanban' && canUseWorkspaceBoard ? (
-      <KanbanBoard
-        applications={visibleApplications}
-        customApplicationStatuses={activeSession.user.settings.customApplicationStatuses}
-        onNew={isTeamMode ? undefined : () => openNewApplicationDialog(null)}
-        teamStudents={isTeamMode ? teamBoardStudents : undefined}
-        onNewForStudent={isTeamMode && canCreateInCurrentTeam ? (studentId) => openNewApplicationDialog(studentId) : undefined}
-        onPrefetch={prefetchDossierAssets}
-        onStatusChange={(id, status) => {
-          const app = workspaceApplicationById.get(id)
-          if (!app || app.status === status) return
-          void saveApplicationQuietly(
-            { ...currentApplicationDraft(app), status },
-            i18nValue.tx('toast.statusUpdated', 'Status updated'),
-          )
-        }}
-        onSelect={(id) => {
-          selectApplication(id)
-        }}
-        onOpenInNewPage={(id) => openApplicationsInTabs([id])}
-        onOpenMany={openApplicationsInTabs}
-        onExportApplication={isTeamMode ? undefined : (id) => exportSelectedApplications([id])}
-        onExportMany={isTeamMode ? undefined : exportSelectedApplications}
-        onCopy={copyValue}
-        onDeleteApplication={isTeamMode ? undefined : (id) => confirmDeleteApplications([id])}
-        onDeleteMany={isTeamMode ? undefined : confirmDeleteApplications}
-      />
+    ) : screen === 'workspace' && renderedWorkspaceViewMode === 'kanban' && canUseWorkspaceBoard ? (
+      null
     ) : selected && !displayedDossierDraft ? (
       <DeferredPanel />
     ) : selected && displayedDossierDraft && displayedDossierApplication ? (
@@ -7726,577 +10150,890 @@ export default function App() {
         aria-busy={dossierHandoffPending || undefined}
       >
         <div className="dossier-handoff-content" inert={dossierHandoffPending || undefined}>
-        <DossierView
-        key={displayedDossierApplication.id}
-        application={displayedDossierApplication}
-        draft={displayedDossierDraft}
-        tab={tab}
-        saving={saving}
-        isDirty={isDraftDirty}
-        profileAssets={profileAssets}
-        deferHeavyContent={deferDossierHeavyContent}
-        aiKeys={aiKeys}
-        onAiDraft={async (input, onEvent, signal) => {
-          await phdApi.streamAiDraft(activeSession.token, input, onEvent, signal)
-          phdApi.listAiKeys(activeSession.token).then(setAiKeys).catch(() => undefined)
-        }}
-        onAiInspectorOpenChange={handleAiInspectorOpenChange}
-        onNotify={notify}
-        session={activeSession}
-        currentUserApplicationRole={selectedTeamMeta?.currentUserApplicationRole}
-        applicationOwnerName={selectedTeamMeta && selectedTeamMeta.ownerId !== activeSession.user.id ? selectedTeamMeta.ownerName : undefined}
-        readOnly={isTeamMode && !canEditInCurrentTeam}
-        canShareApplication={canShareInCurrentTeam}
-        jumpIntent={workspaceJumpIntent}
-        onJumpIntentConsumed={consumeWorkspaceJumpIntent}
-        onTab={(nextTab, direction) => runAnimatedDossierUpdate(
-          () => {
-            setWorkspaceJumpIntent(null)
-            setTab(nextTab)
-          },
-          {
-            scope: 'dossier-tab',
-            direction,
-            deferDossierContent: compactWorkspaceViewport && nextTab === 'materials',
-          },
-        )}
-        onRegisterNavigationGuard={registerNavigationGuard}
-        autoSaveEnabled
-        onFlushAutoSave={flushApplicationAutoSave}
-        onDraft={(nextDraft, intent = 'settled') => {
-          setDraftState(nextDraft)
-          if (intent !== 'external') {
-            scheduleApplicationAutoSave(nextDraft, intent)
-          }
-        }}
-        onCopy={copyValue}
-        onResolveSchoolLogo={(input, options) => (
-          resolveAndStoreSchoolLogo(displayedDossierApplication, input, options)
-        )}
-        onUploadSchoolLogo={(file) => uploadAndStoreSchoolLogo(displayedDossierApplication, file)}
-        onRemoveSchoolLogo={() => removeStoredSchoolLogo(displayedDossierApplication)}
-        canToggleTeamVisibility={canToggleSelectedTeamVisibility}
-        teamTransferRequiresApproval={!canDirectlyMoveSelectedTeamApplication}
-        teamTransferOrganizations={selectedTeamTransferOptions}
-        onPreflightTeamTransfer={(visibleToTeam, teamId) => (
-          phdApi.preflightApplicationTeamTransfer(activeSession.token, selected.id, { visibleToTeam, teamId })
-        )}
-        onToggleTeamVisibility={(visibleToTeam, teamId) => {
-          if (!selected) return undefined
-          return toggleApplicationTeamVisibility(selected.id, visibleToTeam, teamId)
-        }}
-        onCustomApplicationStatusesChange={(statuses) => updateUserSettings({
-          customApplicationStatuses: statuses,
-        })}
-        onSave={saveCurrentDraft}
-        onDiscardDraft={discardDraft}
-        onDelete={() =>
-          setConfirmDialog({
-            title: i18nValue.tx('dossier.delete'),
-            message: tpl(i18nValue.tx('confirmDeleteApplication'), { name: selected.school.name }),
-            confirmLabel: i18nValue.tx('dossier.delete'),
-            variant: 'danger',
-            onConfirm: () => {
-              setConfirmDialog(null)
-              const applicationId = selected.id
-              setRemovingApplicationIds((current) => new Set(current).add(applicationId))
+          <DossierView
+            key={displayedDossierApplication.id}
+            application={displayedDossierApplication}
+            draft={displayedDossierDraft}
+            tab={tab}
+            saving={saving}
+            isDirty={isDraftDirty}
+            profileAssets={profileAssets}
+            recommenderOptions={
+              !isTeamMode
+                ? personalRecommenderOptions
+                : selectedTeamRecommenderOptions
+            }
+            pendingRecommenderDrafts={
+              pendingRecommenderDraftsByApplication[displayedDossierApplication.id] ?? EMPTY_RECOMMENDER_OPTIONS
+            }
+            onPendingRecommenderDraftsChange={(drafts) =>
+              replacePendingRecommenderDrafts(displayedDossierApplication.id, drafts)
+            }
+            onResolveRecommender={
+              isTeamMode
+                ? (recommender, decision) =>
+                    resolveTeamApplicationRecommender(
+                      displayedDossierApplication.id,
+                      recommender,
+                      decision,
+                    )
+                : (recommender, decision) =>
+                    resolvePersonalApplicationRecommender(
+                      displayedDossierApplication.id,
+                      recommender,
+                      decision,
+                    )
+            }
+            deferHeavyContent={deferDossierHeavyContent}
+            aiKeys={enabledAiKeys}
+            onAiDraft={async (input, onEvent, signal) => {
+              await phdApi.streamAiDraft(activeSession.token, input, onEvent, signal)
+              phdApi
+                .listAiKeys(activeSession.token)
+                .then(setAiKeys)
+                .catch(() => undefined)
+            }}
+            onAiInspectorOpenChange={handleAiInspectorOpenChange}
+            onNotify={notify}
+            session={activeSession}
+            currentUserApplicationRole={selectedTeamMeta?.currentUserApplicationRole}
+            applicationOwnerName={
+              selectedTeamMeta && selectedTeamMeta.ownerId !== activeSession.user.id
+                ? selectedTeamMeta.ownerName
+                : undefined
+            }
+            readOnly={isTeamMode && !canEditInCurrentTeam}
+            canShareApplication={canShareInCurrentTeam}
+            canDeleteApplication={!isTeamMode || canEditInCurrentTeam}
+            jumpIntent={workspaceJumpIntent}
+            onJumpIntentConsumed={consumeWorkspaceJumpIntent}
+            onTab={(nextTab, direction) =>
+              runAnimatedDossierUpdate(
+                () => {
+                  setWorkspaceJumpIntent(null)
+                  setTab(nextTab)
+                },
+                {
+                  scope: 'dossier-tab',
+                  direction,
+                  deferDossierContent: compactWorkspaceViewport && nextTab === 'materials',
+                },
+              )
+            }
+            onRegisterNavigationGuard={registerNavigationGuard}
+            saveErrorMessage={
+              applicationSaveStatus.phase === 'error' ? applicationSaveStatus.message : undefined
+            }
+            onReviewSaveFailure={() => {
+              // Put the person in front of the field that refused the save. If
+              // the server named no field, the status banner is the best the
+              // editor can offer, so scroll that into view instead.
+              if (flashInvalidField(lastSaveErrorFieldRef.current)) return
+              document
+                .querySelector('.application-save-status, .save-status')
+                ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+            }}
+            onDraftInteraction={clearDetailDraftHydration}
+            autoSaveEnabled
+            onFlushAutoSave={flushApplicationAutoSave}
+            onDraft={(nextDraft, intent = 'settled') => {
+              // A Dossier interaction is newer than a queued idle hydration.
+              // In particular, an intentionally blank recommender row is kept
+              // local until it gains real content; do not let the selection's
+              // older normalized snapshot replace that affordance mid-edit.
+              if (nextDraft.id === selected.id) clearDetailDraftHydration()
+              setDraftState(nextDraft)
+              if (intent !== 'external') {
+                scheduleApplicationAutoSave(nextDraft, intent)
+              }
+            }}
+            onCopy={copyValue}
+            onResolveSchoolLogo={(input, options) =>
+              resolveAndStoreSchoolLogo(displayedDossierApplication, input, options)
+            }
+            onUploadSchoolLogo={(file) => uploadAndStoreSchoolLogo(displayedDossierApplication, file)}
+            onRemoveSchoolLogo={() => removeStoredSchoolLogo(displayedDossierApplication)}
+            canToggleTeamVisibility={canToggleSelectedTeamVisibility}
+            teamTransferRequiresApproval={!canDirectlyMoveSelectedTeamApplication}
+            teamTransferOrganizations={selectedTeamTransferOptions}
+            onPreflightTeamTransfer={(visibleToTeam, teamId) =>
+              phdApi.preflightApplicationTeamTransfer(activeSession.token, selected.id, { visibleToTeam, teamId })
+            }
+            onToggleTeamVisibility={(visibleToTeam, teamId) => {
+              if (!selected) return undefined
+              return toggleApplicationTeamVisibility(selected.id, visibleToTeam, teamId)
+            }}
+            onCustomApplicationStatusesChange={(statuses) =>
+              updateUserSettings({
+                customApplicationStatuses: statuses,
+              })
+            }
+            onCustomChecklistStatusesChange={(statuses) =>
+              updateUserSettings({
+                customChecklistStatuses: statuses,
+              })
+            }
+            onCustomMailCategoriesChange={(categories) =>
+              updateUserSettings({
+                customMailCategories: categories,
+              })
+            }
+            onCustomChecklistMaterialFormatsChange={(formats) =>
+              updateUserSettings({
+                customChecklistMaterialFormats: formats,
+              })
+            }
+            onSave={saveCurrentDraft}
+            onDiscardDraft={discardDraft}
+            onDelete={() => runWithNavigationGuard(() =>
+              setConfirmDialog({
+                title: i18nValue.tx('dossier.delete'),
+                message: tpl(i18nValue.tx('confirmDeleteApplication'), {
+                  name: selected.school.name,
+                }),
+                confirmLabel: i18nValue.tx('dossier.delete'),
+                variant: 'danger',
+                onConfirm: () => {
+                  const applicationId = selected.id
+                  setRemovingApplicationIds((current) => new Set(current).add(applicationId))
+                  return runOrThrow(async () => {
+                      await waitForRemovalHandoff(deleteApplicationAfterPendingWrites(applicationId))
+                      removeApplicationFromState(applicationId)
+                      notify(i18nValue.tx('toast.appDeleted'))
+                      await refreshTrashAndSessionMetadata(activeSession)
+                    }).finally(() => {
+                    setRemovingApplicationIds((current) => {
+                      const next = new Set(current)
+                      next.delete(applicationId)
+                      return next
+                    })
+                  })
+                },
+              }),
+            )}
+            onShare={openShareDialog}
+            onEnrich={() => {
               void (async () => {
-                await new Promise<void>((resolve) => {
-                  window.setTimeout(resolve, getMotionDelay(380))
+                if (isDraftDirty && !(await saveCurrentDraft())) return
+                await Promise.all([
+                  preloadLanguage(lang, ['core', 'shared', 'discover']),
+                  loadDiscoverApplicationEnrichmentDialog(),
+                ]).catch(() => undefined)
+                setDossierEnrichmentOpen(true)
+              })()
+            }}
+            onOpenUpgrade={openUpgradePage}
+            onCloseApplication={() => runWithNavigationGuard(closeApplicationDetail)}
+            onUpload={(file) =>
+              runInteractiveApplicationMutation(
+                selected.id,
+                async () => {
+                  const material = await phdApi.addMaterial(activeSession.token, selected.id, {
+                    name: file?.name ?? i18nValue.tx('dossier.newMaterial'),
+                    type: file
+                      ? inferChecklistMaterialType(file.name, file.type)
+                      : defaultChecklistMaterialType,
+                    status: (file ? 'Submitted' : 'Draft') as MaterialStatus,
+                    group: 'Uploaded files',
+                    details: file ? i18nValue.tx('dossier.uploadedFileDetails') : '',
+                    file: file ?? undefined,
+                  })
+                  updateApplicationInState(selected.id, (application) => ({
+                    ...application,
+                    materials: [...application.materials, material],
+                    versions: material.versions?.length
+                      ? [...application.versions, ...material.versions]
+                      : application.versions,
+                  }))
+                },
+                file ? i18nValue.tx('toast.materialUploaded') : i18nValue.tx('toast.materialAdded'),
+              )
+            }
+            onDownload={(fileId, name) =>
+              void run(async () => {
+                if (!fileId) {
+                  notify(i18nValue.tx('toast.noUploadedFile'), 'info')
+                  return
+                }
+                const blob = await phdApi.downloadFile(activeSession.token, fileId)
+                downloadBlob(blob, name ?? i18nValue.tx('dossier.file'))
+              })
+            }
+            onPreview={(fileId) => phdApi.downloadFile(activeSession.token, fileId)}
+            onUploadMaterialFiles={(materialId, files) =>
+              runInteractiveApplicationMutation(
+                selected.id,
+                async () => {
+                  const material = await phdApi.uploadMaterialFiles(activeSession.token, selected.id, materialId, files)
+                  updateApplicationInState(selected.id, (application) => ({
+                    ...application,
+                    materials: application.materials.map((item) => (item.id === material.id ? material : item)),
+                    versions: material.versions?.length
+                      ? [
+                          ...application.versions.filter(
+                            (version) => !material.versions?.some((candidate) => candidate.id === version.id),
+                          ),
+                          ...material.versions,
+                        ]
+                      : application.versions,
+                  }))
+                },
+                i18nValue.tx('toast.materialUploaded'),
+              )
+            }
+            onRemoveMaterialFile={(materialId, fileId) =>
+              runInteractiveApplicationMutation(
+                selected.id,
+                async () => {
+                  const material = await phdApi.removeMaterialFile(activeSession.token, selected.id, materialId, fileId)
+                  updateApplicationInState(selected.id, (application) => ({
+                    ...application,
+                    materials: application.materials.map((item) => (item.id === material.id ? material : item)),
+                    versions: application.versions.filter((version) => version.fileId !== fileId),
+                  }))
+                },
+                i18nValue.tx('toast.attachmentRemoved'),
+              )
+            }
+            onRenameMaterialFile={(materialId, fileId, fileName) =>
+              runInteractiveApplicationMutation(
+                selected.id,
+                async () => {
+                  const material = await phdApi.renameMaterialFile(
+                    activeSession.token,
+                    selected.id,
+                    materialId,
+                    fileId,
+                    fileName,
+                  )
+                  updateApplicationInState(selected.id, (application) => ({
+                    ...application,
+                    materials: application.materials.map((item) => (item.id === material.id ? material : item)),
+                  }))
+                },
+                i18nValue.tx('toast.attachmentRenamed', i18nValue.tx('toast.materialUpdated', 'Attachment renamed')),
+              )
+            }
+            onUploadTaskFiles={(taskId, files) =>
+              runInteractiveApplicationMutation(
+                selected.id,
+                async () => {
+                  const task = await phdApi.uploadTaskFiles(activeSession.token, selected.id, taskId, files)
+                  updateApplicationInState(selected.id, (application) => ({
+                    ...application,
+                    tasks: application.tasks.map((item) => (item.id === task.id ? task : item)),
+                    versions: task.versions?.length
+                      ? [
+                          ...application.versions.filter(
+                            (version) => !task.versions?.some((candidate) => candidate.id === version.id),
+                          ),
+                          ...task.versions,
+                        ]
+                      : application.versions,
+                  }))
+                },
+                i18nValue.tx('toast.taskUpdated'),
+              )
+            }
+            onRemoveTaskFile={(taskId, fileId) =>
+              runInteractiveApplicationMutation(
+                selected.id,
+                async () => {
+                  const task = await phdApi.removeTaskFile(activeSession.token, selected.id, taskId, fileId)
+                  updateApplicationInState(selected.id, (application) => ({
+                    ...application,
+                    tasks: application.tasks.map((item) => (item.id === task.id ? task : item)),
+                    versions: application.versions.filter((version) => version.fileId !== fileId),
+                  }))
+                },
+                i18nValue.tx('toast.attachmentRemoved'),
+              )
+            }
+            onRenameTaskFile={(taskId, fileId, fileName) =>
+              runInteractiveApplicationMutation(
+                selected.id,
+                async () => {
+                  const task = await phdApi.renameTaskFile(activeSession.token, selected.id, taskId, fileId, fileName)
+                  updateApplicationInState(selected.id, (application) => ({
+                    ...application,
+                    tasks: application.tasks.map((item) => (item.id === task.id ? task : item)),
+                  }))
+                },
+                i18nValue.tx('toast.attachmentRenamed', i18nValue.tx('toast.taskUpdated', 'Attachment renamed')),
+              )
+            }
+            onAddTask={(title, due, options) =>
+              connectivityUnavailable()
+                ? void saveApplicationQuietly(
+                    {
+                      ...currentApplicationDraft(selected),
+                      tasks: [
+                        {
+                          id: `task-${Date.now()}`,
+                          title,
+                          due,
+                          done: false,
+                          ...options,
+                        },
+                        ...currentApplicationDraft(selected).tasks,
+                      ],
+                    },
+                    i18nValue.tx('toast.taskAdded'),
+                  )
+                : void runApplicationMutation(selected.id, async () => {
+                    if (!title.trim()) throw new Error(i18nValue.tx('toast.taskTitleRequired'))
+                    const task = await phdApi.addTask(activeSession.token, selected.id, {
+                      title,
+                      due,
+                      done: false,
+                      ...options,
+                    })
+                    updateApplicationInState(selected.id, (application) => ({
+                      ...application,
+                      tasks: [task, ...application.tasks],
+                    }))
+                  })
+            }
+            onUpdateTask={(taskId, patch) =>
+              connectivityUnavailable()
+                ? void saveApplicationQuietly(
+                    {
+                      ...currentApplicationDraft(selected),
+                      tasks: currentApplicationDraft(selected).tasks.map((task) =>
+                        task.id === taskId ? { ...task, ...patch } : task,
+                      ),
+                    },
+                    i18nValue.tx('toast.taskUpdated'),
+                  )
+                : void runApplicationMutation(selected.id, async () => {
+                    const task = await phdApi.patchTask(activeSession.token, selected.id, taskId, patch)
+                    updateApplicationInState(selected.id, (application) => ({
+                      ...application,
+                      tasks: application.tasks.map((item) => (item.id === task.id ? task : item)),
+                    }))
+                  })
+            }
+            onToggleTask={(taskId, done, status) =>
+              connectivityUnavailable()
+                ? void saveApplicationQuietly(
+                    {
+                      ...currentApplicationDraft(selected),
+                      tasks: currentApplicationDraft(selected).tasks.map((task) =>
+                        task.id === taskId ? { ...task, done, ...(status ? { status } : {}) } : task,
+                      ),
+                    },
+                    i18nValue.tx('toast.taskUpdated'),
+                  )
+                : void runApplicationMutation(selected.id, async () => {
+                    const beforeToggle = selected
+                    const requestKey = `${selected.id}:${taskId}`
+                    const requestId = (taskToggleRequestRef.current.get(requestKey) ?? 0) + 1
+                    taskToggleRequestRef.current.set(requestKey, requestId)
+                    updateApplicationInState(selected.id, (application) => ({
+                      ...application,
+                      tasks: application.tasks.map((task) => (task.id === taskId ? { ...task, done } : task)),
+                    }))
+                    try {
+                    const task = await phdApi.patchTask(activeSession.token, selected.id, taskId, {
+                      done,
+                      ...(status ? { status } : {}),
+                    })
+                      if (taskToggleRequestRef.current.get(requestKey) !== requestId) return
+                      updateApplicationInState(selected.id, (application) => ({
+                        ...application,
+                        tasks: application.tasks.map((item) => (item.id === task.id ? task : item)),
+                      }))
+                    } catch (error) {
+                      if (taskToggleRequestRef.current.get(requestKey) === requestId) {
+                        const previousDone = beforeToggle.tasks.find((task) => task.id === taskId)?.done ?? !done
+                        updateApplicationInState(selected.id, (application) => ({
+                          ...application,
+                          tasks: application.tasks.map((task) =>
+                            task.id === taskId ? { ...task, done: previousDone } : task,
+                          ),
+                        }))
+                      }
+                      throw error
+                    } finally {
+                      if (taskToggleRequestRef.current.get(requestKey) === requestId) {
+                        taskToggleRequestRef.current.delete(requestKey)
+                      }
+                    }
+                  })
+            }
+            onRemoveTask={(taskId) =>
+              void saveApplicationQuietly(
+                {
+                  ...currentApplicationDraft(selected),
+                  tasks: currentApplicationDraft(selected).tasks.filter((t) => t.id !== taskId),
+                },
+                i18nValue.tx('toast.taskRemoved'),
+              )
+            }
+            onRemoveTasks={(taskIds) =>
+              void saveApplicationQuietly(
+                {
+                  ...currentApplicationDraft(selected),
+                  tasks: currentApplicationDraft(selected).tasks.filter((task) => !taskIds.includes(task.id)),
+                },
+                i18nValue.tx('toast.taskRemoved'),
+              )
+            }
+            onAddCommunication={async (input: CommunicationInput) => {
+              const offlineCommunication = createOfflineCommunication(input)
+              if (connectivityUnavailable() && offlineCommunication) {
+                const source = currentApplicationDraft(selected)
+                const result = await saveApplicationQuietly(
+                  {
+                    ...source,
+                    communications: [offlineCommunication, ...source.communications],
+                  },
+                  i18nValue.tx('toast.commAdded'),
+                )
+                return result.status === 'saved' || result.status === 'queued'
+              }
+              const saved = await runApplicationMutation(selected.id, async () => {
+                if (!input.subject.trim() || !input.summary.trim())
+                  throw new Error(i18nValue.tx('toast.subjectSummaryRequired'))
+                const communication = await phdApi.addCommunication(activeSession.token, selected.id, input)
+                updateApplicationInState(selected.id, (application) => ({
+                  ...application,
+                  communications: [communication, ...application.communications],
+                }))
+                return true
+              })
+              return saved === true
+            }}
+            onUpdateCommunication={async (id, input) => {
+              const saved = await runApplicationMutation(selected.id, async () => {
+                if (input.subject !== undefined && !input.subject.trim())
+                  throw new Error(i18nValue.tx('toast.subjectSummaryRequired'))
+                if (input.summary !== undefined && !input.summary.trim())
+                  throw new Error(i18nValue.tx('toast.subjectSummaryRequired'))
+                const communication = await phdApi.updateCommunication(activeSession.token, selected.id, id, input)
+                updateApplicationInState(selected.id, (application) => ({
+                  ...application,
+                  communications: application.communications.map((item) =>
+                    item.id === communication.id ? communication : item,
+                  ),
+                }))
+                return true
+              })
+              return saved === true
+            }}
+            onSetCommunicationCategory={async (communicationIds, categories) => {
+              const targetBatches = mailClassificationCommunicationIdBatches(communicationIds)
+              const targetIds = targetBatches.flat()
+              if (targetIds.length === 0) return false
+
+              if (connectivityUnavailable()) {
+                notify(i18nValue.tx('toast.offlineActionNeedsOnline'), 'warning')
+                return false
+              }
+
+              const saved = await runApplicationMutation(selected.id, async () => {
+                for (const batchIds of targetBatches) {
+                  const requestSignature = JSON.stringify([
+                    activeSession.user.id,
+                    selected.id,
+                    'manual',
+                    [...batchIds].sort(),
+                    categories,
+                  ])
+                  const requestId = mailClassificationIdempotencyKeysRef.current.get(requestSignature)
+                    ?? persistedMailClassificationRequestId(activeSession.user.id, requestSignature)
+                    ?? createMailClassificationRequestId()
+                  mailClassificationIdempotencyKeysRef.current.set(requestSignature, requestId)
+                  if (!rememberMailClassificationRequestId(
+                    activeSession.user.id,
+                    requestSignature,
+                    requestId,
+                  )) {
+                    mailClassificationIdempotencyKeysRef.current.delete(requestSignature)
+                    throw new Error(i18nValue.tx('localRecoveryUnavailable'))
+                  }
+                  const result = await phdApi.setCommunicationCategories(
+                    activeSession.token,
+                    selected.id,
+                    {
+                      communicationIds: batchIds,
+                      categories,
+                      // Primary built-in, for readers of the single-valued shape.
+                      category: categories.find(isBuiltInMailCategory) ?? null,
+                    },
+                    { idempotencyKey: requestId },
+                  ).catch((error) => {
+                    if (!shouldRetainMailClassificationRequestId(error)) {
+                      mailClassificationIdempotencyKeysRef.current.delete(requestSignature)
+                      forgetMailClassificationRequestId(activeSession.user.id, requestSignature)
+                    }
+                    throw error
+                  })
+                  mailClassificationIdempotencyKeysRef.current.delete(requestSignature)
+                  forgetMailClassificationRequestId(activeSession.user.id, requestSignature)
+                  updateApplicationInState(selected.id, (application) => ({
+                    ...application,
+                    communications: mergeMailClassificationDeltas(
+                      application.communications,
+                      result.communications,
+                    ),
+                  }))
+                }
+                notify(i18nValue.tx('toast.commUpdated'))
+                return true
+              })
+              return saved === true
+            }}
+            onClassifyCommunications={async (communicationIds) => {
+              const targetBatches = mailClassificationCommunicationIdBatches(communicationIds)
+              const targetIds = targetBatches.flat()
+              if (targetIds.length === 0) return false
+              if (connectivityUnavailable()) {
+                notify(i18nValue.tx('toast.offlineActionNeedsOnline'), 'warning')
+                return false
+              }
+
+              const eligibleKeys = selected.teamId
+                ? enabledAiKeys.filter((key) => key.scope === 'team' && key.teamId === selected.teamId)
+                : enabledAiKeys.filter((key) => key.scope === 'personal' && key.ownerId === activeSession.user.id)
+              const aiKey = eligibleKeys.find((key) => key.model === 'gpt-5.6-luna') ?? eligibleKeys[0]
+              if (!aiKey) {
+                notify(i18nValue.tx('dossier.mailClassificationNoKey'), 'warning')
+                return false
+              }
+
+              setClassifyingCommunicationIds((current) => new Set([...current, ...targetIds]))
+              try {
+                const saved = await runApplicationMutation(selected.id, async () => {
+                  for (const batchIds of targetBatches) {
+                    const requestSignature = JSON.stringify([
+                      activeSession.user.id,
+                      selected.id,
+                      'ai',
+                      [...batchIds].sort(),
+                      aiKey.id,
+                      // The account taxonomy is part of the AI request identity;
+                      // renaming or adding a category must not replay an older
+                      // task that was prepared with a different catalog.
+                      activeSession.user.settings.customMailCategories ?? [],
+                    ])
+                    const requestId = mailClassificationIdempotencyKeysRef.current.get(requestSignature)
+                      ?? persistedMailClassificationRequestId(activeSession.user.id, requestSignature)
+                      ?? createMailClassificationRequestId()
+                    mailClassificationIdempotencyKeysRef.current.set(requestSignature, requestId)
+                    if (!rememberMailClassificationRequestId(
+                      activeSession.user.id,
+                      requestSignature,
+                      requestId,
+                    )) {
+                      mailClassificationIdempotencyKeysRef.current.delete(requestSignature)
+                      throw new Error(i18nValue.tx('localRecoveryUnavailable'))
+                    }
+                    const result = await phdApi.classifyCommunications(
+                      activeSession.token,
+                      selected.id,
+                      { communicationIds: batchIds, keyId: aiKey.id },
+                      { idempotencyKey: requestId },
+                    ).catch((error) => {
+                      if (!shouldRetainMailClassificationRequestId(error)) {
+                        mailClassificationIdempotencyKeysRef.current.delete(requestSignature)
+                        forgetMailClassificationRequestId(activeSession.user.id, requestSignature)
+                      }
+                      throw error
+                    })
+                    mailClassificationIdempotencyKeysRef.current.delete(requestSignature)
+                    forgetMailClassificationRequestId(activeSession.user.id, requestSignature)
+                    updateApplicationInState(selected.id, (application) => ({
+                      ...application,
+                      communications: mergeMailClassificationDeltas(
+                        application.communications,
+                        result.communications,
+                      ),
+                    }))
+                  }
+                  notify(i18nValue.tx('toast.commUpdated'))
+                  return true
                 })
-                await run(async () => {
-                  await phdApi.deleteApplication(activeSession.token, applicationId)
-                  removeApplicationFromState(applicationId)
-                  notify(i18nValue.tx('toast.appDeleted'))
-                  await refreshTrashAndSessionMetadata(activeSession)
-                })
-              })().finally(() => {
-                setRemovingApplicationIds((current) => {
+                return saved === true
+              } finally {
+                setClassifyingCommunicationIds((current) => {
                   const next = new Set(current)
-                  next.delete(applicationId)
+                  for (const id of targetIds) next.delete(id)
                   return next
                 })
-              })
-            },
-          })
-        }
-        onShare={openShareDialog}
-        onEnrich={() => {
-          void (async () => {
-            if (isDraftDirty && !await saveCurrentDraft()) return
-            await Promise.all([
-              preloadLanguage(lang, ['core', 'shared', 'discover']),
-              loadDiscoverApplicationEnrichmentDialog(),
-            ]).catch(() => undefined)
-            setDossierEnrichmentOpen(true)
-          })()
-        }}
-        onOpenUpgrade={openUpgradePage}
-        onCloseApplication={() => runWithNavigationGuard(closeApplicationDetail)}
-        onUpload={(file) =>
-          runInteractiveApplicationMutation(selected.id, async () => {
-            const material = await phdApi.addMaterial(activeSession.token, selected.id, {
-              name: file?.name ?? i18nValue.tx('dossier.newMaterial'),
-              type: file?.type || i18nValue.tx('dossier.file'),
-              status: (file ? 'Submitted' : 'Draft') as MaterialStatus,
-              group: 'Uploaded files',
-              details: file ? i18nValue.tx('dossier.uploadedFileDetails') : '',
-              file: file ?? undefined,
-            })
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              materials: [...application.materials, material],
-              versions: material.versions?.length
-                ? [...application.versions, ...material.versions]
-                : application.versions,
-            }))
-          }, file ? i18nValue.tx('toast.materialUploaded') : i18nValue.tx('toast.materialAdded'))
-        }
-        onDownload={(fileId, name) =>
-          void run(async () => {
-            if (!fileId) {
-              notify(i18nValue.tx('toast.noUploadedFile'), 'info')
-              return
-            }
-            const blob = await phdApi.downloadFile(activeSession.token, fileId)
-            downloadBlob(blob, name ?? i18nValue.tx('dossier.file'))
-          })
-        }
-        onPreview={(fileId) => phdApi.downloadFile(activeSession.token, fileId)}
-        onUploadMaterialFiles={(materialId, files) =>
-          runInteractiveApplicationMutation(selected.id, async () => {
-            const material = await phdApi.uploadMaterialFiles(activeSession.token, selected.id, materialId, files)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              materials: application.materials.map((item) => (item.id === material.id ? material : item)),
-              versions: material.versions?.length
-                ? [
-                    ...application.versions.filter((version) =>
-                      !material.versions?.some((candidate) => candidate.id === version.id),
-                    ),
-                    ...material.versions,
-                  ]
-                : application.versions,
-            }))
-          }, i18nValue.tx('toast.materialUploaded'))
-        }
-        onRemoveMaterialFile={(materialId, fileId) =>
-          runInteractiveApplicationMutation(selected.id, async () => {
-            const material = await phdApi.removeMaterialFile(activeSession.token, selected.id, materialId, fileId)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              materials: application.materials.map((item) => (item.id === material.id ? material : item)),
-              versions: application.versions.filter((version) => version.fileId !== fileId),
-            }))
-          }, i18nValue.tx('toast.attachmentRemoved'))
-        }
-        onRenameMaterialFile={(materialId, fileId, fileName) =>
-          runInteractiveApplicationMutation(selected.id, async () => {
-            const material = await phdApi.renameMaterialFile(activeSession.token, selected.id, materialId, fileId, fileName)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              materials: application.materials.map((item) => (item.id === material.id ? material : item)),
-            }))
-          }, i18nValue.tx('toast.attachmentRenamed', i18nValue.tx('toast.materialUpdated', 'Attachment renamed')))
-        }
-        onUploadTaskFiles={(taskId, files) =>
-          runInteractiveApplicationMutation(selected.id, async () => {
-            const task = await phdApi.uploadTaskFiles(activeSession.token, selected.id, taskId, files)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              tasks: application.tasks.map((item) => (item.id === task.id ? task : item)),
-              versions: task.versions?.length
-                ? [
-                    ...application.versions.filter((version) =>
-                      !task.versions?.some((candidate) => candidate.id === version.id),
-                    ),
-                    ...task.versions,
-                  ]
-                : application.versions,
-            }))
-          }, i18nValue.tx('toast.taskUpdated'))
-        }
-        onRemoveTaskFile={(taskId, fileId) =>
-          runInteractiveApplicationMutation(selected.id, async () => {
-            const task = await phdApi.removeTaskFile(activeSession.token, selected.id, taskId, fileId)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              tasks: application.tasks.map((item) => (item.id === task.id ? task : item)),
-              versions: application.versions.filter((version) => version.fileId !== fileId),
-            }))
-          }, i18nValue.tx('toast.attachmentRemoved'))
-        }
-        onRenameTaskFile={(taskId, fileId, fileName) =>
-          runInteractiveApplicationMutation(selected.id, async () => {
-            const task = await phdApi.renameTaskFile(activeSession.token, selected.id, taskId, fileId, fileName)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              tasks: application.tasks.map((item) => (item.id === task.id ? task : item)),
-            }))
-          }, i18nValue.tx('toast.attachmentRenamed', i18nValue.tx('toast.taskUpdated', 'Attachment renamed')))
-        }
-        onAddTask={(title, due, options) =>
-          connectivityUnavailable()
-            ? void saveApplicationQuietly({
-                ...currentApplicationDraft(selected),
-                tasks: [{
-                  id: `task-${Date.now()}`,
-                  title,
-                  due,
-                  done: false,
-                  ...options,
-                }, ...currentApplicationDraft(selected).tasks],
-              }, i18nValue.tx('toast.taskAdded'))
-            : void runApplicationMutation(selected.id, async () => {
-            if (!title.trim()) throw new Error(i18nValue.tx('toast.taskTitleRequired'))
-            const task = await phdApi.addTask(activeSession.token, selected.id, { title, due, done: false, ...options })
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              tasks: [task, ...application.tasks],
-            }))
-          })
-        }
-        onUpdateTask={(taskId, patch) =>
-          connectivityUnavailable()
-            ? void saveApplicationQuietly({
-                ...currentApplicationDraft(selected),
-                tasks: currentApplicationDraft(selected).tasks.map((task) => task.id === taskId ? { ...task, ...patch } : task),
-              }, i18nValue.tx('toast.taskUpdated'))
-            : void runApplicationMutation(selected.id, async () => {
-            const task = await phdApi.patchTask(activeSession.token, selected.id, taskId, patch)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              tasks: application.tasks.map((item) => (item.id === task.id ? task : item)),
-            }))
-          })
-        }
-        onToggleTask={(taskId, done) =>
-          connectivityUnavailable()
-            ? void saveApplicationQuietly({
-                ...currentApplicationDraft(selected),
-                tasks: currentApplicationDraft(selected).tasks.map((task) => task.id === taskId ? { ...task, done } : task),
-              }, i18nValue.tx('toast.taskUpdated'))
-            : void runApplicationMutation(selected.id, async () => {
-            const beforeToggle = selected
-            const requestKey = `${selected.id}:${taskId}`
-            const requestId = (taskToggleRequestRef.current.get(requestKey) ?? 0) + 1
-            taskToggleRequestRef.current.set(requestKey, requestId)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              tasks: application.tasks.map((task) =>
-                task.id === taskId ? { ...task, done } : task,
-              ),
-            }))
-            try {
-              const task = await phdApi.patchTask(activeSession.token, selected.id, taskId, { done })
-              if (taskToggleRequestRef.current.get(requestKey) !== requestId) return
-              updateApplicationInState(selected.id, (application) => ({
-                ...application,
-                tasks: application.tasks.map((item) => (item.id === task.id ? task : item)),
-              }))
-            } catch (error) {
-              if (taskToggleRequestRef.current.get(requestKey) === requestId) {
-                const previousDone = beforeToggle.tasks.find((task) => task.id === taskId)?.done ?? !done
-                updateApplicationInState(selected.id, (application) => ({
-                  ...application,
-                  tasks: application.tasks.map((task) => (
-                    task.id === taskId ? { ...task, done: previousDone } : task
-                  )),
-                }))
               }
-              throw error
-            } finally {
-              if (taskToggleRequestRef.current.get(requestKey) === requestId) {
-                taskToggleRequestRef.current.delete(requestKey)
-              }
+            }}
+            classifyingCommunicationIds={classifyingCommunicationIds}
+            onAddToInterviewPrep={
+              canUseInterview && (canEditInCurrentTeam || !isTeamMode)
+                ? addCommunicationToInterviewPrep
+                : undefined
             }
-          })
-        }
-        onRemoveTask={(taskId) =>
-          void saveApplicationQuietly(
-            {
-              ...currentApplicationDraft(selected),
-              tasks: currentApplicationDraft(selected).tasks.filter((t) => t.id !== taskId),
-            },
-            i18nValue.tx('toast.taskRemoved'),
-          )
-        }
-        onRemoveTasks={(taskIds) =>
-          void saveApplicationQuietly(
-            {
-              ...currentApplicationDraft(selected),
-              tasks: currentApplicationDraft(selected).tasks.filter((task) => !taskIds.includes(task.id)),
-            },
-            i18nValue.tx('toast.taskRemoved'),
-          )
-        }
-        onAddCommunication={async (input: CommunicationInput) => {
-          const offlineCommunication = createOfflineCommunication(input)
-          if (connectivityUnavailable() && offlineCommunication) {
-            const source = currentApplicationDraft(selected)
-            const result = await saveApplicationQuietly({
-              ...source,
-              communications: [offlineCommunication, ...source.communications],
-            }, i18nValue.tx('toast.commAdded'))
-            return result.status === 'saved' || result.status === 'queued'
-          }
-          const saved = await runApplicationMutation(selected.id, async () => {
-            if (!input.subject.trim() || !input.summary.trim()) throw new Error(i18nValue.tx('toast.subjectSummaryRequired'))
-            const communication = await phdApi.addCommunication(activeSession.token, selected.id, input)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              communications: [communication, ...application.communications],
-            }))
-            return true
-          })
-          return saved === true
-        }}
-        onUpdateCommunication={async (id, input) => {
-          const saved = await runApplicationMutation(selected.id, async () => {
-            if (input.subject !== undefined && !input.subject.trim()) throw new Error(i18nValue.tx('toast.subjectSummaryRequired'))
-            if (input.summary !== undefined && !input.summary.trim()) throw new Error(i18nValue.tx('toast.subjectSummaryRequired'))
-            const communication = await phdApi.updateCommunication(activeSession.token, selected.id, id, input)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              communications: application.communications.map((item) => (item.id === communication.id ? communication : item)),
-            }))
-            return true
-          })
-          return saved === true
-        }}
-        onSendCommunication={async (input) => {
-          setBusy(true)
-          try {
-            const sent = await runApplicationMutation(selected.id, async () => {
-              const result = await phdApi.sendCommunication(activeSession.token, selected.id, input)
-              updateApplicationInState(selected.id, (application) => ({
-                ...application,
-                professor: {
-                  ...application.professor,
-                  correspondenceEmails: Array.isArray(result.correspondenceEmails)
-                    ? result.correspondenceEmails
-                    : application.professor.correspondenceEmails,
+            onSendCommunication={async (input) => {
+              setBusy(true)
+              try {
+                const sent = await runApplicationMutation(selected.id, async () => {
+                  const result = await phdApi.sendCommunication(activeSession.token, selected.id, input)
+                  updateApplicationInState(selected.id, (application) => ({
+                    ...application,
+                    professor: {
+                      ...application.professor,
+                      correspondenceEmails: Array.isArray(result.correspondenceEmails)
+                        ? result.correspondenceEmails
+                        : application.professor.correspondenceEmails,
+                    },
+                    communications: [
+                      result.communication,
+                      ...application.communications.filter(
+                        (item) => item.id !== result.communication.id && item.id !== input.sourceDraftId,
+                      ),
+                    ],
+                  }))
+                  const deliveryPresentation = communicationDeliveryPresentation(result.delivery)
+                  notify(i18nValue.tx(deliveryPresentation.toastKey), deliveryPresentation.tone)
+                  // SMTP may already have accepted this message. Keep the
+                  // resident composer intact until the user checks Sent mail;
+                  // clearing it would encourage an unsafe duplicate retry.
+                  return deliveryPresentation.composerSettled
+                })
+                return sent === true
+              } finally {
+                setBusy(false)
+              }
+            }}
+            onRemoveCommunication={(id) =>
+              void saveApplicationQuietly(
+                {
+                  ...currentApplicationDraft(selected),
+                  communications: currentApplicationDraft(selected).communications.filter((c) => c.id !== id),
                 },
-                communications: [
-                  result.communication,
-                  ...application.communications.filter((item) => item.id !== result.communication.id),
-                ],
-              }))
-              notify(
-                result.delivery.sent
-                  ? i18nValue.tx('toast.commSent')
-                  : i18nValue.tx('toast.commQueued'),
-                result.delivery.sent ? 'success' : 'info',
+                i18nValue.tx('toast.commRemoved'),
               )
-              return true
-            })
-            return sent === true
-          } finally {
-            setBusy(false)
-          }
-        }}
-        onRemoveCommunication={(id) =>
-          void saveApplicationQuietly(
-            {
-              ...currentApplicationDraft(selected),
-              communications: currentApplicationDraft(selected).communications.filter((c) => c.id !== id),
-            },
-            i18nValue.tx('toast.commRemoved'),
-          )
-        }
-        onRemoveCommunications={(ids) =>
-          void saveApplicationQuietly(
-            {
-              ...currentApplicationDraft(selected),
-              communications: currentApplicationDraft(selected).communications.filter((item) => !ids.includes(item.id)),
-            },
-            i18nValue.tx('toast.commRemoved'),
-          )
-        }
-        onAddScholarship={async (input) => {
-          if (connectivityUnavailable()) {
-            const source = currentApplicationDraft(selected)
-            const result = await saveApplicationQuietly({
-              ...source,
-              scholarships: [...source.scholarships, { id: `sch-${Date.now()}`, ...input }],
-            }, i18nValue.tx('toast.scholarshipAdded'))
-            return result.status === 'saved' || result.status === 'queued'
-          }
-          const saved = await runApplicationMutation(selected.id, async () => {
-            if (!input.name.trim()) throw new Error(i18nValue.tx('toast.scholarshipRequired'))
-            const scholarship = await phdApi.addScholarship(activeSession.token, selected.id, input)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              scholarships: [...application.scholarships, scholarship],
-            }))
-            return true
-          })
-          return saved === true
-        }}
-        onUpdateScholarship={async (id, input) => {
-          const source = currentApplicationDraft(selected)
-          const result = await saveApplicationQuietly(
-            {
-              ...source,
-              scholarships: source.scholarships.map((scholarship) =>
-                scholarship.id === id ? { id, ...input } : scholarship,
-              ),
-            },
-            i18nValue.tx('toast.scholarshipUpdated'),
-          )
-          return result.status === 'saved' || result.status === 'queued'
-        }}
-        onRemoveScholarship={(id) =>
-          void saveApplicationQuietly(
-            {
-              ...currentApplicationDraft(selected),
-              scholarships: currentApplicationDraft(selected).scholarships.filter((s) => s.id !== id),
-            },
-            i18nValue.tx('toast.scholarshipRemoved'),
-          )
-        }
-        onRemoveScholarships={(ids) =>
-          void saveApplicationQuietly(
-            {
-              ...currentApplicationDraft(selected),
-              scholarships: currentApplicationDraft(selected).scholarships.filter((item) => !ids.includes(item.id)),
-            },
-            i18nValue.tx('toast.scholarshipRemoved'),
-          )
-        }
-        onAddFee={async (input) => {
-          if (connectivityUnavailable()) {
-            const source = currentApplicationDraft(selected)
-            const result = await saveApplicationQuietly({
-              ...source,
-              fees: [...(source.fees ?? []), {
-                  id: `fee-${Date.now()}`,
-                  ...input,
-                  paidDate: input.paidDate ?? null,
-                  createdAt: new Date().toISOString(),
-                }],
-            }, i18nValue.tx('toast.feeAdded'))
-            return result.status === 'saved' || result.status === 'queued'
-          }
-          const saved = await runApplicationMutation(selected.id, async () => {
-            const fee = await phdApi.addFee(activeSession.token, selected.id, input)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              fees: [...(application.fees ?? []), fee],
-            }))
-            return true
-          })
-          return saved === true
-        }}
-        onUpdateFee={async (feeId, patch) => {
-          if (connectivityUnavailable()) {
-            const source = currentApplicationDraft(selected)
-            const result = await saveApplicationQuietly({
-              ...source,
-              fees: (source.fees ?? []).map((fee) => fee.id === feeId ? { ...fee, ...patch } : fee),
-            }, i18nValue.tx('toast.feeUpdated'))
-            return result.status === 'saved' || result.status === 'queued'
-          }
-          const saved = await runApplicationMutation(selected.id, async () => {
-            await phdApi.updateFee(activeSession.token, selected.id, feeId, patch)
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              fees: (application.fees ?? []).map((f) => f.id === feeId ? { ...f, ...patch } : f),
-            }))
-            return true
-          })
-          return saved === true
-        }}
-        onDeleteFee={(feeId) =>
-          connectivityUnavailable()
-            ? saveApplicationQuietly({
-                ...currentApplicationDraft(selected),
-                fees: (currentApplicationDraft(selected).fees ?? []).filter((fee) => fee.id !== feeId),
-              }, i18nValue.tx('toast.feeRemoved')).then(() => undefined)
-            : runApplicationMutation(selected.id, async () => {
-                await phdApi.deleteFee(activeSession.token, selected.id, feeId)
+            }
+            onRemoveCommunications={(ids) =>
+              void saveApplicationQuietly(
+                {
+                  ...currentApplicationDraft(selected),
+                  communications: currentApplicationDraft(selected).communications.filter(
+                    (item) => !ids.includes(item.id),
+                  ),
+                },
+                i18nValue.tx('toast.commRemoved'),
+              )
+            }
+            onAddScholarship={async (input) => {
+              if (connectivityUnavailable()) {
+                const source = currentApplicationDraft(selected)
+                const result = await saveApplicationQuietly(
+                  {
+                    ...source,
+                    scholarships: [...source.scholarships, { id: `sch-${Date.now()}`, ...input }],
+                  },
+                  i18nValue.tx('toast.scholarshipAdded'),
+                )
+                return result.status === 'saved' || result.status === 'queued'
+              }
+              const saved = await runApplicationMutation(selected.id, async () => {
+                if (!input.name.trim()) throw new Error(i18nValue.tx('toast.scholarshipRequired'))
+                const scholarship = await phdApi.addScholarship(activeSession.token, selected.id, input)
                 updateApplicationInState(selected.id, (application) => ({
                   ...application,
-                  fees: (application.fees ?? []).filter((f) => f.id !== feeId),
+                  scholarships: [...application.scholarships, scholarship],
                 }))
-              }).then(() => undefined)
-        }
-        onAddTimelineEvent={async (title, date, note) => {
-          if (!title.trim()) {
-            await runApplicationMutation(selected.id, async () => {
-              throw new Error(i18nValue.tx('toast.eventTitleRequired'))
-            })
-            return false
-          }
-          const source = currentApplicationDraft(selected)
-          const result = await saveApplicationQuietly(
-            {
-              ...source,
-              timeline: [...source.timeline, { id: `tl-${Date.now()}`, title, date, note }],
-            },
-            i18nValue.tx('toast.timelineAdded'),
-          )
-          return result.status === 'saved' || result.status === 'queued'
-        }}
-        onUpdateTimelineEvent={async (id, title, date, note) => {
-          if (!title.trim()) {
-            await runApplicationMutation(selected.id, async () => {
-              throw new Error(i18nValue.tx('toast.eventTitleRequired'))
-            })
-            return false
-          }
-          const source = currentApplicationDraft(selected)
-          const result = await saveApplicationQuietly(
-            {
-              ...source,
-              timeline: source.timeline.map((event) => (
-                event.id === id ? { ...event, title, date, note } : event
-              )),
-            },
-            i18nValue.tx('toast.timelineUpdated'),
-          )
-          return result.status === 'saved' || result.status === 'queued'
-        }}
-        onRemoveTimelineEvent={(id) =>
-          void saveApplicationQuietly(
-            {
-              ...currentApplicationDraft(selected),
-              timeline: currentApplicationDraft(selected).timeline.filter((e) => e.id !== id),
-            },
-            i18nValue.tx('toast.timelineRemoved'),
-          )
-        }
-        onRemoveTimelineEvents={(ids) =>
-          void saveApplicationQuietly(
-            {
-              ...currentApplicationDraft(selected),
-              timeline: currentApplicationDraft(selected).timeline.filter((event) => !ids.includes(event.id)),
-            },
-            i18nValue.tx('toast.timelineRemoved'),
-          )
-        }
-        onAddReviewComment={isTeamMode ? (body, targetTab, parentId, mentionedUserIds) =>
-          runInteractive(async () => {
-            const comment = await phdApi.addReviewComment(
-              activeSession.token,
-              selected.id,
-              body,
-              targetTab,
-              parentId,
-              mentionedUserIds,
-            )
-            updateApplicationInState(selected.id, (application) => ({
-              ...application,
-              reviewComments: appendReviewComment(application.reviewComments, comment, parentId),
-            }))
-          }, i18nValue.tx('toast.reviewCommentAdded'))
-          : undefined}
-        />
+                return true
+              })
+              return saved === true
+            }}
+            onUpdateScholarship={async (id, input) => {
+              const source = currentApplicationDraft(selected)
+              const result = await saveApplicationQuietly(
+                {
+                  ...source,
+                  scholarships: source.scholarships.map((scholarship) =>
+                    scholarship.id === id ? { id, ...input } : scholarship,
+                  ),
+                },
+                i18nValue.tx('toast.scholarshipUpdated'),
+              )
+              return result.status === 'saved' || result.status === 'queued'
+            }}
+            onRemoveScholarship={(id) =>
+              void saveApplicationQuietly(
+                {
+                  ...currentApplicationDraft(selected),
+                  scholarships: currentApplicationDraft(selected).scholarships.filter((s) => s.id !== id),
+                },
+                i18nValue.tx('toast.scholarshipRemoved'),
+              )
+            }
+            onRemoveScholarships={(ids) =>
+              void saveApplicationQuietly(
+                {
+                  ...currentApplicationDraft(selected),
+                  scholarships: currentApplicationDraft(selected).scholarships.filter((item) => !ids.includes(item.id)),
+                },
+                i18nValue.tx('toast.scholarshipRemoved'),
+              )
+            }
+            onAddFee={async (input) => {
+              if (connectivityUnavailable()) {
+                const source = currentApplicationDraft(selected)
+                const result = await saveApplicationQuietly(
+                  {
+                    ...source,
+                    fees: [
+                      ...(source.fees ?? []),
+                      {
+                        id: `fee-${Date.now()}`,
+                        ...input,
+                        paidDate: input.paidDate ?? null,
+                        createdAt: new Date().toISOString(),
+                      },
+                    ],
+                  },
+                  i18nValue.tx('toast.feeAdded'),
+                )
+                return result.status === 'saved' || result.status === 'queued'
+              }
+              const saved = await runApplicationMutation(selected.id, async () => {
+                const fee = await phdApi.addFee(activeSession.token, selected.id, input)
+                updateApplicationInState(selected.id, (application) => ({
+                  ...application,
+                  fees: [...(application.fees ?? []), fee],
+                }))
+                return true
+              })
+              return saved === true
+            }}
+            onUpdateFee={async (feeId, patch) => {
+              if (connectivityUnavailable()) {
+                const source = currentApplicationDraft(selected)
+                const result = await saveApplicationQuietly(
+                  {
+                    ...source,
+                    fees: (source.fees ?? []).map((fee) => (fee.id === feeId ? { ...fee, ...patch } : fee)),
+                  },
+                  i18nValue.tx('toast.feeUpdated'),
+                )
+                return result.status === 'saved' || result.status === 'queued'
+              }
+              const saved = await runApplicationMutation(selected.id, async () => {
+                await phdApi.updateFee(activeSession.token, selected.id, feeId, patch)
+                updateApplicationInState(selected.id, (application) => ({
+                  ...application,
+                  fees: (application.fees ?? []).map((f) => (f.id === feeId ? { ...f, ...patch } : f)),
+                }))
+                return true
+              })
+              return saved === true
+            }}
+            onDeleteFee={(feeId) =>
+              connectivityUnavailable()
+                ? saveApplicationQuietly(
+                    {
+                      ...currentApplicationDraft(selected),
+                      fees: (currentApplicationDraft(selected).fees ?? []).filter((fee) => fee.id !== feeId),
+                    },
+                    i18nValue.tx('toast.feeRemoved'),
+                  ).then((result) => {
+                    if (result.status === 'error') {
+                      throw new Error(result.message || i18nValue.tx('apiErrors.REQUEST_FAILED'))
+                    }
+                  })
+                : runApplicationMutation(selected.id, async () => {
+                    await phdApi.deleteFee(activeSession.token, selected.id, feeId)
+                    updateApplicationInState(selected.id, (application) => ({
+                      ...application,
+                      fees: (application.fees ?? []).filter((f) => f.id !== feeId),
+                    }))
+                    return true
+                  }).then((saved) => {
+                    if (saved !== true) {
+                      throw new Error(i18nValue.tx('apiErrors.REQUEST_FAILED'))
+                    }
+                  })
+            }
+            onAddTimelineEvent={async (title, date, note) => {
+              if (!title.trim()) {
+                await runApplicationMutation(selected.id, async () => {
+                  throw new Error(i18nValue.tx('toast.eventTitleRequired'))
+                })
+                return false
+              }
+              const source = currentApplicationDraft(selected)
+              const result = await saveApplicationQuietly(
+                {
+                  ...source,
+                  timeline: [...source.timeline, { id: `tl-${Date.now()}`, title, date, note }],
+                },
+                i18nValue.tx('toast.timelineAdded'),
+              )
+              return result.status === 'saved' || result.status === 'queued'
+            }}
+            onUpdateTimelineEvent={async (id, title, date, note) => {
+              if (!title.trim()) {
+                await runApplicationMutation(selected.id, async () => {
+                  throw new Error(i18nValue.tx('toast.eventTitleRequired'))
+                })
+                return false
+              }
+              const source = currentApplicationDraft(selected)
+              const result = await saveApplicationQuietly(
+                {
+                  ...source,
+                  timeline: source.timeline.map((event) => (event.id === id ? { ...event, title, date, note } : event)),
+                },
+                i18nValue.tx('toast.timelineUpdated'),
+              )
+              return result.status === 'saved' || result.status === 'queued'
+            }}
+            onRemoveTimelineEvent={(id) =>
+              void saveApplicationQuietly(
+                {
+                  ...currentApplicationDraft(selected),
+                  timeline: currentApplicationDraft(selected).timeline.filter((e) => e.id !== id),
+                },
+                i18nValue.tx('toast.timelineRemoved'),
+              )
+            }
+            onRemoveTimelineEvents={(ids) =>
+              void saveApplicationQuietly(
+                {
+                  ...currentApplicationDraft(selected),
+                  timeline: currentApplicationDraft(selected).timeline.filter((event) => !ids.includes(event.id)),
+                },
+                i18nValue.tx('toast.timelineRemoved'),
+              )
+            }
+            onAddReviewComment={
+              isTeamMode
+                ? (body, targetTab, parentId, mentionedUserIds) =>
+                    runInteractive(async () => {
+                      const comment = await phdApi.addReviewComment(
+                        activeSession.token,
+                        selected.id,
+                        body,
+                        targetTab,
+                        parentId,
+                        mentionedUserIds,
+                      )
+                      updateApplicationInState(selected.id, (application) => ({
+                        ...application,
+                        reviewComments: appendReviewComment(application.reviewComments, comment, parentId),
+                      }))
+                    }, i18nValue.tx('toast.reviewCommentAdded'))
+                : undefined
+            }
+          />
         </div>
         {dossierHandoffPending ? (
           <div className="dossier-handoff-indicator" role="status" aria-live="polite">
             <LoaderCircle size={14} aria-hidden="true" />
-            <span>{tpl(i18nValue.tx('workspace.openingApplication'), { name: selected.school.name })}</span>
+            <span>
+              {tpl(i18nValue.tx('workspace.openingApplication'), {
+                name: selected.school.name,
+              })}
+            </span>
           </div>
         ) : null}
       </div>
@@ -8307,64 +11044,50 @@ export default function App() {
       />
     )
 
-  const workspaceShellClass = screen === 'workspace'
-    ? [
-        'workspace-layout',
-        workspaceOpeningFromDashboard ? 'workspace-opening' : '',
-        workspaceLayout.applicationsHidden ? 'hide-application-pane' : '',
-        workspaceLayout.inspectorHidden ? 'hide-inspector-pane' : '',
-        workspaceLayout.sidebarsSwapped ? 'workspace-swapped' : '',
-        `workspace-view-${viewMode}`,
-        mobileDetailOpen ? 'mobile-detail-open' : '',
-      ].filter(Boolean).join(' ')
-    : ''
-  const shellStyle = screen === 'workspace'
-    ? ({
-        '--pane-width': `${workspaceLayout.applicationPaneWidth}px`,
-        '--inspector-width': `${workspaceLayout.inspectorWidth}px`,
-      } as CSSProperties)
-    : undefined
-  const applicationPaneStyle = screen === 'workspace'
-    ? ({ order: workspaceLayout.sidebarsSwapped ? 4 : 2 } as CSSProperties)
-    : undefined
-  const inspectorPaneStyle = screen === 'workspace'
-    ? ({ order: workspaceLayout.sidebarsSwapped ? 2 : 4 } as CSSProperties)
-    : undefined
-  const screenStageStyle = screen === 'workspace'
-    ? ({ order: 3 } as CSSProperties)
-    : undefined
+  const workspaceShellClass =
+    screen === 'workspace'
+      ? [
+          'workspace-layout',
+          workspaceOpeningFromDashboard ? 'workspace-opening' : '',
+          workspaceLayout.applicationsHidden ? 'hide-application-pane' : '',
+          workspaceLayout.inspectorHidden ? 'hide-inspector-pane' : '',
+          workspaceLayout.sidebarsSwapped ? 'workspace-swapped' : '',
+          `workspace-view-${renderedWorkspaceViewMode}`,
+          mobileDetailOpen ? 'mobile-detail-open' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')
+      : ''
+  const shellStyle =
+    screen === 'workspace'
+      ? ({
+          '--pane-width': `${workspaceLayout.applicationPaneWidth}px`,
+          '--inspector-width': `${workspaceLayout.inspectorWidth}px`,
+        } as CSSProperties)
+      : undefined
+  const applicationPaneStyle =
+    screen === 'workspace' ? ({ order: workspaceLayout.sidebarsSwapped ? 4 : 2 } as CSSProperties) : undefined
+  const inspectorPaneStyle =
+    screen === 'workspace' ? ({ order: workspaceLayout.sidebarsSwapped ? 2 : 4 } as CSSProperties) : undefined
+  const screenStageStyle = screen === 'workspace' ? ({ order: 3 } as CSSProperties) : undefined
   // Keep the center-stage host mounted across navigation so only the content
   // participates in the handoff instead of recreating the whole surface.
   const applicationPaneIsLeft = !workspaceLayout.sidebarsSwapped
   const inspectorPaneIsLeft = workspaceLayout.sidebarsSwapped
-  const applicationResizeHandle = (
-    <WorkspaceResizeHandle
-      label={i18nValue.tx('explorer.resizeApplications')}
-      onPointerDown={(event) => startWorkspaceResize('applications', event)}
-      onKeyDown={(event) => handleWorkspaceResizeKey('applications', event)}
-    />
-  )
-  const inspectorResizeHandle = (
-    <WorkspaceResizeHandle
-      label={i18nValue.tx('explorer.resizeInspector')}
-      onPointerDown={(event) => startWorkspaceResize('inspector', event)}
-      onKeyDown={(event) => handleWorkspaceResizeKey('inspector', event)}
-    />
-  )
   const applicationEdgeResizeHandle = (
     <WorkspaceResizeHandle
       label={i18nValue.tx('explorer.showApplications')}
       className={`workspace-edge-handle ${applicationPaneIsLeft ? 'edge-left' : 'edge-right'}`}
-      onPointerDown={(event) => startWorkspaceResize('applications', event)}
-      onKeyDown={(event) => handleWorkspaceResizeKey('applications', event)}
+      onPointerDown={startApplicationResize}
+      onKeyDown={resizeApplicationWithKeyboard}
     />
   )
   const inspectorEdgeResizeHandle = (
     <WorkspaceResizeHandle
       label={i18nValue.tx('explorer.showInspector')}
       className={`workspace-edge-handle ${inspectorPaneIsLeft ? 'edge-left' : 'edge-right'}`}
-      onPointerDown={(event) => startWorkspaceResize('inspector', event)}
-      onKeyDown={(event) => handleWorkspaceResizeKey('inspector', event)}
+      onPointerDown={startInspectorResize}
+      onKeyDown={resizeInspectorWithKeyboard}
     />
   )
 
@@ -8379,730 +11102,868 @@ export default function App() {
           delayMs={!applicationsLoaded || !shellPaintReady || !i18nValue.ready ? 0 : 90}
           message={(() => {
             // Prefer raw interfaceMode during boot — team role isn't known until data loads.
-            const target = workspaceHandoff?.target
-              ?? (interfaceMode === 'team' || screen === 'team' ? 'team' : 'personal')
-            return target === 'team'
-              ? i18nValue.tx('startup.loadingTeam')
-              : i18nValue.tx('startup.loadingPersonal')
+            const target =
+              workspaceHandoff?.target ?? (interfaceMode === 'team' || screen === 'team' ? 'team' : 'personal')
+            return target === 'team' ? i18nValue.tx('startup.loadingTeam') : i18nValue.tx('startup.loadingPersonal')
           })()}
           detail={
             !isOnline
               ? i18nValue.tx('startup.offlineCheck')
               : workspaceHandoff
-                ? (workspaceHandoff.target === 'team'
+                ? workspaceHandoff.target === 'team'
                   ? i18nValue.tx('startup.loadingTeamDetail')
-                  : i18nValue.tx('startup.loadingPersonalDetail'))
+                  : i18nValue.tx('startup.loadingPersonalDetail')
                 : i18nValue.tx('startup.preparing')
           }
-          variant={workspaceHandoff?.variant ?? (screen === 'team' ? 'team' : screen === 'discover' ? 'dashboard' : screen)}
+          variant={
+            workspaceHandoff?.variant ?? (
+              screen === 'team'
+                ? 'team'
+                : screen === 'discover' || screen === 'interview'
+                  ? 'dashboard'
+                  : screen
+            )
+          }
           minimumVisibleMs={workspaceHandoff ? 180 : 240}
           exitDurationMs={360}
         />
         {applicationsLoaded ? (
-        <>
-        <MailSyncJobWatcher
-          job={activeSession.mailFetchStatus?.syncJob}
-          onPoll={pollMailSyncJob}
-        />
-        <div
-          ref={workspaceShellRef}
-          className={`atlas-shell ${shellPaintReady && i18nValue.ready && !workspaceHandoff ? 'app-shell-ready' : 'app-shell-booting'} ${workspaceShellClass} ${activeSession.user.settings.highContrast ? 'high-contrast' : ''} ${
+          <>
+            <MailSyncJobWatcher
+              job={activeSession.mailFetchStatus?.syncJob}
+              realtimeConnected={realtimeUpdates.connected}
+              onPoll={pollMailSyncJob}
+            />
+            <div
+              ref={workspaceShellRef}
+              className={`atlas-shell ${shellPaintReady && i18nValue.ready && !workspaceHandoff ? 'app-shell-ready' : 'app-shell-booting'} ${workspaceShellClass} ${activeSession.user.settings.highContrast ? 'high-contrast' : ''} ${
             screen !== 'workspace' ? 'full-width' : ''
           }`}
-          style={shellStyle}
-        >
-      {busy ? <div className="global-busy-bar" /> : null}
-      {screen === 'workspace' && workspaceLayout.applicationsHidden ? applicationEdgeResizeHandle : null}
-      {screen === 'workspace' && workspaceLayout.inspectorHidden ? inspectorEdgeResizeHandle : null}
-      <OfflineStatusCenter
-        connectivity={connectivity}
-        language={lang}
-        snapshotActive={offlineDataActive}
-        snapshotSavedAt={offlineSnapshotSavedAt}
-        offlineAccessExpiresAt={offlineAccessExpiresAt}
-        pendingCount={Math.max(0, offlineQueueCount - blockedOfflineCount)}
-        blockedCount={blockedOfflineCount}
-        syncing={syncingOffline}
-        updateReady={pwaUpdateReady}
-        onRetry={() => { void retryOfflineConnection() }}
-        onInstallUpdate={() => { void requestPwaUpdateInstall() }}
-        onToggleOffline={toggleManualOffline}
-        tx={i18nValue.tx}
-      />
-      {activeSession.impersonation ? (
-        <div className="impersonation-banner" role="status" aria-live="polite">
-          <div className="impersonation-banner-copy">
-            <span>{tpl(i18nValue.tx('impersonation.banner'), {
-              target: activeSession.impersonation.targetName || activeSession.user.name,
-            })}</span>
-            <em>{tpl(i18nValue.tx('impersonation.bannerMeta'), {
-              actor: activeSession.impersonation.actorName || activeSession.impersonation.actorEmail,
-            })}</em>
-          </div>
-          <button type="button" className="quiet-action" onClick={leaveTemporaryUserView}>
-            <ArrowRightLeft size={13} aria-hidden="true" />
-            {activeSession.impersonation.returnTo === 'admin'
-              ? i18nValue.tx('impersonation.returnAdmin')
-              : tpl(i18nValue.tx('impersonation.return'), {
-                actor: activeSession.impersonation.actorName || activeSession.impersonation.actorEmail,
-              })}
-          </button>
-        </div>
-      ) : null}
-      <Rail
-        screen={screen}
-        avatarUrl={activeSession.user.settings.avatarDataUrl}
-        userName={activeSession.user.name}
-        userEmail={activeSession.user.email}
-        unreadNotificationCount={unreadNotificationCount}
-        theme={themeProvider.theme}
-        interfaceMode={effectiveInterfaceMode}
-        teamViewerRole={teamViewerRole}
-        allowTeamJoin={!PUBLIC_EDITION}
-        teamSection={teamSection}
-        canUseDiscover={canUseDiscover}
-        modeSwitchLocked={Boolean(activeSession.impersonation?.teamId)}
-        onPrefetchScreen={(nextScreen) => {
-          const destinationViewMode = nextScreen === 'workspace' && canUseWorkspaceBoard ? 'kanban' : viewMode
-          void warmCriticalScreenAssets(nextScreen, tab, lang, destinationViewMode)
-        }}
-        onTeamSection={(section, openTeamScreen = false) => {
-          // Same section on the team screen: ignore so rapid re-taps do not
-          // restart a dissolve. Leaving workspace applications for another
-          // team page still needs a handoff (openTeamScreen).
-          if (
-            section === teamSection
-            && !openTeamScreen
-            && (screen === 'team' || (screen === 'workspace' && section === 'applications'))
-          ) {
-            return
-          }
+              style={shellStyle}
+            >
+              {busy ? <div className="global-busy-bar" /> : null}
+              {screen === 'workspace' && workspaceLayout.applicationsHidden ? applicationEdgeResizeHandle : null}
+              {screen === 'workspace' && workspaceLayout.inspectorHidden ? inspectorEdgeResizeHandle : null}
+              <OfflineStatusCenter
+                connectivity={connectivity}
+                language={lang}
+                snapshotActive={offlineDataActive}
+                snapshotSavedAt={offlineSnapshotSavedAt}
+                offlineAccessExpiresAt={offlineAccessExpiresAt}
+                pendingCount={Math.max(0, offlineQueueCount - blockedOfflineCount)}
+                blockedCount={blockedOfflineCount}
+                blockedReason={blockedOfflineReason}
+                syncing={syncingOffline}
+                updateReady={pwaUpdateReady}
+                onRetry={() => {
+                  void retryOfflineConnection()
+                }}
+                onInstallUpdate={() => {
+                  void requestPwaUpdateInstall()
+                }}
+                onToggleOffline={toggleManualOffline}
+                tx={i18nValue.tx}
+              />
+              {activeSession.impersonation ? (
+                <ImpersonationBanner
+                  key={`${activeSession.impersonation.actorId}:${activeSession.impersonation.targetUserId}:${activeSession.impersonation.returnTo}`}
+                  targetLabel={tpl(i18nValue.tx('impersonation.banner'), {
+                    target: activeSession.impersonation.targetName || activeSession.user.name,
+                  })}
+                  actorLabel={tpl(i18nValue.tx('impersonation.bannerMeta'), {
+                    actor: activeSession.impersonation.actorName || activeSession.impersonation.actorEmail,
+                  })}
+                  returnLabel={activeSession.impersonation.returnTo === 'admin'
+                    ? i18nValue.tx('impersonation.returnAdmin')
+                    : tpl(i18nValue.tx('impersonation.return'), {
+                        actor: activeSession.impersonation.actorName || activeSession.impersonation.actorEmail,
+                      })}
+                  onReturn={leaveTemporaryUserView}
+                />
+              ) : null}
+              <Rail
+                screen={screen}
+                avatarUrl={activeSession.user.settings.avatarDataUrl}
+                userName={activeSession.user.name}
+                userEmail={activeSession.user.email}
+                unreadNotificationCount={unreadNotificationCount}
+                theme={themeProvider.theme}
+                interfaceMode={effectiveInterfaceMode}
+                teamViewerRole={teamViewerRole}
+                allowTeamJoin={!PUBLIC_EDITION}
+                teamSection={teamSection}
+                canUseDiscover={canUseDiscover}
+                canUseInterview={canUseInterview}
+                modeSwitchLocked={Boolean(activeSession.impersonation?.teamId)}
+                onPrefetchScreen={(nextScreen) => {
+                  const destinationViewMode = nextScreen === 'workspace' && canUseWorkspaceBoard ? 'kanban' : viewMode
+                  void warmCriticalScreenAssets(nextScreen, tab, lang, destinationViewMode)
+                }}
+                onTeamSection={(section, openTeamScreen = false) => {
+                  // Same section on the team screen: ignore so rapid re-taps do not
+                  // restart a dissolve. Leaving workspace applications for another
+                  // team page still needs a handoff (openTeamScreen).
+                  if (
+                    section === teamSection &&
+                    !openTeamScreen &&
+                    (
+                      screen === 'team'
+                      || (screen === 'workspace' && section === 'applications')
+                      || (screen === 'interview' && section === 'interview')
+                    )
+                  ) {
+                    return
+                  }
 
-          // Team applications reuse the application workspace. Teachers and owners
-          // enter the student board; students retain the focused list/dossier flow.
-          if (section === 'discover' && teamViewerRole === 'member') {
-            if (!canUseTeamDiscover || !activeSession.user.id) return
-            setTeamDiscoverTargetUserId(activeSession.user.id)
-            runWithNavigationGuard(() => {
-              runAnimatedRailScreenUpdate(() => {
-                setTeamSection('discover')
-                setScreen('discover')
-              }, {
-                direction: 'forward',
-                ready: warmCriticalScreenAssets('discover', tab, lang, viewMode),
-                readinessGate: readinessGateForScreen('discover', viewMode),
-              })
-            })
-            return
-          }
+                  // Team applications reuse the application workspace. Teachers and owners
+                  // enter the student board; students retain the focused list/dossier flow.
+                  if (section === 'discover' && teamViewerRole === 'member') {
+                    if (!canUseTeamDiscover || !activeSession.user.id) return
+                    setTeamDiscoverTargetUserId(activeSession.user.id)
+                    runWithNavigationGuard(() => {
+                      runAnimatedRailScreenUpdate(
+                        () => {
+                          setTeamSection('discover')
+                          setScreen('discover')
+                        },
+                        {
+                          direction: 'forward',
+                          ready: warmCriticalScreenAssets('discover', tab, lang, viewMode),
+                          readinessGate: readinessGateForScreen('discover', viewMode),
+                        },
+                      )
+                    })
+                    return
+                  }
 
-          if (section === 'applications') {
-            const destinationViewMode = teamViewerRole === 'member' ? 'list' as const : 'kanban' as const
-            const direction = validTeamSections.indexOf(section) >= validTeamSections.indexOf(teamSection)
-              ? 'forward'
-              : 'backward'
-            runWithNavigationGuard(() => {
-              // Same smoothness as personal → Applications: rail exit + pane enter.
-              runAnimatedRailScreenUpdate(() => {
-                setTeamSection('applications')
-                if (destinationViewMode === 'kanban') {
-                  commitWorkspaceBoardOpen({ synchronous: true })
-                } else {
-                  setViewModeDirection('to-list')
-                  setViewMode('list')
-                  setSelectedId((current) => current ?? defaultSelectedIdForMode('team'))
-                  setMobileDetailOpen(false)
-                  setScreen('workspace')
-                }
-              }, {
-                direction,
-                ready: warmCriticalScreenAssets('workspace', tab, lang, destinationViewMode),
-                readinessGate: readinessGateForScreen('workspace', destinationViewMode),
-              })
-            })
-            return
-          }
+                  if (section === 'interview') {
+                    if (!canUseInterview) return
+                    const direction =
+                      validTeamSections.indexOf(section) >= validTeamSections.indexOf(teamSection)
+                        ? 'forward'
+                        : 'backward'
+                    runWithNavigationGuard(() => {
+                      runAnimatedRailScreenUpdate(
+                        () => {
+                          setTeamSection('interview')
+                          setScreen('interview')
+                          setMobileDetailOpen(false)
+                        },
+                        {
+                          direction,
+                          ready: warmCriticalScreenAssets('interview', tab, lang, viewMode),
+                          readinessGate: readinessGateForScreen('interview', viewMode),
+                        },
+                      )
+                    })
+                    return
+                  }
 
-          // Already on the team screen: swap section content in place. TeamScreen
-          // runs a directional exit/enter on `.team-section-stage` (not a full-stage
-          // dissolve — that flash is what users noticed before).
-          if (screen === 'team' && !openTeamScreen) {
-            runWithNavigationGuard(() => {
-              startTransition(() => {
-                setTeamSection(section)
-              })
-            })
-            return
-          }
+                  if (section === 'applications') {
+                    const destinationViewMode = teamViewerRole === 'member' ? ('list' as const) : ('kanban' as const)
+                    const direction =
+                      validTeamSections.indexOf(section) >= validTeamSections.indexOf(teamSection)
+                        ? 'forward'
+                        : 'backward'
+                    runWithNavigationGuard(() => {
+                      // Same smoothness as personal → Applications: rail exit + pane enter.
+                      runAnimatedRailScreenUpdate(
+                        () => {
+                          setTeamSection('applications')
+                          if (destinationViewMode === 'kanban') {
+                            commitWorkspaceBoardOpen({ synchronous: true })
+                          } else {
+                            setViewModeDirection('to-list')
+                            setViewMode('list')
+                            setSelectedId((current) => current ?? defaultSelectedIdForMode('team'))
+                            setMobileDetailOpen(false)
+                            setScreen('workspace')
+                          }
+                        },
+                        {
+                          direction,
+                          ready: warmCriticalScreenAssets('workspace', tab, lang, destinationViewMode),
+                          readinessGate: readinessGateForScreen('workspace', destinationViewMode),
+                        },
+                      )
+                    })
+                    return
+                  }
 
-          const direction = validTeamSections.indexOf(section) >= validTeamSections.indexOf(teamSection)
-            ? 'forward'
-            : 'backward'
-          const destinationReady = openTeamScreen || screen !== 'team'
-            ? warmCriticalScreenAssets('team', tab, lang, viewMode)
-            : undefined
-          const destinationReadinessGate = openTeamScreen || screen !== 'team'
-            ? readinessGateForScreen('team', viewMode)
-            : undefined
-          // Entering team from personal/workspace, or leaving team applications
-          // workspace for another team page, uses the same rail handoff as personal.
-          runWithNavigationGuard(() => {
-            runAnimatedRailScreenUpdate(() => {
-              setTeamSection(section)
-              setScreen('team')
-            }, { direction, ready: destinationReady, readinessGate: destinationReadinessGate })
-          })
-        }}
-        onScreen={(nextScreen) => {
-          const direction = validScreens.indexOf(nextScreen) >= validScreens.indexOf(screen)
-            ? 'forward'
-            : 'backward'
-          if (nextScreen === screen && !(nextScreen === 'workspace' && !isTeamMode)) return
+                  // Already on the team screen: swap section content in place. TeamScreen
+                  // runs a directional exit/enter on `.team-section-stage` (not a full-stage
+                  // dissolve — that flash is what users noticed before).
+                  if (screen === 'team' && !openTeamScreen) {
+                    runWithNavigationGuard(() => {
+                      startTransition(() => {
+                        setTeamSection(section)
+                      })
+                    })
+                    return
+                  }
 
-          runWithNavigationGuard(() => {
-            const navigationSequence = ++railNavigationSequenceRef.current
-            const destinationViewMode = nextScreen === 'workspace' && canUseWorkspaceBoard ? 'kanban' : viewMode
-            const warmDestination = () => {
-              if (railNavigationSequenceRef.current !== navigationSequence) return Promise.resolve()
-              // Keep parsing a cold destination in the background. The visual
-              // handoff itself starts immediately with its lightweight shell.
-              return warmCriticalScreenAssets(nextScreen, tab, lang, destinationViewMode)
-            }
-            const destinationReady = warmDestination()
-            const destinationReadinessGate = readinessGateForScreen(nextScreen, destinationViewMode)
+                  const direction =
+                    validTeamSections.indexOf(section) >= validTeamSections.indexOf(teamSection)
+                      ? 'forward'
+                      : 'backward'
+                  const destinationReady =
+                    openTeamScreen || screen !== 'team'
+                      ? warmCriticalScreenAssets('team', tab, lang, viewMode)
+                      : undefined
+                  const destinationReadinessGate =
+                    openTeamScreen || screen !== 'team' ? readinessGateForScreen('team', viewMode) : undefined
+                  // Entering team from personal/workspace, or leaving team applications
+                  // workspace for another team page, uses the same rail handoff as personal.
+                  runWithNavigationGuard(() => {
+                    runAnimatedRailScreenUpdate(
+                      () => {
+                        setTeamSection(section)
+                        setScreen('team')
+                      },
+                      {
+                        direction,
+                        ready: destinationReady,
+                        readinessGate: destinationReadinessGate,
+                      },
+                    )
+                  })
+                }}
+                onScreen={(nextScreen) => {
+                  const direction =
+                    validScreens.indexOf(nextScreen) >= validScreens.indexOf(screen) ? 'forward' : 'backward'
+                  if (nextScreen === screen && !(nextScreen === 'workspace' && !isTeamMode)) return
 
-            if (nextScreen === 'workspace' && canUseWorkspaceBoard) {
-              runAnimatedRailScreenUpdate(
-                () => {
-                  openWorkspaceBoard({ synchronous: true })
-                },
-                { direction, ready: destinationReady, readinessGate: destinationReadinessGate },
-              )
-              return
-            }
+                  runWithNavigationGuard(() => {
+                    const navigationSequence = ++railNavigationSequenceRef.current
+                    const destinationViewMode = nextScreen === 'workspace' && canUseWorkspaceBoard ? 'kanban' : viewMode
+                    const warmDestination = () => {
+                      if (railNavigationSequenceRef.current !== navigationSequence) return Promise.resolve()
+                      // Keep parsing a cold destination in the background. The visual
+                      // handoff itself starts immediately with its lightweight shell.
+                      return warmCriticalScreenAssets(nextScreen, tab, lang, destinationViewMode)
+                    }
+                    const destinationReady = warmDestination()
+                    const destinationReadinessGate = readinessGateForScreen(nextScreen, destinationViewMode)
 
-            runAnimatedRailScreenUpdate(() => {
-              setScreen(nextScreen)
-              // Student team workspaces remain list-first. Personal and teacher/admin
-              // application destinations are handled above by openWorkspaceBoard().
-              if (nextScreen === 'workspace') setMobileDetailOpen(false)
-            }, { direction, ready: destinationReady, readinessGate: destinationReadinessGate })
-          })
-        }}
-        onModeChange={(nextMode) => {
-          if (activeSession.impersonation?.teamId && nextMode === 'personal') return
-          if (nextMode === effectiveInterfaceMode) return
-          if (workspaceHandoff) return
-          runWithNavigationGuard(() => {
-            void switchWorkspaceMode(nextMode)
-          })
-        }}
-        onOpenNotifications={openNotificationCenter}
-        onToggleTheme={themeProvider.toggleTheme}
-        onLogout={() => runWithNavigationGuard(logout)}
-      />
+                    if (nextScreen === 'workspace' && canUseWorkspaceBoard) {
+                      runAnimatedRailScreenUpdate(
+                        () => {
+                          openWorkspaceBoard({ synchronous: true })
+                        },
+                        {
+                          direction,
+                          ready: destinationReady,
+                          readinessGate: destinationReadinessGate,
+                        },
+                      )
+                      return
+                    }
 
-      {screen === 'workspace' ? (
-        <WorkspaceLayoutToolbar
-          applicationsHidden={workspaceLayout.applicationsHidden}
-          inspectorHidden={workspaceLayout.inspectorHidden}
-          tx={i18nValue.tx}
-          viewMode={viewMode}
-          showViewModeToggle={canUseWorkspaceBoard}
-          onToggleApplications={() => toggleWorkspacePane('applications')}
-          onToggleInspector={() => toggleWorkspacePane('inspector')}
-          onSwap={() =>
-            setWorkspaceLayout((current) => ({ ...current, sidebarsSwapped: !current.sidebarsSwapped }))
-          }
-          onReset={() => setWorkspaceLayout(defaultWorkspaceLayout)}
-          onViewModeChange={(nextMode) => {
-            if (nextMode === 'kanban') {
-              runWithNavigationGuard(() => changeViewMode(nextMode))
-              return
-            }
-            changeViewMode(nextMode)
-          }}
-        />
-      ) : null}
+                    runAnimatedRailScreenUpdate(
+                      () => {
+                        setScreen(nextScreen)
+                        // Student team workspaces remain list-first. Personal and teacher/admin
+                        // application destinations are handled above by openWorkspaceBoard().
+                        if (nextScreen === 'workspace') setMobileDetailOpen(false)
+                      },
+                      {
+                        direction,
+                        ready: destinationReady,
+                        readinessGate: destinationReadinessGate,
+                      },
+                    )
+                  })
+                }}
+                onModeChange={(nextMode) => {
+                  if (activeSession.impersonation?.teamId && nextMode === 'personal') return
+                  if (nextMode === effectiveInterfaceMode) return
+                  if (workspaceHandoff) return
+                  runWithNavigationGuard(() => {
+                    void switchWorkspaceMode(nextMode)
+                  })
+                }}
+                onOpenNotifications={openNotificationCenter}
+                onToggleTheme={themeProvider.toggleTheme}
+                onLogout={() => runWithNavigationGuard(logout)}
+              />
 
-      <ApplicationSaveIndicator
-        status={applicationSaveStatus}
-        tx={i18nValue.tx}
-        onRetry={() => { void retryApplicationAutoSave() }}
-      />
+              {screen === 'workspace' ? (
+                <WorkspaceLayoutToolbar
+                  applicationsHidden={workspaceLayout.applicationsHidden}
+                  inspectorHidden={workspaceLayout.inspectorHidden}
+                  tx={i18nValue.tx}
+                  onToggleApplications={() => toggleWorkspacePane('applications')}
+                  onToggleInspector={() => toggleWorkspacePane('inspector')}
+                  onSwap={() =>
+                    setWorkspaceLayout((current) => ({
+                      ...current,
+                      sidebarsSwapped: !current.sidebarsSwapped,
+                    }))
+                  }
+                  onReset={() => setWorkspaceLayout(defaultWorkspaceLayout)}
+                />
+              ) : null}
 
-      {screen === 'workspace' ? (
-        <Suspense fallback={<DeferredAside kind="applications" className="application-pane" style={applicationPaneStyle} />}>
-        <ApplicationPane
-          applications={visibleApplications}
-          totalApplicationCount={applicationLimitUsageCount}
-          applicationLimit={isProUser ? applicationLimit : applicationCreateLimit}
-          isPro={isProUser}
-          trashItems={applicationTrash}
-          trashCount={applicationTrash.length}
-          removingApplicationIds={removingApplicationIds}
-          removingTrashItemIds={removingTrashItemIds}
-          trashEnabled={isProUser}
-          showTrash={!isTeamMode}
-          eyebrow={isTeamMode ? i18nValue.tx('nav.modeTeam') : undefined}
-          title={isTeamMode ? i18nValue.tx('nav.teamApplications') : undefined}
-          ownerNames={isTeamMode ? teamApplicationOwnerNames : undefined}
-          ownerFilterOptions={isTeamMode ? ownerFilterOptions : undefined}
-          ownerFilter={effectiveOwnerFilter}
-          onOwnerFilter={setOwnerFilter}
-          teamRelations={isTeamMode && teamViewerRole !== 'member' ? teamApplicationRelations : undefined}
-          readOnlyIds={isTeamMode ? readOnlyApplicationIds : undefined}
-          selectedId={selected?.id ?? null}
-          query={query}
-          statusFilters={statusFilters}
-          sort={sort}
-          onQuery={setQuery}
-          onStatusFilters={setStatusFilters}
-          onSort={setSort}
-          onPrefetch={prefetchDossierAssets}
-          onResolveMissingSchoolLogo={(application) => (
-            resolveAndStoreSchoolLogo(application, {
-              auto: true,
-              ...(application.school.website.trim()
-                ? { website: application.school.website.trim() }
-                : {}),
-            }, { silent: true })
-          )}
-          onSelect={(id) => {
-            if (id === selected?.id) {
-              setWorkspaceJumpIntent(null)
-              // The first row is commonly auto-selected before the user taps it.
-              // Opening that already-selected record still changes the entire
-              // mobile surface, so give it the same forward handoff as any row.
-              runWithNavigationGuard(() => {
-                mobileDetailOriginRef.current = 'list'
-                runAnimatedDossierUpdate(() => setMobileDetailOpen(true), {
-                  scope: 'workspace-view',
-                  direction: 'forward',
-                  deferDossierContent: true,
-                })
-              })
-              return
-            }
-            runWithNavigationGuard(() => selectApplication(id))
-          }}
-          onNew={canCreateInCurrentTeam ? () => openNewApplicationDialog(null) : undefined}
-          onUpgrade={() => openUpgradePage('application-limit', String(applicationLimitUsageCount + 1), String(isProUser ? applicationLimit : applicationCreateLimit))}
-          onShowBoard={canUseWorkspaceBoard ? () => runWithNavigationGuard(openWorkspaceBoard) : undefined}
-          boardActive={viewMode === 'kanban'}
-          onOpenMany={isTeamMode ? undefined : openApplicationsInTabs}
-          onExportMany={isTeamMode ? undefined : exportSelectedApplications}
-          onRestoreTrash={restoreTrashItem}
-          onDeleteTrash={confirmDeleteTrashItem}
-          onEmptyTrash={confirmEmptyTrash}
-          onCopyApplication={copyValue}
-          onDeleteMany={isTeamMode ? undefined : confirmDeleteApplications}
-          style={applicationPaneStyle}
-          collapsed={workspaceLayout.applicationsHidden}
-          resizeHandle={workspaceLayout.applicationsHidden ? null : applicationResizeHandle}
-          actionVersion={activeSession.token}
-        />
-        </Suspense>
-      ) : null}
+              <ApplicationSaveIndicator
+                status={applicationSaveStatus}
+                tx={i18nValue.tx}
+                onRetry={() => {
+                  void retryApplicationAutoSave()
+                }}
+              />
 
-      <main
-        className={`screen-stage screen-stage-${screen}${screen === 'workspace' ? ` workspace-view-${viewMode} workspace-view-${viewModeDirection}` : ''}${screen === 'workspace' && workspaceOpeningFromDashboard ? ' workspace-open-from-dashboard' : ''}${screen === 'workspace' && workspaceViewExit ? ` workspace-view-exit-${workspaceViewExit}` : ''}`}
+              {screen === 'workspace' ? (
+                <Suspense
+                  fallback={
+                    <DeferredAside kind="applications" className="application-pane" style={applicationPaneStyle} />
+                  }
+                >
+                  <ApplicationPane
+                    applications={visibleApplications}
+                    totalApplicationCount={applicationLimitUsageCount}
+                    applicationLimit={isProUser ? applicationLimit : applicationCreateLimit}
+                    isPro={isProUser}
+                    trashItems={visibleApplicationTrash}
+                    trashCount={visibleApplicationTrash.length}
+                    removingApplicationIds={removingApplicationIds}
+                    removingTrashItemIds={removingTrashItemIds}
+                    trashEnabled={isTeamMode || isProUser}
+                    showTrash={!activeSession.impersonation?.teamId && (!isTeamMode || Boolean(activeTeamId))}
+                    eyebrow={isTeamMode ? i18nValue.tx('nav.modeTeam') : undefined}
+                    title={isTeamMode ? i18nValue.tx('nav.teamApplications') : undefined}
+                    ownerNames={isTeamMode ? teamApplicationOwnerNames : undefined}
+                    trashOwnerNames={isTeamMode ? teamTrashOwnerNames : undefined}
+                    ownerFilterOptions={isTeamMode ? ownerFilterOptions : undefined}
+                    ownerFilter={effectiveOwnerFilter}
+                    onOwnerFilter={setOwnerFilter}
+                    teamRelations={isTeamMode && teamViewerRole !== 'member' ? teamApplicationRelations : undefined}
+                    readOnlyIds={isTeamMode ? readOnlyApplicationIds : undefined}
+                    selectedId={selected?.id ?? null}
+                    query={query}
+                    statusFilters={statusFilters}
+                    sort={sort}
+                    onQuery={setQuery}
+                    onStatusFilters={setStatusFilters}
+                    onSort={setSort}
+                    onPrefetch={prefetchApplicationEntry}
+                    onPrefetchBoard={prefetchWorkspaceBoardAssets}
+                    onSelect={(id) => {
+                      if (id === selected?.id) {
+                        setWorkspaceJumpIntent(null)
+                        // The first row is commonly auto-selected before the user taps it.
+                        // Opening that already-selected record still changes the entire
+                        // mobile surface, so give it the same forward handoff as any row.
+                        runWithNavigationGuard(() => {
+                          mobileDetailOriginRef.current = 'list'
+                          runAnimatedDossierUpdate(() => setMobileDetailOpen(true), {
+                            scope: 'workspace-view',
+                            direction: 'forward',
+                            deferDossierContent: true,
+                          })
+                        })
+                        return
+                      }
+                      runWithNavigationGuard(() => selectApplication(id))
+                    }}
+                    onNew={canCreateInCurrentTeam ? () => openNewApplicationDialog(null) : undefined}
+                    onUpgrade={() =>
+                      openUpgradePage(
+                        'application-limit',
+                        String(applicationLimitUsageCount + 1),
+                        String(isProUser ? applicationLimit : applicationCreateLimit),
+                      )
+                    }
+                    onShowBoard={canUseWorkspaceBoard ? () => runWithNavigationGuard(openWorkspaceBoard) : undefined}
+                    /* Respond to requested view immediately; waiting for the
+                       deferred board made the click look ignored. */
+                    boardActive={viewMode === 'kanban'}
+                    onOpenMany={isTeamMode ? undefined : openApplicationsInTabs}
+                    onExportMany={isTeamMode ? undefined : exportSelectedApplications}
+                    onRestoreTrash={restoreTrashItem}
+                    onDeleteTrash={confirmDeleteTrashItem}
+                    onEmptyTrash={confirmEmptyTrash}
+                    onCopyApplication={copyValue}
+                    onDeleteMany={!isTeamMode || canEditInCurrentTeam ? confirmDeleteApplications : undefined}
+                    style={applicationPaneStyle}
+                    collapsed={workspaceLayout.applicationsHidden}
+                    resizeHandle={workspaceLayout.applicationsHidden ? null : applicationResizeHandle}
+                    actionVersion={activeSession.token}
+                  />
+                </Suspense>
+              ) : null}
+
+              <main
+                className={`screen-stage screen-stage-${screen}${screen === 'workspace' ? ` workspace-view-${renderedWorkspaceViewMode} workspace-view-${viewModeDirection}` : ''}${screen === 'workspace' && workspaceOpeningFromDashboard ? ' workspace-open-from-dashboard' : ''}${screen === 'workspace' && workspaceViewExit ? ` workspace-view-exit-${workspaceViewExit}` : ''}`}
         style={screenStageStyle}
       >
         {routeNotFound ? (
           <NotFoundScreen
             kind="route"
-            path={`${window.location.pathname}${window.location.search}`}
-            onAction={() => {
-              setRouteNotFound(false)
-              startTransition(() => setScreen('dashboard'))
-            }}
-            onBack={() => {
-              setRouteNotFound(false)
-              if (window.history.length > 1) {
-                window.history.back()
-                return
-              }
-              startTransition(() => setScreen('dashboard'))
-            }}
-          />
-        ) : applicationNotFound ? (
-          <NotFoundScreen
-            kind="application"
-            path={`${window.location.pathname}${window.location.search}`}
-            title={i18nValue.tx('notFound.applicationTitle')}
-            message={i18nValue.tx('notFound.applicationMessage')}
-            onAction={() => {
-              startTransition(() => setScreen('dashboard'))
-            }}
-            onBack={() => {
-              if (window.history.length > 1) {
-                window.history.back()
-                return
-              }
-              startTransition(() => setScreen('dashboard'))
-            }}
-          />
-        ) : (
-          <Suspense fallback={<DeferredPanel variant={screen === 'discover' ? 'dashboard' : screen} />}>
-            {mainContent}
-          </Suspense>
-        )}
-      </main>
+                    path={`${window.location.pathname}${window.location.search}`}
+                    onAction={returnToDashboardFromMissingRoute}
+                    onBack={() => {
+                      setRouteNotFound(false)
+                      if (window.history.length > 1) {
+                        window.history.back()
+                        return
+                      }
+                      returnToDashboardFromMissingRoute()
+                    }}
+                  />
+                ) : applicationNotFound ? (
+                  <NotFoundScreen
+                    kind="application"
+                    path={`${window.location.pathname}${window.location.search}`}
+                    title={i18nValue.tx('notFound.applicationTitle')}
+                    message={i18nValue.tx('notFound.applicationMessage')}
+                    onAction={returnToDashboardFromMissingRoute}
+                    onBack={() => {
+                      if (window.history.length > 1) {
+                        window.history.back()
+                        return
+                      }
+                      returnToDashboardFromMissingRoute()
+                    }}
+                  />
+                ) : (
+                  <Suspense fallback={<DeferredPanel variant={screen === 'discover' || screen === 'interview' ? 'dashboard' : screen} />}>
+                    {screen === 'workspace' && workspaceBoardResident && workspaceKanbanContent ? (
+                      <>
+                        <Activity mode={renderedWorkspaceViewMode === 'kanban' ? 'visible' : 'hidden'}>
+                          {/* Keep a real Suspense boundary inside Activity. If a
+                              cold board chunk settles while the resident tree
+                              is being hidden or removed, React must retry the
+                              Suspense node rather than a detached Activity
+                              boundary. The fallback also preserves the filled
+                              workspace surface on the first board visit. */}
+                          <Suspense fallback={<DeferredPanel variant="workspace" />}>
+                            {workspaceKanbanContent}
+                          </Suspense>
+                        </Activity>
+                        {renderedWorkspaceViewMode === 'kanban' ? null : mainContent}
+                      </>
+                    ) : mainContent}
+                  </Suspense>
+                )}
+              </main>
 
-      {screen === 'workspace' && compactWorkspaceViewport && mobileDetailOpen && selected ? (
-        <button
-          type="button"
-          className="mobile-detail-back-fab"
-          onClick={() => runWithNavigationGuard(closeMobileApplicationDetail)}
-          aria-label={i18nValue.tx('back')}
-        >
-          <ArrowLeft size={15} aria-hidden="true" />
-          <span>{i18nValue.tx('back')}</span>
-        </button>
-      ) : null}
+              {screen === 'workspace' && compactWorkspaceViewport && mobileDetailOpen && selected ? (
+                <button
+                  type="button"
+                  className="mobile-detail-back-fab"
+                  onClick={() => runWithNavigationGuard(closeMobileApplicationDetail)}
+                  aria-label={i18nValue.tx('back')}
+                >
+                  <ArrowLeft size={15} aria-hidden="true" />
+                  <span>{i18nValue.tx('back')}</span>
+                </button>
+              ) : null}
 
-      {screen === 'workspace' && !compactWorkspaceViewport ? (
-        <Suspense fallback={<DeferredAside kind="inspector" className="inspector-pane workspace-deferred-inspector" style={inspectorPaneStyle} />}>
-        <Inspector
-          application={deferredInspectorApplication}
-          backups={selectedBackups}
-          removingBackupFileNames={removingBackupFileNames}
-          busy={busy}
-          isPro={isProUser}
-          style={inspectorPaneStyle}
-          collapsed={workspaceLayout.inspectorHidden}
-          resizeHandle={workspaceLayout.inspectorHidden ? null : inspectorResizeHandle}
-          aiActive={aiInspectorOpen}
-          showPastDeadlines={showPastInspectorDeadlines}
-          onShowPastDeadlinesChange={(show) => {
-            setShowPastInspectorDeadlines(show)
-            safeSetItem(inspectorPastDeadlinesKey(activeSession.user.id), show ? '1' : '0')
-          }}
-          onCopy={copyValue}
-          onEditField={handleInspectorEditField}
-          onExport={(format) =>
-            runInteractive(async () => {
-              const target = activeDraft ?? selected
-              const blob = await phdApi.downloadExport(activeSession.token, format, target?.id, lang)
-              const suffix = target ? `-${target.school.name}` : ''
-              downloadBlob(blob, `phd-applications${suffix}.${format === 'excel' ? 'xls' : format}`)
-            }, tpl(i18nValue.tx('toast.exported'), { format: format.toUpperCase() }))
-          }
-          onBackup={() =>
-            runInteractive(async () => {
-              const target = activeDraft ?? selected
-              if (!target) return
-              await phdApi.createBackup(activeSession.token, target.id)
-              setBackups(await phdApi.listBackups(getLatestSessionToken(activeSession.token)))
-            }, i18nValue.tx('toast.backupCreated'))
-          }
-          onUpgrade={() => openUpgradePage('manual-backup', 'backup', String(applicationLimit))}
-          onRestore={(fileName) =>
-            setConfirmDialog({
-              title: i18nValue.tx('inspector.restore'),
-              message: tpl(i18nValue.tx('confirmRestoreBackup'), { fileName }),
-              confirmLabel: i18nValue.tx('inspector.restore'),
-              variant: 'default',
-              onConfirm: () => {
-                setConfirmDialog(null)
-                void run(async () => {
-                  const result = await phdApi.restoreBackup(activeSession.token, fileName)
-                  if (result.application) {
-                    replaceApplication(result.application)
-                  } else {
-                    await refreshAll()
+              {screen === 'workspace' && !compactWorkspaceViewport ? (
+                <Suspense
+                  fallback={
+                    <DeferredAside
+                      kind="inspector"
+                      className="inspector-pane workspace-deferred-inspector"
+                      style={inspectorPaneStyle}
+                    />
                   }
-                }, i18nValue.tx('toast.backupRestored'))
-              },
-            })
-          }
-          onDeleteBackup={(fileName) =>
-            setConfirmDialog({
-              title: i18nValue.tx('inspector.deleteBackup'),
-              message: tpl(i18nValue.tx('confirmDeleteBackup'), { fileName }),
-              confirmLabel: i18nValue.tx('inspector.deleteBackup'),
-            variant: 'danger',
-            onConfirm: () => {
-              setConfirmDialog(null)
-              setRemovingBackupFileNames((current) => new Set(current).add(fileName))
-              void (async () => {
-                await new Promise<void>((resolve) => {
-                  window.setTimeout(resolve, getMotionDelay(380))
-                })
-                await run(async () => {
-                  await phdApi.deleteBackup(activeSession.token, fileName)
-                  setBackups((items) => items.filter((item) => item.fileName !== fileName))
-                }, i18nValue.tx('toast.backupDeleted'))
-              })().finally(() => {
-                setRemovingBackupFileNames((current) => {
-                  const next = new Set(current)
-                  next.delete(fileName)
-                  return next
-                })
-              })
-            },
-          })
-          }
-          actionVersion={activeSession.token}
-        />
-        </Suspense>
-      ) : null}
+                >
+                  <Inspector
+                    application={inspectorApplication}
+                    backups={selectedBackups}
+                    removingBackupFileNames={removingBackupFileNames}
+                    busy={busy}
+                    isPro={isProUser}
+                    style={inspectorPaneStyle}
+                    collapsed={workspaceLayout.inspectorHidden}
+                    resizeHandle={workspaceLayout.inspectorHidden ? null : inspectorResizeHandle}
+                    aiActive={aiInspectorOpen}
+                    showPastDeadlines={showPastInspectorDeadlines}
+                    onShowPastDeadlinesChange={(show) => {
+                      setShowPastInspectorDeadlines(show)
+                      safeSetItem(inspectorPastDeadlinesKey(activeSession.user.id), show ? '1' : '0')
+                    }}
+                    onCopy={copyValue}
+                    onEditField={handleInspectorEditField}
+                    onExport={(format) =>
+                      runInteractive(
+                        async () => {
+                          const target = activeDraft ?? selected
+                          const blob = await phdApi.downloadExport(activeSession.token, format, target?.id, lang)
+                          const suffix = target ? `-${target.school.name}` : ''
+                          downloadBlob(blob, `phd-applications${suffix}.${format === 'excel' ? 'xls' : format}`)
+                        },
+                        tpl(i18nValue.tx('toast.exported'), {
+                          format: format.toUpperCase(),
+                        }),
+                      )
+                    }
+                    onBackup={() =>
+                      runInteractive(async () => {
+                        const target = activeDraft ?? selected
+                        if (!target) return
+                        await phdApi.createBackup(activeSession.token, target.id)
+                        setBackups(await phdApi.listBackups(getLatestSessionToken(activeSession.token)))
+                      }, i18nValue.tx('toast.backupCreated'))
+                    }
+                    onUpgrade={() => openUpgradePage('manual-backup', 'backup', String(applicationLimit))}
+                    onRestore={(fileName) =>
+                      setConfirmDialog({
+                        title: i18nValue.tx('inspector.restore'),
+                        message: tpl(i18nValue.tx('confirmRestoreBackup'), {
+                          fileName,
+                        }),
+                        confirmLabel: i18nValue.tx('inspector.restore'),
+                        variant: 'default',
+                        onConfirm: () => runOrThrow(async () => {
+                            const result = await phdApi.restoreBackup(activeSession.token, fileName)
+                            if (result.application) {
+                              replaceApplication(result.application)
+                            } else {
+                              await refreshAll()
+                            }
+                          }, i18nValue.tx('toast.backupRestored')),
+                      })
+                    }
+                    onDeleteBackup={(fileName) =>
+                      setConfirmDialog({
+                        title: i18nValue.tx('inspector.deleteBackup'),
+                        message: tpl(i18nValue.tx('confirmDeleteBackup'), {
+                          fileName,
+                        }),
+                        confirmLabel: i18nValue.tx('inspector.deleteBackup'),
+                        variant: 'danger',
+                        onConfirm: () => {
+                          setRemovingBackupFileNames((current) => new Set(current).add(fileName))
+                          return runOrThrow(async () => {
+                              const result = await waitForRemovalHandoff(
+                                phdApi.deleteBackup(activeSession.token, fileName),
+                              )
+                              setBackups((items) => items.filter((item) => item.fileName !== fileName))
+                              // `deleted: false` means retention had already removed it, so
+                              // the rest of this list is stale too. Reconcile it.
+                              if (!result.deleted) {
+                                setBackups(await phdApi.listBackups(getLatestSessionToken(activeSession.token)))
+                              }
+                            }, i18nValue.tx('toast.backupDeleted')).finally(() => {
+                            setRemovingBackupFileNames((current) => {
+                              const next = new Set(current)
+                              next.delete(fileName)
+                              return next
+                            })
+                          })
+                        },
+                      })
+                    }
+                    actionVersion={activeSession.token}
+                  />
+                </Suspense>
+              ) : null}
 
-      {dialogOpen ? (
-        <LazyOverlayBoundary namespaces={['core', 'shared', 'dossier']}>
-          <NewApplicationDialog
-            open={dialogOpen}
-            busy={busy}
-            teamMode={newApplicationTeamMode}
-            studentOptions={teamCreateStudentOptions}
-            defaultStudentId={defaultNewApplicationStudentId}
-            onClose={() => {
-              setDialogOpen(false)
-              setNewApplicationOwnerHint(null)
-            }}
-            onCreate={async (input) => {
-              let createdSuccessfully = false
-              await run(async () => {
-                const created = await phdApi.createApplication(activeSession.token, {
-                  professor: input.professor,
-                  professorChinese: input.professorChinese,
-                  professorEmail: input.professorEmail,
-                  professorHomepage: input.professorHomepage.trim() || undefined,
-                  university: input.university,
-                  country: input.country,
-                  website: input.website.trim() || undefined,
-                  program: input.program,
-                  deadline: input.deadline,
-                  notes: input.notes,
-                  visibleToTeam: input.visibleToTeam,
-                  ownerId: input.ownerId,
-                })
-                createdSuccessfully = true
-                const createdForCurrentUser = !created.ownerId || created.ownerId === activeSession.user.id
-                const pendingTeamCreateApproval = newApplicationTeamMode === 'team-self' &&
-                  Boolean(input.visibleToTeam) &&
-                  !created.teamId &&
-                  created.teamTransferRequest?.status === 'pending'
-                if (createdForCurrentUser) {
-                  setApplications((items) => [created, ...items.filter((item) => item.id !== created.id)])
-                }
-                if (pendingTeamCreateApproval) {
-                  setInterfaceMode('team')
-                  setTeamSection('resources')
-                  setOwnerFilter(activeSession.user.id)
-                  setSelectedId(null)
-                  setDraftState(null, { clean: true })
-                  setViewModeDirection('to-list')
-                  setViewMode('list')
-                  setScreen('team')
-                  setMobileDetailOpen(false)
-                  await refreshTeamWorkspace(activeSession)
-                  notify(i18nValue.tx('toast.teamTransferJoinRequested'))
-                  return
-                }
-                if (created.teamId) {
-                  const ownerOption = teamCreateStudentOptions.find((student) => student.id === created.ownerId)
-                  const teamRecord: TeamApplicationRecord = {
-                    ...created,
-                    ownerName: createdForCurrentUser ? activeSession.user.name : ownerOption?.name ?? '',
-                    ownerEmail: createdForCurrentUser ? activeSession.user.email : ownerOption?.email ?? '',
-                    currentUserApplicationRole: createdForCurrentUser ? 'owner' : teamViewerRole,
-                  }
-                  setTeamApplications((items) => [teamRecord, ...items.filter((item) => item.id !== created.id)])
-                  if (!createdForCurrentUser) {
-                    setInterfaceMode('team')
-                    setOwnerFilter(created.ownerId ?? null)
-                  }
-                }
-                setDraftState(cloneApplication(created), { clean: true })
-                setSelectedId(created.id)
-                setViewModeDirection('to-list')
-                setViewMode('list')
-                setScreen('workspace')
-                setMobileDetailOpen(true)
-                if (created.teamId) {
-                  await refreshTeamWorkspace(activeSession)
-                } else {
-                  await refreshSessionMetadata(activeSession)
-                }
-                notify(i18nValue.tx('toast.appCreated'))
-              })
-              return createdSuccessfully
-            }}
-          />
-        </LazyOverlayBoundary>
-      ) : null}
+              {dialogOpen ? (
+                <LazyOverlayBoundary namespaces={['core', 'shared', 'dossier']}>
+                  <NewApplicationDialog
+                    key={`new-application:${activeSession.user.id}:${isTeamMode ? activeTeamId || visibleTeamSummary?.team.id || 'team' : 'personal'}:${newApplicationTeamMode}`}
+                    open={dialogOpen}
+                    busy={busy}
+                    teamMode={newApplicationTeamMode}
+                    studentOptions={teamCreateStudentOptions}
+                    defaultStudentId={defaultNewApplicationStudentId}
+                    draftIdentity={{
+                      userId: activeSession.user.id,
+                      workspaceId: isTeamMode ? activeTeamId || visibleTeamSummary?.team.id || 'team' : 'personal',
+                    }}
+                    onClose={() => {
+                      setDialogOpen(false)
+                      setNewApplicationOwnerHint(null)
+                    }}
+                    onCreate={async (input) => {
+                      let createdSuccessfully = false
+                      try {
+                        await runOrThrow(async () => {
+                          const created = await phdApi.createApplication(activeSession.token, {
+                            professor: input.professor,
+                            professorChinese: input.professorChinese,
+                            professorEmail: input.professorEmail,
+                            professorHomepage: input.professorHomepage.trim() || undefined,
+                            university: input.university,
+                            country: input.country,
+                            website: input.website.trim() || undefined,
+                            program: input.program,
+                            deadline: input.deadline,
+                            notes: input.notes,
+                            visibleToTeam: input.visibleToTeam,
+                            ownerId: input.ownerId,
+                          })
+                          createdSuccessfully = true
+                          const createdForCurrentUser = !created.ownerId || created.ownerId === activeSession.user.id
+                          const pendingTeamCreateApproval =
+                            newApplicationTeamMode === 'team-self' &&
+                            Boolean(input.visibleToTeam) &&
+                            !created.teamId &&
+                            created.teamTransferRequest?.status === 'pending'
+                          if (createdForCurrentUser) {
+                            setApplications((items) => [created, ...items.filter((item) => item.id !== created.id)])
+                          }
+                          if (pendingTeamCreateApproval) {
+                            setInterfaceMode('team')
+                            setTeamSection('resources')
+                            setOwnerFilter(activeSession.user.id)
+                            setSelectedId(null)
+                            setDraftState(null, { clean: true })
+                            setViewModeDirection('to-list')
+                            setViewMode('list')
+                            setScreen('team')
+                            setMobileDetailOpen(false)
+                            await refreshTeamWorkspace(activeSession)
+                            notify(i18nValue.tx('toast.teamTransferJoinRequested'))
+                            return
+                          }
+                          if (created.teamId) {
+                            const ownerOption = teamCreateStudentOptions.find((student) => student.id === created.ownerId)
+                            const teamRecord: TeamApplicationRecord = {
+                              ...created,
+                              ownerName: createdForCurrentUser ? activeSession.user.name : (ownerOption?.name ?? ''),
+                              ownerEmail: createdForCurrentUser ? activeSession.user.email : (ownerOption?.email ?? ''),
+                              currentUserApplicationRole: createdForCurrentUser ? 'owner' : teamViewerRole,
+                            }
+                            setTeamApplications((items) => [
+                              teamRecord,
+                              ...items.filter((item) => item.id !== created.id),
+                            ])
+                            if (!createdForCurrentUser) {
+                              setInterfaceMode('team')
+                              setOwnerFilter(created.ownerId ?? null)
+                            }
+                          }
+                          setDraftState(cloneApplication(created), {
+                            clean: true,
+                          })
+                          setSelectedId(created.id)
+                          setViewModeDirection('to-list')
+                          setViewMode('list')
+                          setScreen('workspace')
+                          setMobileDetailOpen(true)
+                          if (created.teamId) {
+                            await refreshTeamWorkspace(activeSession)
+                          } else {
+                            await refreshSessionMetadata(activeSession)
+                          }
+                          notify(i18nValue.tx('toast.appCreated'))
+                        })
+                      } catch (error) {
+                        // runOrThrow already emits the localized API message;
+                        // give the mounted dialog an immediate pulse and leave
+                        // the structured error for it to keep the state visible.
+                        if (error instanceof ApiError) flashInvalidField(error.field)
+                        throw error
+                      }
+                      return createdSuccessfully
+                    }}
+                  />
+                </LazyOverlayBoundary>
+              ) : null}
 
-      {shareDialogOpen ? (
-        <LazyOverlayBoundary namespaces={['core', 'shared', 'share']}>
-          <ShareDialog
-            open={shareDialogOpen}
-            application={selected}
-            expiry={shareExpiry}
-            permission={sharePermission}
-            activeShareCount={activeSession.usage?.activeShareCount ?? allShares.length}
-            shareQuota={activeSession.usage?.shareQuota ?? activeSession.user.settings.shareQuota}
-            onExpiry={setShareExpiry}
-            onPermission={setSharePermission}
-            sections={shareScopeSections}
-            onSections={setShareScopeSections}
-            onNotify={notify}
-            onClose={() => setShareDialogOpen(false)}
-            onCreate={() => {
-              if (!selected) return
-              void run(async () => {
-                const share = await phdApi.shareApplication(
-                  activeSession.token,
-                  selected.id,
-                  expiresAtForShare(shareExpiry),
-                  sharePermission,
-                  shareScopeSections,
-                )
-                await copyValue(`${window.location.origin}${share.url}`, i18nValue.tx('share.linkLabel'))
-                updateApplicationInState(selected.id, (application) => ({
-                  ...application,
-                  shares: [
-                    {
-                      id: share.id,
-                      token: share.token,
-                      createdAt: share.createdAt,
-                      expiresAt: share.expiresAt,
-                      permission: share.permission,
-                      sections: share.sections,
-                    },
-                    ...(application.shares ?? []).filter((item) => item.id !== share.id),
-                  ],
-                }))
-                await refreshSessionMetadata(activeSession)
-              }, i18nValue.tx('toast.shareCreated'))
-            }}
-            onRevoke={(shareId) => {
-              if (!selected) return
-              void run(async () => {
-                await phdApi.revokeShare(activeSession.token, selected.id, shareId)
-                updateApplicationInState(selected.id, (application) => ({
-                  ...application,
-                  shares: (application.shares ?? []).filter((share) => share.id !== shareId),
-                }))
-                await refreshSessionMetadata(activeSession)
-              }, i18nValue.tx('toast.shareRevoked'))
-            }}
-            onUpdateShare={(shareId, expiresAt, permission, sections) => {
-              if (!selected) return
-              void run(async () => {
-                const share = await phdApi.updateShare(activeSession.token, selected.id, shareId, expiresAt, permission, sections)
-                updateApplicationInState(selected.id, (application) => ({
-                  ...application,
-                  shares: (application.shares ?? []).map((item) =>
-                    item.id === share.id
-                      ? {
-                          id: share.id,
-                          token: share.token,
-                          createdAt: share.createdAt,
-                          expiresAt: share.expiresAt,
-                          permission: share.permission,
-                          sections: share.sections,
+              {shareDialogOpen ? (
+                <LazyOverlayBoundary namespaces={['core', 'shared', 'share']}>
+                  <ShareDialog
+                    open={shareDialogOpen}
+                    application={selected}
+                    expiry={shareExpiry}
+                    permission={sharePermission}
+                    activeShareCount={activeSession.usage?.activeShareCount ?? allShares.length}
+                    shareQuota={activeSession.usage?.shareQuota ?? activeSession.user.settings.shareQuota}
+                    onExpiry={setShareExpiry}
+                    onPermission={setSharePermission}
+                    sections={shareScopeSections}
+                    onSections={setShareScopeSections}
+                    onNotify={notify}
+                    onClose={() => setShareDialogOpen(false)}
+                    onCreate={() => {
+                      if (!selected) return Promise.resolve()
+                      return runOrThrow(async () => {
+                        const share = await phdApi.shareApplication(
+                          activeSession.token,
+                          selected.id,
+                          expiresAtForShare(shareExpiry),
+                          sharePermission,
+                          shareScopeSections,
+                        )
+                        await copyValue(`${window.location.origin}${share.url}`, i18nValue.tx('share.linkLabel'))
+                        updateApplicationInState(selected.id, (application) => ({
+                          ...application,
+                          shares: [
+                            {
+                              id: share.id,
+                              token: share.token,
+                              createdAt: share.createdAt,
+                              expiresAt: share.expiresAt,
+                              permission: share.permission,
+                              sections: share.sections,
+                            },
+                            ...(application.shares ?? []).filter((item) => item.id !== share.id),
+                          ],
+                        }))
+                        try {
+                          await refreshSessionMetadata(activeSession)
+                        } catch {
+                          // Share creation already succeeded; reconcile counts
+                          // on the next normal session refresh.
                         }
-                      : item,
-                  ),
-                }))
-                await refreshSessionMetadata(activeSession)
-              }, i18nValue.tx('toast.shareUpdated'))
-            }}
-          />
-        </LazyOverlayBoundary>
-      ) : null}
+                      }, i18nValue.tx('toast.shareCreated'))
+                    }}
+                    onRevoke={(shareId) => {
+                      if (!selected) return Promise.resolve()
+                      return runOrThrow(async () => {
+                        await phdApi.revokeShare(activeSession.token, selected.id, shareId)
+                        updateApplicationInState(selected.id, (application) => ({
+                          ...application,
+                          shares: (application.shares ?? []).filter((share) => share.id !== shareId),
+                        }))
+                        try {
+                          await refreshSessionMetadata(activeSession)
+                        } catch {
+                          // Do not make a successful revoke look retryable.
+                        }
+                      }, i18nValue.tx('toast.shareRevoked'))
+                    }}
+                    onUpdateShare={(shareId, expiresAt, permission, sections) => {
+                      if (!selected) return Promise.resolve()
+                      return runOrThrow(async () => {
+                        const share = await phdApi.updateShare(
+                          activeSession.token,
+                          selected.id,
+                          shareId,
+                          expiresAt,
+                          permission,
+                          sections,
+                        )
+                        updateApplicationInState(selected.id, (application) => ({
+                          ...application,
+                          shares: (application.shares ?? []).map((item) =>
+                            item.id === share.id
+                              ? {
+                                  id: share.id,
+                                  token: share.token,
+                                  createdAt: share.createdAt,
+                                  expiresAt: share.expiresAt,
+                                  permission: share.permission,
+                                  sections: share.sections,
+                                }
+                              : item,
+                          ),
+                        }))
+                        try {
+                          await refreshSessionMetadata(activeSession)
+                        } catch {
+                          // The update is already durable; refresh counts later.
+                        }
+                      }, i18nValue.tx('toast.shareUpdated'))
+                    }}
+                  />
+                </LazyOverlayBoundary>
+              ) : null}
 
-      {dossierEnrichmentOpen && selected ? (
-        <LazyOverlayBoundary namespaces={['core', 'shared', 'discover']}>
-          <DiscoverApplicationEnrichmentDialog
-            open={dossierEnrichmentOpen}
-            token={activeSession.token}
-            application={selected}
-            aiKeys={aiKeys}
-            onConfigureAiKeys={openAiKeyConfiguration}
-            onApplied={replaceApplication}
-            onNotify={notify}
-            onClose={() => setDossierEnrichmentOpen(false)}
-          />
-        </LazyOverlayBoundary>
-      ) : null}
+              {dossierEnrichmentOpen && selected ? (
+                <LazyOverlayBoundary namespaces={['core', 'shared', 'discover']}>
+                  <DiscoverApplicationEnrichmentDialog
+                    open={dossierEnrichmentOpen}
+                    token={activeSession.token}
+                    application={selected}
+                    aiKeys={enabledAiKeys}
+                    onConfigureAiKeys={openAiKeyConfiguration}
+                    onApplied={replaceApplication}
+                    onNotify={notify}
+                    onClose={() => setDossierEnrichmentOpen(false)}
+                  />
+                </LazyOverlayBoundary>
+              ) : null}
 
-      {teamWorkspaceChooserOpen ? (
-        <LazyOverlayBoundary namespaces={['core', 'shared', 'team']}>
-          <TeamWorkspaceChooser
-            open
-            workspaces={teamWorkspaces}
-            activeTeamId={activeTeamId}
-            onClose={() => {
-              setTeamWorkspaceChooserOpen(false)
-              setPendingTeamWorkspaceEntry(null)
-            }}
-            onSelect={(teamId) => {
-              const destination = pendingTeamWorkspaceEntry ?? {}
-              setTeamWorkspaceChooserOpen(false)
-              setPendingTeamWorkspaceEntry(null)
-              void switchWorkspaceMode('team', { ...destination, teamId })
-            }}
-          />
-        </LazyOverlayBoundary>
-      ) : null}
+              {!PUBLIC_EDITION && teamWorkspaceChooserOpen ? (
+                <LazyOverlayBoundary namespaces={['core', 'shared', 'team']}>
+                  <TeamWorkspaceChooser
+                    open
+                    workspaces={teamWorkspaces}
+                    activeTeamId={activeTeamId}
+                    onClose={() => {
+                      setTeamWorkspaceChooserOpen(false)
+                      setPendingTeamWorkspaceEntry(null)
+                    }}
+                    onSelect={(teamId) => {
+                      const destination = pendingTeamWorkspaceEntry ?? {}
+                      setTeamWorkspaceChooserOpen(false)
+                      setPendingTeamWorkspaceEntry(null)
+                      void switchWorkspaceMode('team', {
+                        ...destination,
+                        teamId,
+                      })
+                    }}
+                  />
+                </LazyOverlayBoundary>
+              ) : null}
 
-      <ConfirmDialog
-        open={!!confirmDialog}
-        title={confirmDialog?.title ?? ''}
-        message={confirmDialog?.message ?? ''}
-        confirmLabel={confirmDialog?.confirmLabel}
-        cancelLabel={i18nValue.tx('cancel')}
-        variant={confirmDialog?.variant}
-        onConfirm={() => confirmDialog?.onConfirm()}
-        onCancel={() => setConfirmDialog(null)}
-      />
+              <ConfirmDialog
+                open={!!confirmDialog}
+                title={confirmDialog?.title ?? ''}
+                message={confirmDialog?.message ?? ''}
+                confirmLabel={confirmDialog?.confirmLabel}
+                cancelLabel={i18nValue.tx('cancel')}
+                variant={confirmDialog?.variant}
+                onConfirm={() => confirmDialog?.onConfirm()}
+                onCancel={() => setConfirmDialog(null)}
+              />
 
-      {notificationCenterOpen ? (
-        <LazyOverlayBoundary namespaces={['core', 'shared', 'workspace', 'team']}>
-          <NotificationCenter
-            open={notificationCenterOpen}
-            notifications={notifications}
-            loading={notificationsLoading}
-            applicationRecords={notificationApplications}
-            teamMembers={visibleTeamSummary?.members ?? []}
-            teamName={visibleTeamSummary?.team.name ?? activeSession.user.teamMemberOf?.teamName ?? null}
-            onClose={() => setNotificationCenterOpen(false)}
-            onMarkRead={markNotificationsRead}
-            onMarkUnread={markNotificationsUnread}
-            onMarkAllRead={markAllNotificationsRead}
-            onArchive={archiveNotifications}
-            onOpenNotification={openNotificationDestination}
-          />
-        </LazyOverlayBoundary>
-      ) : null}
+              {notificationCenterOpen ? (
+                <LazyOverlayBoundary namespaces={['core', 'shared', 'workspace', 'team']}>
+                  <NotificationCenter
+                    open={notificationCenterOpen}
+                    notifications={notifications}
+                    loading={notificationsLoading}
+                    applicationRecords={notificationApplications}
+                    teamMembers={visibleTeamSummary?.members ?? []}
+                    teamName={visibleTeamSummary?.team.name ?? activeSession.user.teamMemberOf?.teamName ?? null}
+                    onClose={() => setNotificationCenterOpen(false)}
+                    onMarkRead={markNotificationsRead}
+                    onMarkUnread={markNotificationsUnread}
+                    onMarkAllRead={markAllNotificationsRead}
+                    onArchive={archiveNotifications}
+                    onOpenNotification={openNotificationDestination}
+                  />
+                </LazyOverlayBoundary>
+              ) : null}
 
-      {shortcutsOpen ? (
-        <LazyOverlayBoundary namespaces={['core', 'shared']}>
-          <KeyboardShortcuts open={shortcutsOpen} onClose={function() { setShortcutsOpen(false) }} />
-        </LazyOverlayBoundary>
-      ) : null}
+              {shortcutsOpen ? (
+                <LazyOverlayBoundary namespaces={['core', 'shared']}>
+                  <KeyboardShortcuts
+                    open={shortcutsOpen}
+                    onClose={function () {
+                      setShortcutsOpen(false)
+                    }}
+                  />
+                </LazyOverlayBoundary>
+              ) : null}
 
-      {commandPaletteOpen ? (
-        <LazyOverlayBoundary namespaces={['core', 'shared']}>
-          <CommandPalette
-            open={commandPaletteOpen}
-            actions={commandPaletteActions}
-            onClose={() => setCommandPaletteOpen(false)}
-          />
-        </LazyOverlayBoundary>
-      ) : null}
+              {commandPaletteOpen ? (
+                <LazyOverlayBoundary namespaces={['core', 'shared']}>
+                  <CommandPalette
+                    open={commandPaletteOpen}
+                    actions={commandPaletteActions}
+                    onClose={() => setCommandPaletteOpen(false)}
+                  />
+                </LazyOverlayBoundary>
+              ) : null}
 
-      <ToastStack toasts={toasts} onClose={dismissToast} onPause={pauseToast} onResume={resumeToast} />
-    </div>
-    {showOnboarding ? (
-      <LazyOverlayBoundary namespaces={['core', 'shared', 'tour', 'dashboard', 'workspace', 'dossier', 'profile', 'settings']}>
-        <OnboardingTour onComplete={handleOnboardingComplete} onStepEnter={handleOnboardingStepEnter} />
-      </LazyOverlayBoundary>
-    ) : null}
-        </>
+              <ToastStack toasts={toasts} onClose={dismissToast} onPause={pauseToast} onResume={resumeToast} />
+            </div>
+            {showOnboarding ? (
+              <LazyOverlayBoundary
+                namespaces={['core', 'shared', 'tour', 'dashboard', 'workspace', 'dossier', 'profile', 'settings']}
+              >
+                <OnboardingTour onComplete={handleOnboardingComplete} onStepEnter={handleOnboardingStepEnter} />
+              </LazyOverlayBoundary>
+            ) : null}
+          </>
         ) : null}
       </I18nContext.Provider>
     </ThemeContext.Provider>

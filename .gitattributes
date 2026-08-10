@@ -1,0 +1,5 @@
+/integrations/codex/** text eol=lf
+/public/downloads/*.zip binary
+/public/downloads/*.zip.sha256 text eol=lf
+/public/downloads/*.mcpb binary
+/public/downloads/*.mcpb.sha256 text eol=lf

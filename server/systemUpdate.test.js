@@ -20,6 +20,7 @@ import {
   readActiveUpdatePackage,
   readPendingUpdateBoot,
   readUpdateLockState,
+  releaseUpdateHelperClaim,
   recoverAbandonedPendingUpdateBoot,
   recoverAbandonedUpdateLock,
   replayActiveUpdateIfNeeded,
@@ -711,7 +712,10 @@ describe('system update package safety', () => {
       packagePath: firstPackagePath,
       requestedAt: '2020-01-01T00:00:00.000Z',
     })
-    await claimUpdateLock(storageRoot, { packagePath: firstPackagePath, helperPid: 606 })
+    const liveClaim = await claimUpdateLock(storageRoot, {
+      packagePath: firstPackagePath,
+      helperPid: 606,
+    })
     const liveHelper = await recoverAbandonedUpdateLock({
       projectRoot,
       storageRoot,
@@ -720,25 +724,35 @@ describe('system update package safety', () => {
       now: () => Date.parse('2020-01-01T00:05:00.000Z'),
     })
     expect(liveHelper).toMatchObject({ recovered: false, lockPresent: true, active: true })
-    await clearUpdateLock(storageRoot)
+    await expect(clearUpdateLock(storageRoot)).rejects.toMatchObject({
+      code: 'UPDATE_LOCK_EXPECTED_REQUIRED',
+    })
+    releaseUpdateHelperClaim(liveClaim)
+    await expect(clearUpdateLock(storageRoot, liveClaim)).resolves.toBe(true)
 
     await writeUpdateLock(storageRoot, {
       packagePath: firstPackagePath,
       requestedAt: '2020-01-01T00:00:00.000Z',
     })
-    await claimUpdateLock(storageRoot, { packagePath: firstPackagePath, helperPid: 404 })
-    await writeUpdateLock(storageRoot, {
+    const oldClaim = await claimUpdateLock(storageRoot, {
+      packagePath: firstPackagePath,
+      helperPid: 404,
+    })
+    await expect(writeUpdateLock(storageRoot, {
+      packagePath: successorPackagePath,
+      requestedAt: '2020-01-01T00:00:01.000Z',
+    })).rejects.toMatchObject({ code: 'UPDATE_HELPER_ALREADY_CLAIMED' })
+    releaseUpdateHelperClaim(oldClaim)
+    await expect(clearUpdateLock(storageRoot, oldClaim)).resolves.toBe(true)
+    const successorReceipt = await writeUpdateLock(storageRoot, {
       packagePath: successorPackagePath,
       requestedAt: '2020-01-01T00:00:01.000Z',
     })
-    await expect(clearUpdateLock(storageRoot, {
-      packagePath: firstPackagePath,
-      helperPid: 404,
-    })).resolves.toBe(false)
+    await expect(clearUpdateLock(storageRoot, oldClaim)).resolves.toBe(false)
     await expect(readUpdateLockState(storageRoot)).resolves.toMatchObject({
       packagePath: successorPackagePath,
     })
-    await clearUpdateLock(storageRoot)
+    await expect(clearUpdateLock(storageRoot, successorReceipt)).resolves.toBe(true)
 
     const updateId = '1700000000000-deadbeef'
     const rollbackRoot = path.join(storageRoot, 'update-rollbacks', updateId)

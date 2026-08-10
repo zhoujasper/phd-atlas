@@ -8,24 +8,19 @@ import { Transform } from 'node:stream'
 import { createGunzip } from 'node:zlib'
 import { pathToFileURL } from 'node:url'
 import tar from 'tar-fs'
+import Database from 'better-sqlite3'
+import { REQUIRED_RUNTIME_FILES } from './sharedConstants.js'
 
 export const UPDATE_MANIFEST_NAME = 'update-manifest.json'
 export const UPDATE_LOCK_NAME = '.update-in-progress.json'
+export const UPDATE_SAFE_SHUTDOWN_NAME = '.update-safe-shutdown.json'
+export const UPDATE_HELPER_CLAIM_NAME = '.update-helper-claim.sqlite'
 export const UPDATE_RESULT_NAME = 'last-update-result.json'
 export const UPDATE_RUNTIME_INVALID_NAME = '.update-runtime-invalid.json'
 export const UPDATE_BOOT_PENDING_NAME = '.update-boot-pending.json'
 export const ACTIVE_UPDATE_DIRECTORY_NAME = 'active-update'
 export const ACTIVE_UPDATE_POINTER_NAME = 'active.json'
 
-const REQUIRED_RUNTIME_FILES = new Set([
-  'dist/index.html',
-  'server/index.js',
-  'tools/start-server.mjs',
-  'tools/apply-update.mjs',
-  'tools/container-entrypoint.mjs',
-  'package.json',
-  'package-lock.json',
-])
 const ALLOWED_UNMANIFESTED_FILES = new Set([
   UPDATE_MANIFEST_NAME,
   'UPDATE_PACKAGE_README.txt',
@@ -48,8 +43,9 @@ const MAX_UPDATE_PATH_DEPTH = 32
 const MAX_UPDATE_TAR_STREAM_SIZE = 320 * 1024 * 1024
 const RUNTIME_PREFLIGHT_TIMEOUT_MS = 60_000
 const PREVIOUS_ACTIVE_BACKUP_NAME = '.previous-active-update.tar.gz'
+const UPDATE_HELPER_CLAIM_HANDLE = Symbol('update-helper-claim-handle')
 
-function normalizedArchivePath(value) {
+export function normalizedArchivePath(value) {
   const normalized = path.posix.normalize(String(value ?? '').replaceAll('\\', '/').replace(/^\.\/+/, ''))
   if (!normalized || normalized === '.' || normalized.startsWith('/') || normalized === '..' || normalized.startsWith('../')) {
     throw Object.assign(new Error('Update package contains an unsafe path.'), { code: 'INVALID_UPDATE_PACKAGE' })
@@ -107,7 +103,7 @@ function isManagedRuntimePath(value) {
     || name.startsWith('tools/')
 }
 
-async function sha256File(filePath) {
+export async function sha256File(filePath) {
   const hash = createHash('sha256')
   for await (const chunk of createReadStream(filePath)) hash.update(chunk)
   return hash.digest('hex')
@@ -124,7 +120,47 @@ async function writeJsonAtomically(filePath, value) {
   }
 }
 
-async function listExtractedFiles(root, current = root) {
+async function writeJsonDurablyAtomically(filePath, value, options = {}) {
+  const temporaryPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`
+  const platform = options.platform ?? process.platform
+  let fileHandle = null
+  let directoryHandle = null
+  let renamed = false
+  await fs.mkdir(path.dirname(filePath), { recursive: true })
+  try {
+    fileHandle = await fs.open(temporaryPath, 'wx', 0o600)
+    await fileHandle.writeFile(`${JSON.stringify(value, null, 2)}\n`, 'utf8')
+    await (options.syncFile
+      ? options.syncFile(fileHandle)
+      : fileHandle.sync())
+    await fileHandle.close()
+    fileHandle = null
+    await fs.rename(temporaryPath, filePath)
+    renamed = true
+    // Windows does not provide a portable directory-fsync primitive through
+    // Node. The marker still uses a synced file plus same-volume atomic rename;
+    // Linux production additionally persists the parent directory entry.
+    if (platform !== 'win32') {
+      directoryHandle = await fs.open(path.dirname(filePath), 'r')
+      await (options.syncDirectory
+        ? options.syncDirectory(directoryHandle)
+        : directoryHandle.sync())
+      await directoryHandle.close()
+      directoryHandle = null
+    }
+  } catch (error) {
+    if (renamed) {
+      await fs.rm(filePath, { force: true }).catch(() => undefined)
+    }
+    throw error
+  } finally {
+    await fileHandle?.close().catch(() => undefined)
+    await directoryHandle?.close().catch(() => undefined)
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+  }
+}
+
+export async function listExtractedFiles(root, current = root) {
   const files = []
   for (const entry of await fs.readdir(current, { withFileTypes: true })) {
     const fullPath = path.join(current, entry.name)
@@ -140,7 +176,7 @@ async function listExtractedFiles(root, current = root) {
   return files
 }
 
-async function extractTarGzip(packagePath, destination) {
+export async function extractTarGzip(packagePath, destination) {
   await fs.mkdir(destination, { recursive: true })
   let entryCount = 0
   let extractedSize = 0
@@ -240,7 +276,7 @@ function compareArchivePaths(left, right) {
   return left < right ? -1 : left > right ? 1 : 0
 }
 
-function manifestDigest(files) {
+export function manifestDigest(files) {
   const hash = createHash('sha256')
   for (const file of [...files].sort((left, right) => compareArchivePaths(left.path, right.path))) {
     hash.update(`${file.path}\0${file.sha256}\0${file.size}\n`)
@@ -350,6 +386,14 @@ function pendingBootPath(storageRoot) {
 
 function updateLockPath(storageRoot) {
   return path.join(storageRoot, UPDATE_LOCK_NAME)
+}
+
+function updateSafeShutdownPath(storageRoot) {
+  return path.join(storageRoot, UPDATE_SAFE_SHUTDOWN_NAME)
+}
+
+function updateHelperClaimPath(storageRoot) {
+  return path.join(storageRoot, UPDATE_HELPER_CLAIM_NAME)
 }
 
 function normalizedManifestFiles(files) {
@@ -1346,7 +1390,13 @@ export async function applyUpdatePackage({
   runtimePreflight = preflightRuntime,
   allowSameVersion = false,
 }) {
-  const updateId = `${Date.now()}-${randomUUID().slice(0, 8)}`
+  // A detached helper already owns a generation-bound update id. Keep that id
+  // stable through preparing/applying so its original claim remains a valid
+  // exact-CAS cleanup receipt. Direct/offline callers without a lock still get
+  // a fresh operation id.
+  const scheduledLock = await readUpdateLock(storageRoot)
+  const updateId = String(scheduledLock?.updateId ?? '').trim()
+    || `${Date.now()}-${randomUUID().slice(0, 8)}`
   const workRoot = path.join(storageRoot, 'update-work')
   const rollbackRoot = path.join(storageRoot, 'update-rollbacks', updateId)
   const resultPath = path.join(storageRoot, UPDATE_RESULT_NAME)
@@ -1524,66 +1574,318 @@ export async function applyUpdatePackage({
   }
 }
 
-export async function writeUpdateLock(storageRoot, data) {
-  const filePath = updateLockPath(storageRoot)
-  await writeJsonAtomically(filePath, {
+async function acquireUpdateHelperClaimDatabase(storageRoot) {
+  await fs.mkdir(storageRoot, { recursive: true })
+  const database = new Database(updateHelperClaimPath(storageRoot))
+  try {
+    database.pragma('busy_timeout = 0')
+    database.exec('BEGIN EXCLUSIVE')
+    return database
+  } catch (error) {
+    try {
+      database.close()
+    } catch {
+      // A failed claim has no state to preserve.
+    }
+    if (error?.code === 'SQLITE_BUSY' || error?.code === 'SQLITE_LOCKED') {
+      throw Object.assign(new Error('Another update helper already owns this update.'), {
+        code: 'UPDATE_HELPER_ALREADY_CLAIMED',
+        cause: error,
+      })
+    }
+    throw error
+  }
+}
+
+function releaseUpdateHelperClaimDatabase(database) {
+  if (!database) return
+  try {
+    if (database.inTransaction) database.exec('ROLLBACK')
+  } finally {
+    database.close()
+  }
+}
+
+export function releaseUpdateHelperClaim(claimedLock) {
+  const database = claimedLock?.[UPDATE_HELPER_CLAIM_HANDLE]
+  if (!database) return false
+  releaseUpdateHelperClaimDatabase(database)
+  delete claimedLock[UPDATE_HELPER_CLAIM_HANDLE]
+  return true
+}
+
+function updateShutdownHandoffIdentity(lock) {
+  const updateId = String(lock?.updateId ?? '').trim()
+  const handoffNonce = String(lock?.handoffNonce ?? '').trim()
+  const packagePath = String(lock?.packagePath ?? '').trim()
+  const targetVersion = String(
+    lock?.version ?? lock?.toVersion ?? lock?.targetVersion ?? '',
+  ).trim()
+  const requestedAt = String(lock?.requestedAt ?? '').trim()
+  const previousPid = Number(lock?.previousPid)
+  const helperPid = Number(lock?.helperPid)
+  const helperClaimToken = String(lock?.helperClaimToken ?? '').trim()
+  if (
+    !updateId
+    || !handoffNonce
+    || !packagePath
+    || !targetVersion
+    || !requestedAt
+    || !Number.isSafeInteger(previousPid)
+    || previousPid <= 0
+    || !Number.isSafeInteger(helperPid)
+    || helperPid <= 0
+    || !helperClaimToken
+  ) {
+    throw Object.assign(new Error('The update lock lacks a complete safe-shutdown identity.'), {
+      code: 'UPDATE_SAFE_SHUTDOWN_INVALID',
+    })
+  }
+  return {
+    updateId,
+    handoffNonce,
+    packagePath: path.resolve(packagePath),
+    targetVersion,
+    requestedAt,
+    previousPid,
+    helperPid,
+    helperClaimToken,
+  }
+}
+
+function sameUpdateShutdownHandoff(left, right) {
+  return left.updateId === right.updateId
+    && left.handoffNonce === right.handoffNonce
+    && left.packagePath === right.packagePath
+    && left.targetVersion === right.targetVersion
+    && left.requestedAt === right.requestedAt
+    && left.previousPid === right.previousPid
+    && left.helperPid === right.helperPid
+    && left.helperClaimToken === right.helperClaimToken
+}
+
+async function readUpdateSafeShutdownMarker(storageRoot) {
+  try {
+    return JSON.parse(await fs.readFile(updateSafeShutdownPath(storageRoot), 'utf8'))
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw Object.assign(new Error(`The update safe-shutdown marker is unreadable: ${error?.message ?? error}`), {
+      code: 'UPDATE_SAFE_SHUTDOWN_INVALID',
+      cause: error,
+    })
+  }
+}
+
+export async function writeUpdateSafeShutdownMarker(storageRoot, {
+  previousPid,
+  expectedExitCode,
+  reason,
+}, options = {}) {
+  if (expectedExitCode !== 75 || reason !== 'system-update') {
+    throw Object.assign(new Error('Only an exit-75 system update can publish a safe-shutdown marker.'), {
+      code: 'UPDATE_SAFE_SHUTDOWN_INVALID',
+    })
+  }
+  const now = options.now ?? Date.now
+  const sleep = options.sleep ?? ((delayMs) => new Promise((resolveSleep) => {
+    setTimeout(resolveSleep, delayMs)
+  }))
+  const claimWaitMs = Math.max(0, Number(options.claimWaitMs ?? 5_000))
+  const claimPollMs = Math.max(1, Number(options.claimPollMs ?? 50))
+  const claimDeadline = now() + claimWaitMs
+  let beforeLock = null
+  let identity = null
+  while (!identity) {
+    beforeLock = await readUpdateLock(storageRoot)
+    if (!beforeLock) {
+      throw Object.assign(new Error('The scheduled update lock is missing before safe shutdown.'), {
+        code: 'UPDATE_LOCK_MISSING',
+      })
+    }
+    try {
+      identity = updateShutdownHandoffIdentity(beforeLock)
+    } catch (error) {
+      if (now() >= claimDeadline) throw error
+      await sleep(Math.min(claimPollMs, claimDeadline - now()))
+    }
+  }
+  if (identity.previousPid !== previousPid) {
+    throw Object.assign(new Error('The update safe-shutdown marker belongs to another worker.'), {
+      code: 'UPDATE_LOCK_CHANGED',
+    })
+  }
+  const marker = {
     formatVersion: 1,
-    updateId: data.updateId ?? `${Date.now()}-${randomUUID().slice(0, 8)}`,
-    phase: data.phase ?? 'scheduled',
-    requestedAt: data.requestedAt ?? new Date().toISOString(),
-    ...data,
-  })
-  return filePath
+    appId: 'phd-atlas',
+    ...identity,
+    expectedExitCode: 75,
+    reason: 'system-update',
+    durabilityPreserved: true,
+    preparedAt: new Date().toISOString(),
+  }
+  await writeJsonDurablyAtomically(
+    updateSafeShutdownPath(storageRoot),
+    marker,
+    options.durability,
+  )
+  const afterLock = await readUpdateLock(storageRoot)
+  if (
+    !afterLock
+    || !sameUpdateShutdownHandoff(identity, updateShutdownHandoffIdentity(afterLock))
+  ) {
+    await fs.rm(updateSafeShutdownPath(storageRoot), { force: true }).catch(() => undefined)
+    throw Object.assign(new Error('The update lock changed while safe shutdown was being published.'), {
+      code: 'UPDATE_LOCK_CHANGED',
+    })
+  }
+  return marker
+}
+
+export async function requireUpdateSafeShutdownMarker(storageRoot, expectedLock) {
+  const expectedIdentity = updateShutdownHandoffIdentity(expectedLock)
+  const currentLock = await readUpdateLock(storageRoot)
+  if (
+    !currentLock
+    || !sameUpdateShutdownHandoff(
+      expectedIdentity,
+      updateShutdownHandoffIdentity(currentLock),
+    )
+  ) {
+    throw Object.assign(new Error('The update lock changed before the old worker stopped.'), {
+      code: 'UPDATE_LOCK_CHANGED',
+    })
+  }
+  const marker = await readUpdateSafeShutdownMarker(storageRoot)
+  let markerIdentity
+  try {
+    markerIdentity = updateShutdownHandoffIdentity(marker)
+  } catch (error) {
+    throw Object.assign(new Error('The old worker did not publish a valid durable safe-shutdown marker.'), {
+      code: 'UPDATE_SAFE_SHUTDOWN_MISSING',
+      cause: error,
+    })
+  }
+  if (
+    !marker
+    || marker.formatVersion !== 1
+    || marker.appId !== 'phd-atlas'
+    || marker.expectedExitCode !== 75
+    || marker.reason !== 'system-update'
+    || marker.durabilityPreserved !== true
+    || !sameUpdateShutdownHandoff(expectedIdentity, markerIdentity)
+  ) {
+    throw Object.assign(new Error('The old worker did not publish a matching durable safe-shutdown marker.'), {
+      code: 'UPDATE_SAFE_SHUTDOWN_MISSING',
+    })
+  }
+  return marker
+}
+
+export async function writeUpdateLock(storageRoot, data) {
+  const claimDatabase = await acquireUpdateHelperClaimDatabase(storageRoot)
+  const filePath = updateLockPath(storageRoot)
+  try {
+    await fs.rm(updateSafeShutdownPath(storageRoot), { force: true })
+    const writtenLock = {
+      formatVersion: 1,
+      updateId: data.updateId ?? `${Date.now()}-${randomUUID().slice(0, 8)}`,
+      handoffNonce: data.handoffNonce ?? randomUUID(),
+      phase: data.phase ?? 'scheduled',
+      requestedAt: data.requestedAt ?? new Date().toISOString(),
+      ...data,
+    }
+    await writeJsonAtomically(filePath, writtenLock)
+    // Callers must retain this immutable generation receipt and pass it to
+    // clearUpdateLock. A path-only or read-later cleanup can delete a successor.
+    return Object.freeze({ ...writtenLock })
+  } finally {
+    releaseUpdateHelperClaimDatabase(claimDatabase)
+  }
 }
 
 export async function claimUpdateLock(storageRoot, {
   packagePath,
   helperPid,
 }) {
-  const lock = await readUpdateLock(storageRoot)
-  if (!lock) {
-    throw Object.assign(new Error('The scheduled update lock is missing.'), {
-      code: 'UPDATE_LOCK_MISSING',
+  const claimDatabase = await acquireUpdateHelperClaimDatabase(storageRoot)
+  try {
+    const lock = await readUpdateLock(storageRoot)
+    if (!lock) {
+      throw Object.assign(new Error('The scheduled update lock is missing.'), {
+        code: 'UPDATE_LOCK_MISSING',
+      })
+    }
+    if (
+      path.resolve(String(lock.packagePath ?? '')) !== path.resolve(packagePath)
+      || !Number.isSafeInteger(helperPid)
+      || helperPid <= 0
+      || lock.helperPid
+      || lock.helperClaimToken
+    ) {
+      throw Object.assign(new Error('The scheduled update lock belongs to another update helper.'), {
+        code: 'UPDATE_LOCK_CHANGED',
+      })
+    }
+    const claimed = {
+      ...lock,
+      phase: lock.phase === 'applying' ? 'applying' : 'claimed',
+      helperPid,
+      helperClaimToken: randomUUID(),
+      claimedAt: lock.claimedAt ?? new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+    await writeJsonAtomically(updateLockPath(storageRoot), claimed)
+    Object.defineProperty(claimed, UPDATE_HELPER_CLAIM_HANDLE, {
+      configurable: true,
+      enumerable: false,
+      value: claimDatabase,
     })
+    return claimed
+  } catch (error) {
+    releaseUpdateHelperClaimDatabase(claimDatabase)
+    throw error
   }
-  if (
-    path.resolve(String(lock.packagePath ?? '')) !== path.resolve(packagePath)
-    || !Number.isSafeInteger(helperPid)
-    || helperPid <= 0
-    || (lock.helperPid && lock.helperPid !== helperPid)
-  ) {
-    throw Object.assign(new Error('The scheduled update lock belongs to another update helper.'), {
-      code: 'UPDATE_LOCK_CHANGED',
-    })
-  }
-  const claimed = {
-    ...lock,
-    phase: lock.phase === 'applying' ? 'applying' : 'claimed',
-    helperPid,
-    claimedAt: lock.claimedAt ?? new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  }
-  await writeJsonAtomically(updateLockPath(storageRoot), claimed)
-  return claimed
 }
 
-export async function clearUpdateLock(storageRoot, expected = null) {
-  if (expected) {
+export async function clearUpdateLock(storageRoot, expected) {
+  if (!expected || typeof expected !== 'object') {
+    throw Object.assign(new Error('An exact update-lock generation receipt is required.'), {
+      code: 'UPDATE_LOCK_EXPECTED_REQUIRED',
+    })
+  }
+  let claimDatabase = expected?.[UPDATE_HELPER_CLAIM_HANDLE] ?? null
+  let ownsClaimDatabase = false
+  if (!claimDatabase) {
+    try {
+      claimDatabase = await acquireUpdateHelperClaimDatabase(storageRoot)
+      ownsClaimDatabase = true
+    } catch (error) {
+      if (error?.code === 'UPDATE_HELPER_ALREADY_CLAIMED') return false
+      throw error
+    }
+  }
+  try {
     const lock = await readUpdateLock(storageRoot)
     if (!lock) return false
+    const helperOwned = Boolean(lock.helperPid || lock.helperClaimToken)
     if (
-      expected.updateId && lock.updateId !== expected.updateId
+      expected.updateId !== lock.updateId
+      || expected.handoffNonce !== lock.handoffNonce
       || expected.packagePath
         && path.resolve(String(lock.packagePath ?? '')) !== path.resolve(expected.packagePath)
-      || expected.helperPid
-        && lock.helperPid
-        && lock.helperPid !== expected.helperPid
+      || helperOwned && (
+        expected.helperPid !== lock.helperPid
+        || expected.helperClaimToken !== lock.helperClaimToken
+      )
     ) {
       return false
     }
+    await fs.rm(updateLockPath(storageRoot), { force: true })
+    await fs.rm(updateSafeShutdownPath(storageRoot), { force: true })
+    return true
+  } finally {
+    if (ownsClaimDatabase) releaseUpdateHelperClaimDatabase(claimDatabase)
   }
-  await fs.rm(updateLockPath(storageRoot), { force: true })
-  return true
 }
 
 export async function readUpdateLockState(storageRoot) {
@@ -1606,27 +1908,35 @@ export async function isUpdateLockAbandoned(lock, options = {}) {
 }
 
 async function archiveAbandonedUpdateLock(storageRoot, lock, disposition) {
-  const current = await readUpdateLock(storageRoot)
-  if (!current) return null
-  if (
-    current.requestedAt !== lock.requestedAt
-    || current.packagePath !== lock.packagePath
-    || current.updateId !== lock.updateId
-    || current.phase !== lock.phase
-    || current.helperPid !== lock.helperPid
-  ) {
-    throw Object.assign(new Error('The update lock changed while recovery was starting.'), {
-      code: 'UPDATE_LOCK_CHANGED',
-    })
+  const claimDatabase = await acquireUpdateHelperClaimDatabase(storageRoot)
+  try {
+    const current = await readUpdateLock(storageRoot)
+    if (!current) return null
+    if (
+      current.requestedAt !== lock.requestedAt
+      || current.packagePath !== lock.packagePath
+      || current.updateId !== lock.updateId
+      || current.handoffNonce !== lock.handoffNonce
+      || current.phase !== lock.phase
+      || current.helperPid !== lock.helperPid
+      || current.helperClaimToken !== lock.helperClaimToken
+    ) {
+      throw Object.assign(new Error('The update lock changed while recovery was starting.'), {
+        code: 'UPDATE_LOCK_CHANGED',
+      })
+    }
+    const historyRoot = path.join(storageRoot, 'update-lock-history')
+    const archivedPath = path.join(
+      historyRoot,
+      `${disposition}-${Date.now()}-${randomUUID().slice(0, 8)}.json`,
+    )
+    await fs.mkdir(historyRoot, { recursive: true })
+    await fs.rename(updateLockPath(storageRoot), archivedPath)
+    await fs.rm(updateSafeShutdownPath(storageRoot), { force: true }).catch(() => undefined)
+    return archivedPath
+  } finally {
+    releaseUpdateHelperClaimDatabase(claimDatabase)
   }
-  const historyRoot = path.join(storageRoot, 'update-lock-history')
-  const archivedPath = path.join(
-    historyRoot,
-    `${disposition}-${Date.now()}-${randomUUID().slice(0, 8)}.json`,
-  )
-  await fs.mkdir(historyRoot, { recursive: true })
-  await fs.rename(updateLockPath(storageRoot), archivedPath)
-  return archivedPath
 }
 
 export async function recoverAbandonedUpdateLock({

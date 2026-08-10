@@ -32,6 +32,10 @@ type IdleDeadline = {
 const warmMountQueue = new Set<() => void>()
 let warmMountQueueHandle: number | null = null
 
+/** Mirrors --ease-fluid / --ease-collapse in index.css. */
+const EXPAND_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)'
+const COLLAPSE_EASING = 'cubic-bezier(0.4, 0.02, 0.22, 1)'
+
 function isJsdomRuntime() {
   return typeof navigator !== 'undefined' && navigator.userAgent.toLowerCase().includes('jsdom')
 }
@@ -172,7 +176,10 @@ export function CollapsiblePanel({
     }
   }
 
-  // Mount lifecycle: keep content while open (or keepMounted); delay unmount after close.
+  // Mount lifecycle: keep content while open (or keepMounted); unmount as the
+  // collapse lands. Unmounting well after the animation used to read as a
+  // second, late collapse: the panel finished shrinking, then its empty shell
+  // (and the parent gap it still occupied) disappeared a beat later.
   useEffect(() => {
     if (unmountTimerRef.current !== null) {
       window.clearTimeout(unmountTimerRef.current)
@@ -186,14 +193,27 @@ export function CollapsiblePanel({
       return undefined
     }
 
-    // Still open visually until collapse finishes — unmount after close duration.
-    unmountTimerRef.current = window.setTimeout(() => {
-      unmountTimerRef.current = null
+    const panel = panelRef.current
+    const settle = () => {
+      if (unmountTimerRef.current !== null) {
+        window.clearTimeout(unmountTimerRef.current)
+        unmountTimerRef.current = null
+      }
       // Only unmount if still closed (guard against reopen races).
       if (!openRef.current) setMounted(false)
-    }, getMotionDelay(resolvedCloseMs + 160))
+    }
+
+    // The height transition is the authority; the timer is only a fallback for
+    // interrupted transitions and reduced-motion runs.
+    const handleTransitionEnd = (event: TransitionEvent) => {
+      if (event.target !== panel || event.propertyName !== 'grid-template-rows') return
+      settle()
+    }
+    panel?.addEventListener('transitionend', handleTransitionEnd)
+    unmountTimerRef.current = window.setTimeout(settle, getMotionDelay(resolvedCloseMs) + 32)
 
     return () => {
+      panel?.removeEventListener('transitionend', handleTransitionEnd)
       if (unmountTimerRef.current !== null) {
         window.clearTimeout(unmountTimerRef.current)
         unmountTimerRef.current = null
@@ -258,7 +278,10 @@ export function CollapsiblePanel({
         ],
         {
           duration,
-          easing: 'cubic-bezier(0.22, 0.61, 0.36, 1)',
+          // Must match the panel's own grid-template-rows curve. A gentler
+          // curve here left the last pixels of the gap trailing behind a panel
+          // that had already finished collapsing.
+          easing: visuallyOpen ? EXPAND_EASING : COLLAPSE_EASING,
           fill: 'forwards',
         },
       )

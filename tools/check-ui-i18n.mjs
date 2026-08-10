@@ -31,6 +31,20 @@ for (const file of fs.readdirSync(englishRoot).filter((name) => name.endsWith('.
   )
 }
 
+const dynamicTranslationContracts = new Map([
+  ['Discover supervisor requirement', ['required', 'recommended', 'optional', 'not_needed', 'unknown'].map((value) => `discover.supervisor_${value}`)],
+  ['Discover lab type', ['dry', 'wet', 'both', 'unknown'].map((value) => `discover.wetDry_${value}`)],
+  ['Interview Prep question category', ['research', 'motivation', 'experience', 'behavioral', 'technical', 'advisor', 'closing'].map((value) => `interview.category.${value}`)],
+  ['Interview Prep format', ['video', 'phone', 'onsite', 'panel'].map((value) => `interview.format.${value}`)],
+  ['Interview Prep status', ['preparing', 'upcoming', 'completed'].map((value) => `interview.status.${value}`)],
+  ['Interview Prep tab', ['plan', 'questions', 'mock', 'feedback'].map((value) => `interview.tab.${value}`)],
+])
+for (const [description, keys] of dynamicTranslationContracts) {
+  for (const key of keys) {
+    if (!translationKeys.has(key)) errors.push(`${description}: missing dynamic i18n key ${key}`)
+  }
+}
+
 function sourceFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const entryPath = path.join(directory, entry.name)
@@ -409,6 +423,9 @@ const screenSurfaceFiles = new Map([
     path.join(sourceRoot, 'components', 'shared', 'DiscoverWorkspace.tsx'),
     path.join(sourceRoot, 'components', 'shared', 'DiscoverAdvancedInsights.tsx'),
   ]],
+  ['interview', [
+    path.join(sourceRoot, 'components', 'screens', 'InterviewPrepScreen.tsx'),
+  ]],
   ['profile', [
     path.join(sourceRoot, 'components', 'screens', 'ProfileScreen.tsx'),
   ]],
@@ -442,10 +459,18 @@ if (!screenNamespaces) {
 }
 
 const errorMessageSource = fs.readFileSync(path.join(sourceRoot, 'errorMessages.ts'), 'utf8')
-const mappedErrorCodes = new Set(Array.from(
-  errorMessageSource.matchAll(/^\s{2}([A-Z][A-Z0-9_]+):\s*'apiErrors\./gm),
-  (match) => match[1],
-))
+const errorMessageMappings = Array.from(
+  errorMessageSource.matchAll(/^\s{2}([A-Z][A-Z0-9_]+):\s*'([^']+)'/gm),
+  (match) => ({ code: match[1], key: match[2] }),
+)
+const mappedErrorCodes = new Set()
+for (const { code, key } of errorMessageMappings) {
+  if (!translationKeys.has(key)) {
+    errors.push(`error mapping ${code} references missing translation key ${key}`)
+    continue
+  }
+  mappedErrorCodes.add(code)
+}
 const speciallyResolvedErrorCodes = new Set(['PRO_REQUIRED', 'STORAGE_QUOTA_EXCEEDED'])
 const serverRoot = path.join(process.cwd(), 'server')
 const serverSource = fs.readdirSync(serverRoot)

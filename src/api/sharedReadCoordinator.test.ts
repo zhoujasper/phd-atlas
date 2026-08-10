@@ -95,6 +95,29 @@ describe('SharedReadCoordinator', () => {
     await expect(third).rejects.toMatchObject({ name: 'AbortError' })
   })
 
+  it('lets an immediate remount rejoin an orphaned read without restarting transport', async () => {
+    const coordinator = new SharedReadCoordinator()
+    const result = deferred<string>()
+    let sharedSignal: AbortSignal | undefined
+    const start = vi.fn((signal: AbortSignal) => {
+      sharedSignal = signal
+      return result.promise
+    })
+    const firstController = new AbortController()
+
+    const first = coordinator.run('strict-mode-read', start, firstController.signal)
+    firstController.abort()
+    const remounted = coordinator.run('strict-mode-read', start)
+
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' })
+    await Promise.resolve()
+    expect(start).toHaveBeenCalledTimes(1)
+    expect(sharedSignal?.aborted).toBe(false)
+
+    result.resolve('ready')
+    await expect(remounted).resolves.toBe('ready')
+  })
+
   it('invalidates only matching request partitions', async () => {
     const coordinator = new SharedReadCoordinator()
     const signals = new Map<string, AbortSignal>()
@@ -118,5 +141,55 @@ describe('SharedReadCoordinator', () => {
 
     secondController.abort()
     await expect(second).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('invalidates only reads selected by a path-aware matcher', async () => {
+    const coordinator = new SharedReadCoordinator()
+    const signals = new Map<string, AbortSignal>()
+    const start = (key: string) => (signal: AbortSignal) => {
+      signals.set(key, signal)
+      return new Promise<string>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    }
+
+    const applications = coordinator.run(
+      'g1:user:r0 conditional /api/applications {}',
+      start('applications'),
+    )
+    const notificationsController = new AbortController()
+    const notifications = coordinator.run(
+      'g1:user:r0 conditional /api/notifications/unread-count {}',
+      start('notifications'),
+      notificationsController.signal,
+    )
+    await Promise.resolve()
+
+    coordinator.invalidateMatching((key) => key.includes(' /api/applications '))
+
+    await expect(applications).rejects.toBeInstanceOf(SharedReadInvalidatedError)
+    expect(signals.get('applications')?.aborted).toBe(true)
+    expect(signals.get('notifications')?.aborted).toBe(false)
+
+    notificationsController.abort()
+    await expect(notifications).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('rejects invalidated subscribers even when the starter ignores transport abort', async () => {
+    const coordinator = new SharedReadCoordinator()
+    const result = deferred<string>()
+    let sharedSignal: AbortSignal | undefined
+    const read = coordinator.run('g1:user-a:read', (signal) => {
+      sharedSignal = signal
+      return result.promise
+    })
+
+    coordinator.invalidatePrefix('g1:user-a:')
+    result.resolve('stale')
+
+    await expect(read).rejects.toBeInstanceOf(SharedReadInvalidatedError)
+    expect(sharedSignal?.aborted).toBe(true)
+    expect(sharedSignal?.reason).toBeInstanceOf(SharedReadInvalidatedError)
+    await expect(coordinator.run('g1:user-a:read', async () => 'fresh')).resolves.toBe('fresh')
   })
 })

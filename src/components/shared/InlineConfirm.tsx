@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { useI18n } from '../hooks/useI18n'
 
@@ -19,7 +19,7 @@ export type InlineConfirmProps = {
   idleAriaLabel?: string
   onOpen: () => void
   onCancel: () => void
-  onConfirm: () => void
+  onConfirm: () => void | Promise<void>
 }
 
 /**
@@ -51,7 +51,9 @@ export function InlineConfirm({
   const actionsRef = useRef<HTMLDivElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
   const confirmRef = useRef<HTMLButtonElement>(null)
+  const [pending, setPending] = useState(false)
   const resolvedCancel = cancelLabel ?? tx('cancel')
+  const effectiveBusy = busy || pending
 
   useLayoutEffect(() => {
     const root = rootRef.current
@@ -82,6 +84,10 @@ export function InlineConfirm({
   }, [children, confirmLabel, resolvedCancel])
 
   useEffect(() => {
+    if (!open) setPending(false)
+  }, [open])
+
+  useEffect(() => {
     if (!open) return
     const target = confirmTone === 'danger' ? cancelRef.current : confirmRef.current
     window.requestAnimationFrame(() => target?.focus())
@@ -103,7 +109,7 @@ export function InlineConfirm({
   return (
     <div
       ref={rootRef}
-      className={clsx('inline-confirm', open && 'is-open', busy && 'is-busy', className)}
+      className={clsx('inline-confirm', open && 'is-open', effectiveBusy && 'is-busy', className)}
       data-tone={confirmTone}
       role="group"
       aria-label={open ? confirmLabel : idleAriaLabel}
@@ -112,7 +118,7 @@ export function InlineConfirm({
         ref={idleRef}
         type="button"
         className={clsx('inline-confirm-idle', idleClassName)}
-        disabled={disabled || busy || open}
+        disabled={disabled || effectiveBusy || open}
         tabIndex={open ? -1 : 0}
         title={idleTitle}
         aria-label={idleAriaLabel}
@@ -121,7 +127,7 @@ export function InlineConfirm({
         onClick={(event) => {
           event.preventDefault()
           event.stopPropagation()
-          if (!disabled && !busy) onOpen()
+          if (!disabled && !effectiveBusy) onOpen()
         }}
       >
         {children}
@@ -137,7 +143,7 @@ export function InlineConfirm({
           ref={cancelRef}
           type="button"
           className={clsx('inline-confirm-cancel', cancelClassName)}
-          disabled={!open || busy}
+          disabled={!open || effectiveBusy}
           tabIndex={open ? 0 : -1}
           onClick={(event) => {
             event.preventDefault()
@@ -155,12 +161,14 @@ export function InlineConfirm({
             confirmTone === 'danger' && 'is-danger',
             confirmClassName,
           )}
-          disabled={!open || busy}
+          disabled={!open || effectiveBusy}
           tabIndex={open ? 0 : -1}
           onClick={(event) => {
             event.preventDefault()
             event.stopPropagation()
-            onConfirm()
+            if (pending) return
+            setPending(true)
+            void Promise.resolve().then(onConfirm).catch(() => undefined).finally(() => setPending(false))
           }}
         >
           {confirmLabel}

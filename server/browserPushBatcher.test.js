@@ -13,6 +13,7 @@ import {
 const tempRoots = []
 
 afterEach(async () => {
+  vi.useRealTimers()
   await Promise.all(tempRoots.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })))
 })
 
@@ -343,6 +344,108 @@ describe('browser push batching', () => {
     clock += 50
     await expect(batcher.flushDue({ at: clock })).resolves.toMatchObject([{ status: 'delivered' }])
     expect(await batcher.pending()).toEqual([])
+  })
+
+  it('waits for a timer-owned delivery and its durable finish before stopAndWait resolves', async () => {
+    vi.useFakeTimers()
+    let clock = 1_000
+    let releaseDelivery
+    const delivery = new Promise((resolve) => { releaseDelivery = resolve })
+    const persistence = createMemoryBrowserPushPersistence()
+    const deliver = vi.fn(() => delivery)
+    const batcher = createBrowserPushBatcher({
+      deliver,
+      persistence,
+      now: () => clock,
+      batchWindowMs: 10,
+    })
+
+    await batcher.enqueue('user-a', notification('timer-1', 'discover_match'))
+    clock += 10
+    await vi.advanceTimersByTimeAsync(10)
+    expect(deliver).toHaveBeenCalledOnce()
+
+    let stoppedSettled = false
+    const stopped = batcher.stopAndWait(new Error('server shutdown'))
+    void stopped.then(() => { stoppedSettled = true })
+    expect(batcher.stopAndWait()).toBe(stopped)
+    await Promise.resolve()
+    expect(stoppedSettled).toBe(false)
+
+    releaseDelivery({ attempted: 1, delivered: 1, failed: 0, removed: 0 })
+    await stopped
+    expect(stoppedSettled).toBe(true)
+    expect(persistence.inspect().batches).toEqual([])
+    expect(vi.getTimerCount()).toBe(0)
+
+    await expect(batcher.enqueue('user-a', notification('late-1', 'discover_match'))).rejects.toMatchObject({
+      name: 'BrowserPushBatcherStoppedError',
+      code: 'BROWSER_PUSH_BATCHER_STOPPED',
+      status: 503,
+      retryable: true,
+    })
+    await expect(batcher.flushDue()).rejects.toMatchObject({ code: 'BROWSER_PUSH_BATCHER_STOPPED' })
+    await expect(batcher.pending()).rejects.toMatchObject({ code: 'BROWSER_PUSH_BATCHER_STOPPED' })
+    await expect(batcher.start()).rejects.toMatchObject({ code: 'BROWSER_PUSH_BATCHER_STOPPED' })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('observes a late detached timer rejection even when the error reporter throws', async () => {
+    vi.useFakeTimers()
+    let clock = 2_000
+    let releaseDelivery
+    const delivery = new Promise((resolve) => { releaseDelivery = resolve })
+    const persistenceError = new Error('journal unavailable')
+    const persistence = {
+      load: vi.fn().mockResolvedValue({ version: 2, revision: 0, batches: [], userDispatches: [] }),
+      save: vi.fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(persistenceError),
+    }
+    const onError = vi.fn(() => { throw new Error('reporter unavailable') })
+    const batcher = createBrowserPushBatcher({
+      deliver: vi.fn(() => delivery),
+      persistence,
+      now: () => clock,
+      batchWindowMs: 10,
+      onError,
+    })
+
+    await batcher.enqueue('user-a', notification('timer-reject', 'discover_match'))
+    clock += 10
+    await vi.advanceTimersByTimeAsync(10)
+    const stopped = batcher.stopAndWait('test shutdown')
+    releaseDelivery({ attempted: 1, delivered: 1, failed: 0, removed: 0 })
+
+    await expect(stopped).resolves.toBeUndefined()
+    expect(onError).toHaveBeenCalledWith(persistenceError, { source: 'timer' })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps an abandoned optional start visible to whenIdle until its storage load settles', async () => {
+    let releaseLoad
+    const persistence = {
+      load: vi.fn(() => new Promise((resolve) => { releaseLoad = resolve })),
+      save: vi.fn().mockResolvedValue(undefined),
+    }
+    const batcher = createBrowserPushBatcher({
+      deliver: vi.fn(),
+      persistence,
+      scheduleTimers: false,
+    })
+
+    const started = batcher.start()
+    let idleSettled = false
+    const idle = batcher.whenIdle().then(() => { idleSettled = true })
+    batcher.stop('optional subsystem timed out')
+    await Promise.resolve()
+    expect(persistence.load).toHaveBeenCalledOnce()
+    expect(idleSettled).toBe(false)
+
+    releaseLoad({ version: 2, revision: 7, batches: [], userDispatches: [] })
+    await expect(started).resolves.toEqual({ batches: 0, notifications: 0 })
+    await idle
+    expect(idleSettled).toBe(true)
   })
 
   it('stores journal snapshots encrypted and recovers from a newer compaction sidecar', async () => {

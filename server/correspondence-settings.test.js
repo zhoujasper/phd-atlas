@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { publicUser } from './storage.js'
 import {
   AdminSettingsPatchSchema,
   AdminUserPatchSchema,
@@ -106,12 +107,14 @@ describe('correspondence and mailbox validation', () => {
       to: 'lab@example.edu',
       trackRecipient: true,
       bodyFormat: 'markdown',
+      sourceDraftId: 'draft-email-1',
     })
 
     expect(send).toMatchObject({
       to: 'lab@example.edu',
       trackRecipient: true,
       bodyFormat: 'markdown',
+      sourceDraftId: 'draft-email-1',
     })
     expect(parseOrThrow(CommunicationSendSchema, {
       subject: 'Research follow-up',
@@ -123,6 +126,12 @@ describe('correspondence and mailbox validation', () => {
       summary: 'Thank you.',
       date: '2026-07-29',
       bodyFormat: 'rtf',
+    })).toThrow()
+    expect(() => parseOrThrow(CommunicationSendSchema, {
+      subject: 'Research follow-up',
+      summary: 'Thank you.',
+      date: '2026-07-29',
+      sourceDraftId: '   ',
     })).toThrow()
   })
 
@@ -147,6 +156,49 @@ describe('correspondence and mailbox validation', () => {
         verified: true,
       })),
     })).toThrow()
+  })
+
+  /**
+   * The settings acknowledgement the browser verifies is read from this
+   * projection. A key the patch schema accepts but the projection omits reads
+   * as "the server did not save this", so the write is reported as failed even
+   * though it committed — which is how adding a correspondence category failed
+   * with a generic error while quietly persisting.
+   */
+  it('returns this account\'s own correspondence categories from the public projection', () => {
+    const user = publicUser({
+      id: 'user_1',
+      name: 'Jasper',
+      email: 'jasper@example.com',
+      role: 'user',
+      settingsVersion: 4,
+      settings: {
+        customMailCategories: [
+          { id: 'custom:offer', label: 'Offer', tone: 'success' },
+          { id: 'custom:offer', label: 'Duplicate id', tone: 'info' },
+          { id: 'not-prefixed', label: 'Rejected', tone: 'info' },
+          { id: 'custom:unknown-tone', label: 'Unknown tone', tone: 'chartreuse' },
+        ],
+      },
+    })
+
+    expect(user.settings.customMailCategories).toEqual([
+      { id: 'custom:offer', label: 'Offer', tone: 'success' },
+      { id: 'custom:unknown-tone', label: 'Unknown tone', tone: 'neutral' },
+    ])
+    // Every key the patch schema accepts has to survive the round trip.
+    const patch = parseOrThrow(UserSettingsPatchSchema, {
+      customMailCategories: [{ id: 'custom:interview', label: '面试邀请', tone: 'accent' }],
+    })
+    const saved = publicUser({
+      id: 'user_1',
+      name: 'Jasper',
+      email: 'jasper@example.com',
+      role: 'user',
+      settingsVersion: 5,
+      settings: { ...patch },
+    })
+    expect(saved.settings.customMailCategories).toEqual(patch.customMailCategories)
   })
 
   it('requires registration captcha metadata and preserves language preference', () => {

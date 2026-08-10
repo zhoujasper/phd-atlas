@@ -1,5 +1,5 @@
 import { Check, ChevronDown, Globe2, Search, X } from 'lucide-react'
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import {
   CONTINENT_ORDER,
@@ -15,6 +15,7 @@ import { getMotionDelay } from '../hooks/useAnimatedClose'
 import { useI18n } from '../hooks/useI18n'
 import {
   addFloatingViewportListeners,
+  applyFloatingOverlayStyle,
   FLOATING_CONTROL_BASE_Z_INDEX,
   getAnchoredOverlayStyle,
 } from './floatingOverlay'
@@ -50,6 +51,7 @@ export function CountrySelect({
   const [highlightIndex, setHighlightIndex] = useState(-1)
   const [expandedContinents, setExpandedContinents] = useState<Set<ContinentId>>(() => new Set())
   const [dropdownStyle, setDropdownStyle] = useState<CSSProperties>({ visibility: 'hidden' })
+  const [positionReady, setPositionReady] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -57,6 +59,7 @@ export function CountrySelect({
   const positionFrameRef = useRef<number | null>(null)
   const closeTimerRef = useRef<number | null>(null)
   const ignoreOutsideUntilRef = useRef(0)
+  const placementRef = useRef<'above' | 'below' | null>(null)
   const openVisible = open && !exiting
 
   const resolved = useMemo(() => resolveCountry(value), [value])
@@ -152,26 +155,48 @@ export function CountrySelect({
     [expandedContinents, groups, rowIndexByCode, searchActive],
   )
 
-  const getDropdownPosition = useCallback((): CSSProperties => {
-    return getAnchoredOverlayStyle(containerRef.current, {
+  const getDropdownPosition = useCallback((placement?: 'above' | 'below'): CSSProperties => {
+    const nextStyle = getAnchoredOverlayStyle(containerRef.current, {
       minWidth: 300,
       maxWidth: 360,
       estimatedHeight: 400,
-      actualHeight: dropdownRef.current?.getBoundingClientRect().height,
+      // Choose the initial side using the full menu estimate. Otherwise a
+      // collapsed list can open below the trigger and flip above mid-expand.
+      useEstimatedHeightForPlacement: true,
+      placement,
+      // offsetHeight is stable while the popover's compositor entrance scales
+      // the painted surface, so flipping above the trigger never chases a
+      // transient transform box.
+      actualHeight: dropdownRef.current?.offsetHeight,
+      // The menu is content-sized when collapsed. Pinning its lower edge keeps
+      // an above-placed menu growing upward without a frame-late top correction.
+      anchorAboveToBottom: true,
       gap: 6,
       baseZIndex: FLOATING_CONTROL_BASE_Z_INDEX,
     })
+    if (!placementRef.current) {
+      const resolvedPlacement = nextStyle['--floating-placement' as keyof CSSProperties] === 'above' ? 'above' : 'below'
+      placementRef.current = resolvedPlacement
+    }
+    return nextStyle
   }, [])
 
-  const updateDropdownPosition = useCallback(() => {
-    setDropdownStyle(getDropdownPosition())
+  const updateDropdownPosition = useCallback((allowPlacementChange = false) => {
+    if (allowPlacementChange) placementRef.current = null
+    const nextStyle = getDropdownPosition(placementRef.current ?? undefined)
+    const dropdown = dropdownRef.current
+    if (!dropdown) {
+      setDropdownStyle(nextStyle)
+      return
+    }
+    applyFloatingOverlayStyle(dropdown, nextStyle)
   }, [getDropdownPosition])
 
-  const scheduleDropdownPosition = useCallback(() => {
+  const scheduleDropdownPosition = useCallback((allowPlacementChange = false) => {
     if (positionFrameRef.current !== null) return
     positionFrameRef.current = window.requestAnimationFrame(() => {
       positionFrameRef.current = null
-      updateDropdownPosition()
+      updateDropdownPosition(allowPlacementChange)
     })
   }, [updateDropdownPosition])
 
@@ -190,6 +215,9 @@ export function CountrySelect({
       closeTimerRef.current = null
       setOpen(false)
       setExiting(false)
+      setPositionReady(false)
+      setDropdownStyle({ visibility: 'hidden' })
+      placementRef.current = null
       setHighlightIndex(-1)
       setSearch('')
       setExpandedContinents(new Set())
@@ -200,13 +228,16 @@ export function CountrySelect({
     if (disabled) return
     clearCloseTimer()
     ignoreOutsideUntilRef.current = performance.now() + 120
-    setDropdownStyle(getDropdownPosition())
+    // The portal node does not exist until this state update commits. Keep it
+    // hidden until the layout pass has measured the real box.
+    setDropdownStyle({ visibility: 'hidden' })
+    setPositionReady(false)
+    placementRef.current = null
     setExiting(false)
     setOpen(true)
     setSearch('')
     setExpandedContinents(new Set())
-    window.requestAnimationFrame(() => setDropdownStyle(getDropdownPosition()))
-  }, [clearCloseTimer, disabled, getDropdownPosition])
+  }, [clearCloseTimer, disabled])
 
   const toggle = () => {
     if (disabled) return
@@ -258,7 +289,7 @@ export function CountrySelect({
 
   useEffect(() => {
     if (!open) return
-    const removeViewportListeners = addFloatingViewportListeners(scheduleDropdownPosition)
+    const removeViewportListeners = addFloatingViewportListeners(() => scheduleDropdownPosition(true))
     return () => {
       removeViewportListeners()
       if (positionFrameRef.current !== null) {
@@ -266,7 +297,27 @@ export function CountrySelect({
         positionFrameRef.current = null
       }
     }
-  }, [open, scheduleDropdownPosition])
+  }, [open, positionReady, scheduleDropdownPosition])
+
+  // Resolve the portal's first position before paint, then keep it anchored as
+  // search/group disclosure changes the measured menu height.
+  useLayoutEffect(() => {
+    if (!open || positionReady || !dropdownRef.current) return undefined
+    const nextStyle = getDropdownPosition()
+    setDropdownStyle(nextStyle)
+    setPositionReady(true)
+  }, [getDropdownPosition, open, positionReady])
+
+  useEffect(() => {
+    if (!open || !positionReady) return undefined
+    const dropdown = dropdownRef.current
+    if (!dropdown || typeof ResizeObserver === 'undefined') return undefined
+    // Keep the current side while a group grows. A viewport change is allowed
+    // to clear this lock through the listener above.
+    const observer = new ResizeObserver(() => scheduleDropdownPosition(false))
+    observer.observe(dropdown)
+    return () => observer.disconnect()
+  }, [open, positionReady, scheduleDropdownPosition])
 
   useEffect(() => () => clearCloseTimer(), [clearCloseTimer])
 

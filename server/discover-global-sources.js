@@ -1,12 +1,22 @@
 import { withAbortDeadline } from './abortDeadline.js'
+import { cancelResponseBody, readBoundedResponseJson } from './boundedResponse.js'
 
 const OPENALEX_BASE = 'https://api.openalex.org'
 const OPENALEX_TIMEOUT_MS = 12_000
 const OPENALEX_RETRY_ATTEMPTS = 3
 const CACHE_TTL_MS = 6 * 60 * 60 * 1_000
-const MAX_COUNTRIES_PER_RUN = 24
-const MAX_INSTITUTION_GROUPS_PER_COUNTRY = 50
-const MAX_DYNAMIC_SOURCES = 48
+const CACHE_MAX_ENTRIES = 128
+const OPENALEX_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
+const MAX_COUNTRIES_PER_RUN = 48
+const MAX_INSTITUTION_GROUPS_PER_COUNTRY = 200
+const MAX_DYNAMIC_SOURCES = 192
+const boundedConcurrencyEnv = (name, fallback, maximum) => {
+  const value = Number(process.env[name])
+  return Number.isSafeInteger(value) && value > 0 ? Math.min(maximum, value) : fallback
+}
+const COUNTRY_LOOKUP_CONCURRENCY = boundedConcurrencyEnv('DISCOVER_GLOBAL_COUNTRY_CONCURRENCY', 2, 4)
+const COUNTRY_SEARCH_CONCURRENCY = boundedConcurrencyEnv('DISCOVER_GLOBAL_SEARCH_CONCURRENCY', 1, 2)
+const INSTITUTION_DETAIL_CONCURRENCY = boundedConcurrencyEnv('DISCOVER_GLOBAL_DETAIL_CONCURRENCY', 2, 6)
 
 const EU_COUNTRY_CODES = new Set([
   'AL', 'AT', 'BA', 'BE', 'BG', 'CH', 'CY', 'CZ', 'DE', 'DK', 'EE', 'ES', 'FI',
@@ -54,6 +64,30 @@ const GLOBAL_PATH_HINTS = Object.freeze({
 })
 
 const cache = new Map()
+
+function cachedSources(cacheKey, now) {
+  const cached = cache.get(cacheKey)
+  if (!cached) return null
+  if (now - cached.cachedAt >= CACHE_TTL_MS) {
+    cache.delete(cacheKey)
+    return null
+  }
+  // Map insertion order owns the LRU order.
+  cache.delete(cacheKey)
+  cache.set(cacheKey, cached)
+  return cached.sources
+}
+
+function rememberSources(cacheKey, cachedAt, sources) {
+  for (const [candidateKey, candidate] of cache) {
+    if (cachedAt - candidate.cachedAt >= CACHE_TTL_MS) cache.delete(candidateKey)
+  }
+  cache.delete(cacheKey)
+  cache.set(cacheKey, { cachedAt, sources })
+  while (cache.size > CACHE_MAX_ENTRIES) {
+    cache.delete(cache.keys().next().value)
+  }
+}
 
 function cleanText(value, limit = 240) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit)
@@ -139,17 +173,30 @@ async function fetchOpenAlexJson(url, {
   let lastError = null
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const response = await withAbortDeadline(
-        (signal) => fetchImpl(requestUrl.toString(), {
-          signal,
-          headers: {
-            accept: 'application/json',
-            'user-agent': 'PhD-Atlas/0.1 (official-source discovery)',
-          },
-        }),
+      const { response, payload } = await withAbortDeadline(
+        async (signal) => {
+          const response = await fetchImpl(requestUrl.toString(), {
+            signal,
+            headers: {
+              accept: 'application/json',
+              'user-agent': 'PhD-Atlas/0.1 (official-source discovery)',
+            },
+          })
+          if (!response.ok) await cancelResponseBody(response)
+          return {
+            response,
+            payload: response.ok
+              ? await readBoundedResponseJson(response, {
+                maxBytes: OPENALEX_RESPONSE_MAX_BYTES,
+                signal,
+                bodyKind: 'OpenAlex response',
+              })
+              : null,
+          }
+        },
         { timeoutMs },
       )
-      if (response.ok) return await response.json()
+      if (response.ok) return payload
       lastError = new Error(`OpenAlex HTTP ${response.status}`)
       if (![429, 500, 502, 503, 504].includes(response.status) || attempt + 1 >= attempts) break
       await new Promise((resolve) => setTimeout(resolve, retryAfterMs(response, attempt)))
@@ -273,8 +320,10 @@ function countryPlan(groups, selectedRegions, limit) {
 }
 
 function institutionQuota(entry, selectedRegionCount, limit) {
-  if (!SINGLE_COUNTRY_REGIONS.has(entry.region)) return 1
-  return Math.min(6, Math.max(2, Math.ceil(limit / Math.max(1, selectedRegionCount * 2))))
+  if (SINGLE_COUNTRY_REGIONS.has(entry.region)) {
+    return Math.min(48, Math.max(8, Math.ceil(limit / Math.max(1, selectedRegionCount * 2))))
+  }
+  return Math.min(12, Math.max(2, Math.ceil(limit / Math.max(1, selectedRegionCount * 16))))
 }
 
 function institutionSource(institution, group, country) {
@@ -367,8 +416,8 @@ export async function discoverGlobalInstitutionSources({
   ]).map(registrableDomain).filter(Boolean))
   const existingSchools = new Set((existingSources || []).map((source) => normalizeSchool(source?.school)).filter(Boolean))
   const cacheKey = JSON.stringify([searches, regionKeys, sourceLimit, [...existingDomains].sort()])
-  const cached = cache.get(cacheKey)
-  if (cached && now - cached.cachedAt < CACHE_TTL_MS) return cached.sources
+  const cached = cachedSources(cacheKey, now)
+  if (cached) return cached
 
   const countryPayloads = await mapWithConcurrency(searches, 2, async (search) => {
     const countryUrl = new URL(`${OPENALEX_BASE}/works`)
@@ -390,8 +439,8 @@ export async function discoverGlobalInstitutionSources({
     selectedRegions,
     sourceLimit,
   )
-  const countryCandidates = await mapWithConcurrency(plannedCountries, 4, async (country) => {
-    const payloads = await mapWithConcurrency(searches, 2, async (search) => {
+  const countryCandidates = await mapWithConcurrency(plannedCountries, COUNTRY_LOOKUP_CONCURRENCY, async (country) => {
+    const payloads = await mapWithConcurrency(searches, COUNTRY_SEARCH_CONCURRENCY, async (search) => {
       const institutionUrl = new URL(`${OPENALEX_BASE}/works`)
       applyResearchQuery(institutionUrl, search, [
         'from_publication_date:2023-01-01',
@@ -413,7 +462,7 @@ export async function discoverGlobalInstitutionSources({
   const detailRequests = countryCandidates.flatMap(({ country, quota, groups }) => (
     groups.map((group) => ({ country, quota, group }))
   ))
-  const detailRows = await mapWithConcurrency(detailRequests, 6, async ({ country, quota, group }) => {
+  const detailRows = await mapWithConcurrency(detailRequests, INSTITUTION_DETAIL_CONCURRENCY, async ({ country, quota, group }) => {
     const id = openAlexId(group.key)
     if (!id) return { country, quota, source: null }
     const detail = await fetchOpenAlexJson(new URL(`${OPENALEX_BASE}/institutions/${id}`), { fetchImpl })
@@ -443,6 +492,6 @@ export async function discoverGlobalInstitutionSources({
     [...acceptedByCountry.values()].flat(),
     sourceLimit,
   ))
-  cache.set(cacheKey, { cachedAt: now, sources })
+  rememberSources(cacheKey, now, sources)
   return sources
 }

@@ -9,6 +9,7 @@ import {
   History,
   LayoutList,
   LogOut,
+  MessagesSquare,
   Moon,
   Settings,
   Sun,
@@ -31,6 +32,7 @@ export function Rail({
   allowTeamJoin = false,
   teamSection,
   canUseDiscover = true,
+  canUseInterview = true,
   modeSwitchLocked = false,
   avatarUrl,
   userName,
@@ -52,6 +54,7 @@ export function Rail({
   allowTeamJoin?: boolean
   teamSection: TeamSection
   canUseDiscover?: boolean
+  canUseInterview?: boolean
   modeSwitchLocked?: boolean
   avatarUrl?: string | null
   userName?: string
@@ -92,6 +95,12 @@ export function Rail({
             shortLabel: tx('navShort.discover'),
             icon: Compass,
           }] : []),
+          ...(canUseInterview ? [{
+            section: 'interview' as const,
+            label: tx('nav.interview'),
+            shortLabel: tx('navShort.interview', tx('nav.interview')),
+            icon: MessagesSquare,
+          }] : []),
           { section: 'resources', label: tx('nav.profile'), shortLabel: tx('navShort.profile', tx('nav.profile')), icon: UserRound },
         ]
         return studentSections.map((item) => ({ screen: 'team' as const, ...item }))
@@ -102,10 +111,12 @@ export function Rail({
         members: 'Members',
         resources: 'Resources',
         discover: 'Discover',
+        interview: 'Interview prep',
         audit: 'Audit',
         settings: 'Settings',
       }
       const labelFor = (section: TeamSection) => {
+        if (section === 'interview') return tx('nav.interview', fallbacks.interview)
         if (teamViewerRole === 'admin' && section === 'applications') return tx('team.tabTeacherApps', 'Student apps')
         if (teamViewerRole === 'admin' && section === 'members') return tx('team.tabTeacherStudents', 'Students')
         if ((teamViewerRole === 'admin' || teamViewerRole === 'owner') && section === 'resources') {
@@ -114,13 +125,14 @@ export function Rail({
         return tx(`team.tab${section[0].toUpperCase()}${section.slice(1)}`, fallbacks[section])
       }
       const sections: TeamSection[] = teamViewerRole === 'owner'
-        ? ['overview', 'applications', 'members', 'resources', 'discover', 'audit', 'settings']
+        ? ['overview', 'applications', 'members', 'resources', 'discover', 'interview', 'audit', 'settings']
         : [
             'overview',
             'applications',
             'members',
             'resources',
             ...(canUseDiscover ? ['discover' as const] : []),
+            ...(canUseInterview ? ['interview' as const] : []),
           ]
       const shortLabelFor = (section: TeamSection) => {
         if (section === 'overview') return tx('navShort.teamOverview', tx('navShort.dashboard', labelFor(section)))
@@ -132,6 +144,7 @@ export function Rail({
         }
         if (section === 'resources') return tx('navShort.profile', labelFor(section))
         if (section === 'discover') return tx('navShort.discover')
+        if (section === 'interview') return tx('navShort.interview', tx('nav.interview'))
         if (section === 'settings') return tx('navShort.settings', labelFor(section))
         return labelFor(section)
       }
@@ -150,6 +163,8 @@ export function Rail({
                   ? ((teamViewerRole === 'admin' || teamViewerRole === 'owner') ? UserRound : Database)
                 : section === 'discover'
                   ? Compass
+                  : section === 'interview'
+                    ? MessagesSquare
                   : section === 'audit'
                     ? History
                     : Settings,
@@ -159,10 +174,11 @@ export function Rail({
       { screen: 'dashboard', label: tx('nav.dashboard'), shortLabel: tx('navShort.dashboard', tx('nav.dashboard')), icon: ClipboardList },
       { screen: 'workspace', label: tx('nav.applications'), shortLabel: tx('navShort.applications', tx('nav.applications')), icon: LayoutList },
       ...(canUseDiscover ? [{ screen: 'discover' as const, label: tx('nav.discover'), shortLabel: tx('navShort.discover'), icon: Compass }] : []),
+      ...(canUseInterview ? [{ screen: 'interview' as const, label: tx('nav.interview'), shortLabel: tx('navShort.interview', tx('nav.interview')), icon: MessagesSquare }] : []),
       { screen: 'profile', label: tx('nav.profile'), shortLabel: tx('navShort.profile', tx('nav.profile')), icon: UserRound },
       { screen: 'settings', label: tx('nav.settings'), shortLabel: tx('navShort.settings', tx('nav.settings')), icon: Settings },
     ]
-  }, [canUseDiscover, isTeamMode, teamViewerRole, tx])
+  }, [canUseDiscover, canUseInterview, isTeamMode, teamViewerRole, tx])
 
   const ModeIcon = isTeamMode ? Building2 : UserRound
   const modeLabel = isTeamMode ? tx('nav.modeTeam') : tx('nav.modePersonal')
@@ -177,6 +193,7 @@ export function Rail({
       ? (screen === 'team' && teamSection === item.section)
         || (screen === 'workspace' && item.section === 'applications')
         || (screen === 'discover' && item.section === 'discover')
+        || (screen === 'interview' && item.section === 'interview')
       : item.screen === screen
   ))
   const currentActiveKey = currentKey ? itemKeyFor(currentKey) : itemKeyFor(items[0])

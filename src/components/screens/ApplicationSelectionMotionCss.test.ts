@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest'
 import appSource from '../../App.tsx?raw'
 import workspaceStyles from '../../index.css?raw'
 import applicationPaneSource from './ApplicationPane.tsx?raw'
+import inspectorSource from './Inspector.tsx?raw'
 
 const normalizedWorkspaceStyles = workspaceStyles.replace(/\r\n/g, '\n')
 
 describe('application selection motion CSS', () => {
   it('lets one measured surface own the complete project-switch slide', () => {
     expect(normalizedWorkspaceStyles).toMatch(
-      /\.application-selection-slider\s*\{[^}]*box-shadow:\s*var\(--shadow-xs\);[^}]*transform:\s*translate3d\(0,\s*var\(--application-selection-y,\s*0\),\s*0\);[^}]*transition:[^}]*transform var\(--duration\) var\(--ease-out\),[^}]*height var\(--duration\) var\(--ease-out\)/s,
+      /\.application-selection-slider\s*\{[^}]*box-shadow:\s*var\(--shadow-xs\);[^}]*transform:\s*translate3d\(0,\s*var\(--application-selection-y,\s*0\),\s*0\)\s*scaleY\(var\(--application-selection-scale-y,\s*1\)\);[^}]*transition:[^}]*transform 240ms var\(--ease-fluid\)/s,
     )
     expect(normalizedWorkspaceStyles).toMatch(
       /\.rail-active-indicator\s*\{[^}]*box-shadow:\s*var\(--shadow-xs\);[^}]*transition:[^}]*transform 280ms var\(--ease-spring\)/s,
@@ -83,27 +84,40 @@ describe('application selection motion CSS', () => {
     expect(applicationPaneSource).toContain(
       'const APPLICATION_SELECTION_MOTION_FALLBACK_MS = 320',
     )
+    expect(applicationPaneSource).toContain(
+      "slider.style.setProperty('--application-selection-scale-y', String(nextScaleY))",
+    )
     expect(applicationPaneSource).toMatch(
       /window\.setTimeout\(\s*scheduleSelectionSliderMotionFinish,\s*APPLICATION_SELECTION_MOTION_FALLBACK_MS,\s*\)/s,
     )
     expect(applicationPaneSource).toMatch(
       /scheduleSelectionSliderMotionFinish[\s\S]*requestAnimationFrame\(\(\) => \{[\s\S]*requestAnimationFrame\(\(\) => \{/s,
     )
+    expect(appSource).not.toContain('scheduleApplicationSelectionAfterPaint')
+    expect(appSource).not.toContain('applicationSelectionFrameRef')
     expect(appSource).toMatch(
-      /scheduleApplicationSelectionAfterPaint[\s\S]*requestAnimationFrame\(\(\) => \{[\s\S]*requestAnimationFrame\(\(\) => \{/s,
-    )
-    expect(appSource).toMatch(
-      /transitionScope === 'dossier-record'[\s\S]*scheduleApplicationSelectionAfterPaint\(beginSelection\)/s,
+      /The application row has already primed its selection surface[\s\S]*beginSelection\(\)/s,
     )
   })
 
   it('bounds the urgent record commit and keeps the explorer collection stable', () => {
     expect(appSource).toMatch(
-      /deferDossierContent:\s*\(\s*transitionScope === 'dossier-record'/s,
+      /deferDossierContent:\s*true/s,
     )
+    expect(appSource).toContain('forceCssFallback: true')
     expect(appSource).toContain('if (!normalizedApplicationQuery) return true')
     expect(appSource).toContain('return filteredApplications')
     expect(appSource).toContain('visibleApplicationIndexById')
-    expect(appSource).toContain('const deferredInspectorApplication = useDeferredValue')
+    expect(appSource).toContain('const inspectorApplication = currentInspectorApplication')
+    expect(appSource).toContain('application={inspectorApplication}')
+    expect(inspectorSource).toContain('key={application.id}')
+    expect(inspectorSource).toContain('inspector-record-handoff')
+    expect(normalizedWorkspaceStyles).toMatch(
+      /\.inspector-default-content\.inspector-record-handoff\s*\{[^}]*animation:\s*inspector-record-handoff 230ms var\(--ease-out\) both;[^}]*will-change:\s*opacity;/s,
+    )
+    expect(normalizedWorkspaceStyles).toMatch(
+      /@keyframes inspector-record-handoff[\s\S]*?from\s*\{\s*opacity:\s*0\.86;\s*\}[\s\S]*?to\s*\{\s*opacity:\s*1;\s*\}/s,
+    )
+    expect(appSource).toContain("if (scope === 'dossier-record') return 72")
   })
 })

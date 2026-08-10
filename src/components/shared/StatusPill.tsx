@@ -1,8 +1,9 @@
 import type { ApplicationStatus, MaterialStatus } from '../../data/applications'
 import { statusCssSlug, statusLabel, statusMenuTone } from '../../statusLabels'
 import { useI18n } from '../hooks/useI18n'
+import { memo } from 'react'
 
-export function StatusPill({ status }: { status: ApplicationStatus | MaterialStatus | string }) {
+export const StatusPill = memo(function StatusPill({ status }: { status: ApplicationStatus | MaterialStatus | string }) {
   const { tx } = useI18n()
   const label = statusLabel(status, tx)
   const slug = statusCssSlug(status)
@@ -14,9 +15,9 @@ export function StatusPill({ status }: { status: ApplicationStatus | MaterialSta
       <span className="status-pill-label">{label}</span>
     </span>
   )
-}
+})
 
-export function MaterialPill({ status }: { status: MaterialStatus | string }) {
+export const MaterialPill = memo(function MaterialPill({ status }: { status: MaterialStatus | string }) {
   const { tx } = useI18n()
   const label = statusLabel(status, tx)
   const slug = statusCssSlug(status)
@@ -28,7 +29,7 @@ export function MaterialPill({ status }: { status: MaterialStatus | string }) {
       <span className="status-pill-label">{label}</span>
     </span>
   )
-}
+})
 
 /** Compact inline chip for dashboard / dense lists. */
 export function StatusChip({

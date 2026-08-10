@@ -1,3 +1,4 @@
+import '../../styles/application-pipeline.css'
 import {
   Activity,
   type CSSProperties,
@@ -5,6 +6,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   memo,
+  startTransition,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -12,9 +14,7 @@ import {
   useState,
 } from 'react'
 import {
-  AlertTriangle,
   ArrowRight,
-  CalendarClock,
   ChevronDown,
   Copy,
   Download,
@@ -23,7 +23,6 @@ import {
   GraduationCap,
   GripVertical,
   LayoutGrid,
-  ListChecks,
   Mail,
   Plus,
   Trash2,
@@ -59,7 +58,7 @@ interface KanbanBoardProps {
   customApplicationStatuses?: readonly ApplicationStatus[]
   onStatusChange: (id: string, status: ApplicationStatus) => void
   onSelect: (id: string) => void
-  onPrefetch?: () => void
+  onPrefetch?: (id?: string) => void
   onOpenInNewPage?: (id: string) => void
   onOpenMany?: (ids: string[]) => void
   onExportApplication?: (id: string) => void
@@ -70,12 +69,16 @@ interface KanbanBoardProps {
   onNew?: () => void
   teamStudents?: TeamKanbanStudent[]
   onNewForStudent?: (studentId: string) => void
+  /** Mount the inactive presentation after the first board paint. */
+  deferInactiveView?: boolean
 }
 
 const KANBAN_COLUMN_INITIAL_COUNT = 4
 const KANBAN_COLUMN_COMPACT_INITIAL_COUNT = 8
 const KANBAN_COLUMN_BATCH_SIZE = 8
 const TEAM_STUDENT_PREVIEW_COUNT = 3
+const PIPELINE_INACTIVE_VIEW_SETTLE_MS = 420
+const PIPELINE_INACTIVE_VIEW_FALLBACK_MS = 900
 const terminalStatuses = new Set<ApplicationStatus>(['Accepted', 'Rejected', 'Waitlist'])
 const PIPELINE_VIEW_STORAGE_PREFIX = 'phd-atlas:application-pipeline-view:v1:'
 
@@ -152,7 +155,7 @@ function TeamStudentKanbanBoard({
 }: {
   students: TeamKanbanStudent[]
   onSelect: (id: string) => void
-  onPrefetch?: () => void
+  onPrefetch?: (id?: string) => void
   onNewForStudent?: (studentId: string) => void
   onOpenInNewPage?: (id: string) => void
   onCopy?: (value: string, label: string) => void
@@ -505,9 +508,9 @@ function TeamStudentKanbanBoard({
                           key={application.id}
                           type="button"
                           className="team-kanban-application-row"
-                          onPointerDown={onPrefetch}
-                          onPointerEnter={onPrefetch}
-                          onFocus={onPrefetch}
+                          onPointerDown={() => onPrefetch?.(application.id)}
+                          onPointerEnter={() => onPrefetch?.(application.id)}
+                          onFocus={() => onPrefetch?.(application.id)}
                           onClick={() => onSelect(application.id)}
                           onContextMenu={(event) => openApplicationContextMenu(event, application)}
                           onKeyDown={(event) => handleApplicationKeyDown(event, application)}
@@ -565,6 +568,7 @@ function PersonalKanbanBoard({
   onDeleteApplication,
   onNew,
   customApplicationStatuses,
+  deferInactiveView,
 }: KanbanBoardProps) {
   const { tx, format } = useI18n()
   const [draggedId, setDraggedId] = useState<string | null>(null)
@@ -581,6 +585,11 @@ function PersonalKanbanBoard({
     status: ApplicationStatus
     fromIndex: number
   } | null>(null)
+  const stageInitialCards = deferInactiveView === true && !(
+    typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
+  const [initialCardsReady, setInitialCardsReady] = useState(() => !stageInitialCards)
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return undefined
@@ -590,6 +599,28 @@ function PersonalKanbanBoard({
     media.addEventListener?.('change', update)
     return () => media.removeEventListener?.('change', update)
   }, [])
+
+  useEffect(() => {
+    if (!stageInitialCards) {
+      if (!initialCardsReady) setInitialCardsReady(true)
+      return undefined
+    }
+    if (initialCardsReady) return undefined
+
+    // Publish the light column scaffold first. Two compositor frames guarantee
+    // the click and shell can paint before React starts preparing card DOM.
+    let firstFrame = 0
+    let secondFrame = 0
+    firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        startTransition(() => setInitialCardsReady(true))
+      })
+    })
+    return () => {
+      window.cancelAnimationFrame(firstFrame)
+      window.cancelAnimationFrame(secondFrame)
+    }
+  }, [initialCardsReady, stageInitialCards])
 
   const initialColumnCount = compactViewport
     ? KANBAN_COLUMN_COMPACT_INITIAL_COUNT
@@ -637,6 +668,7 @@ function PersonalKanbanBoard({
   }, [applications, columnStatusOrder, statusGroups])
   const visibilityKey = `${boardData.datasetKey}:${compactViewport ? 'compact' : 'desktop'}`
   const visibleCounts = visibilityState.key === visibilityKey ? visibilityState.counts : {}
+  const initialEntryPending = stageInitialCards && !initialCardsReady
 
   // Drop in-flight reveal styling when the underlying dataset or density mode changes.
   useEffect(() => {
@@ -814,7 +846,13 @@ function PersonalKanbanBoard({
   }
 
   return (
-    <section className="application-pipeline-view application-pipeline-board-view" aria-label={tx('kanban.boardView')}>
+    <section
+      className="application-pipeline-view application-pipeline-board-view"
+      aria-label={tx('kanban.boardView')}
+      aria-busy={initialEntryPending || undefined}
+      data-entry-staged={stageInitialCards ? 'true' : undefined}
+      data-entry-state={initialEntryPending ? 'preview' : 'ready'}
+    >
       {applications.length === 0 ? (
         <div className="kanban-empty-state">
           <LayoutGrid size={28} aria-hidden="true" />
@@ -842,7 +880,9 @@ function PersonalKanbanBoard({
               </div>
               <div className="kanban-column-grid">
                 {group.columns.map((col) => {
-                  const visibleCount = visibleCounts[col.status] ?? initialColumnCount
+                  const visibleCount = initialEntryPending
+                    ? 0
+                    : (visibleCounts[col.status] ?? initialColumnCount)
                   const visibleItems = col.items.slice(0, visibleCount)
                   const remainingCount = Math.max(0, col.items.length - visibleItems.length)
                   const columnReveal = revealState?.status === col.status ? revealState : null
@@ -871,6 +911,8 @@ function PersonalKanbanBoard({
                             <GripVertical size={14} aria-hidden="true" />
                             <span>{tx('kanban.empty')}</span>
                           </div>
+                        ) : initialEntryPending ? (
+                          <div className="kanban-column-preview" aria-hidden="true" />
                         ) : (
                           <>
                             {visibleItems.map((app, itemIndex) => {
@@ -891,9 +933,9 @@ function PersonalKanbanBoard({
                                   draggable
                                   onDragStart={(e) => handleDragStart(e, app.id)}
                                   onDragEnd={handleDragEnd}
-                                  onPointerDown={onPrefetch}
-                                  onPointerEnter={onPrefetch}
-                                  onFocus={onPrefetch}
+                                  onPointerDown={() => onPrefetch?.(app.id)}
+                                  onPointerEnter={() => onPrefetch?.(app.id)}
+                                  onFocus={() => onPrefetch?.(app.id)}
                                   onClick={() => onSelect(app.id)}
                                   onContextMenu={(event) => openCardContextMenu(event, app)}
                                   role="button"
@@ -956,7 +998,7 @@ const MemoizedTeamStudentKanbanBoard = memo(TeamStudentKanbanBoard)
 const MemoizedPersonalKanbanBoard = memo(PersonalKanbanBoard)
 
 export function KanbanBoard(props: KanbanBoardProps) {
-  const { tx, format } = useI18n()
+  const { tx } = useI18n()
   const scope: ApplicationPipelineScope = props.teamStudents ? 'team' : 'personal'
   const [viewModes, setViewModes] = useState<Record<ApplicationPipelineScope, ApplicationPipelineViewMode>>(
     () => ({
@@ -965,60 +1007,69 @@ export function KanbanBoard(props: KanbanBoardProps) {
     }),
   )
   const viewMode = viewModes[scope]
+  const deferInactiveView = props.deferInactiveView === true
+  const [residentViewModes, setResidentViewModes] = useState<Set<ApplicationPipelineViewMode>>(
+    () => new Set(deferInactiveView ? [viewMode] : ['board', 'table']),
+  )
+
+  useEffect(() => {
+    if (!deferInactiveView) return undefined
+
+    // The active presentation is rendered in the urgent mount. The inactive
+    // tree is useful for later toggles, but mounting it in the same commit as
+    // a dossier -> board handoff doubles the first expensive render.
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
+      cancelIdleCallback?: (handle: number) => void
+    }
+    const mountInactiveView = () => {
+      startTransition(() => {
+        setResidentViewModes((current) => {
+          if (current.has('board') && current.has('table')) return current
+          return new Set(['board', 'table'])
+        })
+      })
+    }
+    let idleHandle: number | null = null
+    let fallbackHandle: number | null = null
+    const settleHandle = window.setTimeout(() => {
+      if (typeof idleWindow.requestIdleCallback === 'function') {
+        // No timeout: forcing a hidden table mount during scroll or pointer
+        // input would merely move the hitch later in the same interaction.
+        idleHandle = idleWindow.requestIdleCallback(mountInactiveView)
+        return
+      }
+      fallbackHandle = window.setTimeout(mountInactiveView, PIPELINE_INACTIVE_VIEW_FALLBACK_MS)
+    }, PIPELINE_INACTIVE_VIEW_SETTLE_MS)
+
+    return () => {
+      window.clearTimeout(settleHandle)
+      if (idleHandle !== null) idleWindow.cancelIdleCallback?.(idleHandle)
+      if (fallbackHandle !== null) window.clearTimeout(fallbackHandle)
+    }
+  }, [deferInactiveView, scope])
   const controlsId = `application-pipeline-${scope}-view`
 
   useEffect(() => {
     writePipelineView(scope, viewMode)
   }, [scope, viewMode])
 
-  const summary = useMemo(() => {
-    if (props.teamStudents) {
-      const applicationsById = new Map<string, ApplicationRecord>()
-      for (const student of props.teamStudents) {
-        for (const application of student.allApplications) {
-          applicationsById.set(application.id, application)
-        }
-      }
-      const allApplications = [...applicationsById.values()]
-      return {
-        total: allApplications.length,
-        active: 0,
-        decisions: 0,
-        urgent: allApplications.filter((application) => {
-          if (terminalStatuses.has(application.status)) return false
-          const due = daysUntil(application.deadline)
-          return due >= 0 && due <= 30
-        }).length,
-        attention: allApplications.filter(applicationNeedsAttention).length,
-        students: props.teamStudents.length,
-      }
-    }
-
-    let active = 0
-    let decisions = 0
-    let urgent = 0
-    for (const application of props.applications) {
-      if (terminalStatuses.has(application.status)) decisions += 1
-      else active += 1
-      const due = daysUntil(application.deadline)
-      if (!terminalStatuses.has(application.status) && due >= 0 && due <= 30) urgent += 1
-    }
-    return {
-      total: props.applications.length,
-      active,
-      decisions,
-      urgent,
-      attention: 0,
-      students: 0,
-    }
-  }, [props.applications, props.teamStudents])
-
   const changePipelineView = (nextView: ApplicationPipelineViewMode) => {
+    setResidentViewModes((current) => current.has(nextView) ? current : new Set([...current, nextView]))
     setViewModes((current) => (
       current[scope] === nextView ? current : { ...current, [scope]: nextView }
     ))
   }
+  const preparePipelineView = (nextView: ApplicationPipelineViewMode) => {
+    startTransition(() => {
+      setResidentViewModes((current) => (
+        current.has(nextView) ? current : new Set([...current, nextView])
+      ))
+    })
+  }
   const tableMode = viewMode === 'table'
+  const tableMounted = !deferInactiveView || tableMode || residentViewModes.has('table')
+  const boardMounted = !deferInactiveView || !tableMode || residentViewModes.has('board')
   const teamMode = Boolean(props.teamStudents)
 
   return (
@@ -1046,10 +1097,10 @@ export function KanbanBoard(props: KanbanBoardProps) {
                       <span className="eyebrow">
                         {tx(tableHeading ? 'kanban.teamTableEyebrow' : 'team.teacherApplicationsEyebrow')}
                       </span>
-                      <div className="team-kanban-title-row">
+                      <div className="application-pipeline-title-row team-kanban-title-row">
                         <h2>{tx(tableHeading ? 'kanban.teamTableTitle' : 'team.teacherApplicationsTitle')}</h2>
                         <InfoTooltip
-                          className="team-kanban-help"
+                          className="application-pipeline-title-help team-kanban-help"
                           content={tx(tableHeading ? 'kanban.teamTableSubtitle' : 'team.teacherApplicationsDesc')}
                           label={tx(tableHeading ? 'kanban.teamTableSubtitle' : 'team.teacherApplicationsDesc')}
                         />
@@ -1058,8 +1109,14 @@ export function KanbanBoard(props: KanbanBoardProps) {
                   ) : (
                     <>
                       <span className="eyebrow">{tx(tableHeading ? 'kanban.tableEyebrow' : 'kanban.eyebrow')}</span>
-                      <h2>{tx(tableHeading ? 'kanban.tableTitle' : 'kanban.title')}</h2>
-                      <p>{tx(tableHeading ? 'kanban.tableSubtitle' : 'kanban.subtitle')}</p>
+                      <div className="application-pipeline-title-row">
+                        <h2>{tx(tableHeading ? 'kanban.tableTitle' : 'kanban.title')}</h2>
+                        <InfoTooltip
+                          className="application-pipeline-title-help"
+                          content={tx(tableHeading ? 'kanban.tableSubtitle' : 'kanban.subtitle')}
+                          label={tx(tableHeading ? 'kanban.tableSubtitle' : 'kanban.subtitle')}
+                        />
+                      </div>
                     </>
                   )}
                 </div>
@@ -1067,13 +1124,6 @@ export function KanbanBoard(props: KanbanBoardProps) {
             })}
           </div>
         </div>
-
-        {props.onNew && props.applications.length > 0 ? (
-          <button type="button" className="kanban-mobile-new primary-action" onClick={props.onNew}>
-            <Plus size={17} aria-hidden="true" />
-            <span>{tx('workspace.new')}</span>
-          </button>
-        ) : null}
 
         <div className="application-pipeline-hero-tools">
           <ApplicationPipelineViewSwitch
@@ -1084,51 +1134,8 @@ export function KanbanBoard(props: KanbanBoardProps) {
             tableLabel={tx('kanban.table')}
             scope={scope}
             controlsId={controlsId}
+            onPrepare={preparePipelineView}
           />
-          <div
-            className="kanban-summary"
-            aria-label={tx(teamMode ? 'team.studentMetricsLabel' : 'kanban.summary')}
-          >
-            {teamMode ? (
-              <>
-                <span>
-                  <UsersRound size={13} aria-hidden="true" />
-                  {format(tx('team.teacherStudentsTitle'), { count: summary.students })}
-                </span>
-                <span>
-                  <LayoutGrid size={13} aria-hidden="true" />
-                  {format(tx('kanban.totalCount'), { count: summary.total })}
-                </span>
-                <span>
-                  <AlertTriangle size={13} aria-hidden="true" />
-                  {format(tx('team.teacherWorkbenchRisk'), { count: summary.attention })}
-                </span>
-                <span>
-                  <CalendarClock size={13} aria-hidden="true" />
-                  {format(tx('team.teacherWorkbenchDue'), { count: summary.urgent })}
-                </span>
-              </>
-            ) : (
-              <>
-                <span>
-                  <LayoutGrid size={13} aria-hidden="true" />
-                  {format(tx('kanban.totalCount'), { count: summary.total })}
-                </span>
-                <span>
-                  <ListChecks size={13} aria-hidden="true" />
-                  {format(tx('kanban.activeCount'), { count: summary.active })}
-                </span>
-                <span>
-                  <ArrowRight size={13} aria-hidden="true" />
-                  {format(tx('kanban.decisionCount'), { count: summary.decisions })}
-                </span>
-                <span>
-                  <CalendarClock size={13} aria-hidden="true" />
-                  {format(tx('kanban.urgentCount'), { count: summary.urgent })}
-                </span>
-              </>
-            )}
-          </div>
         </div>
       </div>
 
@@ -1138,33 +1145,38 @@ export function KanbanBoard(props: KanbanBoardProps) {
         data-view={viewMode}
         data-pipeline-scope={scope}
       >
-        <span
-          className="application-pipeline-transition-veil"
-          data-application-pipeline-transition-veil
-          aria-hidden="true"
-        />
-        <Activity mode={tableMode ? 'visible' : 'hidden'}>
-          <div className="application-pipeline-view-slot" data-pipeline-view-slot="table">
-            <MemoizedApplicationSmartTable key={scope} {...props} />
-          </div>
-        </Activity>
-        <Activity mode={tableMode ? 'hidden' : 'visible'}>
-          <div className="application-pipeline-view-slot" data-pipeline-view-slot="board">
-            {props.teamStudents ? (
-              <MemoizedTeamStudentKanbanBoard
-                students={props.teamStudents}
-                onSelect={props.onSelect}
-                onPrefetch={props.onPrefetch}
-                onNewForStudent={props.onNewForStudent}
-                onOpenInNewPage={props.onOpenInNewPage}
-                onCopy={props.onCopy}
-                customApplicationStatuses={props.customApplicationStatuses}
-              />
-            ) : (
-              <MemoizedPersonalKanbanBoard {...props} />
-            )}
-          </div>
-        </Activity>
+        {tableMounted ? (
+          <Activity mode={tableMode ? 'visible' : 'hidden'}>
+            <div
+              className="application-pipeline-view-slot"
+              data-pipeline-view-slot="table"
+            >
+              <MemoizedApplicationSmartTable key={scope} {...props} />
+            </div>
+          </Activity>
+        ) : null}
+        {boardMounted ? (
+          <Activity mode={tableMode ? 'hidden' : 'visible'}>
+            <div
+              className="application-pipeline-view-slot"
+              data-pipeline-view-slot="board"
+            >
+              {props.teamStudents ? (
+                <MemoizedTeamStudentKanbanBoard
+                  students={props.teamStudents}
+                  onSelect={props.onSelect}
+                  onPrefetch={props.onPrefetch}
+                  onNewForStudent={props.onNewForStudent}
+                  onOpenInNewPage={props.onOpenInNewPage}
+                  onCopy={props.onCopy}
+                  customApplicationStatuses={props.customApplicationStatuses}
+                />
+              ) : (
+                <MemoizedPersonalKanbanBoard {...props} />
+              )}
+            </div>
+          </Activity>
+        ) : null}
       </div>
       <ProjectFooter />
     </section>

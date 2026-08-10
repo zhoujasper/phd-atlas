@@ -93,6 +93,54 @@ describe('upload-only application shares', () => {
     expect(sharedApplicationPayload(application, { permission: 'edit', sections: ['materials', 'tasks'] }).tasks).toHaveLength(2)
     expect(shareAllowsReservedUpload({ permission: 'edit' }, application.materials[1])).toBe(true)
   })
+
+  it('never exposes a personal recommender-library link through an application share', () => {
+    const application = applicationFixture()
+    application.materials[0].recommenders = [{
+      id: 'slot-1',
+      name: 'Prof. Ada',
+      contact: 'ada@example.edu',
+      profileId: 'private-profile-id',
+      notes: 'Private relationship context',
+      deadline: '2026-11-20',
+      reminderDate: '2026-11-10',
+      reminderTime: '09:30',
+    }]
+
+    const payload = sharedApplicationPayload(application, { permission: 'view', sections: ['materials'] })
+
+    expect(payload.materials[0].recommenders).toEqual([
+      { id: 'slot-1', name: 'Prof. Ada', contact: 'ada@example.edu' },
+    ])
+  })
+
+  it('shares only the application recommender snapshot and its opted-in note in Overview', () => {
+    const application = applicationFixture()
+    application.recommenders = [{
+      id: 'rec-ada',
+      name: 'Prof. Ada',
+      contact: 'ada@example.edu',
+      profileId: 'private-profile-id',
+      notes: 'Please highlight the distributed-systems project.',
+      deadline: '2026-11-20',
+      reminderDate: '2026-11-10',
+      reminderTime: '09:30',
+    }]
+
+    const payload = sharedApplicationPayload(application, { permission: 'view', sections: ['overview'] })
+
+    expect(payload.recommenders).toEqual([{
+      id: 'rec-ada',
+      name: 'Prof. Ada',
+      contact: 'ada@example.edu',
+      notes: 'Please highlight the distributed-systems project.',
+      deadline: '2026-11-20',
+      deadlineTime: '',
+    }])
+    expect(JSON.stringify(payload.recommenders)).not.toContain('private-profile-id')
+    expect(JSON.stringify(payload.recommenders)).not.toContain('2026-11-10')
+    expect(JSON.stringify(payload.recommenders)).not.toContain('09:30')
+  })
 })
 
 describe('profile asset share payloads', () => {

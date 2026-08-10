@@ -1,3 +1,4 @@
+import '../../styles/mail-actions.css'
 import { Check, CircleAlert, type LucideIcon } from 'lucide-react'
 import { useEffect, useRef, useState, type ButtonHTMLAttributes } from 'react'
 import { PendingLabel } from './PendingLabel'

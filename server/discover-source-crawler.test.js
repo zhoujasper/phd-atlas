@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { lookup as nodeDnsLookup } from 'node:dns/promises'
+import { describe, expect, it, vi } from 'vitest'
+import { pinnedHttpsFetch } from './pinnedHttpsFetch.js'
 import {
   DISCOVER_SOURCE_REGISTRY,
   listDiscoverResearchSources,
@@ -13,6 +15,7 @@ import {
   constrainDiscoverPageTypes,
   discoverEvidenceSourceTargetCount,
   isDiscoverPublicNetworkTarget,
+  resolveDiscoverCrawlerNetworkPolicy,
 } from './discover-source-crawler.js'
 
 describe('Discover official-source registry', () => {
@@ -22,7 +25,46 @@ describe('Discover official-source registry', () => {
     expect(DISCOVER_SOURCE_REGISTRY.every((source) => source.url.startsWith('https://'))).toBe(true)
     expect(DISCOVER_SOURCE_REGISTRY.every((source) => source.seeds?.length >= 1)).toBe(true)
     expect(DISCOVER_SOURCE_REGISTRY.find((source) => source.school === 'Massachusetts Institute of Technology')?.seeds.length).toBeGreaterThanOrEqual(3)
+    const princeton = DISCOVER_SOURCE_REGISTRY.find((source) => source.school === 'Princeton University')
+    expect(princeton?.allowedHosts).toEqual(expect.arrayContaining([
+      'pni.princeton.edu',
+      'pacm.princeton.edu',
+      'collaborate.princeton.edu',
+    ]))
+    expect(princeton?.seeds.map((seed) => seed.url)).toEqual(expect.arrayContaining([
+      'https://gradschool.princeton.edu/academics/degrees-requirements/fields-study/neuroscience',
+      'https://www.pacm.princeton.edu/people/jonathan-pillow',
+      'https://www.princeton.edu/~yael/',
+      'https://www.cs.princeton.edu/people/profile/sseung',
+    ]))
+    expect(princeton?.crawlPolicy?.maxPages).toBe(20)
     expect(listDiscoverResearchSources(['UK']).every((source) => source.region === 'UK')).toBe(true)
+  })
+
+  it('honours a school-specific bounded page budget for declared fallback hosts', async () => {
+    const crawlSourceImpl = vi.fn(async (_source, options) => ({
+      source: _source,
+      pages: [],
+      candidatePages: [],
+      skipped: null,
+      observedMaxPages: options.maxPages,
+    }))
+
+    const [result] = await crawlDiscoverSources({
+      sources: [{
+        region: 'US',
+        school: 'Fallback University',
+        url: 'https://fallback.example.edu/',
+        allowedHosts: ['fallback.example.edu'],
+        seeds: [],
+        crawlPolicy: { maxPages: 20 },
+      }],
+      maxPages: 12,
+      crawlSourceImpl,
+    })
+
+    expect(result.observedMaxPages).toBe(20)
+    expect(crawlSourceImpl).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -138,6 +180,30 @@ describe('Discover source crawler', () => {
     expect(progress).toHaveLength(2)
   })
 
+  it('propagates caller cancellation through concurrent site workers', async () => {
+    const controller = new AbortController()
+    let observedSignal
+    let markStarted
+    const started = new Promise((resolve) => { markStarted = resolve })
+    const crawling = crawlDiscoverSources({
+      sources: [{ region: 'US', school: 'Slow University', url: 'https://slow.example.edu/' }],
+      signal: controller.signal,
+      crawlSourceImpl: async (_source, options) => {
+        observedSignal = options.signal
+        markStarted()
+        await new Promise((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true })
+        })
+      },
+    })
+    await started
+    const reason = new Error('client disconnected')
+    controller.abort(reason)
+
+    await expect(crawling).rejects.toBe(reason)
+    expect(observedSignal).toBe(controller.signal)
+  })
+
   it('keeps person and directory paths out of every programme evidence bucket', () => {
     expect(constrainDiscoverPageTypes(
       'https://example.edu/people/ada-lovelace/phd',
@@ -157,6 +223,87 @@ describe('Discover source crawler', () => {
       { address: '127.0.0.1', family: 4 },
     ]))).toBe(false)
     expect(await isDiscoverPublicNetworkTarget('https://[::ffff:7f00:1]/')).toBe(false)
+  })
+
+  it('never downgrades the production DNS and pinned-HTTPS policy for a wrapped fetch', () => {
+    const wrappedFetch = vi.fn()
+    const injectedLookup = vi.fn()
+    const policy = resolveDiscoverCrawlerNetworkPolicy(wrappedFetch, injectedLookup, {
+      production: true,
+    })
+
+    expect(policy).toMatchObject({ pinned: true })
+    expect(policy.fetchImpl).toBe(pinnedHttpsFetch)
+    expect(policy.dnsLookup).toBe(nodeDnsLookup)
+    expect(policy.fetchImpl).not.toBe(wrappedFetch)
+    expect(policy.dnsLookup).not.toBe(injectedLookup)
+  })
+
+  it('revalidates DNS before following an allowed-host redirect and blocks private rebinding', async () => {
+    const fetched = []
+    const lookedUp = []
+    const fetchImpl = async (value) => {
+      const url = String(value)
+      fetched.push(url)
+      if (url.endsWith('/robots.txt')) return new Response('User-agent: *\nAllow: /', { status: 200 })
+      if (url.endsWith('/sitemap.xml')) return new Response('', { status: 404 })
+      if (url === 'https://example.edu/') {
+        return new Response('', {
+          status: 302,
+          headers: { location: 'https://private.example.edu/faculty' },
+        })
+      }
+      return new Response('<title>must not be fetched</title>', { status: 200 })
+    }
+    const dnsLookup = async (hostname) => {
+      lookedUp.push(hostname)
+      return [{
+        address: hostname === 'private.example.edu' ? '127.0.0.1' : '93.184.216.34',
+        family: 4,
+      }]
+    }
+
+    const result = await crawlDiscoverSource({
+      region: 'US',
+      school: 'Example University',
+      url: 'https://example.edu/',
+      allowedHosts: ['example.edu'],
+    }, { fetchImpl, dnsLookup, maxPages: 1 })
+
+    expect(lookedUp).toContain('private.example.edu')
+    expect(fetched).not.toContain('https://private.example.edu/faculty')
+    expect(result.health.fetchFailureReasons).toContain('non-public-network-target')
+  })
+
+  it('cancels the real crawler transport through the independent parent signal', async () => {
+    const controller = new AbortController()
+    let observedSignal
+    let markStarted
+    const started = new Promise((resolve) => { markStarted = resolve })
+    const fetchImpl = async (_value, init) => {
+      observedSignal = init.signal
+      markStarted()
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true })
+      })
+    }
+    const crawling = crawlDiscoverSource({
+      region: 'US',
+      school: 'Example University',
+      url: 'https://example.edu/',
+      allowedHosts: ['example.edu'],
+    }, {
+      fetchImpl,
+      dnsLookup: async () => [{ address: '93.184.216.34', family: 4 }],
+      signal: controller.signal,
+    })
+
+    await started
+    const reason = new Error('research cancelled')
+    controller.abort(reason)
+
+    await expect(crawling).rejects.toBe(reason)
+    expect(observedSignal.aborted).toBe(true)
   })
 
   it('honours an applicable robots disallow rule', () => {
@@ -217,6 +364,38 @@ describe('Discover source crawler', () => {
     expect(index.schemaVersion).toBe(1)
     expect(index.schools[0].advisorPages.map((page) => page.url)).toContain('https://university.example/people/faculty')
     expect(index.schools[0].admissionsPages.map((page) => page.url)).toContain('https://university.example/graduate/phd')
+  })
+
+  it('keeps a fetched declared advisor seed in the advisor index when automatic typing says homepage', () => {
+    const advisorUrl = 'https://people.example.edu/ada-lovelace'
+    const index = buildDiscoverSourceIndex([{
+      source: {
+        school: 'Example University',
+        region: 'US',
+        url: 'https://example.edu/',
+        allowedHosts: ['example.edu'],
+        seeds: [{ kind: 'advisor', url: advisorUrl }],
+      },
+      pages: [{
+        url: advisorUrl,
+        title: 'Example - Ada Lovelace',
+        types: ['homepage'],
+        declaredKinds: ['advisor'],
+        excerpt: 'Ada Lovelace is an associate professor researching neural systems.',
+        fetched: true,
+      }],
+      candidatePages: [],
+    }])
+
+    expect(index.schools[0].advisorPages).toEqual([
+      expect.objectContaining({
+        url: advisorUrl,
+        types: ['homepage'],
+        declaredKinds: ['advisor'],
+        fetched: true,
+        excerpt: 'Ada Lovelace is an associate professor researching neural systems.',
+      }),
+    ])
   })
 
   it('crawls declared school-specific seeds across approved university subdomains', async () => {

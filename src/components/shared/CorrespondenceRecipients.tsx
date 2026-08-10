@@ -299,10 +299,13 @@ export function CorrespondenceRecipientSettings({
             })}
           </div>
           <form className="recipient-settings-add" onSubmit={addRecipient}>
-            <label htmlFor="recipient-settings-email">{tx('dossier.recipientAddLabel')}</label>
+            <label htmlFor="recipient-settings-email">
+              <span>{tx('dossier.recipientAddLabel')} <span className="field-required-mark">*</span></span>
+            </label>
             <div>
               <input
                 id="recipient-settings-email"
+                required
                 value={value}
                 type="email"
                 inputMode="email"

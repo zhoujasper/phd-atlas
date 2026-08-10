@@ -1,24 +1,23 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
   Check,
-  Copy,
   Database,
   KeyRound,
   Languages,
   Lock,
   Mail,
   Moon,
-  RefreshCw,
   Server,
   ShieldCheck,
   Sparkles,
   Sun,
   UserRound,
 } from 'lucide-react'
-import { phdApi, type BootstrapSecrets, type DatabaseEngine, type InitialAdminSetupInput } from '../../api/phdApi'
+import { ApiError, phdApi, type BootstrapSecrets, type DatabaseEngine, type InitialAdminSetupInput } from '../../api/phdApi'
 import { normalizeErrorMessage } from '../../errorMessages'
+import { registerSafeReloadGuard } from '../../safeReload'
 import { useI18n } from '../hooks/useI18n'
 import { type ThemeContextValue } from '../hooks/useTheme'
 import { languageOptions, type Language } from '../../i18n'
@@ -31,6 +30,15 @@ type SetupStep = 'account' | 'security' | 'storage' | 'mail' | 'review'
 type SmtpVerificationState = 'idle' | 'sending' | 'sent' | 'checking' | 'verified'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const BOOTSTRAP_CLAIM_ERROR_CODES = new Set(['BOOTSTRAP_CLAIM_INVALID', 'BOOTSTRAP_CLAIM_REQUIRED'])
+
+function bootstrapClaimWasRejected(reason: unknown) {
+  return reason instanceof ApiError && BOOTSTRAP_CLAIM_ERROR_CODES.has(reason.code)
+}
+
+function utf8ByteLength(value: string) {
+  return new TextEncoder().encode(value).byteLength
+}
 
 export function AdminSetupScreen({
   busy,
@@ -45,7 +53,7 @@ export function AdminSetupScreen({
   language: string
   themeProvider: ThemeContextValue
   changeLanguage: (lang: Language) => void
-  onSubmit: (input: InitialAdminSetupInput) => Promise<void>
+  onSubmit: (input: InitialAdminSetupInput, bootstrapClaimToken: string) => Promise<void>
 }) {
   const { tx } = useI18n()
   const languages = languageOptions()
@@ -72,74 +80,123 @@ export function AdminSetupScreen({
   const [databaseSsl, setDatabaseSsl] = useState(false)
   const [mysql57Compatibility, setMysql57Compatibility] = useState(false)
   const [databaseSchema, setDatabaseSchema] = useState('')
+  const [bootstrapOperatorToken, setBootstrapOperatorToken] = useState('')
+  const [bootstrapClaimToken, setBootstrapClaimToken] = useState('')
+  const [bootstrapClaimExpiresAt, setBootstrapClaimExpiresAt] = useState(0)
+  const [bootstrapClaiming, setBootstrapClaiming] = useState(false)
+  const [bootstrapClaimError, setBootstrapClaimError] = useState<string | null>(null)
   const [secrets, setSecrets] = useState<BootstrapSecrets | null>(null)
   const [secretsLoading, setSecretsLoading] = useState(false)
-  const [regenerating, setRegenerating] = useState(false)
-  const [copiedKey, setCopiedKey] = useState<string | null>(null)
-  const [showRegenConfirm, setShowRegenConfirm] = useState(false)
   const [smtpVerificationToken, setSmtpVerificationToken] = useState('')
   const [smtpVerificationCode, setSmtpVerificationCode] = useState('')
   const [smtpVerificationState, setSmtpVerificationState] = useState<SmtpVerificationState>('idle')
   const [smtpVerificationError, setSmtpVerificationError] = useState<string | null>(null)
+  const setupReloadGuardId = useId()
+  const setupDirtyForReloadRef = useRef(false)
+  setupDirtyForReloadRef.current = Boolean(
+    busy
+    || step !== 'account'
+    || name
+    || email
+    || password
+    || confirmPassword
+    || adminEntryHidden
+    || adminEntryCode
+    || smtpHost
+    || smtpPort !== '587'
+    || smtpUser
+    || smtpPass
+    || !smtpTls
+    || notificationMailbox
+    || databaseType !== 'sqlite'
+    || sqlitePath
+    || databaseHost
+    || databasePort
+    || databaseName
+    || databaseUser
+    || databasePassword
+    || databaseSsl
+    || mysql57Compatibility
+    || databaseSchema
+    || bootstrapOperatorToken
+    || bootstrapClaimToken
+    || bootstrapClaimExpiresAt
+    || bootstrapClaiming
+    || secrets
+    || secretsLoading
+    || smtpVerificationToken
+    || smtpVerificationCode
+    || smtpVerificationState !== 'idle'
+  )
+
+  useEffect(() => registerSafeReloadGuard(`initial-admin-setup:${setupReloadGuardId}`, {
+    // No prepare callback by design: this form contains passwords, operator
+    // tokens, database credentials, and verification material that must never
+    // enter browser storage. Automatic reloads stop while any state is resident.
+    hasUnsavedChanges: () => setupDirtyForReloadRef.current,
+  }), [setupReloadGuardId])
+
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!setupDirtyForReloadRef.current) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [])
+
+  const reopenBootstrapClaim = useCallback((message?: string) => {
+    setBootstrapClaimToken('')
+    setBootstrapClaimExpiresAt(0)
+    setBootstrapOperatorToken('')
+    setSecrets(null)
+    setStep('account')
+    setBootstrapClaimError(message ?? tx(
+      'admin.setup.bootstrapClaimInvalid',
+      'The bootstrap access token is invalid or no longer active.',
+    ))
+  }, [tx])
 
   const fetchSecrets = useCallback(async (signal?: AbortSignal) => {
+    if (!bootstrapClaimToken) return
     setSecretsLoading(true)
     try {
-      const data = await phdApi.initialSetupSecrets({ signal })
+      const data = await phdApi.initialSetupSecrets(bootstrapClaimToken, { signal })
       if (!signal?.aborted) setSecrets(data)
-    } catch {
-      // Non-critical
+    } catch (reason) {
+      if (!signal?.aborted) {
+        const message = normalizeErrorMessage(
+          reason,
+          language as Parameters<typeof normalizeErrorMessage>[1],
+          tx('admin.setup.bootstrapClaimInvalid', 'The bootstrap access token is invalid or no longer active.'),
+        )
+        if (bootstrapClaimWasRejected(reason)) reopenBootstrapClaim(message)
+        else setBootstrapClaimError(message)
+      }
     } finally {
       if (!signal?.aborted) setSecretsLoading(false)
     }
-  }, [])
-
-  const regenerateKeys = useCallback(async () => {
-    setRegenerating(true)
-    setShowRegenConfirm(false)
-    try {
-      setSecrets(await phdApi.regenerateInitialSetupSecrets())
-    } catch {
-      // Non-critical
-    } finally {
-      setRegenerating(false)
-    }
-  }, [])
+  }, [bootstrapClaimToken, language, reopenBootstrapClaim, tx])
 
   // Fetch secrets when the security step becomes active
   useEffect(() => {
-    if (step !== 'security' || secrets) return undefined
+    if (step !== 'security' || secrets || !bootstrapClaimToken) return undefined
     const controller = new AbortController()
     void fetchSecrets(controller.signal)
     return () => controller.abort()
-  }, [step, secrets, fetchSecrets])
+  }, [step, secrets, bootstrapClaimToken, fetchSecrets])
 
-  const copyToClipboard = useCallback(async (text: string, key: string) => {
-    let copied = false
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text)
-        copied = true
-      }
-    } catch {
-      // 某些受限浏览器不提供异步剪贴板权限，继续使用兼容方案。
+  useEffect(() => {
+    if (!bootstrapClaimToken || !bootstrapClaimExpiresAt) return undefined
+    const remaining = bootstrapClaimExpiresAt - Date.now()
+    if (remaining <= 0) {
+      reopenBootstrapClaim()
+      return undefined
     }
-    if (!copied) {
-      const field = document.createElement('textarea')
-      field.value = text
-      field.setAttribute('readonly', '')
-      field.style.position = 'fixed'
-      field.style.opacity = '0'
-      document.body.append(field)
-      field.select()
-      copied = document.execCommand('copy')
-      field.remove()
-    }
-    if (copied) {
-      setCopiedKey(key)
-      window.setTimeout(() => setCopiedKey(null), 2000)
-    }
-  }, [])
+    const timer = window.setTimeout(() => reopenBootstrapClaim(), remaining)
+    return () => window.clearTimeout(timer)
+  }, [bootstrapClaimExpiresAt, bootstrapClaimToken, reopenBootstrapClaim])
 
   const adminEntryValid = !adminEntryHidden || /^[A-Za-z0-9_-]{3,64}$/.test(adminEntryCode)
   const accountValid = name.trim().length >= 2
@@ -147,6 +204,10 @@ export function AdminSetupScreen({
     && password.length >= 15
     && password === confirmPassword
     && adminEntryValid
+    && (Boolean(bootstrapClaimToken) || (() => {
+      const bytes = utf8ByteLength(bootstrapOperatorToken.trim())
+      return bytes >= 32 && bytes <= 512
+    })())
   const smtpPortNumber = Number(smtpPort)
   const mailValid = smtpHost.trim().length > 0
     && Number.isInteger(smtpPortNumber)
@@ -177,7 +238,10 @@ export function AdminSetupScreen({
     setSmtpVerificationState('sending')
     setSmtpVerificationError(null)
     try {
-      const result = await phdApi.sendInitialSetupSmtpVerification(smtpVerificationInput)
+      const result = await phdApi.sendInitialSetupSmtpVerification(
+        smtpVerificationInput,
+        bootstrapClaimToken,
+      )
       setSmtpVerificationToken(result.token)
       setSmtpVerificationCode('')
       setSmtpVerificationState('sent')
@@ -185,8 +249,9 @@ export function AdminSetupScreen({
       setSmtpVerificationToken('')
       setSmtpVerificationState('idle')
       setSmtpVerificationError(normalizeErrorMessage(reason, language as Parameters<typeof normalizeErrorMessage>[1], tx('emailCodeSendFailed')))
+      if (bootstrapClaimWasRejected(reason)) reopenBootstrapClaim()
     }
-  }, [language, mailValid, smtpVerificationInput, smtpVerificationState, tx])
+  }, [bootstrapClaimToken, language, mailValid, reopenBootstrapClaim, smtpVerificationInput, smtpVerificationState, tx])
 
   const verifySmtpVerificationCode = useCallback(async () => {
     if (!smtpVerificationToken || !/^\d{6}$/.test(smtpVerificationCode.trim())) {
@@ -200,16 +265,17 @@ export function AdminSetupScreen({
         ...smtpVerificationInput,
         token: smtpVerificationToken,
         code: smtpVerificationCode.trim(),
-      })
+      }, bootstrapClaimToken)
       setSmtpVerificationToken(verified.token)
       setSmtpVerificationState('verified')
       return true
     } catch (reason) {
       setSmtpVerificationState('sent')
       setSmtpVerificationError(normalizeErrorMessage(reason, language as Parameters<typeof normalizeErrorMessage>[1], tx('emailCodeRequired')))
+      if (bootstrapClaimWasRejected(reason)) reopenBootstrapClaim()
       return false
     }
-  }, [language, smtpVerificationCode, smtpVerificationInput, smtpVerificationToken, tx])
+  }, [bootstrapClaimToken, language, reopenBootstrapClaim, smtpVerificationCode, smtpVerificationInput, smtpVerificationToken, tx])
   const databasePortNumber = Number(databasePort)
   const externalDatabase = databaseType !== 'sqlite'
   const databaseValid = !externalDatabase || (
@@ -230,8 +296,35 @@ export function AdminSetupScreen({
     { id: 'review' as const, label: tx('admin.setup.reviewStep'), icon: Check },
   ], [tx])
 
+  const claimBootstrapAccess = useCallback(async () => {
+    if (bootstrapClaimToken) return bootstrapClaimToken
+    const operatorToken = bootstrapOperatorToken.trim()
+    const tokenBytes = utf8ByteLength(operatorToken)
+    if (tokenBytes < 32 || tokenBytes > 512 || bootstrapClaiming) return ''
+    setBootstrapClaiming(true)
+    setBootstrapClaimError(null)
+    try {
+      const claim = await phdApi.claimInitialSetup(operatorToken)
+      setBootstrapClaimToken(claim.token)
+      setBootstrapClaimExpiresAt(new Date(claim.expiresAt).getTime())
+      setBootstrapOperatorToken('')
+      return claim.token
+    } catch (reason) {
+      setBootstrapClaimError(normalizeErrorMessage(
+        reason,
+        language as Parameters<typeof normalizeErrorMessage>[1],
+        tx('admin.setup.bootstrapClaimInvalid', 'The bootstrap access token is invalid or no longer active.'),
+      ))
+      return ''
+    } finally {
+      setBootstrapClaiming(false)
+    }
+  }, [bootstrapClaimToken, bootstrapClaiming, bootstrapOperatorToken, language, tx])
+
   const goForward = async () => {
-    if (step === 'account' && accountValid) setStep('security')
+    if (step === 'account' && accountValid) {
+      if (await claimBootstrapAccess()) setStep('security')
+    }
     else if (step === 'security') setStep('storage')
     else if (step === 'storage' && databaseValid) setStep('mail')
     else if (step === 'mail' && mailValid && await verifySmtpVerificationCode()) setStep('review')
@@ -245,34 +338,38 @@ export function AdminSetupScreen({
 
   const submit = async () => {
     if (!accountValid || !databaseValid || !mailValid || smtpVerificationState !== 'verified' || busy) return
-    await onSubmit({
-      name: name.trim(),
-      email: email.trim().toLowerCase(),
-      password,
-      adminEntryHidden,
-      ...(adminEntryHidden ? { adminEntryCode } : {}),
-      notificationMailbox: notificationMailbox.trim().toLowerCase(),
-      smtpHost: smtpHost.trim(),
-      smtpPort: smtpPortNumber,
-      smtpUser: smtpUser.trim().toLowerCase(),
-      smtpPass,
-      smtpTls,
-      smtpVerificationToken,
-      language,
-      database: databaseType === 'sqlite'
-        ? { type: 'sqlite', sqlitePath: sqlitePath.trim() || undefined }
-        : {
-            type: databaseType,
-            host: databaseHost.trim(),
-            port: databasePortNumber,
-            database: databaseName.trim(),
-            username: databaseUser.trim(),
-            password: databasePassword,
-            ssl: databaseSsl,
-            mysql57Compatibility: databaseType === 'mysql' && mysql57Compatibility,
-            schema: databaseSchema.trim() || undefined,
-          },
-    })
+    try {
+      await onSubmit({
+        name: name.trim(),
+        email: email.trim().toLowerCase(),
+        password,
+        adminEntryHidden,
+        ...(adminEntryHidden ? { adminEntryCode } : {}),
+        notificationMailbox: notificationMailbox.trim().toLowerCase(),
+        smtpHost: smtpHost.trim(),
+        smtpPort: smtpPortNumber,
+        smtpUser: smtpUser.trim().toLowerCase(),
+        smtpPass,
+        smtpTls,
+        smtpVerificationToken,
+        language,
+        database: databaseType === 'sqlite'
+          ? { type: 'sqlite', sqlitePath: sqlitePath.trim() || undefined }
+          : {
+              type: databaseType,
+              host: databaseHost.trim(),
+              port: databasePortNumber,
+              database: databaseName.trim(),
+              username: databaseUser.trim(),
+              password: databasePassword,
+              ssl: databaseSsl,
+              mysql57Compatibility: databaseType === 'mysql' && mysql57Compatibility,
+              schema: databaseSchema.trim() || undefined,
+            },
+      }, bootstrapClaimToken)
+    } catch (reason) {
+      if (bootstrapClaimWasRejected(reason)) reopenBootstrapClaim()
+    }
   }
 
   return (
@@ -331,26 +428,50 @@ export function AdminSetupScreen({
               <div className="admin-setup-fields">
                 <label>
                   <span>{tx('admin.setup.adminName')}</span>
-                  <input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" autoFocus />
+                  <input required value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" autoFocus />
                 </label>
                 <label>
                   <span>{tx('admin.setup.loginEmail')}</span>
-                  <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" placeholder="admin@example.com" />
+                  <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" placeholder="admin@example.com" />
                 </label>
                 <label>
                   <span>{tx('admin.setup.password')}</span>
-                  <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" />
+                  <input required type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" />
                   <small>{tx('admin.setup.passwordHint')}</small>
                 </label>
                 <label>
                   <span>{tx('admin.setup.confirmPassword')}</span>
                   <input
                     type="password"
+                    required
                     value={confirmPassword}
                     onChange={(event) => setConfirmPassword(event.target.value)}
                     autoComplete="new-password"
                     aria-invalid={confirmPassword.length > 0 && password !== confirmPassword}
                   />
+                </label>
+                <label className="admin-setup-field-wide">
+                  <span>{tx('admin.setup.bootstrapClaimLabel', 'Bootstrap access token')}</span>
+                  <input
+                    name="bootstrapOperatorToken"
+                    required={!bootstrapClaimToken}
+                    type="password"
+                    value={bootstrapClaimToken ? 'bootstrap-claim-active' : bootstrapOperatorToken}
+                    onChange={(event) => {
+                      setBootstrapOperatorToken(event.target.value)
+                      setBootstrapClaimError(null)
+                    }}
+                    autoComplete="off"
+                    spellCheck={false}
+                    disabled={Boolean(bootstrapClaimToken)}
+                    aria-invalid={Boolean(bootstrapOperatorToken) && (() => {
+                      const bytes = utf8ByteLength(bootstrapOperatorToken.trim())
+                      return bytes < 32 || bytes > 512
+                    })()}
+                  />
+                  <small>{bootstrapClaimToken
+                    ? tx('admin.setup.bootstrapClaimAccepted', 'Bootstrap access confirmed for this browser session.')
+                    : tx('admin.setup.bootstrapClaimHint', 'Enter the operator-provided PHD_ATLAS_BOOTSTRAP_TOKEN (at least 32 characters).')}</small>
                 </label>
                 <div className={`admin-setup-entry-control admin-setup-field-wide ${adminEntryHidden ? 'enabled' : ''}`}>
                   <div className="admin-setup-entry-summary">
@@ -379,6 +500,7 @@ export function AdminSetupScreen({
                       <label>
                         <span>{tx('admin.adminEntry.codeLabel')}</span>
                         <input
+                          required={adminEntryHidden}
                           value={adminEntryCode}
                           onChange={(event) => setAdminEntryCode(event.target.value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64))}
                           placeholder={tx('admin.adminEntry.codePlaceholder')}
@@ -428,19 +550,6 @@ export function AdminSetupScreen({
                         </div>
                         <div className="admin-secret-card-value">
                           <code>{secrets.jwtSecretPreview}</code>
-                          <button
-                            type="button"
-                            className="admin-secret-copy-btn quiet-action"
-                            onClick={() => copyToClipboard(secrets.jwtSecret || secrets.jwtSecretPreview, 'jwt')}
-                            title={copiedKey === 'jwt' ? tx('admin.setup.securityCopied') : tx('admin.setup.securityCopyKey')}
-                            aria-label={copiedKey === 'jwt' ? tx('admin.setup.securityCopied') : tx('admin.setup.securityCopyKey')}
-                          >
-                            {copiedKey === 'jwt' ? (
-                              <Check size={14} aria-hidden="true" />
-                            ) : (
-                              <Copy size={14} aria-hidden="true" />
-                            )}
-                          </button>
                         </div>
                       </div>
                       <div className="admin-secret-card">
@@ -455,58 +564,8 @@ export function AdminSetupScreen({
                         </div>
                         <div className="admin-secret-card-value">
                           <code>{secrets.encryptionKeyPreview}</code>
-                          <button
-                            type="button"
-                            className="admin-secret-copy-btn quiet-action"
-                            onClick={() => copyToClipboard(secrets.encryptionKey || secrets.encryptionKeyPreview, 'enc')}
-                            title={copiedKey === 'enc' ? tx('admin.setup.securityCopied') : tx('admin.setup.securityCopyKey')}
-                            aria-label={copiedKey === 'enc' ? tx('admin.setup.securityCopied') : tx('admin.setup.securityCopyKey')}
-                          >
-                            {copiedKey === 'enc' ? (
-                              <Check size={14} aria-hidden="true" />
-                            ) : (
-                              <Copy size={14} aria-hidden="true" />
-                            )}
-                          </button>
                         </div>
                       </div>
-                    </div>
-                    <div className="admin-setup-secrets-actions">
-                      {showRegenConfirm ? (
-                        <div className="admin-secret-regen-confirm">
-                          <p className="admin-warning-text">{tx('admin.setup.securityRegenerateWarning')}</p>
-                          <div className="admin-secret-regen-buttons">
-                            <button
-                              type="button"
-                              className="primary-action destructive"
-                              onClick={regenerateKeys}
-                              disabled={regenerating}
-                            >
-                              {regenerating ? (
-                                <><span className="admin-setup-spinner" aria-hidden="true" /></>
-                              ) : (
-                                <><RefreshCw size={13} /> {tx('admin.setup.securityRegenerateConfirm')}</>
-                              )}
-                            </button>
-                            <button
-                              type="button"
-                              className="quiet-action"
-                              onClick={() => setShowRegenConfirm(false)}
-                              disabled={regenerating}
-                            >
-                              {tx('admin.setup.back')}
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          className="quiet-action"
-                          onClick={() => setShowRegenConfirm(true)}
-                        >
-                          <RefreshCw size={13} /> {tx('admin.setup.securityRegenerate')}
-                        </button>
-                      )}
                     </div>
                   </>
                 ) : null}
@@ -526,23 +585,23 @@ export function AdminSetupScreen({
               <div className="admin-setup-fields admin-setup-mail-grid">
                 <label className="admin-setup-field-wide">
                   <span>{tx('settings.smtpHost')}</span>
-                  <input value={smtpHost} onChange={(event) => { invalidateSmtpVerification(); setSmtpHost(event.target.value) }} placeholder="smtp.example.com" autoFocus />
+                  <input required value={smtpHost} onChange={(event) => { invalidateSmtpVerification(); setSmtpHost(event.target.value) }} placeholder="smtp.example.com" autoFocus />
                 </label>
                 <label>
                   <span>{tx('settings.smtpPort')}</span>
-                  <input type="number" min="1" max="65535" value={smtpPort} onChange={(event) => { invalidateSmtpVerification(); setSmtpPort(event.target.value) }} inputMode="numeric" />
+                  <input required type="number" min="1" max="65535" value={smtpPort} onChange={(event) => { invalidateSmtpVerification(); setSmtpPort(event.target.value) }} inputMode="numeric" />
                 </label>
                 <label>
                   <span>{tx('settings.smtpUser')}</span>
-                  <input type="email" value={smtpUser} onChange={(event) => { invalidateSmtpVerification(); setSmtpUser(event.target.value) }} placeholder="notifications@example.com" autoComplete="username" />
+                  <input required type="email" value={smtpUser} onChange={(event) => { invalidateSmtpVerification(); setSmtpUser(event.target.value) }} placeholder="notifications@example.com" autoComplete="username" />
                 </label>
                 <label>
                   <span>{tx('settings.smtpPass')}</span>
-                  <input type="password" value={smtpPass} onChange={(event) => { invalidateSmtpVerification(); setSmtpPass(event.target.value) }} autoComplete="new-password" />
+                  <input required type="password" value={smtpPass} onChange={(event) => { invalidateSmtpVerification(); setSmtpPass(event.target.value) }} autoComplete="new-password" />
                 </label>
                 <label className="admin-setup-field-wide">
                   <span>{tx('admin.setup.notificationMailbox')}</span>
-                  <input type="email" value={notificationMailbox} onChange={(event) => { invalidateSmtpVerification(); setNotificationMailbox(event.target.value) }} placeholder="admin@example.com" />
+                  <input required type="email" value={notificationMailbox} onChange={(event) => { invalidateSmtpVerification(); setNotificationMailbox(event.target.value) }} placeholder="admin@example.com" />
                   <small>{tx('admin.setup.notificationMailboxHint')}</small>
                 </label>
                 <div className="admin-setup-switch-row admin-setup-field-wide">
@@ -554,7 +613,7 @@ export function AdminSetupScreen({
                 </div>
                 <div className={`admin-setup-smtp-verification admin-setup-field-wide is-${smtpVerificationState}`}>
                   <div className="admin-setup-smtp-verification-copy">
-                    <strong>{tx('emailCode')}</strong>
+                    <strong>{tx('emailCode')} <span className="field-required-mark">*</span></strong>
                     <small>{notificationMailbox || tx('admin.setup.notificationMailboxHint')}</small>
                   </div>
                   <div className="admin-setup-smtp-verification-actions">
@@ -563,6 +622,7 @@ export function AdminSetupScreen({
                       inputMode="numeric"
                       autoComplete="one-time-code"
                       value={smtpVerificationCode}
+                      aria-required="true"
                       onChange={(event) => {
                         setSmtpVerificationCode(event.target.value.replace(/\D/g, '').slice(0, 6))
                         setSmtpVerificationError(null)
@@ -632,23 +692,23 @@ export function AdminSetupScreen({
                   <>
                     <label className="admin-setup-field-wide">
                       <span>{tx('admin.database.host')}</span>
-                      <input value={databaseHost} onChange={(event) => setDatabaseHost(event.target.value)} placeholder="db.example.com" autoFocus />
+                      <input required value={databaseHost} onChange={(event) => setDatabaseHost(event.target.value)} placeholder="db.example.com" autoFocus />
                     </label>
                     <label>
                       <span>{tx('admin.database.port')}</span>
-                      <input type="number" min="1" max="65535" value={databasePort} onChange={(event) => setDatabasePort(event.target.value)} inputMode="numeric" />
+                      <input required type="number" min="1" max="65535" value={databasePort} onChange={(event) => setDatabasePort(event.target.value)} inputMode="numeric" />
                     </label>
                     <label>
                       <span>{tx('admin.database.name')}</span>
-                      <input value={databaseName} onChange={(event) => setDatabaseName(event.target.value)} />
+                      <input required value={databaseName} onChange={(event) => setDatabaseName(event.target.value)} />
                     </label>
                     <label>
                       <span>{tx('admin.database.username')}</span>
-                      <input value={databaseUser} onChange={(event) => setDatabaseUser(event.target.value)} autoComplete="username" />
+                      <input required value={databaseUser} onChange={(event) => setDatabaseUser(event.target.value)} autoComplete="username" />
                     </label>
                     <label>
                       <span>{tx('admin.database.password')}</span>
-                      <input type="password" value={databasePassword} onChange={(event) => setDatabasePassword(event.target.value)} autoComplete="new-password" />
+                      <input required type="password" value={databasePassword} onChange={(event) => setDatabasePassword(event.target.value)} autoComplete="new-password" />
                     </label>
                     <label className="admin-setup-field-wide">
                       <span>{tx('admin.database.schema')}</span>
@@ -723,11 +783,15 @@ export function AdminSetupScreen({
             </>
           ) : null}
 
-          {error ? <div className="admin-error admin-setup-error" role="alert">{error}</div> : null}
+          {bootstrapClaimError || error ? (
+            <div className="admin-error admin-setup-error" role="alert">
+              {bootstrapClaimError || error}
+            </div>
+          ) : null}
 
           <footer className="admin-setup-actions">
             {step !== 'account' ? (
-              <button type="button" className="quiet-action" onClick={goBack} disabled={busy}>
+              <button type="button" className="quiet-action" onClick={goBack} disabled={busy || bootstrapClaiming}>
                 <ArrowLeft size={14} aria-hidden="true" /> {tx('admin.setup.back')}
               </button>
             ) : <span />}
@@ -736,15 +800,19 @@ export function AdminSetupScreen({
                 type="button"
                 className="primary-action"
                 onClick={() => void goForward()}
-                disabled={step === 'account'
+                disabled={bootstrapClaiming || (step === 'account'
                   ? !accountValid
                   : step === 'security'
                     ? false
                     : step === 'storage'
                       ? !databaseValid
-                      : !mailValid || !smtpVerificationToken || !/^\d{6}$/.test(smtpVerificationCode) || smtpVerificationState === 'sending' || smtpVerificationState === 'checking'}
+                      : !mailValid || !smtpVerificationToken || !/^\d{6}$/.test(smtpVerificationCode) || smtpVerificationState === 'sending' || smtpVerificationState === 'checking')}
               >
-                {tx('admin.setup.continue')} <ArrowRight size={14} aria-hidden="true" />
+                {bootstrapClaiming ? (
+                  <PendingLabel label={tx('admin.setup.verifying')} />
+                ) : (
+                  <>{tx('admin.setup.continue')} <ArrowRight size={14} aria-hidden="true" /></>
+                )}
               </button>
             ) : (
               <button type="button" className="primary-action" onClick={() => void submit()} disabled={busy} aria-busy={busy || undefined}>

@@ -27,6 +27,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   Search,
   Send,
@@ -44,6 +45,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -54,6 +56,12 @@ import {
 import { AsyncActionButton } from '../shared/AsyncActionButton'
 import { phdApi, type AdminSettings, type AdminTeamRecord, type AdminUser, type BackupRecord, type DatabaseConfiguration, type DatabaseConnectionInput, type DatabaseEngine, type EncryptionAlgorithm, type NotificationGroup, type ReleaseUpdateCheck, type SystemEvent, type SystemInfo, type SystemLogPage, type SystemLogQuery, type SystemUpdateLogEntry, type SystemUpdateResult, type SystemUpdateStatus, type TeamMember, type TeamRole, type TeamSummary } from '../../api/phdApi'
 import * as systemUpdateClient from '../../admin/systemUpdateClient'
+import {
+  advanceSystemUpdateTimeline,
+  getSystemUpdateDownloadProgress,
+  INITIAL_SYSTEM_UPDATE_TIMELINE,
+  SYSTEM_UPDATE_STEP_ORDER,
+} from '../../admin/systemUpdateProgress'
 import type { BackupFrequency } from '../../data/applications'
 import { normalizeErrorMessage } from '../../errorMessages'
 import { PUBLIC_DISTRIBUTION, PUBLIC_EDITION } from '../../edition'
@@ -94,6 +102,7 @@ import type { TableColumnDef } from '../shared/useTableColumns'
 import {
   accountTypeForUser,
   backupFrequencyOptions,
+  backupFrequencyOptionsFor,
   backupLimitOptions,
   compareAdminUsers,
   compareLogEvents,
@@ -119,13 +128,21 @@ import {
   type UserUpdatePatch,
 } from './adminScreenModel'
 import { AdminLiveUptime } from './AdminLiveUptime'
+import { registerSafeReloadGuard } from '../../safeReload'
+import {
+  readAdminResidentDraft,
+  writeAdminResidentDraftDomain,
+  type AdminEncryptionResidentDraft,
+} from '../../admin/adminResidentDraft'
 
 registerLanguage('en', englishAdmin as LangDict, 'admin')
 registerLanguage('zh', chineseAdmin as LangDict, 'admin')
 registerLanguage('en', englishSettings as LangDict, 'settings')
 registerLanguage('zh', chineseSettings as LangDict, 'settings')
-registerLanguage('en', englishTeam as LangDict, 'team')
-registerLanguage('zh', chineseTeam as LangDict, 'team')
+if (!PUBLIC_EDITION) {
+  registerLanguage('en', englishTeam as LangDict, 'team')
+  registerLanguage('zh', chineseTeam as LangDict, 'team')
+}
 
 const USER_PAGE_SIZE = 8
 const LOG_PAGE_SIZE = 10
@@ -161,6 +178,7 @@ function QuotaEditor({
   variant = 'regular',
   showValue = true,
   onCommit,
+  onDirtyChange,
 }: {
   quota: number
   label: string
@@ -169,34 +187,70 @@ function QuotaEditor({
   max?: number
   variant?: 'regular' | 'compact'
   showValue?: boolean
-  onCommit: (next: number) => void
+  onCommit: (next: number) => Promise<void>
+  onDirtyChange?: (dirty: boolean) => void
 }) {
   const quotaInputValue = isUnlimitedQuota(quota) ? '-1' : String(quota)
   const [value, setValue] = useState(quotaInputValue)
   const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const skipNextBlurRef = useRef(false)
+  const dirtyRef = useRef(false)
+  const commitInFlightRef = useRef(false)
+  const onDirtyChangeRef = useRef(onDirtyChange)
+  onDirtyChangeRef.current = onDirtyChange
+
+  const publishDirty = (dirty: boolean) => {
+    dirtyRef.current = dirty
+    onDirtyChangeRef.current?.(dirty)
+  }
 
   useEffect(() => {
     if (!editing) {
       setValue(quotaInputValue)
       return
     }
-    setValue(quotaInputValue)
     skipNextBlurRef.current = false
     inputRef.current?.focus()
     inputRef.current?.select()
-  }, [editing, quota, quotaInputValue])
+  }, [editing, quotaInputValue])
 
-  const commit = (rawValue = value) => {
+  useEffect(() => () => onDirtyChangeRef.current?.(false), [])
+
+  const commit = async (rawValue = value) => {
+    if (commitInFlightRef.current) return
     const next = Number(rawValue)
-    if (Number.isInteger(next) && (next === -1 || (next > 0 && next <= max))) {
-      if (next !== quota) onCommit(next)
-      setValue(String(next))
-    } else {
+    if (!Number.isInteger(next) || (next !== -1 && (next <= 0 || next > max))) {
       setValue(quotaInputValue)
+      publishDirty(false)
+      setEditing(false)
+      return
     }
-    setEditing(false)
+    if (next === quota) {
+      setValue(String(next))
+      publishDirty(false)
+      setEditing(false)
+      return
+    }
+    commitInFlightRef.current = true
+    setSaving(true)
+    try {
+      await onCommit(next)
+      setValue(String(next))
+      publishDirty(false)
+      setEditing(false)
+    } catch {
+      // Keep the authored value and resident editor available for retry. The
+      // parent already owns the localized error notification.
+      queueMicrotask(() => {
+        inputRef.current?.focus()
+        inputRef.current?.select()
+      })
+    } finally {
+      commitInFlightRef.current = false
+      setSaving(false)
+    }
   }
 
   if (editing) {
@@ -212,21 +266,28 @@ function QuotaEditor({
             step={1}
             inputMode="numeric"
             value={value}
-            onChange={(event) => setValue(event.target.value)}
+            disabled={saving}
+            aria-busy={saving || undefined}
+            onChange={(event) => {
+              setValue(event.target.value)
+              publishDirty(event.target.value !== quotaInputValue)
+            }}
             onBlur={(event) => {
               if (skipNextBlurRef.current) {
                 skipNextBlurRef.current = false
                 return
               }
-              commit(event.currentTarget.value)
+              void commit(event.currentTarget.value)
             }}
             onKeyDown={(event) => {
               if (event.key === 'Enter') {
-                commit(event.currentTarget.value)
+                skipNextBlurRef.current = true
+                void commit(event.currentTarget.value)
               }
               if (event.key === 'Escape') {
                 skipNextBlurRef.current = true
                 setValue(quotaInputValue)
+                publishDirty(false)
                 setEditing(false)
               }
             }}
@@ -248,7 +309,11 @@ function QuotaEditor({
       <button
         type="button"
         className="admin-quota-edit-btn"
-        onClick={() => setEditing(true)}
+        onClick={() => {
+          setValue(quotaInputValue)
+          publishDirty(false)
+          setEditing(true)
+        }}
         title={editLabel}
         aria-label={editLabel}
       >
@@ -280,6 +345,8 @@ function EncryptionSettingsPanel({
   busy,
   onApply,
   onLocalError,
+  initialDraft,
+  onResidentStateChange,
   tx,
 }: {
   settings: AdminSettings
@@ -287,17 +354,33 @@ function EncryptionSettingsPanel({
   busy: boolean
   onApply: (patch: Partial<AdminSettings>) => Promise<void>
   onLocalError?: (message: string) => void
+  initialDraft?: AdminEncryptionResidentDraft | null
+  onResidentStateChange?: (state: {
+    dirty: boolean
+    hasSensitiveValues: boolean
+    draft: AdminEncryptionResidentDraft
+  }) => void
   tx: (path: string, fallback?: string) => string
 }) {
-  const [enabled, setEnabled] = useState(Boolean(settings.encryptionAtRest))
-  const [algorithm, setAlgorithm] = useState<EncryptionAlgorithm>(settings.encryptionAlgorithm === 'chacha20-poly1305' ? 'chacha20-poly1305' : 'aes-256-gcm')
-  const [passwordEnabled, setPasswordEnabled] = useState(Boolean(settings.encryptionPasswordEnabled))
-  const [sqliteEncryption, setSqliteEncryption] = useState(Boolean(settings.sqliteEncryption))
+  const [enabled, setEnabled] = useState(initialDraft?.enabled ?? Boolean(settings.encryptionAtRest))
+  const [algorithm, setAlgorithm] = useState<EncryptionAlgorithm>(initialDraft?.algorithm ?? (settings.encryptionAlgorithm === 'chacha20-poly1305' ? 'chacha20-poly1305' : 'aes-256-gcm'))
+  const [passwordEnabled, setPasswordEnabled] = useState(initialDraft?.passwordEnabled ?? Boolean(settings.encryptionPasswordEnabled))
+  const [sqliteEncryption, setSqliteEncryption] = useState(initialDraft?.sqliteEncryption ?? Boolean(settings.sqliteEncryption))
   const [password, setPassword] = useState('')
   const [passwordConfirm, setPasswordConfirm] = useState('')
   const [currentPassword, setCurrentPassword] = useState('')
+  const [dirty, setDirty] = useState(Boolean(initialDraft))
+  const dirtyRef = useRef(dirty)
+  const editVersionRef = useRef(0)
+  dirtyRef.current = dirty
+
+  const markDirty = () => {
+    editVersionRef.current += 1
+    setDirty(true)
+  }
 
   useEffect(() => {
+    if (dirtyRef.current) return
     setEnabled(Boolean(settings.encryptionAtRest))
     setAlgorithm(settings.encryptionAlgorithm === 'chacha20-poly1305' ? 'chacha20-poly1305' : 'aes-256-gcm')
     setPasswordEnabled(Boolean(settings.encryptionPasswordEnabled))
@@ -307,6 +390,24 @@ function EncryptionSettingsPanel({
     settings.encryptionAlgorithm,
     settings.encryptionPasswordEnabled,
     settings.sqliteEncryption,
+  ])
+
+  useEffect(() => {
+    onResidentStateChange?.({
+      dirty,
+      hasSensitiveValues: Boolean(password || passwordConfirm || currentPassword),
+      draft: { enabled, algorithm, passwordEnabled, sqliteEncryption },
+    })
+  }, [
+    algorithm,
+    currentPassword,
+    dirty,
+    enabled,
+    onResidentStateChange,
+    password,
+    passwordConfirm,
+    passwordEnabled,
+    sqliteEncryption,
   ])
 
   const passwordAlreadySet = Boolean(settings.encryptionPasswordSet)
@@ -346,10 +447,17 @@ function EncryptionSettingsPanel({
     if (needsCurrentPassword) {
       patch.encryptionCurrentPassword = currentPassword
     }
-    await onApply(patch)
+    const submittedVersion = editVersionRef.current
+    try {
+      await onApply(patch)
+    } catch {
+      // Keep toggles and all secret fields resident after a rejected write.
+      return
+    }
     setPassword('')
     setPasswordConfirm('')
     setCurrentPassword('')
+    if (editVersionRef.current === submittedVersion) setDirty(false)
   }
 
   return (
@@ -360,7 +468,10 @@ function EncryptionSettingsPanel({
           checked={enabled}
           label={tx('admin.encryptionEnabledLabel')}
           variant="accent"
-          onChange={setEnabled}
+          onChange={(next) => {
+            markDirty()
+            setEnabled(next)
+          }}
         />
       </label>
 
@@ -377,7 +488,10 @@ function EncryptionSettingsPanel({
               }))}
               onChange={(value) => {
                 const nextAlgorithm = encryptionAlgorithmOptions.find((option) => option.value === value)?.value
-                if (nextAlgorithm) setAlgorithm(nextAlgorithm)
+                if (nextAlgorithm) {
+                  markDirty()
+                  setAlgorithm(nextAlgorithm)
+                }
               }}
               ariaLabel={tx('admin.encryptionMethod')}
             />
@@ -394,7 +508,10 @@ function EncryptionSettingsPanel({
                   variant="accent"
                   aria-controls="admin-encryption-password-fields"
                   aria-expanded={passwordEnabled}
-                  onChange={setPasswordEnabled}
+                  onChange={(next) => {
+                    markDirty()
+                    setPasswordEnabled(next)
+                  }}
                 />
               </label>
               <p className="admin-encryption-hint">{tx('admin.encryptionPasswordToggleDesc')}</p>
@@ -417,7 +534,10 @@ function EncryptionSettingsPanel({
                   type="password"
                   value={password}
                   autoComplete="new-password"
-                  onChange={(event) => setPassword(event.target.value)}
+                  onChange={(event) => {
+                    markDirty()
+                    setPassword(event.target.value)
+                  }}
                   placeholder={passwordAlreadySet ? '••••••••' : undefined}
                 />
               </label>
@@ -427,7 +547,10 @@ function EncryptionSettingsPanel({
                   type="password"
                   value={passwordConfirm}
                   autoComplete="new-password"
-                  onChange={(event) => setPasswordConfirm(event.target.value)}
+                  onChange={(event) => {
+                    markDirty()
+                    setPasswordConfirm(event.target.value)
+                  }}
                 />
               </label>
             </CollapsiblePanel>
@@ -440,7 +563,10 @@ function EncryptionSettingsPanel({
               disabled={!sqliteAvailable}
               label={tx('admin.sqliteEncryption')}
               variant="accent"
-              onChange={setSqliteEncryption}
+              onChange={(next) => {
+                markDirty()
+                setSqliteEncryption(next)
+              }}
             />
           </label>
           <p className="admin-encryption-hint">
@@ -464,7 +590,10 @@ function EncryptionSettingsPanel({
               type="password"
               value={currentPassword}
               autoComplete="current-password"
-              onChange={(event) => setCurrentPassword(event.target.value)}
+              onChange={(event) => {
+                markDirty()
+                setCurrentPassword(event.target.value)
+              }}
             />
             <small>{tx('admin.encryptionCurrentPasswordHint')}</small>
           </label>
@@ -536,6 +665,8 @@ export function AdminScreen({
   onNotify?: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
 }) {
   const { tx, format, lang } = useI18n()
+  const adminResidentGuardId = useId()
+  const [initialResidentDraft] = useState(() => readAdminResidentDraft(currentUserId))
   const [userPage, setUserPage] = useState(0)
   const [userSearch, setUserSearch] = useState('')
   const [accountView, setAccountView] = useState<'personal' | 'teams'>('personal')
@@ -604,17 +735,21 @@ export function AdminScreen({
   const [logRetentionSaving, setLogRetentionSaving] = useState(false)
 
   // System config state
-  const [notificationMailbox, setNotificationMailbox] = useState(settings.notificationMailbox)
-  const [smtpHost, setSmtpHost] = useState(settings.smtpHost || '')
-  const [smtpPort, setSmtpPort] = useState(String(settings.smtpPort ?? 587))
-  const [smtpUser, setSmtpUser] = useState(settings.smtpUser || '')
+  const [notificationMailbox, setNotificationMailbox] = useState(initialResidentDraft?.mail?.notificationMailbox ?? settings.notificationMailbox)
+  const [smtpHost, setSmtpHost] = useState(initialResidentDraft?.mail?.smtpHost ?? settings.smtpHost ?? '')
+  const [smtpPort, setSmtpPort] = useState(initialResidentDraft?.mail?.smtpPort ?? String(settings.smtpPort ?? 587))
+  const [smtpUser, setSmtpUser] = useState(initialResidentDraft?.mail?.smtpUser ?? settings.smtpUser ?? '')
   // The server never returns the real secret (see settings.smtpPassSet) — this only ever holds a NEW value being typed.
   const [smtpPass, setSmtpPass] = useState('')
-  const [smtpTls, setSmtpTls] = useState(settings.smtpTls ?? true)
+  const [smtpTls, setSmtpTls] = useState(initialResidentDraft?.mail?.smtpTls ?? settings.smtpTls ?? true)
+  const [mailDirty, setMailDirty] = useState(Boolean(initialResidentDraft?.mail))
+  const mailEditVersionRef = useRef(0)
   const [registrationOpen, setRegistrationOpen] = useState(false)
   const [adminEntryOpen, setAdminEntryOpen] = useState(false)
-  const [adminEntryEnabled, setAdminEntryEnabled] = useState(Boolean(settings.adminEntryHidden))
+  const [adminEntryEnabled, setAdminEntryEnabled] = useState(initialResidentDraft?.adminEntry?.adminEntryEnabled ?? Boolean(settings.adminEntryHidden))
   const [adminEntryCode, setAdminEntryCode] = useState('')
+  const [adminEntryDirty, setAdminEntryDirty] = useState(Boolean(initialResidentDraft?.adminEntry))
+  const adminEntryEditVersionRef = useRef(0)
   const [adminEntrySaving, setAdminEntrySaving] = useState(false)
   const [encryptionOpen, setEncryptionOpen] = useState(false)
   const [encryptionBusy, setEncryptionBusy] = useState(false)
@@ -631,14 +766,23 @@ export function AdminScreen({
   const [databaseTesting, setDatabaseTesting] = useState(false)
   const [databaseSaving, setDatabaseSaving] = useState(false)
   const [backupConfigOpen, setBackupConfigOpen] = useState(false)
-  const [backupFrequency, setBackupFrequency] = useState(normalizeBackupFrequency(settings.backupFrequency))
-  const [maxBackupsLimit, setMaxBackupsLimit] = useState(normalizeBackupLimitOption(settings.maxBackupsPerAppLimit))
-  const [adminSessionDuration, setAdminSessionDuration] = useState(String(settings.adminSessionDurationMinutes ?? 120))
+  const [backupFrequency, setBackupFrequency] = useState(initialResidentDraft?.backup?.backupFrequency ?? normalizeBackupFrequency(settings.backupFrequency))
+  const [maxBackupsLimit, setMaxBackupsLimit] = useState(initialResidentDraft?.backup?.maxBackupsLimit ?? normalizeBackupLimitOption(settings.maxBackupsPerAppLimit))
+  const [backupDirty, setBackupDirty] = useState(Boolean(initialResidentDraft?.backup))
+  const backupEditVersionRef = useRef(0)
+  const backupSavingCountRef = useRef(0)
+  const [adminSessionDuration, setAdminSessionDuration] = useState(initialResidentDraft?.session?.adminSessionDuration ?? String(settings.adminSessionDurationMinutes ?? 120))
+  const [sessionDirty, setSessionDirty] = useState(Boolean(initialResidentDraft?.session))
+  const sessionEditVersionRef = useRef(0)
+  const sessionSavingCountRef = useRef(0)
   const [workspaceBackups, setWorkspaceBackups] = useState<BackupRecord[]>([])
   const [workspaceBackupsLoaded, setWorkspaceBackupsLoaded] = useState(false)
   const [workspaceBackupsLoading, setWorkspaceBackupsLoading] = useState(false)
   const [workspaceBackupBusy, setWorkspaceBackupBusy] = useState<string | null>(null)
   const [pendingBackupDelete, setPendingBackupDelete] = useState<BackupRecord | null>(null)
+  const [pendingBackupRestore, setPendingBackupRestore] = useState<BackupRecord | null>(null)
+  const [restoreFileName, setRestoreFileName] = useState('')
+  const restoreFileNameRef = useRef<HTMLInputElement>(null)
 
   // Password change state
   const [passwordConfigOpen, setPasswordConfigOpen] = useState(false)
@@ -651,11 +795,19 @@ export function AdminScreen({
   // System update state
   const [uploading, setUploading] = useState(false)
   const [updateFile, setUpdateFile] = useState<File | null>(null)
+  const [storedUpdate, setStoredUpdate] = useState<{
+    storedAs: string
+    fileName: string
+    version: string
+  } | null>(null)
+  const [pendingStoredUpdateDelete, setPendingStoredUpdateDelete] = useState(false)
+  const [deletingStoredUpdate, setDeletingStoredUpdate] = useState(false)
   const [updateDragActive, setUpdateDragActive] = useState(false)
   const [releaseUpdate, setReleaseUpdate] = useState<ReleaseUpdateCheck | null>(null)
   const [checkingReleaseUpdate, setCheckingReleaseUpdate] = useState(false)
   const [installingReleaseUpdate, setInstallingReleaseUpdate] = useState(false)
   const [systemUpdateStatus, setSystemUpdateStatus] = useState<SystemUpdateStatus | null>(null)
+  const [systemUpdateTimeline, setSystemUpdateTimeline] = useState(INITIAL_SYSTEM_UPDATE_TIMELINE)
   const [systemUpdateLogs, setSystemUpdateLogs] = useState<SystemUpdateLogEntry[]>([])
   const [systemUpdateLogsOpen, setSystemUpdateLogsOpen] = useState(false)
   const [systemUpdateLogsLoading, setSystemUpdateLogsLoading] = useState(false)
@@ -666,12 +818,179 @@ export function AdminScreen({
   const [notificationGroups, setNotificationGroups] = useState<NotificationGroup[]>([])
   const [notificationGroupsLoaded, setNotificationGroupsLoaded] = useState(false)
 
+  const mailDirtyRef = useRef(mailDirty)
+  const backupDirtyRef = useRef(backupDirty)
+  const sessionDirtyRef = useRef(sessionDirty)
+  const adminEntryDirtyRef = useRef(adminEntryDirty)
+  mailDirtyRef.current = mailDirty
+  backupDirtyRef.current = backupDirty
+  sessionDirtyRef.current = sessionDirty
+  adminEntryDirtyRef.current = adminEntryDirty
+
+  const quotaDirtyIdsRef = useRef(new Set<string>())
+  const encryptionResidentRef = useRef({
+    dirty: Boolean(initialResidentDraft?.encryption),
+    hasSensitiveValues: false,
+    draft: initialResidentDraft?.encryption ?? {
+      enabled: Boolean(settings.encryptionAtRest),
+      algorithm: settings.encryptionAlgorithm === 'chacha20-poly1305'
+        ? 'chacha20-poly1305' as const
+        : 'aes-256-gcm' as const,
+      passwordEnabled: Boolean(settings.encryptionPasswordEnabled),
+      sqliteEncryption: Boolean(settings.sqliteEncryption),
+    },
+  })
+  const residentSnapshotRef = useRef({
+    mailDirty,
+    mail: { notificationMailbox, smtpHost, smtpPort, smtpUser, smtpTls },
+    backupDirty,
+    backup: { backupFrequency, maxBackupsLimit },
+    sessionDirty,
+    session: { adminSessionDuration },
+    adminEntryDirty,
+    adminEntry: { adminEntryEnabled },
+    hasSensitiveValues: false,
+    busy: false,
+  })
+  residentSnapshotRef.current = {
+    mailDirty,
+    mail: { notificationMailbox, smtpHost, smtpPort, smtpUser, smtpTls },
+    backupDirty,
+    backup: { backupFrequency, maxBackupsLimit },
+    sessionDirty,
+    session: { adminSessionDuration },
+    adminEntryDirty,
+    adminEntry: { adminEntryEnabled },
+    // Secrets are deliberately absent from the recovery payload. They keep
+    // the resident page mounted until the admin explicitly saves or discards.
+    hasSensitiveValues: Boolean(
+      smtpPass
+      || adminEntryCode
+      || currentPassword
+      || newPassword
+      || confirmNewPassword
+      || databasePassword
+    ),
+    busy: mailSaving
+      || mailTesting
+      || adminEntrySaving
+      || encryptionBusy
+      || passwordBusy
+      || databaseTesting
+      || databaseSaving,
+  }
+
+  const handleQuotaDirtyChange = useCallback((draftId: string, dirty: boolean) => {
+    if (dirty) quotaDirtyIdsRef.current.add(draftId)
+    else quotaDirtyIdsRef.current.delete(draftId)
+  }, [])
+
+  const handleEncryptionResidentState = useCallback((state: {
+    dirty: boolean
+    hasSensitiveValues: boolean
+    draft: AdminEncryptionResidentDraft
+  }) => {
+    encryptionResidentRef.current = state
+    writeAdminResidentDraftDomain(
+      currentUserId,
+      'encryption',
+      state.dirty ? state.draft : null,
+    )
+  }, [currentUserId])
+
+  useEffect(() => {
+    writeAdminResidentDraftDomain(currentUserId, 'mail', mailDirty ? {
+      notificationMailbox,
+      smtpHost,
+      smtpPort,
+      smtpUser,
+      smtpTls,
+    } : null)
+  }, [currentUserId, mailDirty, notificationMailbox, smtpHost, smtpPort, smtpTls, smtpUser])
+
+  useEffect(() => {
+    writeAdminResidentDraftDomain(currentUserId, 'backup', backupDirty ? {
+      backupFrequency,
+      maxBackupsLimit,
+    } : null)
+  }, [backupDirty, backupFrequency, currentUserId, maxBackupsLimit])
+
+  useEffect(() => {
+    writeAdminResidentDraftDomain(currentUserId, 'session', sessionDirty ? {
+      adminSessionDuration,
+    } : null)
+  }, [adminSessionDuration, currentUserId, sessionDirty])
+
+  useEffect(() => {
+    writeAdminResidentDraftDomain(currentUserId, 'adminEntry', adminEntryDirty ? {
+      adminEntryEnabled,
+    } : null)
+  }, [adminEntryDirty, adminEntryEnabled, currentUserId])
+
+  useEffect(() => {
+    const persistRecoverableDrafts = () => {
+      const resident = residentSnapshotRef.current
+      const encryption = encryptionResidentRef.current
+      let persisted = true
+      if (resident.mailDirty) {
+        persisted = writeAdminResidentDraftDomain(currentUserId, 'mail', resident.mail) && persisted
+      }
+      if (resident.backupDirty) {
+        persisted = writeAdminResidentDraftDomain(currentUserId, 'backup', resident.backup) && persisted
+      }
+      if (resident.sessionDirty) {
+        persisted = writeAdminResidentDraftDomain(currentUserId, 'session', resident.session) && persisted
+      }
+      if (resident.adminEntryDirty) {
+        persisted = writeAdminResidentDraftDomain(currentUserId, 'adminEntry', resident.adminEntry) && persisted
+      }
+      if (encryption.dirty) {
+        persisted = writeAdminResidentDraftDomain(currentUserId, 'encryption', encryption.draft) && persisted
+      }
+      return persisted
+    }
+    const hasBlockingResidentState = () => {
+      const resident = residentSnapshotRef.current
+      const encryption = encryptionResidentRef.current
+      return resident.hasSensitiveValues
+        || resident.busy
+        || backupSavingCountRef.current > 0
+        || sessionSavingCountRef.current > 0
+        || encryption.hasSensitiveValues
+        || quotaDirtyIdsRef.current.size > 0
+    }
+    const unregister = registerSafeReloadGuard(`admin-screen:${adminResidentGuardId}`, {
+      prepare: persistRecoverableDrafts,
+      hasUnsavedChanges: hasBlockingResidentState,
+    })
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (persistRecoverableDrafts() && !hasBlockingResidentState()) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', beforeUnload)
+    return () => {
+      unregister()
+      window.removeEventListener('beforeunload', beforeUnload)
+    }
+  }, [adminResidentGuardId, currentUserId])
+
+  const markMailDirty = () => {
+    mailEditVersionRef.current += 1
+    setMailDirty(true)
+  }
+
+  const markAdminEntryDirty = () => {
+    adminEntryEditVersionRef.current += 1
+    setAdminEntryDirty(true)
+  }
+
   const commitUserUpdate = async (userId: string, patch: UserUpdatePatch) => {
     setUpdatingUserIds((current) => new Set(current).add(userId))
     try {
+      // AdminApp owns the visible error message. Preserve any rejection so a
+      // resident row editor can remain open instead of painting false success.
       await onUserUpdate(userId, patch)
-    } catch {
-      // AdminApp owns the visible error message; this row only owns its pending UI.
     } finally {
       setUpdatingUserIds((current) => {
         const next = new Set(current)
@@ -683,7 +1002,7 @@ export function AdminScreen({
 
   const handleAccountTypeChange = (userId: string, accountType: AccountType) => {
     setPendingAccountTypes((current) => ({ ...current, [userId]: accountType }))
-    void commitUserUpdate(userId, patchForAccountType(accountType)).finally(() => {
+    void commitUserUpdate(userId, patchForAccountType(accountType)).catch(() => undefined).finally(() => {
       setPendingAccountTypes((current) => {
         const next = { ...current }
         delete next[userId]
@@ -693,19 +1012,46 @@ export function AdminScreen({
   }
 
   useEffect(() => {
+    if (mailDirtyRef.current) return
     setNotificationMailbox(settings.notificationMailbox)
     setSmtpHost(settings.smtpHost || '')
     setSmtpPort(String(settings.smtpPort ?? 587))
     setSmtpUser(settings.smtpUser || '')
     setSmtpPass('')
     setSmtpTls(settings.smtpTls ?? true)
+  }, [
+    settings.notificationMailbox,
+    settings.smtpHost,
+    settings.smtpPassSet,
+    settings.smtpPort,
+    settings.smtpTls,
+    settings.smtpUser,
+  ])
+
+  useEffect(() => {
+    if (backupDirtyRef.current) return
     setBackupFrequency(normalizeBackupFrequency(settings.backupFrequency))
     setMaxBackupsLimit(normalizeBackupLimitOption(settings.maxBackupsPerAppLimit))
+  }, [settings.backupFrequency, settings.maxBackupsPerAppLimit])
+
+  useEffect(() => {
+    if (sessionDirtyRef.current) return
     setAdminSessionDuration(String(settings.adminSessionDurationMinutes ?? 120))
+  }, [settings.adminSessionDurationMinutes])
+
+  useEffect(() => {
+    if (adminEntryDirtyRef.current) return
     setAdminEntryEnabled(Boolean(settings.adminEntryHidden))
     setAdminEntryCode('')
+  }, [settings.adminEntryCodeSet, settings.adminEntryHidden])
+
+  useEffect(() => {
     setLogRetentionDraft(settings.systemLogRetentionDays ?? null)
-  }, [settings])
+  }, [settings.systemLogRetentionDays])
+
+  useEffect(() => {
+    setSystemUpdateTimeline((current) => advanceSystemUpdateTimeline(current, systemUpdateStatus))
+  }, [systemUpdateStatus])
 
   const loadWorkspaceBackups = useCallback(async (showSpinner = true) => {
     if (showSpinner) setWorkspaceBackupsLoading(true)
@@ -862,9 +1208,10 @@ export function AdminScreen({
 
   const totalUsed = useMemo(() => users.reduce((sum, user) => sum + Number(user.storageUsedBytes ?? 0), 0), [users])
   const adminListUsers = useMemo(() => users, [users])
-  const userDerivedTeamAccounts = useMemo<AdminTeamRecord[]>(() => users
-    .filter((owner) => Boolean(owner.teamId))
-    .map((owner) => {
+  const userDerivedTeamAccounts = useMemo<AdminTeamRecord[]>(() => {
+    if (PUBLIC_EDITION) return []
+    return users.filter((owner) => Boolean(owner.teamId))
+      .map((owner) => {
       const teamId = owner.teamId as string
       const members = users.filter((candidate) => candidate.teamMemberOf?.teamId === teamId)
       return {
@@ -881,7 +1228,8 @@ export function AdminScreen({
         teacherCount: members.filter((member) => member.teamMemberOf?.role === 'admin').length,
         studentCount: members.filter((member) => member.teamMemberOf?.role === 'member').length,
       }
-    }), [users])
+      })
+  }, [users])
   const teamAccounts = useMemo(
     () => PUBLIC_EDITION ? [] : (adminTeams.length > 0 ? adminTeams : userDerivedTeamAccounts),
     [adminTeams, userDerivedTeamAccounts],
@@ -956,7 +1304,7 @@ export function AdminScreen({
     { id: 'users', label: tx('admin.notificationAudienceUsers'), description: tx('admin.notificationAudienceUsersDesc') },
     { id: 'free', label: tx('admin.notificationAudienceFree'), description: tx('admin.notificationAudienceFreeDesc') },
     { id: 'pro', label: tx('admin.notificationAudiencePro'), description: tx('admin.notificationAudienceProDesc') },
-    { id: 'team', label: tx('admin.notificationAudienceTeam'), description: tx('admin.notificationAudienceTeamDesc') },
+    ...(!PUBLIC_EDITION ? [{ id: 'team', label: tx('admin.notificationAudienceTeam'), description: tx('admin.notificationAudienceTeamDesc') }] : []),
   ], [tx])
   const createNotificationGroup = useCallback(async (name: string, memberIds: string[]) => {
     const group = await phdApi.createAdminNotificationGroup(token, name, memberIds)
@@ -1186,16 +1534,25 @@ export function AdminScreen({
       else if (!smtpHost.trim()) notify(tx('admin.smtpHostRequired', 'SMTP host is required.'), 'error')
       return
     }
+    const submittedVersion = mailEditVersionRef.current
     setMailSaving(true)
     try {
       await onSettings(patch)
-      setSmtpPass('')
       notify(tx('admin.configSaved'), 'success')
     } catch {
       // Parent already toasts the error.
+      return
     } finally {
       setMailSaving(false)
     }
+    if (mailEditVersionRef.current !== submittedVersion) return
+    setNotificationMailbox(patch.notificationMailbox ?? notificationMailbox)
+    setSmtpHost(patch.smtpHost ?? smtpHost)
+    setSmtpPort(String(patch.smtpPort ?? smtpPort))
+    setSmtpUser(patch.smtpUser ?? smtpUser)
+    setSmtpTls(patch.smtpTls ?? smtpTls)
+    setSmtpPass('')
+    setMailDirty(false)
   }
 
   const clearSystemMailPass = async () => {
@@ -1218,10 +1575,17 @@ export function AdminScreen({
       else notify(tx('settings.mailNeedsSetup'), 'warning')
       return
     }
+    const submittedVersion = mailEditVersionRef.current
     setMailTesting(true)
     try {
       await onTestSystemMail(patch, delivery)
       notify(tx('admin.testEmailQueued'), 'success')
+      if (mailEditVersionRef.current === submittedVersion) {
+        setSmtpPass('')
+        setMailDirty(false)
+      }
+    } catch {
+      // Parent owns the localized error and the full resident draft remains.
     } finally {
       setMailTesting(false)
     }
@@ -1300,13 +1664,22 @@ export function AdminScreen({
   const persistBackupSettings = async (patch: {
     backupFrequency?: BackupFrequency
     maxBackupsPerAppLimit?: number
-  }) => {
+  }, submittedVersion: number, onFailure?: () => void) => {
+    backupSavingCountRef.current += 1
     try {
       await onSettings(patch)
       notify(tx('admin.configSaved'), 'success')
     } catch {
       // Parent already toasts the error.
+      if (backupEditVersionRef.current === submittedVersion) {
+        onFailure?.()
+        setBackupDirty(false)
+      }
+      return
+    } finally {
+      backupSavingCountRef.current = Math.max(0, backupSavingCountRef.current - 1)
     }
+    if (backupEditVersionRef.current === submittedVersion) setBackupDirty(false)
   }
 
   const createWorkspaceBackup = async () => {
@@ -1346,6 +1719,37 @@ export function AdminScreen({
       notify(tx('admin.workspaceBackupDeleted'), 'success')
     } catch (error) {
       notify(normalizeErrorMessage(error, lang), 'error')
+      throw error
+    } finally {
+      setWorkspaceBackupBusy(null)
+    }
+  }
+
+  const deleteStoredUpdate = async () => {
+    if (!storedUpdate) return
+    setDeletingStoredUpdate(true)
+    try {
+      await phdApi.deleteSystemUpdate(token, storedUpdate.storedAs)
+      setStoredUpdate(null)
+      setPendingStoredUpdateDelete(false)
+      notify(tx('admin.packageDeleted'), 'success')
+    } catch (error) {
+      notify(normalizeErrorMessage(error, lang), 'error')
+      throw error
+    } finally {
+      setDeletingStoredUpdate(false)
+    }
+  }
+
+  const restoreWorkspaceBackup = async (backup: BackupRecord) => {
+    setWorkspaceBackupBusy(backup.fileName)
+    try {
+      await phdApi.restoreAdminBackup(token, backup.fileName)
+      onRefreshSystemInfo()
+      notify(tx('admin.workspaceBackupRestored'), 'success')
+    } catch (error) {
+      notify(normalizeErrorMessage(error, lang), 'error')
+      throw error
     } finally {
       setWorkspaceBackupBusy(null)
     }
@@ -1441,7 +1845,9 @@ export function AdminScreen({
       })
       setSystemUpdateStatus({ ...ready, phase: 'ready' })
       notify(tx('admin.updateReadyRefreshing'), 'success')
-      window.setTimeout(systemUpdateClient.reloadInstalledApplication, 650)
+      window.setTimeout(() => {
+        void systemUpdateClient.reloadInstalledApplication()
+      }, 650)
       return true
     } catch (error) {
       const timeout = (error as { code?: string })?.code === 'UPDATE_RESTART_TIMEOUT'
@@ -1539,6 +1945,13 @@ export function AdminScreen({
     try {
       const result = await onSystemUpdate(file)
       if (result) {
+        if (typeof result === 'object' && result.storedAs) {
+          setStoredUpdate({
+            storedAs: result.storedAs,
+            fileName: result.fileName,
+            version: result.version,
+          })
+        }
         notify(tx('admin.updateUploaded'), 'success')
         if (fileInputRef.current) fileInputRef.current.value = ''
         setUpdateFile(null)
@@ -1603,9 +2016,8 @@ export function AdminScreen({
     },
   ] : []
   const updatePhase = systemUpdateStatus?.phase ?? 'idle'
-  const updateProgress = systemUpdateStatus?.total
-    ? Math.min(100, Math.max(0, Math.round((systemUpdateStatus.bytes / systemUpdateStatus.total) * 100)))
-    : 0
+  const exactDownloadProgress = getSystemUpdateDownloadProgress(systemUpdateStatus)
+  const updateProgress = Math.round(exactDownloadProgress ?? 0)
   const updateSourceLabel = !systemUpdateStatus?.source
     ? ''
     : systemUpdateStatus.source === 'github'
@@ -1618,26 +2030,12 @@ export function AdminScreen({
   const showUpdateProgress = updatePhase !== 'idle'
   const systemUpdateBusy = installingReleaseUpdate
     || uploading
+    || deletingStoredUpdate
     || Boolean(systemUpdateStatus?.operationInFlight)
     || Boolean(systemUpdateStatus?.restartPending)
     || ['resolving', 'probing', 'downloading', 'verifying', 'preparing', 'installing', 'restarting'].includes(updatePhase)
-  const updateStepOrder: SystemUpdateStatus['phase'][] = [
-    'resolving',
-    'probing',
-    'downloading',
-    'verifying',
-    'preparing',
-    'installing',
-    'restarting',
-  ]
-  const updateStepIndex = updatePhase === 'ready' || updatePhase === 'stored'
-    ? updateStepOrder.length
-    : Math.max(0, updateStepOrder.indexOf(updatePhase))
-  const updateTimelineProgress = updatePhase === 'ready' || updatePhase === 'stored'
-    ? 100
-    : updatePhase === 'downloading'
-      ? 34 + (updateProgress * 0.24)
-      : Math.min(96, (updateStepIndex / updateStepOrder.length) * 100)
+  const updateStepIndex = systemUpdateTimeline.stepIndex
+  const updateTimelineProgress = systemUpdateTimeline.progress
 
   return (
     <section className="simple-screen admin-screen">
@@ -1713,7 +2111,10 @@ export function AdminScreen({
                   <SwitchControl
                     checked={adminEntryEnabled}
                     label={tx('admin.adminEntry.hideToggle')}
-                    onChange={setAdminEntryEnabled}
+                    onChange={(next) => {
+                      markAdminEntryDirty()
+                      setAdminEntryEnabled(next)
+                    }}
                   />
                 </label>
                 <CollapsiblePanel open={adminEntryEnabled} className="admin-entry-code-collapse" collapseMs={280} keepMounted>
@@ -1733,7 +2134,10 @@ export function AdminScreen({
                         placeholder={settings.adminEntryCodeSet
                           ? tx('admin.adminEntry.codeKeepPlaceholder')
                           : tx('admin.adminEntry.codePlaceholder')}
-                        onChange={(event) => setAdminEntryCode(event.target.value.replace(/[^A-Za-z0-9_-]/g, ''))}
+                        onChange={(event) => {
+                          markAdminEntryDirty()
+                          setAdminEntryCode(event.target.value.replace(/[^A-Za-z0-9_-]/g, ''))
+                        }}
                       />
                     </label>
                     <div className="admin-entry-preview">
@@ -1753,14 +2157,25 @@ export function AdminScreen({
                         notify(tx('admin.adminEntry.codeRequired'), 'error')
                         return
                       }
+                      const submittedVersion = adminEntryEditVersionRef.current
                       setAdminEntrySaving(true)
-                      void Promise.resolve(onSettings({
-                        adminEntryHidden: adminEntryEnabled,
-                        ...(code ? { adminEntryCode: code } : {}),
-                      }))
-                        .then(() => notify(tx('admin.adminEntry.saved'), 'success'))
-                        .catch(() => undefined)
-                        .finally(() => setAdminEntrySaving(false))
+                      void (async () => {
+                        try {
+                          await onSettings({
+                            adminEntryHidden: adminEntryEnabled,
+                            ...(code ? { adminEntryCode: code } : {}),
+                          })
+                          notify(tx('admin.adminEntry.saved'), 'success')
+                          if (adminEntryEditVersionRef.current === submittedVersion) {
+                            setAdminEntryCode('')
+                            setAdminEntryDirty(false)
+                          }
+                        } catch {
+                          // Keep both the toggle and sensitive code resident.
+                        } finally {
+                          setAdminEntrySaving(false)
+                        }
+                      })()
                     }}
                   >
                     {adminEntrySaving ? <RefreshCw size={12} className="spin-icon" aria-hidden="true" /> : <Save size={12} aria-hidden="true" />}
@@ -1806,6 +2221,8 @@ export function AdminScreen({
                 settings={settings}
                 databaseType={databaseConfiguration?.type ?? null}
                 busy={encryptionBusy}
+                initialDraft={initialResidentDraft?.encryption}
+                onResidentStateChange={handleEncryptionResidentState}
                 onApply={async (patch) => {
                   setEncryptionBusy(true)
                   try {
@@ -1859,6 +2276,11 @@ export function AdminScreen({
                     label: tx(option.labelKey, option.fallback),
                   }))}
                   onChange={(value) => {
+                    const previous = adminSessionDuration
+                    sessionEditVersionRef.current += 1
+                    const submittedVersion = sessionEditVersionRef.current
+                    sessionSavingCountRef.current += 1
+                    setSessionDirty(true)
                     setAdminSessionDuration(value)
                     void (async () => {
                       try {
@@ -1866,7 +2288,15 @@ export function AdminScreen({
                         notify(tx('admin.configSaved'), 'success')
                       } catch {
                         // Parent already toasts the error.
+                        if (sessionEditVersionRef.current === submittedVersion) {
+                          setAdminSessionDuration(previous)
+                          setSessionDirty(false)
+                        }
+                        return
+                      } finally {
+                        sessionSavingCountRef.current = Math.max(0, sessionSavingCountRef.current - 1)
                       }
+                      if (sessionEditVersionRef.current === submittedVersion) setSessionDirty(false)
                     })()
                   }}
                   ariaLabel={tx('settings.validFor')}
@@ -1995,14 +2425,20 @@ export function AdminScreen({
                     <input
                       className={notificationMailboxValid ? '' : 'invalid'}
                       value={notificationMailbox}
-                      onChange={(event) => setNotificationMailbox(event.target.value)}
+                      onChange={(event) => {
+                        markMailDirty()
+                        setNotificationMailbox(event.target.value)
+                      }}
                       aria-invalid={!notificationMailboxValid}
                       autoComplete="email"
                     />
                   </label>
                   <label>
                     <span>{tx('settings.smtpHost')}</span>
-                    <input value={smtpHost} onChange={(event) => setSmtpHost(event.target.value)} placeholder="smtp.example.com" autoComplete="off" />
+                    <input value={smtpHost} onChange={(event) => {
+                      markMailDirty()
+                      setSmtpHost(event.target.value)
+                    }} placeholder="smtp.example.com" autoComplete="off" />
                   </label>
                   <label>
                     <span>{tx('settings.smtpPort')}</span>
@@ -2012,14 +2448,20 @@ export function AdminScreen({
                       min={1}
                       max={65535}
                       value={smtpPort}
-                      onChange={(event) => setSmtpPort(event.target.value)}
+                      onChange={(event) => {
+                        markMailDirty()
+                        setSmtpPort(event.target.value)
+                      }}
                       aria-invalid={!smtpPortValid}
                       inputMode="numeric"
                     />
                   </label>
                   <label>
                     <span>{tx('settings.smtpUser')}</span>
-                    <input value={smtpUser} onChange={(event) => setSmtpUser(event.target.value)} autoComplete="username" />
+                    <input value={smtpUser} onChange={(event) => {
+                      markMailDirty()
+                      setSmtpUser(event.target.value)
+                    }} autoComplete="username" />
                   </label>
                   <label>
                     <span>{tx('settings.smtpPass')}</span>
@@ -2027,7 +2469,10 @@ export function AdminScreen({
                       <input
                         type="password"
                         value={smtpPass}
-                        onChange={(event) => setSmtpPass(event.target.value)}
+                        onChange={(event) => {
+                          markMailDirty()
+                          setSmtpPass(event.target.value)
+                        }}
                         placeholder={settings.smtpPassSet ? tx('settings.passwordSavedPlaceholder') : ''}
                         autoComplete="new-password"
                       />
@@ -2047,7 +2492,10 @@ export function AdminScreen({
                       checked={smtpTls}
                       label={tx('settings.smtpTls')}
                       variant="accent"
-                      onChange={(v) => setSmtpTls(v)}
+                      onChange={(v) => {
+                        markMailDirty()
+                        setSmtpTls(v)
+                      }}
                     />
                     <span>{tx('settings.smtpTls')}</span>
                   </label>
@@ -2254,15 +2702,23 @@ export function AdminScreen({
                     size="small"
                     value={backupFrequency}
                     ariaLabel={tx('settings.backupFrequency')}
-                    options={backupFrequencyOptions.map((option) => ({
+                    options={backupFrequencyOptionsFor(backupFrequency).map((option) => ({
                       value: option.value,
                       label: tx(option.labelKey, option.fallback),
                     }))}
-                    onChange={(value) => {
-                      const next = value as BackupFrequency
-                      setBackupFrequency(next)
-                      void persistBackupSettings({ backupFrequency: next })
-                    }}
+                  onChange={(value) => {
+                    const next = value as BackupFrequency
+                    const previous = backupFrequency
+                    backupEditVersionRef.current += 1
+                    const submittedVersion = backupEditVersionRef.current
+                    setBackupDirty(true)
+                    setBackupFrequency(next)
+                    void persistBackupSettings(
+                      { backupFrequency: next },
+                      submittedVersion,
+                      () => setBackupFrequency(previous),
+                    )
+                  }}
                   />
                 </div>
                 <div className="admin-field">
@@ -2272,10 +2728,18 @@ export function AdminScreen({
                     value={maxBackupsLimit}
                     ariaLabel={tx('settings.maxBackupsPerAppLimit')}
                     options={backupLimitOptions.map((value) => ({ value, label: format(tx('settings.backupLimitValue'), { limit: value }) }))}
-                    onChange={(value) => {
+                  onChange={(value) => {
+                      const previous = maxBackupsLimit
+                      backupEditVersionRef.current += 1
+                      const submittedVersion = backupEditVersionRef.current
+                      setBackupDirty(true)
                       setMaxBackupsLimit(value)
-                      void persistBackupSettings({ maxBackupsPerAppLimit: Number(value) })
-                    }}
+                      void persistBackupSettings(
+                        { maxBackupsPerAppLimit: Number(value) },
+                        submittedVersion,
+                        () => setMaxBackupsLimit(previous),
+                      )
+                  }}
                   />
                 </div>
               </div>
@@ -2346,6 +2810,19 @@ export function AdminScreen({
                           <button
                             type="button"
                             className="icon-action"
+                            onClick={() => {
+                              setPendingBackupRestore(backup)
+                              setRestoreFileName('')
+                            }}
+                            disabled={workspaceBackupBusy !== null}
+                            title={tx('admin.restoreBackup')}
+                            aria-label={tx('admin.restoreBackup')}
+                          >
+                            <RotateCcw size={14} aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            className="icon-action"
                             onClick={() => void downloadWorkspaceBackup(backup)}
                             disabled={workspaceBackupBusy !== null}
                             title={tx('admin.downloadBackup')}
@@ -2388,13 +2865,43 @@ export function AdminScreen({
         confirmLabel={workspaceBackupBusy === pendingBackupDelete?.fileName ? tx('admin.deletingBackup') : tx('admin.deleteBackup')}
         cancelLabel={tx('cancel')}
         variant="danger"
-        onConfirm={() => {
-          if (pendingBackupDelete) void deleteWorkspaceBackup(pendingBackupDelete)
-        }}
+        onConfirm={() => pendingBackupDelete ? deleteWorkspaceBackup(pendingBackupDelete) : undefined}
         onCancel={() => {
           if (workspaceBackupBusy !== pendingBackupDelete?.fileName) setPendingBackupDelete(null)
         }}
       />
+
+      <ConfirmDialog
+        open={!!pendingBackupRestore}
+        title={tx('admin.restoreBackupTitle')}
+        message={format(tx('admin.restoreBackupMessage'), { fileName: pendingBackupRestore?.fileName ?? '' })}
+        confirmLabel={workspaceBackupBusy === pendingBackupRestore?.fileName ? tx('admin.restoringBackup') : tx('admin.restoreBackupConfirm')}
+        cancelLabel={tx('cancel')}
+        variant="danger"
+        confirmDisabled={restoreFileName !== pendingBackupRestore?.fileName}
+        initialFocusRef={restoreFileNameRef}
+        onConfirm={() => pendingBackupRestore ? restoreWorkspaceBackup(pendingBackupRestore) : undefined}
+        onCancel={() => {
+          if (workspaceBackupBusy !== pendingBackupRestore?.fileName) {
+            setPendingBackupRestore(null)
+            setRestoreFileName('')
+          }
+        }}
+      >
+        <label className="admin-field" style={{ width: '100%', justifySelf: 'stretch' }}>
+          <span>{format(tx('admin.restoreBackupInputLabel'), { fileName: pendingBackupRestore?.fileName ?? '' })}</span>
+          <input
+            ref={restoreFileNameRef}
+            value={restoreFileName}
+            onChange={(event) => setRestoreFileName(event.target.value)}
+            disabled={workspaceBackupBusy === pendingBackupRestore?.fileName}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={pendingBackupRestore?.fileName}
+            aria-label={format(tx('admin.restoreBackupInputLabel'), { fileName: pendingBackupRestore?.fileName ?? '' })}
+          />
+        </label>
+      </ConfirmDialog>
 
       {/* ================================================================
           Tab: User Management
@@ -2402,6 +2909,7 @@ export function AdminScreen({
       {activeTab === 'userManagement' && (
         <div className="admin-panel-grid" role="tabpanel" aria-label={tx('admin.tabs.userManagement')}>
           <NotificationPublisherPanel
+            key={`admin-notification-publisher:${currentUserId}`}
             className="admin-card admin-card-wide"
             eyebrow={tx('admin.notificationPublisherEyebrow')}
             title={tx('admin.notificationPublisherTitle')}
@@ -2410,6 +2918,7 @@ export function AdminScreen({
             recipients={notificationRecipients}
             groups={notificationGroups}
             audiences={notificationAudiences}
+            draftScope={{ userId: currentUserId, workspaceId: 'system-admin' }}
             onPublish={(input) => phdApi.publishAdminNotification(token, input)}
             onCreateGroup={createNotificationGroup}
             onDeleteGroup={deleteNotificationGroup}
@@ -2440,7 +2949,7 @@ export function AdminScreen({
               </button>
             ) : null}
           </div>
-          {accountView === 'personal' ? (
+          {accountView === 'personal' || PUBLIC_EDITION ? (
           <section className="admin-card admin-card-wide admin-account-view-panel is-personal">
             <div className="admin-card-head">
               <div>
@@ -2578,7 +3087,8 @@ export function AdminScreen({
                                       max={10000}
                                       variant="compact"
                                       showValue={false}
-                                      onCommit={(next) => void commitUserUpdate(user.id, { applicationQuota: next })}
+                                      onCommit={(next) => commitUserUpdate(user.id, { applicationQuota: next })}
+                                      onDirtyChange={(dirty) => handleQuotaDirtyChange(`${user.id}:applications`, dirty)}
                                     />
                                   )}
                                 </div>
@@ -2608,7 +3118,8 @@ export function AdminScreen({
                                       max={10000}
                                       variant="compact"
                                       showValue={false}
-                                      onCommit={(next) => void commitUserUpdate(user.id, { applicationCreateQuota: next })}
+                                      onCommit={(next) => commitUserUpdate(user.id, { applicationCreateQuota: next })}
+                                      onDirtyChange={(dirty) => handleQuotaDirtyChange(`${user.id}:application-creates`, dirty)}
                                     />
                                   )}
                                 </div>
@@ -2638,7 +3149,8 @@ export function AdminScreen({
                                       max={10000}
                                       variant="compact"
                                       showValue={false}
-                                      onCommit={(next) => void commitUserUpdate(user.id, { shareQuota: next })}
+                                      onCommit={(next) => commitUserUpdate(user.id, { shareQuota: next })}
+                                      onDirtyChange={(dirty) => handleQuotaDirtyChange(`${user.id}:shares`, dirty)}
                                     />
                                   )}
                                 </div>
@@ -2668,7 +3180,8 @@ export function AdminScreen({
                                       max={10000}
                                       variant="compact"
                                       showValue={false}
-                                      onCommit={(next) => void commitUserUpdate(user.id, { shareCreateQuota: next })}
+                                      onCommit={(next) => commitUserUpdate(user.id, { shareCreateQuota: next })}
+                                      onDirtyChange={(dirty) => handleQuotaDirtyChange(`${user.id}:share-creates`, dirty)}
                                     />
                                   )}
                                 </div>
@@ -2702,7 +3215,8 @@ export function AdminScreen({
                                       suffix="MB"
                                       variant="compact"
                                       showValue={false}
-                                      onCommit={(next) => void commitUserUpdate(user.id, { storageQuotaMb: next })}
+                                      onCommit={(next) => commitUserUpdate(user.id, { storageQuotaMb: next })}
+                                      onDirtyChange={(dirty) => handleQuotaDirtyChange(`${user.id}:storage`, dirty)}
                                     />
                                   )}
                                 </div>
@@ -2793,6 +3307,7 @@ export function AdminScreen({
                   <label>
                     <span className="sr-only">{tx('admin.createTeamName')}</span>
                     <input
+                      required
                       value={newTeamName}
                       onChange={(event) => setNewTeamName(event.target.value)}
                       placeholder={tx('admin.createTeamNamePlaceholder')}
@@ -3149,9 +3664,7 @@ export function AdminScreen({
               confirmLabel={clearingLogs ? tx('admin.clearingLogs') : tx('admin.clearLogsConfirm')}
               cancelLabel={tx('cancel')}
               variant="danger"
-              onConfirm={() => {
-                void handleClearLogs()
-              }}
+              onConfirm={handleClearLogs}
               onCancel={() => {
                 if (!clearingLogs) setClearLogDialogOpen(false)
               }}
@@ -3521,13 +4034,13 @@ export function AdminScreen({
                         </small>
                       </span>
                       <span className="admin-update-progress-track" aria-hidden="true">
-                        <i style={{ width: `${updateTimelineProgress}%` }} />
+                        <i style={{ transform: `scaleX(${updateTimelineProgress / 100})` }} />
                       </span>
                       <span className="admin-update-progress-steps" aria-hidden="true">
-                        {updateStepOrder.map((phase, index) => (
+                        {SYSTEM_UPDATE_STEP_ORDER.map((phase, index) => (
                           <i
                             key={phase}
-                            className={`${index < updateStepIndex ? 'done' : ''}${index === updateStepIndex && !['ready', 'stored', 'error', 'timeout'].includes(updatePhase) ? ' active' : ''}`}
+                            className={`${index < updateStepIndex ? 'done' : ''}${index === updateStepIndex && !['ready', 'stored', 'error', 'timeout'].includes(updatePhase) ? ' active' : ''}${index === updateStepIndex && ['error', 'timeout'].includes(updatePhase) ? ' failed' : ''}`}
                           />
                         ))}
                       </span>
@@ -3692,6 +4205,23 @@ export function AdminScreen({
                       )}
                     </button>
                   </div>
+                  {storedUpdate ? (
+                    <div className="admin-stored-update">
+                      <span className="admin-stored-update-copy">
+                        <strong>{storedUpdate.fileName}</strong>
+                        <em>{format(tx('admin.storedPackageVersion'), { version: storedUpdate.version })}</em>
+                      </span>
+                      <button
+                        type="button"
+                        className="danger-action"
+                        disabled={systemUpdateBusy}
+                        onClick={() => setPendingStoredUpdateDelete(true)}
+                      >
+                        <Trash2 size={13} aria-hidden="true" />
+                        {tx('admin.deleteStoredPackage')}
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -3699,7 +4229,20 @@ export function AdminScreen({
         </div>
       )}
 
-      {viewingTeam ? (
+      <ConfirmDialog
+        open={Boolean(pendingStoredUpdateDelete && storedUpdate)}
+        title={tx('admin.deleteStoredPackageTitle')}
+        message={format(tx('admin.deleteStoredPackageMessage'), { fileName: storedUpdate?.fileName ?? '' })}
+        confirmLabel={deletingStoredUpdate ? tx('admin.deletingStoredPackage') : tx('admin.deleteStoredPackage')}
+        cancelLabel={tx('cancel')}
+        variant="danger"
+        onConfirm={() => deleteStoredUpdate()}
+        onCancel={() => {
+          if (!deletingStoredUpdate) setPendingStoredUpdateDelete(false)
+        }}
+      />
+
+      {!PUBLIC_EDITION && viewingTeam ? (
         <AdminTeamPanel
           token={token}
           teamId={viewingTeam.teamId}
@@ -3921,6 +4464,7 @@ function AdminTeamPanel({
       await reload()
     } catch (err) {
       setError(normalizeErrorMessage(err, lang))
+      throw err
     } finally {
       setBusyId(null)
     }
@@ -4731,9 +5275,7 @@ function AdminTeamPanel({
           }) : ''}
           confirmLabel={tx('team.removeMemberTitle')}
           variant="danger"
-          onConfirm={() => {
-            if (pendingRemoveMember) void handleRemove(pendingRemoveMember.id)
-          }}
+          onConfirm={() => pendingRemoveMember ? handleRemove(pendingRemoveMember.id) : undefined}
           onCancel={() => setPendingRemoveMemberId(null)}
         />
       </div>

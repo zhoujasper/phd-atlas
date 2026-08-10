@@ -1,14 +1,16 @@
-import { ChevronLeft, ChevronRight, Calendar } from 'lucide-react'
-import { useState, useRef, useEffect, useCallback, useMemo, type CSSProperties } from 'react'
+import { ChevronLeft, ChevronRight, Calendar, Clock } from 'lucide-react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { localeForLanguage } from '../../i18n'
 import { getMotionDelay } from '../hooks/useAnimatedClose'
 import { useI18n } from '../hooks/useI18n'
 import {
   addFloatingViewportListeners,
+  applyFloatingOverlayStyle,
   FLOATING_CONTROL_BASE_Z_INDEX,
   getAnchoredOverlayStyle,
 } from './floatingOverlay'
+import { TimeWheel } from './TimeWheel'
 
 function localizedMonths(locale: string): string[] {
   return Array.from({ length: 12 }, (_, month) => (
@@ -55,6 +57,24 @@ function sameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
 }
 
+function isCompleteTime(value: string): boolean {
+  return /^([01]\d|2[0-3]):[0-5]\d$/u.test(value)
+}
+
+function normalizeTypedTime(value: string): string {
+  const digits = value.replace(/\D/g, '').slice(0, 4)
+  return digits.length <= 2 ? digits : `${digits.slice(0, 2)}:${digits.slice(2)}`
+}
+
+function commitTypedTime(value: string): string {
+  const digits = value.replace(/\D/g, '')
+  if (!digits) return ''
+  const padded = digits.padEnd(4, '0').slice(0, 4)
+  const hour = Math.min(23, Number(padded.slice(0, 2)))
+  const minute = Math.min(59, Number(padded.slice(2, 4)))
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+}
+
 export function DatePicker({
   value,
   onChange,
@@ -62,6 +82,9 @@ export function DatePicker({
   min,
   max,
   allowClear = false,
+  timeValue,
+  onTimeChange,
+  timeAriaLabel,
 }: {
   value: string
   onChange: (value: string) => void
@@ -69,6 +92,10 @@ export function DatePicker({
   min?: string
   max?: string
   allowClear?: boolean
+  /** When supplied, specific time lives in the calendar footer rather than in a second popover. */
+  timeValue?: string
+  onTimeChange?: (value: string) => void
+  timeAriaLabel?: string
 }) {
   const [open, setOpen] = useState(false)
   const [exiting, setExiting] = useState(false)
@@ -76,6 +103,13 @@ export function DatePicker({
   const [viewMonth, setViewMonth] = useState(() => new Date().getMonth())
   const [mode, setMode] = useState<PickerMode>('calendar')
   const [dropdownStyle, setDropdownStyle] = useState<CSSProperties>({ visibility: 'hidden' })
+  const [positionReady, setPositionReady] = useState(false)
+  const [timeDraft, setTimeDraft] = useState(timeValue ?? '')
+  const [timeEditing, setTimeEditing] = useState(false)
+  const [timeWheelOpen, setTimeWheelOpen] = useState(false)
+  const [timeWheelExiting, setTimeWheelExiting] = useState(false)
+  const [timeWheelStyle, setTimeWheelStyle] = useState<CSSProperties>({ visibility: 'hidden' })
+  const [timeWheelPositionReady, setTimeWheelPositionReady] = useState(false)
   const { lang, tx } = useI18n()
   const dateLocale = localeForLanguage(lang)
   const MONTHS_SHORT = useMemo(() => localizedMonths(dateLocale), [dateLocale])
@@ -83,36 +117,51 @@ export function DatePicker({
   const todayLabel = tx('datePicker.today')
   const clearLabel = tx('datePicker.clear')
   const displayPlaceholder = placeholder ?? tx('datePicker.placeholder')
+  const supportsTime = typeof onTimeChange === 'function'
+  const timeLabel = timeAriaLabel ?? tx('timePicker.toggle')
+  const timePlaceholder = tx('timePicker.placeholder')
 
   const containerRef = useRef<HTMLDivElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
+  const timeFieldRef = useRef<HTMLLabelElement>(null)
+  const timeWheelDropdownRef = useRef<HTMLDivElement>(null)
   const positionFrameRef = useRef<number | null>(null)
+  const timeWheelPositionFrameRef = useRef<number | null>(null)
   const closeTimerRef = useRef<number | null>(null)
+  const timeWheelCloseTimerRef = useRef<number | null>(null)
   /** Ignore outside closes until after the open gesture finishes (same-click races). */
   const ignoreOutsideUntilRef = useRef(0)
   const openVisible = open && !exiting
+  const timeWheelVisible = timeWheelOpen && !timeWheelExiting
 
   const selectedDate = parseYMD(value)
   const minDate = min ? parseYMD(min) : null
   const maxDate = max ? parseYMD(max) : null
   const today = new Date()
 
+  const selectedTime = isCompleteTime(timeValue ?? '') ? timeValue!.trim() : ''
   const displayValue = selectedDate
-    ? selectedDate.toLocaleDateString(dateLocale, { month: 'short', day: 'numeric', year: 'numeric' })
+    ? `${selectedDate.toLocaleDateString(dateLocale, { month: 'short', day: 'numeric', year: 'numeric' })}${selectedTime ? ` · ${selectedTime}` : ''}`
     : ''
 
   const getDropdownPosition = useCallback((): CSSProperties => {
     return getAnchoredOverlayStyle(containerRef.current, {
       minWidth: 252,
       maxWidth: 252,
-      estimatedHeight: 330,
-      actualHeight: dropdownRef.current?.getBoundingClientRect().height,
+      estimatedHeight: supportsTime ? 366 : 330,
+      actualHeight: dropdownRef.current?.offsetHeight,
       baseZIndex: FLOATING_CONTROL_BASE_Z_INDEX,
     })
-  }, [])
+  }, [supportsTime])
 
   const updateDropdownPosition = useCallback(() => {
-    setDropdownStyle(getDropdownPosition())
+    const nextStyle = getDropdownPosition()
+    const dropdown = dropdownRef.current
+    if (!dropdown) {
+      setDropdownStyle(nextStyle)
+      return
+    }
+    applyFloatingOverlayStyle(dropdown, nextStyle)
   }, [getDropdownPosition])
 
   const scheduleDropdownPosition = useCallback(() => {
@@ -123,6 +172,34 @@ export function DatePicker({
     })
   }, [updateDropdownPosition])
 
+  const getTimeWheelPosition = useCallback((): CSSProperties => {
+    return getAnchoredOverlayStyle(timeFieldRef.current, {
+      minWidth: 218,
+      maxWidth: 218,
+      estimatedHeight: 246,
+      actualHeight: timeWheelDropdownRef.current?.offsetHeight,
+      baseZIndex: FLOATING_CONTROL_BASE_Z_INDEX,
+    })
+  }, [])
+
+  const updateTimeWheelPosition = useCallback(() => {
+    const nextStyle = getTimeWheelPosition()
+    const dropdown = timeWheelDropdownRef.current
+    if (!dropdown) {
+      setTimeWheelStyle(nextStyle)
+      return
+    }
+    applyFloatingOverlayStyle(dropdown, nextStyle)
+  }, [getTimeWheelPosition])
+
+  const scheduleTimeWheelPosition = useCallback(() => {
+    if (timeWheelPositionFrameRef.current !== null) return
+    timeWheelPositionFrameRef.current = window.requestAnimationFrame(() => {
+      timeWheelPositionFrameRef.current = null
+      updateTimeWheelPosition()
+    })
+  }, [updateTimeWheelPosition])
+
   const openCalendar = useCallback(() => {
     const d = selectedDate || new Date()
     if (closeTimerRef.current !== null) {
@@ -131,17 +208,47 @@ export function DatePicker({
     }
     // Suppress outside-dismiss for the remainder of this pointer/focus gesture.
     ignoreOutsideUntilRef.current = performance.now() + 120
-    setDropdownStyle(getDropdownPosition())
+    setDropdownStyle({ visibility: 'hidden' })
+    setPositionReady(false)
     setViewYear(d.getFullYear())
     setViewMonth(d.getMonth())
     setMode('calendar')
     setExiting(false)
     setOpen(true)
-    // Re-measure after paint — nested scroll layouts (fees form) can shift.
-    window.requestAnimationFrame(() => {
-      updateDropdownPosition()
-    })
-  }, [getDropdownPosition, selectedDate, updateDropdownPosition])
+  }, [selectedDate])
+
+  const closeTimeWheel = useCallback(() => {
+    if (!timeWheelOpen || timeWheelExiting) return
+    if (timeWheelCloseTimerRef.current !== null) {
+      window.clearTimeout(timeWheelCloseTimerRef.current)
+      timeWheelCloseTimerRef.current = null
+    }
+    setTimeWheelExiting(true)
+    timeWheelCloseTimerRef.current = window.setTimeout(() => {
+      timeWheelCloseTimerRef.current = null
+      setTimeWheelOpen(false)
+      setTimeWheelExiting(false)
+      setTimeWheelPositionReady(false)
+      setTimeWheelStyle({ visibility: 'hidden' })
+    }, getMotionDelay(150))
+  }, [timeWheelExiting, timeWheelOpen])
+
+  const openTimeWheel = useCallback(() => {
+    if (timeWheelVisible) {
+      setTimeEditing(true)
+      return
+    }
+    if (timeWheelCloseTimerRef.current !== null) {
+      window.clearTimeout(timeWheelCloseTimerRef.current)
+      timeWheelCloseTimerRef.current = null
+    }
+    ignoreOutsideUntilRef.current = performance.now() + 120
+    setTimeWheelStyle({ visibility: 'hidden' })
+    setTimeWheelPositionReady(false)
+    setTimeWheelExiting(false)
+    setTimeEditing(true)
+    setTimeWheelOpen(true)
+  }, [timeWheelVisible])
 
   const closeCalendar = useCallback(() => {
     if (!open || exiting) return
@@ -154,8 +261,11 @@ export function DatePicker({
       closeTimerRef.current = null
       setOpen(false)
       setExiting(false)
-    }, getMotionDelay(140))
-  }, [exiting, open])
+      setPositionReady(false)
+      setDropdownStyle({ visibility: 'hidden' })
+    }, getMotionDelay(150))
+    closeTimeWheel()
+  }, [closeTimeWheel, exiting, open])
 
   const toggleCalendar = useCallback(() => {
     if (openVisible) closeCalendar()
@@ -167,12 +277,10 @@ export function DatePicker({
     function handleClick(e: MouseEvent) {
       if (performance.now() < ignoreOutsideUntilRef.current) return
       const target = e.target as Node
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(target) &&
-        dropdownRef.current &&
-        !dropdownRef.current.contains(target)
-      ) {
+      const insideTrigger = containerRef.current?.contains(target) ?? false
+      const insideCalendar = dropdownRef.current?.contains(target) ?? false
+      const insideTimeWheel = timeWheelDropdownRef.current?.contains(target) ?? false
+      if (!insideTrigger && !insideCalendar && !insideTimeWheel) {
         closeCalendar()
       }
     }
@@ -188,7 +296,7 @@ export function DatePicker({
 
   // Listen for resize/scroll to keep position updated
   useEffect(() => {
-    if (!open) return
+    if (!open || !positionReady) return
     const removeViewportListeners = addFloatingViewportListeners(scheduleDropdownPosition)
     return () => {
       removeViewportListeners()
@@ -197,23 +305,74 @@ export function DatePicker({
         positionFrameRef.current = null
       }
     }
-  }, [open, scheduleDropdownPosition])
+  }, [open, positionReady, scheduleDropdownPosition])
+
+  // Do not let the first visible frame inherit the trigger position while the
+  // portal is still measuring. The observer also handles month/year views that
+  // change the calendar's real height while it is flipped above the field.
+  useLayoutEffect(() => {
+    if (!open || positionReady || !dropdownRef.current) return undefined
+    setDropdownStyle(getDropdownPosition())
+    setPositionReady(true)
+  }, [getDropdownPosition, open, positionReady])
+
+  useEffect(() => {
+    if (!open || !positionReady) return undefined
+    const dropdown = dropdownRef.current
+    if (!dropdown || typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(() => scheduleDropdownPosition())
+    observer.observe(dropdown)
+    return () => observer.disconnect()
+  }, [open, positionReady, scheduleDropdownPosition])
+
+  useEffect(() => {
+    if (!timeWheelOpen || !timeWheelPositionReady) return undefined
+    const removeViewportListeners = addFloatingViewportListeners(scheduleTimeWheelPosition)
+    return () => {
+      removeViewportListeners()
+      if (timeWheelPositionFrameRef.current !== null) {
+        window.cancelAnimationFrame(timeWheelPositionFrameRef.current)
+        timeWheelPositionFrameRef.current = null
+      }
+    }
+  }, [scheduleTimeWheelPosition, timeWheelOpen, timeWheelPositionReady])
+
+  useLayoutEffect(() => {
+    if (!timeWheelOpen || timeWheelPositionReady || !timeWheelDropdownRef.current) return undefined
+    setTimeWheelStyle(getTimeWheelPosition())
+    setTimeWheelPositionReady(true)
+  }, [getTimeWheelPosition, timeWheelOpen, timeWheelPositionReady])
+
+  useEffect(() => {
+    if (!timeWheelOpen || !timeWheelPositionReady) return undefined
+    const dropdown = timeWheelDropdownRef.current
+    if (!dropdown || typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(() => scheduleTimeWheelPosition())
+    observer.observe(dropdown)
+    return () => observer.disconnect()
+  }, [scheduleTimeWheelPosition, timeWheelOpen, timeWheelPositionReady])
 
   useEffect(() => () => {
     if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current)
+    if (timeWheelCloseTimerRef.current !== null) window.clearTimeout(timeWheelCloseTimerRef.current)
   }, [])
+
+  useEffect(() => {
+    if (!timeEditing) setTimeDraft(timeValue ?? '')
+  }, [timeEditing, timeValue])
 
   useEffect(() => {
     if (!open) return
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
+        if (timeWheelVisible) { closeTimeWheel(); return }
         if (mode !== 'calendar') { setMode('calendar'); return }
         closeCalendar()
       }
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [open, closeCalendar, mode])
+  }, [closeCalendar, closeTimeWheel, mode, open, timeWheelVisible])
 
   const days = useMemo(() => getDaysMatrix(viewYear, viewMonth), [viewYear, viewMonth])
 
@@ -230,6 +389,47 @@ export function DatePicker({
     if (minDate && date < minDate) return
     if (maxDate && date > maxDate) return
     onChange(formatYMD(date))
+    // When a time is part of this field, keep the calendar resident after a
+    // day choice so the next natural action is typing the time at its lower
+    // right edge. Date-only controls retain their quick select-and-close path.
+    if (!supportsTime) closeCalendar()
+  }
+
+  const updateTimeDraft = (rawValue: string) => {
+    const nextValue = normalizeTypedTime(rawValue)
+    setTimeDraft(nextValue)
+    if (!nextValue || isCompleteTime(nextValue)) onTimeChange?.(nextValue)
+  }
+
+  const finalizeTimeDraft = () => {
+    const nextValue = commitTypedTime(timeDraft)
+    setTimeDraft(nextValue)
+    onTimeChange?.(nextValue)
+    setTimeEditing(false)
+  }
+
+  const updateTimeFromWheel = (nextValue: string) => {
+    setTimeDraft(nextValue)
+    setTimeEditing(true)
+    onTimeChange?.(nextValue)
+  }
+
+  const setCurrentTime = () => {
+    const now = new Date()
+    updateTimeFromWheel(`${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`)
+  }
+
+  const clearTime = () => {
+    setTimeDraft('')
+    setTimeEditing(false)
+    onTimeChange?.('')
+    closeTimeWheel()
+  }
+
+  const clearSelection = () => {
+    onChange('')
+    onTimeChange?.('')
+    setTimeDraft('')
     closeCalendar()
   }
 
@@ -261,11 +461,11 @@ export function DatePicker({
       }}
     >
       <div className="date-picker-input-wrap">
-        <input
-          type="text"
-          readOnly
-          value={displayValue}
-          placeholder={displayPlaceholder}
+          <input
+            type="text"
+            readOnly
+            value={displayValue}
+            placeholder={displayPlaceholder}
           onMouseDown={(event) => {
             // Prefer pointer-down open so focus+click races cannot cancel open.
             event.preventDefault()
@@ -277,9 +477,10 @@ export function DatePicker({
               openCalendar()
             }
           }}
-          className="date-picker-display"
-          aria-haspopup="dialog"
-          aria-expanded={openVisible}
+            className="date-picker-display"
+            aria-label={placeholder}
+            aria-haspopup="dialog"
+            aria-expanded={openVisible}
         />
         <button
           type="button"
@@ -329,7 +530,7 @@ export function DatePicker({
           {mode === 'calendar' && (
             <>
               <div className="date-picker-weekdays">
-                {DAYS_HEADER.map((d) => <span key={d} className="date-picker-weekday">{d}</span>)}
+                {DAYS_HEADER.map((d, index) => <span key={`${d}-${index}`} className="date-picker-weekday">{d}</span>)}
               </div>
               <div className="date-picker-grid">
                 {days.map((date, idx) => {
@@ -352,10 +553,39 @@ export function DatePicker({
                 })}
               </div>
               <div className="date-picker-footer">
-                <button type="button" className="date-picker-today-btn" onClick={() => selectDate(new Date())}>{todayLabel}</button>
-                {allowClear && value && (
-                  <button type="button" className="date-picker-clear-btn" onClick={() => { onChange(''); closeCalendar() }}>{clearLabel}</button>
-                )}
+                <span className="date-picker-footer-start">
+                  <button type="button" className="date-picker-today-btn" onClick={() => selectDate(new Date())}>{todayLabel}</button>
+                  {allowClear && value ? (
+                    <button type="button" className="date-picker-clear-btn" onClick={clearSelection}>{clearLabel}</button>
+                  ) : null}
+                </span>
+                {supportsTime ? (
+                  <label className="date-picker-time-field" ref={timeFieldRef}>
+                    <Clock size={12} aria-hidden="true" />
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={timeDraft}
+                      placeholder={timePlaceholder}
+                      aria-label={timeLabel}
+                      aria-haspopup="dialog"
+                      aria-expanded={timeWheelVisible}
+                      onFocus={openTimeWheel}
+                      onMouseDown={() => {
+                        ignoreOutsideUntilRef.current = performance.now() + 120
+                      }}
+                      onClick={openTimeWheel}
+                      onChange={(event) => updateTimeDraft(event.target.value)}
+                      onBlur={finalizeTimeDraft}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter') return
+                        event.preventDefault()
+                        finalizeTimeDraft()
+                        closeCalendar()
+                      }}
+                    />
+                  </label>
+                ) : null}
               </div>
             </>
           )}
@@ -402,6 +632,27 @@ export function DatePicker({
               </div>
             </div>
           )}
+        </div>,
+        document.body,
+      )}
+
+      {timeWheelOpen && supportsTime && createPortal(
+        <div
+          className={`date-time-wheel-dropdown ${timeWheelExiting ? 'time-wheel-exit' : ''}`}
+          ref={timeWheelDropdownRef}
+          style={timeWheelStyle}
+          data-floating-overlay="true"
+          role="dialog"
+          aria-label={timeLabel}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <TimeWheel
+            value={timeDraft}
+            onChange={updateTimeFromWheel}
+            onNow={setCurrentTime}
+            onClear={clearTime}
+            allowClear={Boolean(timeDraft)}
+          />
         </div>,
         document.body,
       )}

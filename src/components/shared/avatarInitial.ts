@@ -9,6 +9,7 @@ function meaningfulNameParts(value: string) {
     .split(/\s+/)
     .filter(Boolean)
     .filter((part) => !latinHonorific.test(part))
+    .filter((part) => !/^\d+$/u.test(part))
 }
 
 function initialsFrom(value?: string) {

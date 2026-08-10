@@ -11,25 +11,20 @@ import {
 const tx = (key: string) => key
 
 describe('dossier resource model', () => {
-  it('creates the same four application-aware default cards', () => {
+  it('seeds only the portal and requirements cards on a new application', () => {
     const draft = structuredClone(applications[0])
     const cards = createDefaultDossierResourceCards(draft, tx)
 
     expect(cards.map((card) => card.id)).toEqual([
       'default-application-portal',
-      'default-program-page',
-      'default-professor-contact',
       'default-requirements-notes',
     ])
-    expect(cards[1].fields).toContainEqual(expect.objectContaining({
-      id: 'default-program-website',
-      value: draft.school.website,
-    }))
-    expect(cards[2].fields).toContainEqual(expect.objectContaining({
-      id: 'default-professor-email',
-      value: draft.professor.email,
-    }))
-    expect(cards[3].fields[0]).toMatchObject({
+    expect(cards[0].fields.map((field) => field.id)).toEqual([
+      'default-portal-link',
+      'default-portal-account',
+      'default-portal-notes',
+    ])
+    expect(cards[1].fields[0]).toMatchObject({
       type: 'tags',
       value: draft.tags.join(', '),
       width: 'full',

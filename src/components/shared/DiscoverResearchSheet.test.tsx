@@ -16,6 +16,7 @@ const savedKey: AiKey = {
   label: 'Research model',
   model: 'gpt-test',
   baseUrl: '',
+  maxConcurrency: 1,
   createdAt: '2026-07-23T00:00:00.000Z',
   updatedAt: '2026-07-23T00:00:00.000Z',
   lastUsedAt: null,
@@ -73,10 +74,21 @@ describe('DiscoverResearchSheet AI requirements', () => {
   it('requires a selected saved key and has no AI opt-out control', () => {
     const props = renderSheet({ aiKeys: [savedKey], selectedKeyIds: ['key-1'] })
 
+    expect(document.querySelector('.discover-sheet-section input[required]')).toBeRequired()
     expect(screen.queryByRole('switch', { name: 'Use AI research agents' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Start update' }))
 
     expect(props.onSubmit).toHaveBeenCalledOnce()
+  })
+
+  it('uses evidence-exhaustive coverage without program or advisor count inputs', () => {
+    renderSheet({ aiKeys: [savedKey], selectedKeyIds: ['key-1'] })
+
+    expect(screen.getByText('No result quota')).toBeVisible()
+    expect(screen.queryByText('Programs to rank')).not.toBeInTheDocument()
+    expect(screen.queryByText('Advisors per program')).not.toBeInTheDocument()
+    expect(screen.getByRole('spinbutton')).toHaveAttribute('min', '0')
+    expect(screen.getByRole('spinbutton')).not.toHaveAttribute('max')
   })
 
   it('shows the configuration validation progress before handing work to the background server', () => {

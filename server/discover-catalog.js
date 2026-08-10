@@ -15,7 +15,7 @@ import { isGenericProgramLabel } from './discover-source-grounding.js'
 import { dedupeDiscoverProgrammeRecords } from './discover-program-identity.js'
 
 const CURRENT_YEAR = new Date().getFullYear()
-export const MAX_DISCOVER_PERSISTED_PROGRAMS = 500
+export const MAX_DISCOVER_PERSISTED_PROGRAMS = 2_000
 
 export const DISCOVER_REGIONS = [
   { key: 'US', label: 'United States', short: 'US', color: '#0F4D92', order: 1 },
@@ -1115,6 +1115,60 @@ function normalizePi(raw, index = 0) {
   const category = ['rising_star', 'direction_fit', 'interesting', 'famous_but_fits'].includes(raw.category)
     ? raw.category
     : 'direction_fit'
+  const rawProfileMatch = raw.profileMatch && typeof raw.profileMatch === 'object'
+    ? raw.profileMatch
+    : null
+  const profileMatch = rawProfileMatch ? {
+    score: Math.max(0, Math.min(100, Number(rawProfileMatch.score) || 0)),
+    confidence: ['high', 'medium', 'low', 'unknown'].includes(rawProfileMatch.confidence)
+      ? rawProfileMatch.confidence
+      : 'unknown',
+    matchedInterests: Array.isArray(rawProfileMatch.matchedInterests)
+      ? rawProfileMatch.matchedInterests.map((value) => String(value).slice(0, 120)).filter(Boolean).slice(0, 12)
+      : [],
+    matchedMethods: Array.isArray(rawProfileMatch.matchedMethods)
+      ? rawProfileMatch.matchedMethods.map((value) => String(value).slice(0, 120)).filter(Boolean).slice(0, 12)
+      : [],
+    matchedResearchTerms: Array.isArray(rawProfileMatch.matchedResearchTerms)
+      ? rawProfileMatch.matchedResearchTerms.map((value) => String(value).slice(0, 120)).filter(Boolean).slice(0, 12)
+      : [],
+    evidenceUrl: String(rawProfileMatch.evidenceUrl || '').slice(0, 500),
+    checkedAt: typeof rawProfileMatch.checkedAt === 'string' ? rawProfileMatch.checkedAt.slice(0, 40) : null,
+    basis: 'applicant-profile+official-individual-profile',
+  } : undefined
+  const rawScholarly = raw.scholarly && typeof raw.scholarly === 'object' ? raw.scholarly : null
+  const scholarly = rawScholarly && rawScholarly.match?.basis === 'institution-scoped-scholarly-record+official-individual-profile'
+    ? {
+        openAlexId: normalizeDiscoverSourceUrl(rawScholarly.openAlexId),
+        orcid: normalizeDiscoverSourceUrl(rawScholarly.orcid),
+        profileUrl: normalizeDiscoverSourceUrl(rawScholarly.profileUrl),
+        providers: Array.isArray(rawScholarly.providers)
+          ? [...new Set(rawScholarly.providers.map((value) => String(value).slice(0, 32)).filter(Boolean))].slice(0, 6)
+          : [],
+        matchedQueries: Array.isArray(rawScholarly.matchedQueries)
+          ? [...new Set(rawScholarly.matchedQueries.map((value) => String(value).slice(0, 120)).filter(Boolean))].slice(0, 12)
+          : [],
+        recentWorks: Array.isArray(rawScholarly.recentWorks)
+          ? rawScholarly.recentWorks.map((work) => ({
+              title: String(work?.title || '').slice(0, 300),
+              year: Number.isInteger(Number(work?.year)) ? Number(work.year) : null,
+              citedByCount: Math.max(0, Number(work?.citedByCount) || 0),
+              source: normalizeDiscoverSourceUrl(work?.source),
+              matchedQuery: String(work?.matchedQuery || '').slice(0, 120),
+              matchedTopic: String(work?.matchedTopic || '').slice(0, 120) || null,
+            })).filter((work) => work.title && work.source).slice(0, 20)
+          : [],
+        match: {
+          basis: 'institution-scoped-scholarly-record+official-individual-profile',
+          nameMatch: rawScholarly.match.nameMatch === 'exact' ? 'exact' : 'initial',
+          officialProfileUrl: normalizeDiscoverSourceUrl(rawScholarly.match.officialProfileUrl) || '',
+          institutionId: normalizeDiscoverSourceUrl(rawScholarly.match.institutionId),
+          checkedAt: typeof rawScholarly.match.checkedAt === 'string'
+            ? rawScholarly.match.checkedAt.slice(0, 40)
+            : null,
+        },
+      }
+    : undefined
   return {
     id: String(raw.id || slugId(name, 'pi')).slice(0, 80),
     name,
@@ -1131,6 +1185,8 @@ function normalizePi(raw, index = 0) {
     url: String(raw.url || '').slice(0, 500),
     email: String(raw.email || '').slice(0, 160),
     rank: Number.isFinite(Number(raw.rank)) ? Number(raw.rank) : index + 1,
+    ...(profileMatch ? { profileMatch } : {}),
+    ...(scholarly ? { scholarly } : {}),
   }
 }
 
@@ -1143,7 +1199,10 @@ export function normalizeCustomProgram(raw, { source = 'custom' } = {}) {
   const id = String(raw.id || slugId(`${school}_${program}`, 'prog')).slice(0, 80)
   const region = String(raw.region || 'OTHER').trim().slice(0, 16) || 'OTHER'
   const pis = Array.isArray(raw.pis)
-    ? raw.pis.map((item, index) => normalizePi(item, index)).filter(Boolean).slice(0, 20)
+    // This is an abuse-resistance ceiling for one serialized programme, not a
+    // user-selectable result target. Normal research keeps every verified
+    // advisor found in the finite official/scholarly evidence set.
+    ? raw.pis.map((item, index) => normalizePi(item, index)).filter(Boolean).slice(0, 500)
     : []
   const stipendUSD = raw.stipendUSD == null || raw.stipendUSD === ''
     ? null
@@ -1164,7 +1223,7 @@ export function normalizeCustomProgram(raw, { source = 'custom' } = {}) {
       : 'unverified',
     checkedAt: typeof rawVerification.checkedAt === 'string' ? rawVerification.checkedAt.slice(0, 40) : null,
     officialSourceCount: clamp(rawVerification.officialSourceCount, 0, 20, 0),
-    advisorSourceCount: clamp(rawVerification.advisorSourceCount, 0, 20, 0),
+    advisorSourceCount: clamp(rawVerification.advisorSourceCount, 0, 500, 0),
     issues: Array.isArray(rawVerification.issues)
       ? rawVerification.issues.map((item) => String(item || '').slice(0, 240)).filter(Boolean).slice(0, 12)
       : [],
@@ -1261,7 +1320,7 @@ export function normalizeCustomProgram(raw, { source = 'custom' } = {}) {
   }
 }
 
-export function normalizeCustomPrograms(list, { source = 'custom', max = 160 } = {}) {
+export function normalizeCustomPrograms(list, { source = 'custom', max = MAX_DISCOVER_PERSISTED_PROGRAMS } = {}) {
   if (!Array.isArray(list)) return []
   const out = []
   const seen = new Set()
@@ -1421,8 +1480,8 @@ const DEFAULT_INTAKE = {
   regions: ['US', 'UK', 'EU', 'CA', 'SG', 'HK', 'CN', 'AU', 'OTHER'],
   stipendFloor: 35000,
   currency: 'USD',
-  nPrograms: 20,
-  nPisPerProgram: 6,
+  nPrograms: 30,
+  nPisPerProgram: 8,
   piPreferences: ['rising_star', 'direction_fit'],
   risingStarBias: 'moderate',
   notes: '',
@@ -1632,6 +1691,166 @@ function normalizeDiscoverSourcePages(values) {
  * is the durable, exportable JSON index of official site pages found by the
  * background worker.
  */
+const DISCOVER_SCHOLARLY_RESEARCHER_LIMIT = 120
+const DISCOVER_SCHOLARLY_PROVIDER_LIMIT = 8
+const DISCOVER_SCHOLARLY_QUERY_LIMIT = 12
+const DISCOVER_SCHOLARLY_TOPIC_LIMIT = 8
+const DISCOVER_SCHOLARLY_WORK_LIMIT = 6
+/**
+ * Top-level source-index byte cap. The real 8.78 MiB index was produced by
+ * years of unconstrained merges; 16 MiB keeps that existing data intact while
+ * still bounding future growth. Storage refuses entries above this limit, and
+ * the retention helper evicts the least useful school evidence first.
+ */
+export const DISCOVER_SOURCE_INDEX_MAX_BYTES = 16 * 1024 * 1024
+const DISCOVER_SCHOLARLY_SOURCE_KEYS = [
+  'openalex',
+  'openalexTopics',
+  'ror',
+  'europepmc',
+  'mesh',
+  'crossref',
+]
+
+function boundedScholarlyText(value, max) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max)
+}
+
+function boundedScholarlyNumber(value, min, max, fallback = 0) {
+  const number = Number(value)
+  return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback
+}
+
+function normalizeScholarlyProviders(value) {
+  const values = Array.isArray(value) ? value : String(value || '').split('+')
+  return [...new Set(values
+    .map((provider) => boundedScholarlyText(provider, 40).toLowerCase())
+    .filter((provider) => /^[a-z][a-z0-9._-]*$/.test(provider)))]
+    .slice(0, DISCOVER_SCHOLARLY_PROVIDER_LIMIT)
+}
+
+function normalizeScholarlyStatus(value, fallback = 'unavailable') {
+  const status = boundedScholarlyText(value, 64).toLowerCase()
+  return /^[a-z][a-z0-9-]*$/.test(status) ? status : fallback
+}
+
+function normalizeScholarlyTaxonomyNode(value) {
+  if (!value || typeof value !== 'object') return null
+  const id = boundedScholarlyText(value.id, 80)
+  const displayName = boundedScholarlyText(value.displayName || value.label, 160)
+  return id || displayName ? { id, displayName } : null
+}
+
+function normalizeScholarlyTopic(value) {
+  if (!value || typeof value !== 'object') return null
+  const id = boundedScholarlyText(value.id, 100)
+  const displayName = boundedScholarlyText(value.displayName || value.name, 180)
+  if (!id && !displayName) return null
+  return {
+    query: boundedScholarlyText(value.query, 120),
+    id,
+    displayName,
+    confidence: boundedScholarlyNumber(value.confidence, 0, 1, 0),
+    primaryForQuery: value.primaryForQuery === true,
+    domain: normalizeScholarlyTaxonomyNode(value.domain),
+    field: normalizeScholarlyTaxonomyNode(value.field),
+    subfield: normalizeScholarlyTaxonomyNode(value.subfield),
+  }
+}
+
+function normalizeResearcherMatchedTopic(value) {
+  if (!value || typeof value !== 'object') return null
+  const id = boundedScholarlyText(value.id, 100)
+  const name = boundedScholarlyText(value.name || value.displayName, 180)
+  if (!id && !name) return null
+  return {
+    id,
+    name,
+    domain: normalizeScholarlyTaxonomyNode(value.domain),
+    field: normalizeScholarlyTaxonomyNode(value.field),
+    confidence: boundedScholarlyNumber(value.confidence, 0, 1, 0),
+  }
+}
+
+function normalizeScholarlySourceStatus(value) {
+  if (!value || typeof value !== 'object') return null
+  return Object.fromEntries(DISCOVER_SCHOLARLY_SOURCE_KEYS.map((key) => (
+    [key, normalizeScholarlyStatus(value[key])]
+  )))
+}
+
+function normalizeScholarlySourceCounts(value) {
+  if (!value || typeof value !== 'object') return null
+  return Object.fromEntries([...DISCOVER_SCHOLARLY_SOURCE_KEYS, 'merged'].map((key) => (
+    [key, clamp(value[key], 0, 100000, 0)]
+  )))
+}
+
+function normalizeScholarlyTopicResolution(value) {
+  if (!value || typeof value !== 'object') return null
+  return {
+    status: normalizeScholarlyStatus(value.status),
+    searchedTerms: asStringArray(value.searchedTerms, DISCOVER_SCHOLARLY_QUERY_LIMIT)
+      .map((term) => term.slice(0, 120)),
+    failures: clamp(value.failures, 0, 1000, 0),
+    topics: (Array.isArray(value.topics) ? value.topics : [])
+      .map(normalizeScholarlyTopic)
+      .filter(Boolean)
+      .slice(0, DISCOVER_SCHOLARLY_TOPIC_LIMIT),
+  }
+}
+
+function normalizeScholarlyDisciplinePlan(value) {
+  if (!value || typeof value !== 'object') return null
+  const broadDomains = (Array.isArray(value.broadDomains) ? value.broadDomains : [])
+    .map((domain) => {
+      if (!domain || typeof domain !== 'object') return null
+      const id = boundedScholarlyText(domain.id, 80)
+      const label = boundedScholarlyText(domain.label || domain.displayName, 160)
+      return id || label ? { id, label } : null
+    })
+    .filter(Boolean)
+    .slice(0, 6)
+  const disciplines = (Array.isArray(value.disciplines) ? value.disciplines : [])
+    .map((discipline) => {
+      if (!discipline || typeof discipline !== 'object') return null
+      const id = boundedScholarlyText(discipline.id, 100)
+      const label = boundedScholarlyText(discipline.label, 180)
+      if (!id && !label) return null
+      return {
+        id,
+        label,
+        broadDomain: boundedScholarlyText(discipline.broadDomain, 80),
+        canonicalTerm: boundedScholarlyText(discipline.canonicalTerm, 120),
+        providers: normalizeScholarlyProviders(discipline.providers),
+        vocabularies: asStringArray(discipline.vocabularies, 8).map((item) => item.slice(0, 80)),
+      }
+    })
+    .filter(Boolean)
+    .slice(0, 30)
+  return {
+    taxonomyVersion: boundedScholarlyText(value.taxonomyVersion, 80),
+    broadDomains,
+    disciplines,
+    providerHints: normalizeScholarlyProviders(value.providerHints).slice(0, 12),
+    vocabularies: asStringArray(value.vocabularies, 12).map((item) => item.slice(0, 80)),
+  }
+}
+
+function normalizeScholarlyRecentWorks(values) {
+  return (Array.isArray(values) ? values : []).map((work) => ({
+    title: boundedScholarlyText(work?.title, 300),
+    year: work?.year === null || work?.year === undefined || work?.year === ''
+      ? null
+      : clamp(work.year, 1900, 2200, 0) || null,
+    citedByCount: clamp(work?.citedByCount, 0, 10000000, 0),
+    source: normalizeDiscoverSourceUrl(work?.source),
+    matchedQuery: boundedScholarlyText(work?.matchedQuery, 120),
+    matchedTopic: boundedScholarlyText(work?.matchedTopic, 160) || null,
+    meshHeadings: asStringArray(work?.meshHeadings, 8).map((item) => item.slice(0, 120)),
+  })).filter((work) => work.title && work.source).slice(0, DISCOVER_SCHOLARLY_WORK_LIMIT)
+}
+
 function normalizeScholarlyEvidence(value) {
   if (!value || typeof value !== 'object') return null
   const institutionRaw = value.institution && typeof value.institution === 'object' ? value.institution : null
@@ -1649,33 +1868,45 @@ function normalizeScholarlyEvidence(value) {
     if (!raw || typeof raw !== 'object') continue
     const openAlexId = normalizeDiscoverSourceUrl(raw.openAlexId)
     const name = String(raw.name || '').trim().slice(0, 180)
-    if (!openAlexId || !name) continue
+    const orcid = normalizeDiscoverSourceUrl(raw.orcid)
+    const providers = normalizeScholarlyProviders(raw.providers)
+    const recentWorks = normalizeScholarlyRecentWorks(raw.recentWorks)
+    const profileUrl = normalizeDiscoverSourceUrl(raw.profileUrl) || orcid || openAlexId
+    if (!name || (!openAlexId && !orcid && !profileUrl && !providers.length && !recentWorks.length)) continue
     candidateResearchers.push({
       openAlexId,
       name,
-      orcid: normalizeDiscoverSourceUrl(raw.orcid),
-      profileUrl: normalizeDiscoverSourceUrl(raw.profileUrl) || openAlexId,
-      score: clamp(raw.score, 0, 100000, 0),
-      matchedQueries: Array.isArray(raw.matchedQueries)
-        ? raw.matchedQueries.map((item) => String(item || '').slice(0, 120)).filter(Boolean).slice(0, 4)
-        : [],
-      recentWorks: (Array.isArray(raw.recentWorks) ? raw.recentWorks : []).map((work) => ({
-        title: String(work?.title || '').slice(0, 300),
-        year: clamp(work?.year, 1900, 2200, 0) || null,
-        citedByCount: clamp(work?.citedByCount, 0, 10000000, 0),
-        source: normalizeDiscoverSourceUrl(work?.source),
-        matchedQuery: String(work?.matchedQuery || '').slice(0, 120),
-      })).filter((work) => work.title && work.source).slice(0, 5),
+      orcid,
+      profileUrl,
+      providers,
+      score: boundedScholarlyNumber(raw.score, 0, 100000, 0),
+      matchedQueries: asStringArray(raw.matchedQueries, DISCOVER_SCHOLARLY_QUERY_LIMIT)
+        .map((item) => item.slice(0, 120)),
+      matchedTopics: (Array.isArray(raw.matchedTopics) ? raw.matchedTopics : [])
+        .map(normalizeResearcherMatchedTopic)
+        .filter(Boolean)
+        .slice(0, DISCOVER_SCHOLARLY_TOPIC_LIMIT),
+      recentWorks,
     })
-    if (candidateResearchers.length >= 15) break
+    if (candidateResearchers.length >= DISCOVER_SCHOLARLY_RESEARCHER_LIMIT) break
   }
+  const declaredProviders = normalizeScholarlyProviders(value.providers?.length ? value.providers : value.provider)
+  const candidateProviders = normalizeScholarlyProviders(candidateResearchers.flatMap((researcher) => researcher.providers))
+  const providers = declaredProviders.length ? declaredProviders : candidateProviders
+  const normalizedStatus = normalizeScholarlyStatus(value.status)
+  const status = ['ok', 'partial', 'unavailable'].includes(normalizedStatus) ? normalizedStatus : 'unavailable'
   return {
-    provider: value.provider === 'openalex+ror' ? value.provider : 'openalex+ror',
+    provider: providers.join('+') || 'openalex+ror',
+    providers: providers.length ? providers : ['openalex', 'ror'],
     queriedAt: typeof value.queriedAt === 'string' ? value.queriedAt.slice(0, 40) : null,
     query: String(value.query || '').slice(0, 300),
-    status: value.status === 'ok' ? 'ok' : 'unavailable',
-    error: value.status === 'ok' ? null : String(value.error || '').slice(0, 160),
+    status,
+    error: status === 'ok' ? null : String(value.error || '').slice(0, 160),
     institution,
+    sourceStatus: normalizeScholarlySourceStatus(value.sourceStatus),
+    sourceCounts: normalizeScholarlySourceCounts(value.sourceCounts),
+    topicResolution: normalizeScholarlyTopicResolution(value.topicResolution),
+    disciplinePlan: normalizeScholarlyDisciplinePlan(value.disciplinePlan),
     candidateResearchers,
   }
 }
@@ -1751,6 +1982,22 @@ export function normalizeDiscoverSourceIndex(value) {
       }))
       .filter((source) => source.name && source.url)
       .slice(0, 40),
+    funnel: value.funnel && typeof value.funnel === 'object' ? Object.fromEntries([
+      'registrySchools',
+      'scopedSchools',
+      'dynamicallyDiscoveredSchools',
+      'selectedOfficialSchools',
+      'readableOfficialSchools',
+      'indexedDoctoralLinks',
+      'hydratedCandidateSchools',
+      'officialProgramLeads',
+      'groundedProgramCandidates',
+      'deepAdvisorPrograms',
+      'scholarlyCandidateResearchers',
+      'matchedOfficialAdvisorLeads',
+      'hydratedOfficialAdvisorPages',
+      'independentlyVerifiedPrograms',
+    ].map((key) => [key, clamp(value.funnel[key], 0, 100000, 0)])) : undefined,
     quality: value.quality && typeof value.quality === 'object' ? {
       passed: Boolean(value.quality.passed),
       coveragePassed: value.quality.coveragePassed !== false,
@@ -1765,9 +2012,51 @@ export function normalizeDiscoverSourceIndex(value) {
       crossSchoolSourceViolations: clamp(value.quality.crossSchoolSourceViolations, 0, 100000, 0),
       genericProgramRows: clamp(value.quality.genericProgramRows, 0, 1000, 0),
       verifiedAdvisorProfiles: clamp(value.quality.verifiedAdvisorProfiles, 0, 100000, 0),
+      profileMatchedAdvisorProfiles: clamp(value.quality.profileMatchedAdvisorProfiles, 0, 100000, 0),
+      unsupportedAdvisorFitClaims: clamp(value.quality.unsupportedAdvisorFitClaims, 0, 100000, 0),
       scholarlyInstitutionsResolved: clamp(value.quality.scholarlyInstitutionsResolved, 0, 500, 0),
     } : null,
   }
+}
+
+function discoverSourceIndexSchoolPriority(school, index) {
+  const fetchedPages = (school.pages ?? []).filter((page) => page.fetched).length
+  return {
+    evidence: (school.scholarlyEvidence ? 1 : 0) + Math.min(fetchedPages, 10),
+    collectedAt: typeof school.collectedAt === 'string' ? school.collectedAt : '',
+    index,
+  }
+}
+
+export function applyDiscoverSourceIndexRetention(value, { maxBytes = DISCOVER_SOURCE_INDEX_MAX_BYTES } = {}) {
+  const normalized = normalizeDiscoverSourceIndex(value)
+  if (!normalized || normalized.schools.length === 0) return normalized
+  if (Buffer.byteLength(JSON.stringify(normalized), 'utf8') <= maxBytes) return normalized
+
+  const ranked = normalized.schools
+    .map((school, index) => ({
+      school,
+      priority: discoverSourceIndexSchoolPriority(school, index),
+    }))
+    .sort((left, right) => (
+      right.priority.evidence - left.priority.evidence
+      || right.priority.collectedAt.localeCompare(left.priority.collectedAt)
+      || left.priority.index - right.priority.index
+    ))
+  const retained = []
+  for (const { school } of ranked) {
+    const trial = normalizeDiscoverSourceIndex({
+      ...normalized,
+      schools: [...retained, school],
+    })
+    if (Buffer.byteLength(JSON.stringify(trial), 'utf8') <= maxBytes) {
+      retained.push(school)
+    }
+  }
+  return normalizeDiscoverSourceIndex({
+    ...normalized,
+    schools: retained,
+  })
 }
 
 export function normalizeDiscoverState(raw) {
@@ -1884,13 +2173,19 @@ export function setUserDiscoverState(user, nextState) {
 }
 
 export function getUserDiscoverSourceIndex(user) {
-  return normalizeDiscoverSourceIndex(user?.settings?.discoverSourceIndex)
+  // Production reads go through storage.readDiscoverSourceIndex. This helper
+  // remains useful for pure merge tests and keeps legacy settings fallback.
+  return normalizeDiscoverSourceIndex(
+    user?.discoverSourceIndex ?? user?.settings?.discoverSourceIndex,
+  )
 }
 
 export function setUserDiscoverSourceIndex(user, index) {
-  if (!user.settings || typeof user.settings !== 'object') user.settings = {}
-  user.settings.discoverSourceIndex = normalizeDiscoverSourceIndex(index)
-  return user.settings.discoverSourceIndex
+  if (user.settings && typeof user.settings === 'object') {
+    delete user.settings.discoverSourceIndex
+  }
+  user.discoverSourceIndex = normalizeDiscoverSourceIndex(index)
+  return user.discoverSourceIndex
 }
 
 function mergeDiscoverSourcePages(current, previous) {
@@ -2010,7 +2305,9 @@ function advisorDensityScore(program, intake) {
   if (!pis.length) return 0.2
   const prefs = new Set(intake.piPreferences || [])
   const fitting = pis.filter((item) => prefs.size === 0 || prefs.has(item.category) || item.category === 'direction_fit' || item.category === 'rising_star')
-  let score = Math.min(1, fitting.length / Math.max(2, intake.nPisPerProgram || 6))
+  // Advisor density is a ranking signal, not a hidden result quota. Saturate
+  // smoothly so legacy draft counts cannot change which advisors are retained.
+  let score = 1 - Math.exp(-fitting.length / 4)
   if (intake.risingStarBias === 'strong') {
     const rising = pis.filter((item) => item.category === 'rising_star').length
     score = Math.min(1, score * 0.7 + (rising > 0 ? 0.3 : 0))
@@ -2083,12 +2380,11 @@ export function rankPrograms(state, { includeHidden = false } = {}) {
     .map((program) => ({
       ...program,
       pis: (program.pis || [])
-        .filter((pi) => includeHidden || !(state.hiddenPiIds || []).includes(pi.id))
-        .slice(0, Math.max(1, state.intake?.nPisPerProgram || 6)),
+        .filter((pi) => includeHidden || !(state.hiddenPiIds || []).includes(pi.id)),
     }))
     .sort((a, b) => b.matchScore - a.matchScore || (b.fitScore || 0) - (a.fitScore || 0))
 
-  return scored.slice(0, Math.max(5, state.intake?.nPrograms || 20))
+  return scored
 }
 
 export function listAllScoredPrograms(state) {
@@ -2121,7 +2417,9 @@ export function listAllPis(state) {
         program: program.program,
         region: program.region,
         city: program.city,
-        matchScore: program.matchScore,
+        // Advisor ranking is owned by the deterministic applicant-profile ↔
+        // official-profile receipt, not inherited from the programme score.
+        matchScore: pi.profileMatch?.score ?? program.matchScore,
       })
     }
   }
@@ -2432,6 +2730,42 @@ export function buildAiResearchPrompt(state, ranked) {
   }
 }
 
+function embeddedJsonObjects(value) {
+  const text = String(value || '')
+  const parsed = []
+  let start = -1
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') inString = false
+      continue
+    }
+    if (character === '"') {
+      inString = true
+      continue
+    }
+    if (character === '{') {
+      if (depth === 0) start = index
+      depth += 1
+      continue
+    }
+    if (character !== '}' || depth === 0) continue
+    depth -= 1
+    if (depth !== 0 || start < 0) continue
+    try {
+      const candidate = JSON.parse(text.slice(start, index + 1))
+      if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) parsed.push(candidate)
+    } catch { /* the next balanced object may still be valid */ }
+    start = -1
+  }
+  return parsed
+}
+
 export function parseAiResearchResponse(text, ranked, { verified = false } = {}) {
   const cleaned = String(text || '')
     .replace(/^```(?:json)?\s*/i, '')
@@ -2441,16 +2775,16 @@ export function parseAiResearchResponse(text, ranked, { verified = false } = {})
   try {
     parsed = JSON.parse(cleaned)
   } catch {
-    // Try to extract first {...} block
-    const start = cleaned.indexOf('{')
-    const end = cleaned.lastIndexOf('}')
-    if (start >= 0 && end > start) {
-      try {
-        parsed = JSON.parse(cleaned.slice(start, end + 1))
-      } catch {
-        return { summary: cleaned.slice(0, 800), enrichments: {}, suggestedPrograms: [] }
-      }
-    } else {
+    // Some OpenAI-compatible reasoning gateways emit an explanatory/schema
+    // object before the actual JSON result. Scan balanced top-level objects and
+    // prefer the last one that has the Discover response shape.
+    const candidates = embeddedJsonObjects(cleaned)
+    parsed = [...candidates].reverse().find((candidate) => (
+      Array.isArray(candidate.suggestedPrograms)
+      || Array.isArray(candidate.enrichments)
+      || typeof candidate.summary === 'string'
+    )) || candidates.at(-1)
+    if (!parsed) {
       return { summary: cleaned.slice(0, 800), enrichments: {}, suggestedPrograms: [] }
     }
   }
@@ -2480,7 +2814,7 @@ export function parseAiResearchResponse(text, ranked, { verified = false } = {})
       stipendNotes: item?.stipendNotes || (verified ? 'Checked against the cited official source.' : 'AI-suggested — verify all numbers on official pages.'),
       stipendBasis: item?.stipendBasis || (verified ? 'Official-source research' : 'AI research suggestion (unverified)'),
     })),
-    { source: 'ai', max: 120 },
+    { source: 'ai', max: MAX_DISCOVER_PERSISTED_PROGRAMS },
   )
 
   return {

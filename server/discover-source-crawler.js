@@ -21,7 +21,12 @@ const MAX_ALLOWED_HOSTS = 32
 const MAX_SEEDS_PER_SOURCE = 32
 const MAX_LINKS_SCANNED_PER_PAGE = 1_200
 
-const QUERY_STOP_WORDS = new Set([
+/**
+ * Stop words for this module only. A second list under the same name in another
+ * Discover module is intentionally different — they strip different vocabulary —
+ * so they carry distinct names rather than looking like copies that drifted.
+ */
+const CRAWLER_QUERY_STOP_WORDS = new Set([
   'a', 'an', 'and', 'application', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on',
   'or', 'phd', 'program', 'programme', 'research', 'the', 'to', 'university', 'with',
 ])
@@ -194,6 +199,38 @@ export async function isDiscoverPublicNetworkTarget(value, dnsLookup = null) {
   }
 }
 
+/**
+ * Select the crawler transport independently from request cancellation.
+ *
+ * Production must never infer network safety from the identity of a caller's
+ * fetch function. A harmless AbortSignal wrapper is still a different function
+ * and previously disabled both DNS validation and the address-pinned HTTPS
+ * transport. Tests may keep injecting a deterministic fetch/DNS pair outside
+ * production, while the deployed path always resolves and connects through the
+ * hardened owners below.
+ */
+export function resolveDiscoverCrawlerNetworkPolicy(
+  fetchImpl,
+  dnsLookup,
+  { production = process.env.NODE_ENV === 'production' } = {},
+) {
+  const selectedFetch = typeof fetchImpl === 'function' ? fetchImpl : globalThis.fetch
+  if (production) {
+    return {
+      fetchImpl: pinnedHttpsFetch,
+      dnsLookup: nodeDnsLookup,
+      pinned: true,
+    }
+  }
+  return {
+    fetchImpl: selectedFetch,
+    dnsLookup: dnsLookup === undefined
+      ? (selectedFetch === globalThis.fetch ? nodeDnsLookup : null)
+      : dnsLookup,
+    pinned: false,
+  }
+}
+
 function boundedInteger(value, fallback, minimum, maximum) {
   const number = Number(value)
   return Number.isFinite(number)
@@ -349,7 +386,7 @@ function buildResearchQueryProfile(value) {
     if (!phrase) continue
     if (!phrases.includes(phrase)) phrases.push(phrase)
     const words = phrase.split(' ').filter((word) => (
-      word.length >= 2 && !QUERY_STOP_WORDS.has(word)
+      word.length >= 2 && !CRAWLER_QUERY_STOP_WORDS.has(word)
     ))
     for (const word of words) tokens.add(word)
     if (words.length >= 2 && words.length <= 8) {
@@ -620,10 +657,17 @@ function mergeCandidate(existing, candidate, discoveredFrom) {
 }
 
 function pageEntry(page) {
+  const title = page.title ? sanitizeUntrustedWebText(page.title, 180) : { text: null, promptInjectionSuspected: false }
+  const label = page.label ? sanitizeUntrustedWebText(page.label, 220) : { text: null, promptInjectionSuspected: false }
+  const excerpt = page.excerpt ? sanitizeUntrustedWebText(page.excerpt, 6_000) : { text: '', promptInjectionSuspected: false }
   return {
     url: page.url,
-    title: page.title ? sanitizeUntrustedWebText(page.title, 180).text : null,
-    label: page.label ? sanitizeUntrustedWebText(page.label, 220).text : null,
+    title: title.text,
+    label: label.text,
+    // The final program/advisor grounding layer needs this bounded official
+    // text when an institutional profile title is generic or numeric. Dropping
+    // it here made successfully fetched declared seeds impossible to verify.
+    excerpt: excerpt.text,
     types: uniqueTypes(page.types),
     discoveredFrom: [...new Set(page.discoveredFrom || [])].slice(0, 12),
     fetched: Boolean(page.fetched),
@@ -634,7 +678,12 @@ function pageEntry(page) {
     pagination: Boolean(page.pagination),
     doctoral: Boolean(page.doctoral),
     declaredKinds: [...new Set(page.declaredKinds || [])].slice(0, 8),
-    promptInjectionSuspected: Boolean(page.promptInjectionSuspected),
+    promptInjectionSuspected: Boolean(
+      page.promptInjectionSuspected
+      || title.promptInjectionSuspected
+      || label.promptInjectionSuspected
+      || excerpt.promptInjectionSuspected
+    ),
   }
 }
 
@@ -802,6 +851,27 @@ export function allowsDiscoverCrawl(robotsText, pathname, userAgentValue = DISCO
   return bestRule?.allow !== false
 }
 
+async function waitForCrawlDelay(delayMs, signal) {
+  if (delayMs <= 0) return
+  if (signal?.aborted) throw signal.reason ?? new Error('Discover crawl was aborted.')
+  await new Promise((resolve, reject) => {
+    let timer = null
+    const cleanup = () => signal?.removeEventListener('abort', abort)
+    const abort = () => {
+      if (timer) clearTimeout(timer)
+      cleanup()
+      reject(signal.reason ?? new Error('Discover crawl was aborted.'))
+    }
+    timer = setTimeout(() => {
+      cleanup()
+      resolve()
+    }, delayMs)
+    timer.unref?.()
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) abort()
+  })
+}
+
 async function fetchText(url, {
   fetchImpl,
   timeoutMs,
@@ -811,6 +881,7 @@ async function fetchText(url, {
   beforeFetch,
   allowRequest,
   dnsLookup,
+  signal: parentSignal,
 }) {
   const fail = (reason, details = {}) => {
     onFailure?.({ reason, ...details })
@@ -874,8 +945,9 @@ async function fetchText(url, {
         }
       }
       return fail('too-many-redirects')
-    }, { timeoutMs: deadlineMs })
+    }, { signal: parentSignal, timeoutMs: deadlineMs })
   } catch (error) {
+    if (parentSignal?.aborted) throw parentSignal.reason ?? error
     return fail(error instanceof AbortDeadlineError ? 'timeout' : 'network-error')
   }
 }
@@ -894,16 +966,14 @@ export async function crawlDiscoverSource(source, {
   timeoutMs = 12_000,
   dnsLookup,
   researchQuery = null,
+  signal,
 } = {}) {
   if (!source?.url || typeof fetchImpl !== 'function') return { source, pages: [], candidatePages: [], skipped: 'invalid-source' }
   const origin = sourceAllowedUrl(source.url, source)
   if (!origin) return { source, pages: [], candidatePages: [], skipped: 'invalid-source' }
-  const outboundFetch = process.env.NODE_ENV === 'production' && fetchImpl === globalThis.fetch
-    ? pinnedHttpsFetch
-    : fetchImpl
-  const networkLookup = dnsLookup === undefined
-    ? (fetchImpl === globalThis.fetch ? nodeDnsLookup : null)
-    : dnsLookup
+  const networkPolicy = resolveDiscoverCrawlerNetworkPolicy(fetchImpl, dnsLookup)
+  const outboundFetch = networkPolicy.fetchImpl
+  const networkLookup = networkPolicy.dnsLookup
   const requestTimeoutMs = boundedInteger(timeoutMs, 12_000, 250, MAX_REQUEST_TIMEOUT_MS)
   const callerPageLimit = boundedInteger(maxPages, 8, 1, MAX_PAGES_PER_SOURCE)
   const candidateLimit = boundedInteger(
@@ -942,10 +1012,11 @@ export async function crawlDiscoverSource(source, {
   const nextFetchAt = new Map()
   const beforeFetch = crawlDelayMs > 0
     ? async (url) => {
+        if (signal?.aborted) throw signal.reason ?? new Error('Discover crawl was aborted.')
         const parsed = sourceAllowedUrl(url, source)
         if (!parsed) return
         const waitMs = Math.max(0, (nextFetchAt.get(parsed.origin) || 0) - Date.now())
-        if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs))
+        if (waitMs > 0) await waitForCrawlDelay(waitMs, signal)
         nextFetchAt.set(parsed.origin, Date.now() + crawlDelayMs)
       }
     : null
@@ -955,6 +1026,7 @@ export async function crawlDiscoverSource(source, {
     source,
     beforeFetch,
     dnsLookup: networkLookup,
+    signal,
     onHttpStatus: (status) => httpFailures.push(status),
     onFailure: (failure) => fetchFailures.push(failure),
   }
@@ -1245,6 +1317,7 @@ export async function crawlDiscoverSources({
   researchQuery = null,
   onProgress,
   crawlSourceImpl = crawlDiscoverSource,
+  signal,
 } = {}) {
   const sourceLimit = boundedInteger(limit, 120, 1, MAX_SOURCES_PER_RUN)
   const sources = (Array.isArray(suppliedSources) ? suppliedSources : listDiscoverResearchSources(regions)).slice(0, sourceLimit)
@@ -1256,16 +1329,26 @@ export async function crawlDiscoverSources({
   )
   await Promise.all(Array.from({ length: workerCount }, async () => {
     while (nextIndex < sources.length) {
+      if (signal?.aborted) throw signal.reason ?? new Error('Discover crawl was aborted.')
       const index = nextIndex++
       try {
+        const sourcePageBudget = Math.max(
+          Number(maxPages) || 0,
+          Number(sources[index]?.crawlPolicy?.maxPages) || 0,
+        )
         results[index] = await crawlSourceImpl(sources[index], {
           fetchImpl,
           dnsLookup,
           researchQuery,
-          maxPages,
+          // A maintained adapter may request a larger *bounded* budget when it
+          // carries several explicit fallback hosts. crawlDiscoverSource still
+          // enforces the absolute 32-page guard.
+          maxPages: sourcePageBudget,
           timeoutMs,
+          signal,
         })
       } catch (error) {
+        if (signal?.aborted) throw signal.reason ?? error
         // An unexpected adapter/site failure is evidence about this one source,
         // not a reason to discard every other successfully crawled university.
         results[index] = {
@@ -1342,7 +1425,7 @@ export function buildDiscoverSourceIndex(results, { generatedAt = new Date().toI
       pages,
     }
     for (const category of categories) {
-      entry[`${category}Pages`] = pages.filter((page) => page.types.includes(category))
+      entry[`${category}Pages`] = pages.filter((page) => pageMatchesDeclaredCategory(page, category))
     }
     return entry
   }).filter((school) => school.school && school.officialUrl)
@@ -1352,6 +1435,18 @@ export function buildDiscoverSourceIndex(results, { generatedAt = new Date().toI
     sourceCount: schools.length,
     schools,
   }
+}
+
+function pageMatchesDeclaredCategory(page, category) {
+  if ((page?.types || []).includes(category)) return true
+  const declaredKinds = new Set((page?.declaredKinds || []).map((value) => String(value).toLowerCase()))
+  if (category === 'program') {
+    return ['doctoral', 'program'].some((kind) => declaredKinds.has(kind))
+  }
+  if (category === 'advisor') {
+    return ['advisor', 'faculty'].some((kind) => declaredKinds.has(kind))
+  }
+  return declaredKinds.has(category)
 }
 
 function evidencePageScore(page, queryProfile) {
@@ -1427,6 +1522,7 @@ function compactCandidatePage(page) {
     title: title.text || null,
     label: label.text || null,
     types: uniqueTypes(page?.types),
+    declaredKinds: [...new Set(page?.declaredKinds || [])].slice(0, 8),
     fetched: Boolean(page?.fetched),
     individualAdvisor: Boolean(page?.individualAdvisor),
     relevanceScore: Number.isFinite(page?.relevanceScore) ? page.relevanceScore : 0,
@@ -1442,7 +1538,7 @@ function compactCandidatePage(page) {
 function rankedCandidatePages(pages, type, queryProfile, limit) {
   return [...(pages || [])]
     .filter((page) => (
-      (page?.types || []).includes(type)
+      pageMatchesDeclaredCategory(page, type)
       && (
         junkPagePenalty(page?.url, page?.title || page?.label) < 200
         || (page?.declaredKinds || []).some((kind) => kind && kind !== 'sitemap')

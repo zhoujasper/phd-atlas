@@ -48,6 +48,11 @@ let runtime = {
   key: deriveKeyMaterial(),
   passwordBinding: '',
 }
+const runtimeCryptoStats = {
+  keyDerivations: 1,
+  profileChanges: 0,
+  reusedConfigurations: 0,
+}
 
 /**
  * @param {{ algorithm?: string, passwordBinding?: string }} config
@@ -55,6 +60,15 @@ let runtime = {
 export function setRuntimeCryptoConfig(config = {}) {
   const algorithm = normalizeAlgorithm(config.algorithm)
   const passwordBinding = String(config.passwordBinding || '')
+  // Storage reapplies the durable policy after each successful write so a
+  // real settings change becomes active immediately. The overwhelmingly
+  // common case is the identical profile, where another memory-hard scrypt
+  // derivation is pure duplicate work and serializes an otherwise independent
+  // burst of account saves on the Node main thread.
+  if (runtime.algorithm === algorithm && runtime.passwordBinding === passwordBinding) {
+    runtimeCryptoStats.reusedConfigurations += 1
+    return getRuntimeCryptoConfig()
+  }
   runtime = {
     algorithm,
     // The server secret remains mandatory. When password protection is on, the
@@ -64,12 +78,23 @@ export function setRuntimeCryptoConfig(config = {}) {
     key: deriveKeyMaterial(passwordBinding),
     passwordBinding,
   }
+  runtimeCryptoStats.keyDerivations += 1
+  runtimeCryptoStats.profileChanges += 1
   return getRuntimeCryptoConfig()
 }
 
 export function getRuntimeCryptoConfig() {
   return {
     algorithm: runtime.algorithm,
+  }
+}
+
+/** Non-secret runtime counters used to prove stable policy reapplication is cheap. */
+export function runtimeCryptoDiagnostics() {
+  return {
+    algorithm: runtime.algorithm,
+    passwordBound: runtime.passwordBinding.length > 0,
+    ...runtimeCryptoStats,
   }
 }
 
@@ -84,6 +109,36 @@ export function clearRuntimePassword() {
 export function normalizeAlgorithm(value) {
   if (value === 'chacha20-poly1305') return 'chacha20-poly1305'
   return 'aes-256-gcm'
+}
+
+/**
+ * Create an authenticated cipher for streaming durable payloads without
+ * materialising their plaintext as a UTF-8/base64 string. The caller owns the
+ * returned stream and must persist `cipher.getAuthTag()` after it has ended.
+ */
+export function createSecretCipherWithProfile(profile = {}, iv = randomBytes(12)) {
+  const algorithm = normalizeAlgorithm(profile.algorithm)
+  const key = profile.key
+    ?? deriveKeyMaterial(String(profile.passwordBinding || ''))
+  return {
+    algorithm,
+    iv,
+    cipher: createCipheriv(nodeAlgorithm(algorithm), key, iv),
+  }
+}
+
+/**
+ * Create an authenticated decipher for a streaming durable payload. Setting
+ * the tag before piping means `final()` rejects before a temporary plaintext
+ * file can ever be promoted to its destination.
+ */
+export function createSecretDecipherWithProfile(iv, authTag, profile = {}) {
+  const algorithm = normalizeAlgorithm(profile.algorithm)
+  const key = profile.key
+    ?? deriveKeyMaterial(String(profile.passwordBinding || ''))
+  const decipher = createDecipheriv(nodeAlgorithm(algorithm), key, iv)
+  decipher.setAuthTag(authTag)
+  return { algorithm, decipher }
 }
 
 /**
@@ -124,15 +179,21 @@ export function decryptSecret(ciphertext, options = {}) {
   if (ciphertext.startsWith(PREFIX_V3)) {
     try {
       const body = ciphertext.slice(PREFIX_V3.length)
-      const parts = body.split(':')
-      if (parts.length !== 4) return ''
-      const algorithm = normalizeAlgorithm(parts[0])
-      const iv = Buffer.from(parts[1], 'base64')
-      const authTag = Buffer.from(parts[2], 'base64')
-      const encrypted = Buffer.from(parts[3], 'base64')
+      const algorithmEnd = body.indexOf(':')
+      const ivEnd = body.indexOf(':', algorithmEnd + 1)
+      const tagEnd = body.indexOf(':', ivEnd + 1)
+      if (
+        algorithmEnd <= 0
+        || ivEnd <= algorithmEnd + 1
+        || tagEnd <= ivEnd + 1
+        || body.indexOf(':', tagEnd + 1) !== -1
+      ) return ''
+      const algorithm = normalizeAlgorithm(body.slice(0, algorithmEnd))
+      const iv = Buffer.from(body.slice(algorithmEnd + 1, ivEnd), 'base64')
+      const authTag = Buffer.from(body.slice(ivEnd + 1, tagEnd), 'base64')
       const decipher = createDecipheriv(nodeAlgorithm(algorithm), key, iv)
       decipher.setAuthTag(authTag)
-      return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8')
+      return decipher.update(body.slice(tagEnd + 1), 'base64', 'utf8') + decipher.final('utf8')
     } catch {
       return ''
     }
@@ -140,14 +201,15 @@ export function decryptSecret(ciphertext, options = {}) {
 
   if (ciphertext.startsWith(PREFIX_V2)) {
     try {
-      const parts = ciphertext.slice(PREFIX_V2.length).split(':')
-      if (parts.length !== 3) return ''
-      const iv = Buffer.from(parts[0], 'base64')
-      const authTag = Buffer.from(parts[1], 'base64')
-      const encrypted = Buffer.from(parts[2], 'base64')
+      const body = ciphertext.slice(PREFIX_V2.length)
+      const ivEnd = body.indexOf(':')
+      const tagEnd = body.indexOf(':', ivEnd + 1)
+      if (ivEnd <= 0 || tagEnd <= ivEnd + 1 || body.indexOf(':', tagEnd + 1) !== -1) return ''
+      const iv = Buffer.from(body.slice(0, ivEnd), 'base64')
+      const authTag = Buffer.from(body.slice(ivEnd + 1, tagEnd), 'base64')
       const decipher = createDecipheriv('aes-256-gcm', key, iv)
       decipher.setAuthTag(authTag)
-      return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8')
+      return decipher.update(body.slice(tagEnd + 1), 'base64', 'utf8') + decipher.final('utf8')
     } catch {
       // Fall through to legacy / alternate-key attempts below.
     }
@@ -155,14 +217,15 @@ export function decryptSecret(ciphertext, options = {}) {
 
   // Legacy untagged format
   try {
-    const parts = ciphertext.split(':')
-    if (parts.length < 3) return ''
-    const iv = Buffer.from(parts[parts.length - 3], 'base64')
-    const authTag = Buffer.from(parts[parts.length - 2], 'base64')
-    const encrypted = Buffer.from(parts[parts.length - 1], 'base64')
+    const encryptedStart = ciphertext.lastIndexOf(':')
+    const tagStart = ciphertext.lastIndexOf(':', encryptedStart - 1)
+    const ivStart = ciphertext.lastIndexOf(':', tagStart - 1)
+    if (tagStart < 0 || encryptedStart <= tagStart + 1) return ''
+    const iv = Buffer.from(ciphertext.slice(ivStart + 1, tagStart), 'base64')
+    const authTag = Buffer.from(ciphertext.slice(tagStart + 1, encryptedStart), 'base64')
     const decipher = createDecipheriv('aes-256-gcm', key, iv)
     decipher.setAuthTag(authTag)
-    return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8')
+    return decipher.update(ciphertext.slice(encryptedStart + 1), 'base64', 'utf8') + decipher.final('utf8')
   } catch {
     return ''
   }

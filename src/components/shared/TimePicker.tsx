@@ -1,13 +1,15 @@
 import { Clock } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { getMotionDelay } from '../hooks/useAnimatedClose'
 import { useI18n } from '../hooks/useI18n'
 import {
   addFloatingViewportListeners,
+  applyFloatingOverlayStyle,
   FLOATING_CONTROL_BASE_Z_INDEX,
   getAnchoredOverlayStyle,
 } from './floatingOverlay'
+import { TimeWheel } from './TimeWheel'
 
 function parseTime(value: string) {
   const match = /^(\d{2}):(\d{2})$/.exec(value)
@@ -47,30 +49,34 @@ export function TimePicker({
   const [draftValue, setDraftValue] = useState(value)
   const [editing, setEditing] = useState(false)
   const [dropdownStyle, setDropdownStyle] = useState<CSSProperties>({ visibility: 'hidden' })
+  const [positionReady, setPositionReady] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
   const positionFrameRef = useRef<number | null>(null)
   const closeTimerRef = useRef<number | null>(null)
   const ignoreOutsideUntilRef = useRef(0)
   const openVisible = open && !exiting
-  const selected = parseTime(draftValue) ?? parseTime(value)
-  const hours = useMemo(() => Array.from({ length: 24 }, (_, hour) => hour), [])
-  const minutes = useMemo(() => Array.from({ length: 60 }, (_, minute) => minute), [])
   const displayPlaceholder = placeholder ?? tx('timePicker.placeholder')
   const label = ariaLabel ?? tx('timePicker.toggle')
 
   const getDropdownPosition = useCallback((): CSSProperties => {
     return getAnchoredOverlayStyle(rootRef.current, {
-      minWidth: 196,
-      maxWidth: 196,
-      estimatedHeight: 290,
-      actualHeight: dropdownRef.current?.getBoundingClientRect().height,
+      minWidth: 218,
+      maxWidth: 218,
+      estimatedHeight: 246,
+      actualHeight: dropdownRef.current?.offsetHeight,
       baseZIndex: FLOATING_CONTROL_BASE_Z_INDEX,
     })
   }, [])
 
   const updateDropdownPosition = useCallback(() => {
-    setDropdownStyle(getDropdownPosition())
+    const nextStyle = getDropdownPosition()
+    const dropdown = dropdownRef.current
+    if (!dropdown) {
+      setDropdownStyle(nextStyle)
+      return
+    }
+    applyFloatingOverlayStyle(dropdown, nextStyle)
   }, [getDropdownPosition])
 
   const scheduleDropdownPosition = useCallback(() => {
@@ -82,17 +88,24 @@ export function TimePicker({
   }, [updateDropdownPosition])
 
   const openPicker = useCallback(() => {
+    // Focus and click both fire for the same input gesture. Once the panel is
+    // already visible, keep its measured frame instead of hiding/restarting
+    // the entrance path on the second event.
+    if (openVisible) {
+      setEditing(true)
+      return
+    }
     if (closeTimerRef.current !== null) {
       window.clearTimeout(closeTimerRef.current)
       closeTimerRef.current = null
     }
     ignoreOutsideUntilRef.current = performance.now() + 120
-    setDropdownStyle(getDropdownPosition())
+    setDropdownStyle({ visibility: 'hidden' })
+    setPositionReady(false)
     setEditing(true)
     setExiting(false)
     setOpen(true)
-    window.requestAnimationFrame(() => setDropdownStyle(getDropdownPosition()))
-  }, [getDropdownPosition])
+  }, [openVisible])
 
   const closePicker = useCallback(() => {
     if (!open || exiting) return
@@ -102,7 +115,9 @@ export function TimePicker({
       closeTimerRef.current = null
       setOpen(false)
       setExiting(false)
-    }, getMotionDelay(140))
+      setPositionReady(false)
+      setDropdownStyle({ visibility: 'hidden' })
+    }, getMotionDelay(150))
   }, [exiting, open])
 
   const togglePicker = useCallback(() => {
@@ -110,12 +125,10 @@ export function TimePicker({
     else openPicker()
   }, [closePicker, openPicker, openVisible])
 
-  const selectTime = (hour: number, minute: number) => {
-    const nextValue = formatTime(hour, minute)
+  const selectTime = (nextValue: string) => {
     setDraftValue(nextValue)
     onChange(nextValue)
-    setEditing(false)
-    closePicker()
+    setEditing(true)
   }
 
   const commitTypedTime = () => {
@@ -151,6 +164,24 @@ export function TimePicker({
     if (!editing) setDraftValue(value)
   }, [editing, value])
 
+  // The time picker can open above a narrow viewport. Position it once the
+  // portal has a real box so its compositor entrance is not visibly corrected
+  // on the next frame, and follow any content-height change without a jump.
+  useLayoutEffect(() => {
+    if (!open || positionReady || !dropdownRef.current) return undefined
+    setDropdownStyle(getDropdownPosition())
+    setPositionReady(true)
+  }, [getDropdownPosition, open, positionReady])
+
+  useEffect(() => {
+    if (!open || !positionReady) return undefined
+    const dropdown = dropdownRef.current
+    if (!dropdown || typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(() => scheduleDropdownPosition())
+    observer.observe(dropdown)
+    return () => observer.disconnect()
+  }, [open, positionReady, scheduleDropdownPosition])
+
   useEffect(() => () => {
     if (closeTimerRef.current !== null) {
       window.clearTimeout(closeTimerRef.current)
@@ -159,7 +190,7 @@ export function TimePicker({
   }, [])
 
   useEffect(() => {
-    if (!open || exiting) return undefined
+    if (!open || exiting || !positionReady) return undefined
     function handleClick(event: MouseEvent) {
       if (performance.now() < ignoreOutsideUntilRef.current) return
       const target = event.target as Node
@@ -190,7 +221,7 @@ export function TimePicker({
         positionFrameRef.current = null
       }
     }
-  }, [open, exiting, closePicker, scheduleDropdownPosition])
+  }, [closePicker, exiting, open, positionReady, scheduleDropdownPosition])
 
   return (
     <div
@@ -213,6 +244,7 @@ export function TimePicker({
           onChange={(event) => updateTypedTime(event.target.value)}
           className="time-picker-display"
           aria-label={label}
+          aria-haspopup="dialog"
           aria-expanded={openVisible}
         />
         <button
@@ -236,57 +268,25 @@ export function TimePicker({
           ref={dropdownRef}
           style={dropdownStyle}
           data-floating-overlay="true"
+          role="dialog"
+          aria-label={label}
           onMouseDown={(event) => event.stopPropagation()}
         >
-          <div className="time-picker-columns">
-            <div className="time-picker-column" aria-label={tx('timePicker.hour')}>
-              <span>{tx('timePicker.hour')}</span>
-              <div className="time-picker-options">
-                {hours.map((hour) => (
-                  <button
-                    key={hour}
-                    type="button"
-                    className={selected?.hour === hour ? 'selected' : ''}
-                    onClick={() => selectTime(hour, selected?.minute ?? 0)}
-                  >
-                    {String(hour).padStart(2, '0')}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="time-picker-column" aria-label={tx('timePicker.minute')}>
-              <span>{tx('timePicker.minute')}</span>
-              <div className="time-picker-options">
-                {minutes.map((minute) => (
-                  <button
-                    key={minute}
-                    type="button"
-                    className={selected?.minute === minute ? 'selected' : ''}
-                    onClick={() => selectTime(selected?.hour ?? 9, minute)}
-                  >
-                    {String(minute).padStart(2, '0')}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="time-picker-footer">
-            <button
-              type="button"
-              className="time-picker-now-btn"
-              onClick={() => {
-                const now = new Date()
-                selectTime(now.getHours(), now.getMinutes())
-              }}
-            >
-              {tx('timePicker.now')}
-            </button>
-            {allowClear && value ? (
-              <button type="button" className="time-picker-clear-btn" onClick={() => { setDraftValue(''); setEditing(false); onChange(''); closePicker() }}>
-                {tx('timePicker.clear')}
-              </button>
-            ) : null}
-          </div>
+          <TimeWheel
+            value={draftValue}
+            onChange={selectTime}
+            onNow={() => {
+              const now = new Date()
+              selectTime(formatTime(now.getHours(), now.getMinutes()))
+            }}
+            onClear={allowClear && value ? () => {
+              setDraftValue('')
+              setEditing(false)
+              onChange('')
+              closePicker()
+            } : undefined}
+            allowClear={allowClear && Boolean(value)}
+          />
         </div>,
         document.body,
       )}

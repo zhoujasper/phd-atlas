@@ -18,23 +18,46 @@ export function startNonOverlappingRecurringTask({
   }
 
   let activeRun = null
+  let activeController = null
   let stopped = false
 
-  const runNow = async () => {
+  const runNow = async ({ signal } = {}) => {
     if (stopped || activeRun) return false
 
-    activeRun = Promise.resolve().then(run)
+    const controller = new AbortController()
+    activeController = controller
+    const forwardAbort = () => {
+      if (!controller.signal.aborted) controller.abort(signal?.reason)
+    }
+    if (signal?.aborted) {
+      forwardAbort()
+    } else {
+      signal?.addEventListener?.('abort', forwardAbort, { once: true })
+    }
+
+    const currentRun = Promise.resolve()
+      .then(() => run(controller.signal))
+      .catch((error) => {
+        try {
+          onError(error)
+        } catch {
+          // Error reporting must never turn a handled task failure into an
+          // unhandled rejection or prevent the next scheduled run.
+        }
+      })
+      .finally(() => {
+        signal?.removeEventListener?.('abort', forwardAbort)
+        if (activeRun === currentRun) {
+          activeRun = null
+          activeController = null
+        }
+      })
+    activeRun = currentRun
     try {
-      await activeRun
-    } catch (error) {
-      try {
-        onError(error)
-      } catch {
-        // Error reporting must never turn a handled task failure into an
-        // unhandled rejection or prevent the next scheduled run.
-      }
-    } finally {
-      activeRun = null
+      await currentRun
+    } catch {
+      // currentRun contains task and reporter failures. Keep this final guard
+      // so a future cleanup change cannot leak a detached rejection.
     }
     return true
   }
@@ -43,6 +66,13 @@ export function startNonOverlappingRecurringTask({
     void runNow()
   }, delay)
   timer?.unref?.()
+
+  const stop = (reason) => {
+    if (stopped) return
+    stopped = true
+    timers.clearInterval(timer)
+    activeController?.abort(reason)
+  }
 
   return {
     runNow,
@@ -55,19 +85,13 @@ export function startNonOverlappingRecurringTask({
         // runNow already contains task failures and invokes onError.
       }
     },
-    stop() {
-      if (stopped) return
-      stopped = true
-      timers.clearInterval(timer)
-    },
-    async stopAndWait() {
-      if (!stopped) {
-        stopped = true
-        timers.clearInterval(timer)
-      }
-      if (!activeRun) return
+    stop,
+    async stopAndWait(reason) {
+      stop(reason)
+      const running = activeRun
+      if (!running) return
       try {
-        await activeRun
+        await running
       } catch {
         // runNow already contains task failures and invokes onError.
       }

@@ -14,6 +14,11 @@ export type SourceCompletion = {
   selectTo: number
 }
 
+// Completion rules only inspect the caret's current tag/line fragment. Keeping
+// the inspected window bounded prevents every keystroke in a long document
+// from cloning the entire prefix before the caret.
+const SOURCE_COMPLETION_CONTEXT_LIMIT = 4096
+
 type HtmlElementSpec = {
   tag: string
   insertText?: string
@@ -367,9 +372,17 @@ export function getSourceCompletions(
   force = false,
 ) {
   const safeCaret = Math.max(0, Math.min(caret, value.length))
-  const htmlItems = htmlCompletions(value, safeCaret, force, format)
-  if (htmlItems.length > 0) return htmlItems
-  return markdownCompletions(value, safeCaret, force)
+  const contextStart = Math.max(0, safeCaret - SOURCE_COMPLETION_CONTEXT_LIMIT)
+  const context = value.slice(contextStart, safeCaret)
+  const localCaret = context.length
+  const offsetItem = (item: SourceCompletion): SourceCompletion => ({
+    ...item,
+    from: item.from + contextStart,
+    to: item.to + contextStart,
+  })
+  const htmlItems = htmlCompletions(context, localCaret, force, format)
+  if (htmlItems.length > 0) return htmlItems.map(offsetItem)
+  return markdownCompletions(context, localCaret, force).map(offsetItem)
 }
 
 export function getHtmlAutoCloseEdit(value: string, caret: number) {

@@ -48,13 +48,20 @@ describe('dashboard and dossier switch motion CSS', () => {
       '@keyframes dossier-record-view-new-forward',
       '@keyframes dossier-record-view-old-backward',
       '@keyframes dossier-record-view-new-backward',
+    ]) {
+      const rule = cssRule(name)
+      expect(rule).toContain('opacity: 0')
+      expect(rule).not.toContain('transform')
+    }
+    for (const name of [
       '@keyframes atlas-fallback-dossier-record-exit-forward',
       '@keyframes atlas-fallback-dossier-record-exit-backward',
       '@keyframes atlas-fallback-dossier-record-enter-forward',
       '@keyframes atlas-fallback-dossier-record-enter-backward',
     ]) {
       const rule = cssRule(name)
-      expect(rule).toContain('opacity: 0')
+      expect(rule).toContain('opacity: 0.86')
+      expect(rule).not.toContain('opacity: 0;')
       expect(rule).not.toContain('transform')
     }
     expect(cssRule('::view-transition-old(atlas-dossier-record)')).toContain('mix-blend-mode: plus-lighter')
@@ -64,6 +71,38 @@ describe('dashboard and dossier switch motion CSS', () => {
     )
     expect(cssRule('::view-transition-group(atlas-dossier-record)')).toContain('animation: none')
     expect(cssRule('.dossier-handoff-content')).toContain('overflow-anchor: none')
+    expect(styles).toContain('html[data-atlas-fallback-scope="dossier-record"] {\n  --atlas-fallback-exit-duration: 72ms;')
+    expect(appSource).toContain("if (scope === 'dossier-record') return 72")
+  })
+
+  it('keeps the resident dossier handoff opacity-only while the next record hydrates', () => {
+    const handoff = cssRule('.dossier-handoff-content')
+    const pending = cssRule('.dossier-handoff.is-pending .dossier-handoff-content')
+
+    expect(handoff).toContain('opacity 230ms var(--ease-out)')
+    expect(handoff).not.toContain('transform')
+    expect(pending).toContain('opacity: 0.72')
+    expect(pending).toContain('will-change: opacity')
+    expect(pending).not.toContain('transform')
+  })
+
+  it('reveals deferred dossier cards after the shell cross-fade', () => {
+    const entry = cssRule('.dossier-progressive-entry')
+    const second = cssRule('.dossier-progressive-entry-second')
+    const resource = cssRule('.dossier-progressive-entry-resource')
+    const progressiveEntry = cssRule('@keyframes dossier-progressive-content-enter')
+    const dossierPane = cssRule('.dossier-pane.content-flow-enter')
+
+    expect(entry).toContain('dossier-progressive-content-enter 360ms var(--ease-fluid) both')
+    expect(entry).toContain('will-change: opacity')
+    expect(entry).toContain('animation')
+    expect(progressiveEntry).toContain('opacity: 0')
+    expect(progressiveEntry).not.toContain('transform')
+    expect(dossierPane).toContain('dossier-application-enter var(--duration) var(--ease-out) both')
+    expect(second).toContain('animation-delay: 36ms')
+    expect(resource).toContain('animation-delay: 72ms')
+    expect(styles).toContain('@media (prefers-reduced-motion: reduce)')
+    expect(appSource).toContain('dossierContentDeferred')
   })
 
   it('starts board-to-dossier replacement as one local opacity cross-fade', () => {

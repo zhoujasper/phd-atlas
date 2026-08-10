@@ -337,11 +337,14 @@ export function AdminApp() {
     }
   }
 
-  async function handleInitialSetup(input: Parameters<typeof phdApi.completeInitialSetup>[0]) {
+  async function handleInitialSetup(
+    input: Parameters<typeof phdApi.completeInitialSetup>[0],
+    bootstrapClaimToken: string,
+  ) {
     setBusy(true)
     setError(null)
     try {
-      const nextSession = await phdApi.completeInitialSetup(input)
+      const nextSession = await phdApi.completeInitialSetup(input, bootstrapClaimToken)
       currentSessionUserIdRef.current = nextSession.user.id
       resetSessionTokenLineage(nextSession.token)
       setSetupRequired(false)
@@ -349,7 +352,21 @@ export function AdminApp() {
       localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify(nextSession))
       await loadAdminData(nextSession)
     } catch (err) {
+      try {
+        const status = await phdApi.initialSetupStatus()
+        if (!status.required) {
+          setSetupRequired(false)
+          setError(tx(
+            'admin.setup.completedSignIn',
+            'Initial setup completed, but its response was interrupted. Sign in with the administrator account you just created.',
+          ))
+          return
+        }
+      } catch {
+        // Keep the resident form mounted while the durable outcome is unknown.
+      }
       setError(normalizeError(err, lang))
+      throw err
     } finally {
       setBusy(false)
     }

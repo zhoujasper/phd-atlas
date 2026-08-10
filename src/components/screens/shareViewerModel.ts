@@ -14,6 +14,45 @@ export function shareSectionsToDetailTabs(sections: readonly ShareSection[]): De
   return tabs
 }
 
+export function mergeSharedAttachmentState(
+  current: ApplicationRecord,
+  server: ApplicationRecord,
+): ApplicationRecord {
+  const serverMaterials = new Map(server.materials.map((material) => [material.id, material]))
+  const serverTasks = new Map(server.tasks.map((task) => [task.id, task]))
+  return {
+    ...current,
+    materials: current.materials.map((material) => {
+      const serverMaterial = serverMaterials.get(material.id)
+      if (!serverMaterial) return material
+      return {
+        ...material,
+        fileId: serverMaterial.fileId,
+        fileName: serverMaterial.fileName,
+        fileSize: serverMaterial.fileSize,
+        mimeType: serverMaterial.mimeType,
+        storageName: serverMaterial.storageName,
+        versions: serverMaterial.versions,
+        version: serverMaterial.version,
+        updatedAt: serverMaterial.updatedAt,
+      }
+    }),
+    tasks: current.tasks.map((task) => {
+      const serverTask = serverTasks.get(task.id)
+      if (!serverTask) return task
+      return {
+        ...task,
+        fileId: serverTask.fileId,
+        fileName: serverTask.fileName,
+        fileSize: serverTask.fileSize,
+        mimeType: serverTask.mimeType,
+        storageName: serverTask.storageName,
+        versions: serverTask.versions,
+      }
+    }),
+  }
+}
+
 export function sharedPayloadToApplication(data: SharedApplicationPayload): ApplicationRecord {
   return {
     id: 'shared-application',
@@ -43,6 +82,7 @@ export function sharedPayloadToApplication(data: SharedApplicationPayload): Appl
     tags: data.tags ?? [],
     nextReminder: data.nextReminder ?? '',
     result: data.result ?? '',
+    recommenders: data.recommenders ?? [],
     dossierCards: data.dossierCards,
     materials: (data.materials ?? []).map((material) => ({
       id: material.id,

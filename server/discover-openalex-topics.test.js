@@ -74,4 +74,29 @@ describe('Discover OpenAlex dynamic topic resolution', () => {
     expect(plan.filter((item) => item.kind === 'topic')).toHaveLength(6)
     expect(plan.filter((item) => item.kind === 'text')).toHaveLength(2)
   })
+
+  it('keeps the topic-result cache within its LRU entry budget', async () => {
+    clearDiscoverOpenAlexTopicCache()
+    let calls = 0
+    const fetchImpl = async () => {
+      calls += 1
+      return new Response(JSON.stringify({ results: [] }), { status: 200 })
+    }
+    const query = (index) => ({
+      terms: [`bounded specialist topic ${index}`],
+      fetchImpl,
+      now: 1_000,
+    })
+
+    for (let index = 0; index <= 256; index += 1) {
+      await resolveDiscoverOpenAlexTopics(query(index))
+    }
+
+    const beforeRecentHit = calls
+    await resolveDiscoverOpenAlexTopics(query(256))
+    expect(calls).toBe(beforeRecentHit)
+
+    await resolveDiscoverOpenAlexTopics(query(0))
+    expect(calls).toBeGreaterThan(beforeRecentHit)
+  })
 })

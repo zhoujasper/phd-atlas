@@ -149,4 +149,27 @@ describe('Discover global institution sources', () => {
     ))).toBe(true)
     expect(groupedWorkCalls.some((url) => url.searchParams.get('search') === 'comparative public law')).toBe(true)
   })
+
+  it('keeps the dynamic source cache within its LRU entry budget', async () => {
+    const calls = []
+    const fetchImpl = openAlexFixtureFetch(calls)
+    const query = (index) => ({
+      terms: [`bounded cache research direction ${index}`],
+      regions: ['US'],
+      limit: 1,
+      fetchImpl,
+      now: 1_000,
+    })
+
+    for (let index = 0; index <= 128; index += 1) {
+      await discoverGlobalInstitutionSources(query(index))
+    }
+
+    const beforeRecentHit = calls.length
+    await discoverGlobalInstitutionSources(query(128))
+    expect(calls).toHaveLength(beforeRecentHit)
+
+    await discoverGlobalInstitutionSources(query(0))
+    expect(calls.length).toBeGreaterThan(beforeRecentHit)
+  })
 })

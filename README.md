@@ -6,16 +6,26 @@
 > PhD application journey.
 
 [![CI](https://github.com/zhoujasper/phd-atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/zhoujasper/phd-atlas/actions/workflows/ci.yml)
-[![Status: Beta](https://img.shields.io/badge/status-beta-f59e0b.svg)](TODO.md)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Status: Stable](https://img.shields.io/badge/status-stable-16a34a.svg)](TODO.md)
+[![License: PhD Atlas Community 1.0](https://img.shields.io/badge/license-PhD_Atlas_Community_1.0-7c3aed.svg)](LICENSE)
 [![Node.js 24 LTS](https://img.shields.io/badge/Node.js-24%20LTS-339933.svg)](https://nodejs.org/)
 
-> [!WARNING]
-> **PhD Atlas is currently Beta.** Until the first stable
-> public release, database schemas, stored data, and update paths may change
-> without backward-compatibility guarantees. Use backups and test Beta updates
-> before applying them to important data. The current prerelease version and
-> published assets are listed on the
+> [!IMPORTANT]
+> **Read the license before using this software.** The source is available free
+> of charge to individuals and non-profit entities for personal, academic,
+> research, educational, charitable, and other non-commercial purposes. **Any
+> use by or on behalf of a for-profit company, commercial organization, or
+> other profit-seeking entity requires prior written authorization from the
+> copyright holder** — including internal use, paid or hosted services, SaaS,
+> consulting, resale, and work performed by a contractor for a commercial
+> organization. Public source code does not mean unrestricted commercial use.
+> See the [PhD Atlas Community License v1.0](LICENSE) and contact the copyright
+> holder through the official repository before any commercial use.
+
+> [!NOTE]
+> `v0.1.0` is the first stable public release. Back up the complete workspace
+> before upgrading an existing Beta installation. Versioned packages and
+> checksums are published on the
 > [Releases page](https://github.com/zhoujasper/phd-atlas/releases).
 
 PhD Atlas brings applications, prospective supervisors, documents, deadlines,
@@ -25,10 +35,9 @@ database or selected MySQL/MariaDB, PostgreSQL, or Microsoft SQL Server data
 store, plus uploads, backups, credentials, and integration settings, remain on
 infrastructure you control.
 
-This repository is the **public self-hosted Beta edition**. It includes the
-complete Team collaboration workspace: owner, teacher, and student roles,
-invitations, scoped workspaces, shared applications and resources, audit
-history, and the same permission checks used by the private source build.
+This repository is the **public self-hosted stable edition**. The current product
+is personal-only. Team collaboration is archived in the private source and is
+not exposed, loaded, tested, or published by this distribution.
 
 ## Real interface
 
@@ -44,8 +53,8 @@ a scaled-down desktop image.
   <img src="public/assets/product-tour/workspace-en-light.webp" alt="PhD Atlas Applications workspace showing the ETH Zurich checklist, application Explorer, Dossier, and Inspector" width="1600">
 </picture>
 
-<details>
-<summary><strong>Open five more real product views</strong></summary>
+<details open>
+<summary><strong>Explore or collapse five more real product views</strong></summary>
 
 ### Correspondence
 
@@ -200,17 +209,60 @@ a scaled-down desktop image.
 - Switch among English, Simplified Chinese, German, Spanish, French, Italian,
   Japanese, Korean, Portuguese, Russian, Thai, and Vietnamese.
 
-## Public Team availability
+## MCP / Skill for Codex and Claude Desktop
 
-The public Beta ships Team collaboration end to end. Organizations can manage
-owner, teacher, and student memberships, invitations, scoped workspaces,
-application sharing, review workflows, audit history, and Team AI access. The
-same server-authoritative permissions and quota checks apply to public and
-private-source deployments.
+PhD Atlas includes a zero-dependency Codex Skill and Claude Desktop MCPB for account-scoped natural
+language operations across applications, profiles, deadlines, files,
+communications, discovery, and settings. It uses the signed-in user's real
+permissions; installing it does not create administrator access.
 
-The public repository still starts with blank login fields rather than private
-demo shortcuts. As a Beta, Team data and update paths should be backed up and
-tested before production upgrades.
+The recommended installation is to start a Codex task and say:
+
+> Use skill-installer to install the PhD Atlas skill from
+> `https://github.com/zhoujasper/phd-atlas/tree/main/integrations/codex/plugins/phd-atlas/skills/phd-atlas`.
+
+Replace `main` with a `v...` Release tag when a pinned, reproducible version is
+required. A production build also exposes the checksum-paired manual downloads
+at `/downloads/phd-atlas-codex-skill.zip`,
+`/downloads/phd-atlas-codex-plugin.zip`, and `/downloads/phd-atlas-claude.mcpb`.
+The Skill ZIP supports direct Codex installation, the Plugin ZIP adds the local
+stdio MCP server, and the MCPB is the one-click Claude Desktop package. All
+three use the same personal-only authorization boundary. Always verify the adjacent
+`.sha256` file before manual installation, and start a new Codex task after an
+install or update.
+
+On first use, Codex or Claude Desktop opens the PhD Atlas authorization page in
+the browser; the verification URL and short code remain available as a fallback. Sign in
+on that page, inspect the requested scopes and lifetime, and approve or deny
+the device authorization. Authorizations default to and cannot exceed 365
+days, expire early after 180 consecutive days without use, and are never
+permanent. Open **Settings → MCP / Skill** to rename a connection, review its
+client/computer and last use, pause or resume it, or delete it. The integration can retain
+multiple accounts on one or more self-hosted servers, list them, switch the
+active account, target one account for a single request, and disconnect local
+accounts. Settings revocation, account disablement, an `authVersion` change,
+or a full-system restore invalidates affected authorizations immediately.
+Server-side revocation remains authoritative.
+
+The focused communications tool can set manual mail categories and run an
+explicitly confirmed AI-classification batch with a stable idempotency key.
+Generic communication updates cannot change classification authority fields.
+Discover and AI routes keep separate read/write/use scopes; browser workspace
+bootstrap streams remain explicitly unavailable, while Interview Prep routes
+are exposed only through scope-version-2 capabilities and the matching
+interview scopes. Existing scope-v1 authorizations require reapproval.
+
+Credentials are created only after approval and stay in the operating system's
+user configuration directory, never inside either downloadable ZIP, the Skill,
+or the Plugin cache. Use HTTPS outside loopback development, never paste a
+token into a prompt, and revoke the grant if a device or credential file may
+have been exposed.
+
+## Personal-only product boundary
+
+Team collaboration, Team upgrades, Team entry points, and Team administration
+are archived and are not part of this public distribution. The public repository
+starts with blank login fields rather than private demo shortcuts.
 
 ## Stack
 
@@ -240,6 +292,8 @@ npm run dev
 Open `http://localhost:5173/admin`. On a new database, the one-time setup guide
 asks for:
 
+- the 32–512-byte `PHD_ATLAS_BOOTSTRAP_TOKEN` configured in the protected local
+  environment before the browser can claim first-run setup;
 - the first administrator's name, login email, and a password of at least 12
   characters;
 - SQLite or an external MySQL/MariaDB, PostgreSQL, or SQL Server connection;
@@ -256,41 +310,40 @@ operation, backup, and troubleshooting, read
 
 ## Production deployment
 
-One command is all you need:
-
-```bash
-docker run --detach --name phd-atlas \
-  --env DOMAIN="https://phd.example.com" \
-  --volume phd-atlas-data:/app/storage \
-  --restart unless-stopped \
-  --publish 127.0.0.1:8000:4317 \
-  ghcr.io/zhoujasper/phd-atlas:latest
-```
-
-Or with Docker Compose:
+Production uses the repository's complete Compose service so its shutdown,
+resource, PID, log, capability, storage, proxy-trust, health, and restart-fuse
+boundaries stay together:
 
 ```bash
 git clone https://github.com/zhoujasper/phd-atlas.git
 cd phd-atlas
-# Set DOMAIN in .env (everything else is auto-derived)
-vim .env
+cp .env.example .env
+chmod 600 .env
+# Set DOMAIN=https://phd.example.com in .env, then generate the mandatory
+# 32–512-byte first-run token directly into that protected file.
+{ printf 'PHD_ATLAS_BOOTSTRAP_TOKEN='; openssl rand -base64 48 | tr -d '\n'; printf '\n'; } >> .env
+docker compose pull
 docker compose up -d --wait
 ```
 
-The service binds to `127.0.0.1` and persists all data in a named volume.
-Put an HTTPS reverse proxy in front of it.
+Never print, commit, log, or paste the bootstrap token into chat. Read it from
+`.env` only in a trusted editor when the first `/admin` claim page asks for it.
+The service binds to host `127.0.0.1:4317` and persists all data in a named
+volume. Put an HTTPS reverse proxy in front of it.
 
 For complete Docker, native Linux, and Windows Server instructions, read
 [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Configuration
 
-The only required setting is `DOMAIN`. `BASE_URL`, `CORS_ORIGIN`, and
-`ALLOWED_HOSTS` are auto-derived from it. JWT signing keys and data-encryption
-keys are auto-generated on first boot and persisted to your storage volume.
+New production workspaces require `DOMAIN` and a 32–512-byte
+`PHD_ATLAS_BOOTSTRAP_TOKEN`. `BASE_URL`, `CORS_ORIGIN`, and `ALLOWED_HOSTS` are
+auto-derived from the domain. JWT signing keys and data-encryption keys are
+auto-generated on first boot and persisted to your storage volume.
 
-After the service starts, open `https://your-host/admin` once to create the
-administrator, select the database, and configure system mail.
+After the service starts, open `https://your-host/admin`, enter the protected
+bootstrap token to claim setup, then create the administrator, select the
+database, and configure system mail.
 
 Optional variables configure VAPID web-push keys and PDF fonts. See
 [.env.example](.env.example) for the complete list.
@@ -340,9 +393,17 @@ Tagged package and container publication are also gated by an isolated
 Microsoft SQL Server 2022 adapter smoke test before either artifact is
 published.
 
-Beta release packages exercise the same runtime install and rollback checks,
-but they do not promise database-schema or stored-data compatibility between
-Beta versions. Back up the whole workspace before every Beta update.
+When a compatible previous Release package is available, the workflow also
+publishes a file-level differential package. An automatic update downloads only
+added or changed runtime files (plus the deletion list) when its persisted base
+package has the exact expected version and content fingerprint. The server then
+reconstructs and validates a complete local package so restart, replay, and
+rollback keep the same trust boundary. A missing, mismatched, larger, or invalid
+delta automatically falls back to the complete package.
+
+Stable release packages exercise the same runtime install and rollback checks.
+Back up the whole workspace before every update, especially when moving from a
+Beta release to the first stable line.
 
 For Docker, native Windows, or native Linux deployments already running
 `v0.1.0-beta.6` or later:
@@ -388,6 +449,7 @@ server/              Express routes, multi-engine persistence, mail, push, AI, e
 public/              PWA manifest, icons, service worker, boot assets
 tests/e2e/            Playwright user-flow coverage
 deploy/               systemd, Nginx, WinSW, and IIS templates
+integrations/codex/    installable Codex Skill and optional Plugin/MCP source
 tools/                build, validation, stress, and startup utilities
 Dockerfile            reproducible production image
 compose.yaml          single-host production Compose service
@@ -410,4 +472,21 @@ containers before a tag is published.
 
 ## License
 
-[MIT](LICENSE)
+PhD Atlas is distributed under the
+[PhD Atlas Community License v1.0](LICENSE). It is a source-available license
+with a commercial-use restriction, not the MIT License and not an
+OSI-approved open-source license.
+
+- Individuals and non-profit entities may use, study, modify, and distribute
+  the software for personal, academic, research, educational, charitable, and
+  other non-commercial purposes, subject to the license terms.
+- Any use by or for a for-profit company, commercial organization, or other
+  profit-seeking entity requires prior written authorization from the
+  copyright holder, even when the software is used only internally.
+- Commercial products, hosted or paid services, SaaS, consulting, resale, and
+  contractor use on behalf of a for-profit organization are not authorized
+  without that prior written permission.
+
+For commercial licensing or authorization, contact the copyright holder
+through the official PhD Atlas repository or another published contact channel
+before using the software.

@@ -1,7 +1,7 @@
 import http from 'node:http'
 import https from 'node:https'
 
-const healthUrl = new URL(process.env.API_HEALTH_URL || 'http://127.0.0.1:4317/api/health')
+const healthUrl = new URL(process.env.API_HEALTH_URL || 'http://127.0.0.1:4317/api/health/ready')
 const configuredTimeoutMs = Number.parseInt(process.env.API_HEALTH_TIMEOUT_MS ?? '', 10)
 const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs >= 1_000
   ? configuredTimeoutMs
@@ -45,7 +45,8 @@ while (Date.now() < deadline) {
     ready = true
     break
   }
-  // The API initializes storage and web-push state before listening.
+  // The process starts listening early so liveness stays observable during
+  // storage recovery. Only the readiness endpoint is safe for dependants.
   await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
 }
 

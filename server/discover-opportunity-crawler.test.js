@@ -120,4 +120,20 @@ describe('bounded opportunity portal executor', () => {
     expect(results.every((result) => result.health.authority === 'lead-only')).toBe(true)
     expect(results.every((result) => result.health.canVerifyApplicationFact === false)).toBe(true)
   })
+
+  it('stops before claiming another portal when the research lifecycle is aborted', async () => {
+    const controller = new AbortController()
+    const reason = Object.assign(new Error('execution slice ended'), {
+      code: 'DISCOVER_RESEARCH_TIME_SLICE_DEFERRED',
+    })
+    controller.abort(reason)
+    let requests = 0
+
+    await expect(crawlDiscoverOpportunitySources({
+      sources: [source()],
+      signal: controller.signal,
+      fetchImpl: async () => { requests += 1; return new Response('must not run') },
+    })).rejects.toBe(reason)
+    expect(requests).toBe(0)
+  })
 })

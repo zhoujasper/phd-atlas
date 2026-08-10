@@ -19,9 +19,12 @@ describe('creatable Select visual polish', () => {
     const active = cssRule('.custom-select-option-actions button:active')
     const focus = cssRule('.custom-select-option-actions button:focus-visible')
 
-    expect(row).toContain('padding-right: 54px')
+    // At rest the checkmark owns the row end; the gap only opens on hover.
+    expect(row).toContain('padding-right: 10px')
+    expect(row).toContain('padding-right var(--duration)')
     expect(actions).toContain('opacity: 0')
     expect(actions).toContain('pointer-events: none')
+    expect(actions).toContain('translate3d(12px, -50%, 0)')
     expect(buttons).toContain('width: 22px')
     expect(buttons).toContain('height: 22px')
     expect(buttons).toContain('border: 0')
@@ -36,6 +39,7 @@ describe('creatable Select visual polish', () => {
 
   it('morphs the add row into one compact integrated editor without a nested white card', () => {
     const stage = cssRule('.custom-select-create-stage')
+    const editingStage = cssRule('.custom-select-create-stage.is-editing')
     const addAction = cssRule('.custom-select-create-option')
     const hiddenAddAction = cssRule('.custom-select-create-stage.is-editing .custom-select-create-option')
     const panel = cssRule('.custom-select-create-panel')
@@ -49,6 +53,8 @@ describe('creatable Select visual polish', () => {
     expect(stage).toContain('flex: 0 0 36px')
     expect(stage).toContain('height: 36px')
     expect(stage).toContain('background: transparent')
+    expect(editingStage).toContain('flex-basis: 42px')
+    expect(editingStage).toContain('height: 42px')
     expect(addAction).toContain('background: transparent')
     expect(addAction).toContain('opacity 190ms')
     expect(hiddenAddAction).toContain('opacity 150ms')
@@ -59,7 +65,9 @@ describe('creatable Select visual polish', () => {
     expect(panel).toContain('box-shadow: none')
     expect(panel).toContain('translate3d(4px, 0, 0)')
     expect(visiblePanel).toContain('opacity 190ms')
-    expect(input).toContain('height: 28px')
+    // Compact field with real breathing room above and below it.
+    expect(panel).toContain('inset: 6px 8px')
+    expect(input).toContain('height: 30px')
     expect(input).toContain('background: var(--surface-secondary)')
     expect(buttons).toContain('width: 22px')
     expect(buttons).toContain('height: 22px')
@@ -76,6 +84,9 @@ describe('creatable Select visual polish', () => {
     )
     expect(normalizedStyles).toMatch(
       /@media \(hover: none\), \(pointer: coarse\)\s*\{[\s\S]*?\.custom-select-create-panel button\s*\{[^}]*width:\s*28px[^}]*height:\s*28px/s,
+    )
+    expect(normalizedStyles).toMatch(
+      /@media \(hover: none\), \(pointer: coarse\)\s*\{[\s\S]*?\.custom-select-create-stage\.is-editing\s*\{[^}]*flex-basis:\s*46px[^}]*height:\s*46px/s,
     )
     expect(normalizedStyles).toMatch(
       /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?\*,\s*\*::before,\s*\*::after\s*\{[^}]*transition-duration:\s*0\.01ms !important[^}]*animation-duration:\s*0\.01ms !important/s,

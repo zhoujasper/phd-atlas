@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, promises as fs } from 'node:fs'
+import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -8,15 +9,13 @@ import {
   decryptSecretWithProfile,
   encryptSecretWithProfile,
 } from './crypto.js'
+import { resolvePinnedNetworkTarget } from './outboundNetworkPolicy.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const projectRoot = path.resolve(__dirname, '..')
-const storageRoot = process.env.PHD_ATLAS_STORAGE_ROOT
-  ? path.resolve(process.env.PHD_ATLAS_STORAGE_ROOT)
-  : path.join(projectRoot, 'storage')
 
-function defaultTestSqlitePath() {
+function defaultTestStorageRoot() {
   const worker = String(process.env.VITEST_POOL_ID || process.env.VITEST_WORKER_ID || process.pid)
     .replace(/[^a-z0-9_-]/gi, '_')
     .slice(0, 48)
@@ -28,16 +27,24 @@ function defaultTestSqlitePath() {
   // Clean public exports intentionally omit ignored runtime directories.
   // Create this test-only parent before better-sqlite3 opens the database.
   mkdirSync(testRoot, { recursive: true })
-  return path.join(testRoot, `phd-atlas-vitest-${process.pid}-${worker}-${nonce}.sqlite`)
+  const runtimeRoot = path.join(testRoot, `phd-atlas-vitest-${process.pid}-${worker}-${nonce}`)
+  mkdirSync(runtimeRoot, { recursive: true })
+  return runtimeRoot
 }
+
+export const runtimeStorageRoot = process.env.PHD_ATLAS_STORAGE_ROOT
+  ? path.resolve(process.env.PHD_ATLAS_STORAGE_ROOT)
+  : process.env.NODE_ENV === 'test'
+    ? defaultTestStorageRoot()
+    : path.join(projectRoot, 'storage')
 
 // Allows an isolated local verification server to use a copied workspace
 // database without competing with the normal development service. Production
 // defaults remain unchanged when the variable is absent.
 export const defaultSqlitePath = process.env.PHD_ATLAS_SQLITE_PATH
   ? path.resolve(process.env.PHD_ATLAS_SQLITE_PATH)
-  : (process.env.NODE_ENV === 'test' ? defaultTestSqlitePath() : path.join(storageRoot, 'phd-atlas.sqlite'))
-export const databaseConfigPath = path.join(storageRoot, 'database-connection.json')
+  : path.join(runtimeStorageRoot, 'phd-atlas.sqlite')
+export const databaseConfigPath = path.join(runtimeStorageRoot, 'database-connection.json')
 export const databaseStateId = 'primary'
 const DATABASE_PASSWORD_ENCRYPTION = 'server-key-v1'
 const DATABASE_PASSWORD_PROFILE = Object.freeze({
@@ -48,23 +55,82 @@ const DATABASE_PASSWORD_PROFILE = Object.freeze({
 const EXTERNAL_ENGINES = new Set(['mysql', 'postgresql', 'mssql'])
 const SUPPORTED_ENGINES = new Set(['sqlite', ...EXTERNAL_ENGINES])
 const IDENTIFIER_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]{0,62}$/
+export const DEFAULT_EXTERNAL_DATABASE_QUERY_TIMEOUT_MS = 20_000
+export const MIN_EXTERNAL_DATABASE_QUERY_TIMEOUT_MS = 1_000
+export const MAX_EXTERNAL_DATABASE_QUERY_TIMEOUT_MS = 60_000
 
 function databaseError(code, message, field) {
   const error = new Error(message)
   error.code = code
   error.status = code === 'DATABASE_AUTH_FAILED'
     ? 422
-    : code === 'DATABASE_TARGET_NOT_EMPTY'
+    : code === 'DATABASE_QUERY_TIMEOUT'
+      ? 504
+      : code === 'DATABASE_TARGET_NOT_EMPTY' || code === 'DATABASE_REVISION_CONFLICT'
       ? 409
       : 400
   if (field) error.field = field
   return error
 }
 
+export function normalizeExternalDatabaseQueryTimeoutMs(
+  value = process.env.PHD_ATLAS_EXTERNAL_DB_QUERY_TIMEOUT_MS,
+) {
+  if (value === undefined || value === null || value === '') {
+    return DEFAULT_EXTERNAL_DATABASE_QUERY_TIMEOUT_MS
+  }
+  const timeout = Number(value)
+  if (!Number.isFinite(timeout)) return DEFAULT_EXTERNAL_DATABASE_QUERY_TIMEOUT_MS
+  return Math.min(
+    MAX_EXTERNAL_DATABASE_QUERY_TIMEOUT_MS,
+    Math.max(MIN_EXTERNAL_DATABASE_QUERY_TIMEOUT_MS, Math.trunc(timeout)),
+  )
+}
+
+function databaseQueryTimeoutError(timeoutMs, operation) {
+  return databaseError(
+    'DATABASE_QUERY_TIMEOUT',
+    `External database ${operation} exceeded the ${timeoutMs} ms deadline.`,
+  )
+}
+
+function createOperationDeadline(timeoutMs) {
+  const startedAt = Date.now()
+  const remaining = () => Math.max(1, timeoutMs - (Date.now() - startedAt))
+  const run = async (operation, label = 'operation') => {
+    const waitMs = remaining()
+    let timer
+    try {
+      return await Promise.race([
+        Promise.resolve().then(operation),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(databaseQueryTimeoutError(timeoutMs, label)), waitMs)
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+  return { remaining, run }
+}
+
+async function closeFailedExternalConnection(operation, timeoutMs) {
+  const cleanupDeadline = createOperationDeadline(Math.min(1_000, timeoutMs))
+  await cleanupDeadline.run(operation, 'connection cleanup').catch(() => undefined)
+}
+
 export function createDatabaseTargetNotEmptyError() {
   return databaseError(
     'DATABASE_TARGET_NOT_EMPTY',
     'The selected database already contains a PhD Atlas workspace. Initial setup will not overwrite it.',
+    'database',
+  )
+}
+
+export function createDatabaseRevisionConflictError(revision) {
+  return databaseError(
+    'DATABASE_REVISION_CONFLICT',
+    `The external database already contains different workspace content for revision ${revision}.`,
     'database',
   )
 }
@@ -94,6 +160,83 @@ function normalizeSqlitePath(value) {
     throw databaseError('DATABASE_INVALID_CONFIG', 'SQLite database file must end in .sqlite or .sqlite3.', 'sqlitePath')
   }
   return resolved
+}
+
+function pathIsWithinRoot(rootPath, candidatePath) {
+  const relative = path.relative(rootPath, candidatePath)
+  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))
+}
+
+async function realPathForProspectiveTarget(targetPath) {
+  const missingSegments = []
+  let current = targetPath
+  while (true) {
+    try {
+      const real = await fs.realpath(current)
+      return path.resolve(real, ...missingSegments.reverse())
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+      const parent = path.dirname(current)
+      if (parent === current) throw error
+      missingSegments.push(path.basename(current))
+      current = parent
+    }
+  }
+}
+
+/**
+ * Initial setup is reachable before an administrator exists, so its SQLite
+ * target is deliberately narrower than the authenticated database settings
+ * surface. Validate both the lexical path and every existing symlink/junction
+ * component before creating a directory or opening SQLite.
+ */
+export async function assertSetupSqlitePath(sqlitePath, options = {}) {
+  const configuredRoot = path.resolve(options.storageRoot ?? runtimeStorageRoot)
+  await fs.mkdir(configuredRoot, { recursive: true })
+  const rootRealPath = await fs.realpath(configuredRoot)
+  const targetPath = path.resolve(sqlitePath)
+  if (!pathIsWithinRoot(configuredRoot, targetPath)) {
+    throw databaseError(
+      'DATABASE_PATH_OUTSIDE_STORAGE_ROOT',
+      'Initial setup SQLite files must be stored inside PHD_ATLAS_STORAGE_ROOT.',
+      'sqlitePath',
+    )
+  }
+  const targetRealPath = await realPathForProspectiveTarget(targetPath)
+  if (!pathIsWithinRoot(rootRealPath, targetRealPath)) {
+    throw databaseError(
+      'DATABASE_PATH_OUTSIDE_STORAGE_ROOT',
+      'Initial setup SQLite files must not traverse a symlink outside PHD_ATLAS_STORAGE_ROOT.',
+      'sqlitePath',
+    )
+  }
+  return targetPath
+}
+
+export async function resolveSetupDatabaseNetworkTarget(config, options = {}) {
+  const normalized = normalizeDatabaseConfiguration(config)
+  if (!isExternalDatabaseConfiguration(normalized)) return null
+  try {
+    return await resolvePinnedNetworkTarget(normalized.host, {
+      enforcePublic: true,
+      privateHostAllowlist: options.privateHostAllowlist
+        ?? process.env.DATABASE_PRIVATE_HOST_ALLOWLIST,
+      lookup: options.lookup,
+    })
+  } catch (error) {
+    const wrapped = databaseError(
+      'DATABASE_HOST_NOT_ALLOWED',
+      'The database host must resolve only to public addresses unless it is explicitly listed in DATABASE_PRIVATE_HOST_ALLOWLIST.',
+      'host',
+    )
+    wrapped.cause = error
+    throw wrapped
+  }
+}
+
+async function setupConnectionTarget(config, options = {}) {
+  if (!options.setupSafety || !isExternalDatabaseConfiguration(config)) return null
+  return resolveSetupDatabaseNetworkTarget(config, options)
 }
 
 /**
@@ -210,7 +353,7 @@ export async function readPersistedDatabaseConfiguration() {
 
 export async function persistDatabaseConfiguration(config) {
   const normalized = normalizeDatabaseConfiguration(config)
-  await fs.mkdir(storageRoot, { recursive: true })
+  await fs.mkdir(runtimeStorageRoot, { recursive: true })
   const storedConfig = { ...normalized }
   let passwordEncrypted = ''
   if (isExternalDatabaseConfiguration(storedConfig)) {
@@ -241,22 +384,50 @@ function stateTableReference(config) {
   return '`phd_atlas_state`'
 }
 
-async function openMysql(config) {
-  const mysql = await import('mysql2/promise')
+// External snapshots are produced under the local write lock, but separate
+// network flushes can still finish out of order. Every adapter must therefore
+// leave a newer stored revision untouched and compare equal-revision bytes.
+function assertGuardedRevisionResult(row, payload, revision) {
+  if (!row) throw new Error('The guarded workspace write did not leave a readable database row.')
+  const storedRevision = Number(row.revision)
+  if (!Number.isSafeInteger(storedRevision)) {
+    throw new Error('The external database returned an invalid workspace revision.')
+  }
+  if (storedRevision > revision) return 'stale'
+  if (storedRevision < revision) {
+    throw new Error('The guarded workspace write did not persist the requested revision.')
+  }
+  if (!Buffer.from(row.state_blob).equals(Buffer.from(payload))) {
+    throw createDatabaseRevisionConflictError(revision)
+  }
+  return 'accepted'
+}
+
+async function openMysql(config, mysql, timeoutMs) {
+  const deadline = createOperationDeadline(timeoutMs)
   const pool = mysql.createPool({
-    host: config.host,
+    // Keep the validated DNS name for TLS identity while the socket itself is
+    // pinned to the already-vetted numeric address.
+    host: config.connectionAddress ? (config.servername ?? config.host) : config.host,
     port: config.port,
     user: config.username,
     password: config.password,
     database: config.database,
     ssl: config.ssl ? {} : undefined,
+    ...(config.connectionAddress
+      ? { stream: () => net.connect({ host: config.connectionAddress, port: config.port }) }
+      : {}),
     connectionLimit: 1,
-    connectTimeout: 10_000,
+    connectTimeout: Math.min(10_000, timeoutMs),
     enableKeepAlive: false,
     charset: 'utf8mb4',
   })
+  const query = (executor, sql, parameters = []) => deadline.run(
+    () => executor.query({ sql, timeout: deadline.remaining() }, parameters),
+    'query',
+  )
   try {
-    const [versionRows] = await pool.query('SELECT VERSION() AS version')
+    const [versionRows] = await query(pool, 'SELECT VERSION() AS version')
     const version = String(versionRows[0]?.version ?? '')
     if (config.mysql57Compatibility && !/^5\.7\.44(?:[-+.]|$)/.test(version)) {
       throw databaseError(
@@ -266,12 +437,13 @@ async function openMysql(config) {
       )
     }
   } catch (error) {
-    await pool.end().catch(() => undefined)
+    await closeFailedExternalConnection(() => pool.end(), timeoutMs)
     throw error
   }
   return {
     async ensure() {
-      await pool.query(
+      await query(
+        pool,
         `CREATE TABLE IF NOT EXISTS ${stateTableReference(config)} (
           id VARCHAR(32) NOT NULL PRIMARY KEY,
           state_blob LONGBLOB NOT NULL,
@@ -280,18 +452,83 @@ async function openMysql(config) {
         )`,
       )
     },
-    async read() {
-      const [rows] = await pool.query(
+    async read(options = {}) {
+      if (typeof options.acquirePayloadMemory === 'function') {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const [metadataRows] = await query(
+            pool,
+            `SELECT OCTET_LENGTH(state_blob) AS payload_bytes,
+                    LEFT(state_blob, 16) AS payload_prefix,
+                    revision, updated_at
+             FROM ${stateTableReference(config)} WHERE id = ?`,
+            [databaseStateId],
+          )
+          const metadata = metadataRows[0]
+          if (!metadata) return null
+          const payloadBytes = Number(metadata.payload_bytes)
+          if (!Number.isSafeInteger(payloadBytes) || payloadBytes < 0) {
+            throw new Error('MySQL returned an invalid workspace payload length.')
+          }
+          const releaseMemory = options.acquirePayloadMemory(payloadBytes, {
+            payloadPrefix: Buffer.from(metadata.payload_prefix ?? ''),
+            revision: Number(metadata.revision),
+            updatedAt: metadata.updated_at,
+          })
+          let retained = false
+          try {
+            const [rows] = await query(
+              pool,
+              `SELECT state_blob, revision, updated_at FROM ${stateTableReference(config)}
+               WHERE id = ? AND revision = ? AND OCTET_LENGTH(state_blob) = ?`,
+              [databaseStateId, metadata.revision, payloadBytes],
+            )
+            const row = rows[0]
+            if (!row) continue
+            retained = true
+            return {
+              payload: Buffer.from(row.state_blob),
+              revision: Number(row.revision),
+              updatedAt: row.updated_at,
+              releaseMemory,
+            }
+          } finally {
+            if (!retained) releaseMemory?.()
+          }
+        }
+        throw databaseError('DATABASE_STATE_CHANGED', 'The external workspace changed while it was being read.')
+      }
+      const [rows] = await query(
+        pool,
         `SELECT state_blob, revision, updated_at FROM ${stateTableReference(config)} WHERE id = ?`,
         [databaseStateId],
       )
       const row = rows[0]
       return row ? { payload: Buffer.from(row.state_blob), revision: Number(row.revision), updatedAt: row.updated_at } : null
     },
+    async readMetadata() {
+      const [rows] = await query(
+        pool,
+        `SELECT OCTET_LENGTH(state_blob) AS payload_bytes,
+                LEFT(state_blob, 16) AS payload_prefix,
+                revision, updated_at
+         FROM ${stateTableReference(config)} WHERE id = ?`,
+        [databaseStateId],
+      )
+      const row = rows[0]
+      return row
+        ? {
+            payloadBytes: Number(row.payload_bytes),
+            payloadPrefix: Buffer.from(row.payload_prefix ?? ''),
+            revision: Number(row.revision),
+            updatedAt: row.updated_at,
+          }
+        : null
+    },
     async write(payload, revision, updatedAt, options = {}) {
       if (options.overwrite === false) {
         try {
-          await pool.query(
+          await query(
+            pool,
             `INSERT INTO ${stateTableReference(config)} (id, state_blob, revision, updated_at)
              VALUES (?, ?, ?, ?)`,
             [databaseStateId, payload, revision, updatedAt],
@@ -304,34 +541,122 @@ async function openMysql(config) {
         }
         return
       }
-      await pool.query(
-        `INSERT INTO ${stateTableReference(config)} (id, state_blob, revision, updated_at)
-         VALUES (?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE state_blob = VALUES(state_blob), revision = VALUES(revision), updated_at = VALUES(updated_at)`,
-        [databaseStateId, payload, revision, updatedAt],
-      )
+      const connection = await deadline.run(() => pool.getConnection(), 'connection acquisition')
+      try {
+        await deadline.run(() => connection.beginTransaction(), 'transaction begin')
+        const [result] = await query(
+          connection,
+          `INSERT INTO ${stateTableReference(config)} (id, state_blob, revision, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             state_blob = IF(VALUES(revision) > revision, VALUES(state_blob), state_blob),
+             updated_at = IF(VALUES(revision) > revision, VALUES(updated_at), updated_at),
+             revision = GREATEST(revision, VALUES(revision))`,
+          [databaseStateId, payload, revision, updatedAt],
+        )
+        const affectedRows = Number(result?.affectedRows)
+        if (!Number.isInteger(affectedRows) || affectedRows < 0 || affectedRows > 2) {
+          throw new Error('MySQL returned an invalid affected-row count for the guarded workspace write.')
+        }
+        const [rows] = await query(
+          connection,
+          `SELECT state_blob, revision FROM ${stateTableReference(config)} WHERE id = ? FOR UPDATE`,
+          [databaseStateId],
+        )
+        const outcome = assertGuardedRevisionResult(rows[0], payload, revision)
+        await deadline.run(() => connection.commit(), 'transaction commit')
+        if (outcome === 'stale') return { outcome }
+      } catch (error) {
+        await deadline.run(() => connection.rollback(), 'transaction rollback').catch(() => undefined)
+        throw error
+      } finally {
+        connection.release()
+      }
     },
-    close: () => pool.end(),
+    close: () => deadline.run(() => pool.end(), 'connection close'),
   }
 }
 
-async function openPostgres(config) {
-  const { Client } = await import('pg')
+function createPinnedMssqlConnector(address, port) {
+  return async (options, _lookup, signal) => {
+    if (
+      String(options?.host ?? '').toLowerCase() !== String(address).toLowerCase()
+      || Number(options?.port) !== Number(port)
+    ) {
+      throw databaseError(
+        'DATABASE_HOST_NOT_ALLOWED',
+        'The database server attempted to redirect outside its validated network target.',
+        'host',
+      )
+    }
+    if (signal?.aborted) {
+      const error = new Error('The database connection was aborted.')
+      error.name = 'AbortError'
+      throw error
+    }
+    return await new Promise((resolve, reject) => {
+      const socket = net.connect({ host: address, port })
+      const cleanup = () => {
+        socket.removeListener('connect', onConnect)
+        socket.removeListener('error', onError)
+        signal?.removeEventListener('abort', onAbort)
+      }
+      const onConnect = () => {
+        cleanup()
+        resolve(socket)
+      }
+      const onError = (error) => {
+        cleanup()
+        reject(error)
+      }
+      const onAbort = () => {
+        cleanup()
+        socket.destroy()
+        const error = new Error('The database connection was aborted.')
+        error.name = 'AbortError'
+        reject(error)
+      }
+      socket.once('connect', onConnect)
+      socket.once('error', onError)
+      signal?.addEventListener('abort', onAbort, { once: true })
+    })
+  }
+}
+
+async function openPostgres(config, postgres, timeoutMs) {
+  const { Client } = postgres
+  const deadline = createOperationDeadline(timeoutMs)
   const client = new Client({
-    host: config.host,
+    host: config.connectionAddress ?? config.host,
     port: config.port,
     user: config.username,
     password: config.password,
     database: config.database,
-    ssl: config.ssl ? { rejectUnauthorized: true } : undefined,
-    connectionTimeoutMillis: 10_000,
+    ssl: config.ssl
+      ? {
+          rejectUnauthorized: true,
+          ...(config.servername ? { servername: config.servername } : {}),
+        }
+      : undefined,
+    connectionTimeoutMillis: Math.min(10_000, timeoutMs),
+    statement_timeout: timeoutMs,
+    query_timeout: timeoutMs,
   })
-  await client.connect()
+  try {
+    await deadline.run(() => client.connect(), 'connection')
+  } catch (error) {
+    await closeFailedExternalConnection(() => client.end(), timeoutMs)
+    throw error
+  }
+  const query = (statement, parameters = []) => deadline.run(
+    () => client.query(statement, parameters),
+    'query',
+  )
   const table = stateTableReference(config)
   return {
     async ensure() {
-      await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(config.schema, 'postgresql')}`)
-      await client.query(
+      await query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(config.schema, 'postgresql')}`)
+      await query(
         `CREATE TABLE IF NOT EXISTS ${table} (
           id VARCHAR(32) PRIMARY KEY,
           state_blob BYTEA NOT NULL,
@@ -340,17 +665,77 @@ async function openPostgres(config) {
         )`,
       )
     },
-    async read() {
-      const result = await client.query(
+    async read(options = {}) {
+      if (typeof options.acquirePayloadMemory === 'function') {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const metadataResult = await query(
+            `SELECT octet_length(state_blob)::bigint AS payload_bytes,
+                    substring(state_blob from 1 for 16) AS payload_prefix,
+                    revision, updated_at
+             FROM ${table} WHERE id = $1`,
+            [databaseStateId],
+          )
+          const metadata = metadataResult.rows[0]
+          if (!metadata) return null
+          const payloadBytes = Number(metadata.payload_bytes)
+          if (!Number.isSafeInteger(payloadBytes) || payloadBytes < 0) {
+            throw new Error('PostgreSQL returned an invalid workspace payload length.')
+          }
+          const releaseMemory = options.acquirePayloadMemory(payloadBytes, {
+            payloadPrefix: Buffer.from(metadata.payload_prefix ?? ''),
+            revision: Number(metadata.revision),
+            updatedAt: metadata.updated_at,
+          })
+          let retained = false
+          try {
+            const result = await query(
+              `SELECT state_blob, revision, updated_at FROM ${table}
+               WHERE id = $1 AND revision = $2 AND octet_length(state_blob) = $3`,
+              [databaseStateId, metadata.revision, payloadBytes],
+            )
+            const row = result.rows[0]
+            if (!row) continue
+            retained = true
+            return {
+              payload: Buffer.from(row.state_blob),
+              revision: Number(row.revision),
+              updatedAt: row.updated_at,
+              releaseMemory,
+            }
+          } finally {
+            if (!retained) releaseMemory?.()
+          }
+        }
+        throw databaseError('DATABASE_STATE_CHANGED', 'The external workspace changed while it was being read.')
+      }
+      const result = await query(
         `SELECT state_blob, revision, updated_at FROM ${table} WHERE id = $1`,
         [databaseStateId],
       )
       const row = result.rows[0]
       return row ? { payload: Buffer.from(row.state_blob), revision: Number(row.revision), updatedAt: row.updated_at } : null
     },
+    async readMetadata() {
+      const result = await query(
+        `SELECT octet_length(state_blob)::bigint AS payload_bytes,
+                substring(state_blob from 1 for 16) AS payload_prefix,
+                revision, updated_at
+         FROM ${table} WHERE id = $1`,
+        [databaseStateId],
+      )
+      const row = result.rows[0]
+      return row
+        ? {
+            payloadBytes: Number(row.payload_bytes),
+            payloadPrefix: Buffer.from(row.payload_prefix ?? ''),
+            revision: Number(row.revision),
+            updatedAt: row.updated_at,
+          }
+        : null
+    },
     async write(payload, revision, updatedAt, options = {}) {
       if (options.overwrite === false) {
-        const result = await client.query(
+        const result = await query(
           `INSERT INTO ${table} (id, state_blob, revision, updated_at)
            VALUES ($1, $2, $3, $4)
            ON CONFLICT (id) DO NOTHING
@@ -360,22 +745,50 @@ async function openPostgres(config) {
         if (result.rowCount !== 1) throw createDatabaseTargetNotEmptyError()
         return
       }
-      await client.query(
-        `INSERT INTO ${table} (id, state_blob, revision, updated_at)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (id) DO UPDATE SET state_blob = EXCLUDED.state_blob, revision = EXCLUDED.revision, updated_at = EXCLUDED.updated_at`,
-        [databaseStateId, payload, revision, updatedAt],
-      )
+      await query('BEGIN')
+      try {
+        const result = await query(
+          `INSERT INTO ${table} (id, state_blob, revision, updated_at)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (id) DO UPDATE
+             SET state_blob = EXCLUDED.state_blob,
+                 revision = EXCLUDED.revision,
+                 updated_at = EXCLUDED.updated_at
+             WHERE ${table}.revision < EXCLUDED.revision
+           RETURNING state_blob, revision`,
+          [databaseStateId, payload, revision, updatedAt],
+        )
+        if (result.rowCount !== 0 && result.rowCount !== 1) {
+          throw new Error('PostgreSQL returned an invalid affected-row count for the guarded workspace write.')
+        }
+        if (result.rowCount === 0) {
+          const current = await query(
+            `SELECT state_blob, revision FROM ${table} WHERE id = $1 FOR UPDATE`,
+            [databaseStateId],
+          )
+          const outcome = assertGuardedRevisionResult(current.rows[0], payload, revision)
+          if (outcome === 'stale') {
+            await query('COMMIT')
+            return { outcome }
+          }
+        } else {
+          assertGuardedRevisionResult(result.rows[0], payload, revision)
+        }
+        await query('COMMIT')
+      } catch (error) {
+        await query('ROLLBACK').catch(() => undefined)
+        throw error
+      }
     },
-    close: () => client.end(),
+    close: () => deadline.run(() => client.end(), 'connection close'),
   }
 }
 
-async function openMssql(config) {
-  const module = await import('mssql')
+async function openMssql(config, module, timeoutMs) {
   const sql = module.default ?? module
+  const deadline = createOperationDeadline(timeoutMs)
   const pool = new sql.ConnectionPool({
-    server: config.host,
+    server: config.connectionAddress ?? config.host,
     port: config.port,
     user: config.username,
     password: config.password,
@@ -383,18 +796,32 @@ async function openMssql(config) {
     options: {
       encrypt: config.ssl,
       trustServerCertificate: !config.ssl,
+      ...(config.servername ? { serverName: config.servername } : {}),
+      ...(config.connectionAddress
+        ? { connector: createPinnedMssqlConnector(config.connectionAddress, config.port) }
+        : {}),
     },
-    connectionTimeout: 10_000,
-    requestTimeout: 20_000,
+    connectionTimeout: Math.min(10_000, timeoutMs),
+    requestTimeout: timeoutMs,
     pool: { max: 1, min: 0, idleTimeoutMillis: 5_000 },
   })
-  await pool.connect()
+  try {
+    await deadline.run(() => pool.connect(), 'connection')
+  } catch (error) {
+    await closeFailedExternalConnection(() => pool.close(), timeoutMs)
+    throw error
+  }
+  const query = (request, statement) => deadline.run(
+    () => request.query(statement),
+    'query',
+  )
   const schema = config.schema.replaceAll(']', ']]')
   const table = stateTableReference(config)
   return {
     async ensure() {
-      await pool.request().query(`IF SCHEMA_ID(N'${schema.replaceAll("'", "''")}') IS NULL EXEC(N'CREATE SCHEMA [${schema}]')`)
-      await pool.request().query(
+      await query(pool.request(), `IF SCHEMA_ID(N'${schema.replaceAll("'", "''")}') IS NULL EXEC(N'CREATE SCHEMA [${schema}]')`)
+      await query(
+        pool.request(),
         `IF OBJECT_ID(N'${schema}.phd_atlas_state', N'U') IS NULL
          CREATE TABLE ${table} (
            id NVARCHAR(32) NOT NULL PRIMARY KEY,
@@ -404,12 +831,76 @@ async function openMssql(config) {
          )`,
       )
     },
-    async read() {
-      const result = await pool.request()
-        .input('id', sql.NVarChar(32), databaseStateId)
-        .query(`SELECT state_blob, revision, updated_at FROM ${table} WHERE id = @id`)
+    async read(options = {}) {
+      if (typeof options.acquirePayloadMemory === 'function') {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const metadataResult = await query(
+            pool.request().input('id', sql.NVarChar(32), databaseStateId),
+            `SELECT DATALENGTH(state_blob) AS payload_bytes,
+                    SUBSTRING(state_blob, 1, 16) AS payload_prefix,
+                    revision, updated_at
+             FROM ${table} WHERE id = @id`,
+          )
+          const metadata = metadataResult.recordset[0]
+          if (!metadata) return null
+          const payloadBytes = Number(metadata.payload_bytes)
+          if (!Number.isSafeInteger(payloadBytes) || payloadBytes < 0) {
+            throw new Error('Microsoft SQL Server returned an invalid workspace payload length.')
+          }
+          const releaseMemory = options.acquirePayloadMemory(payloadBytes, {
+            payloadPrefix: Buffer.from(metadata.payload_prefix ?? ''),
+            revision: Number(metadata.revision),
+            updatedAt: metadata.updated_at,
+          })
+          let retained = false
+          try {
+            const result = await query(
+              pool.request()
+                .input('id', sql.NVarChar(32), databaseStateId)
+                .input('revision', sql.BigInt, metadata.revision)
+                .input('payloadBytes', sql.BigInt, payloadBytes),
+              `SELECT state_blob, revision, updated_at FROM ${table}
+               WHERE id = @id AND revision = @revision AND DATALENGTH(state_blob) = @payloadBytes`,
+            )
+            const row = result.recordset[0]
+            if (!row) continue
+            retained = true
+            return {
+              payload: Buffer.from(row.state_blob),
+              revision: Number(row.revision),
+              updatedAt: row.updated_at,
+              releaseMemory,
+            }
+          } finally {
+            if (!retained) releaseMemory?.()
+          }
+        }
+        throw databaseError('DATABASE_STATE_CHANGED', 'The external workspace changed while it was being read.')
+      }
+      const result = await query(
+        pool.request().input('id', sql.NVarChar(32), databaseStateId),
+        `SELECT state_blob, revision, updated_at FROM ${table} WHERE id = @id`,
+      )
       const row = result.recordset[0]
       return row ? { payload: Buffer.from(row.state_blob), revision: Number(row.revision), updatedAt: row.updated_at } : null
+    },
+    async readMetadata() {
+      const result = await query(
+        pool.request().input('id', sql.NVarChar(32), databaseStateId),
+        `SELECT DATALENGTH(state_blob) AS payload_bytes,
+                SUBSTRING(state_blob, 1, 16) AS payload_prefix,
+                revision, updated_at
+         FROM ${table} WHERE id = @id`,
+      )
+      const row = result.recordset[0]
+      return row
+        ? {
+            payloadBytes: Number(row.payload_bytes),
+            payloadPrefix: Buffer.from(row.payload_prefix ?? ''),
+            revision: Number(row.revision),
+            updatedAt: row.updated_at,
+          }
+        : null
     },
     async write(payload, revision, updatedAt, options = {}) {
       const request = pool.request()
@@ -418,7 +909,8 @@ async function openMssql(config) {
         .input('revision', sql.BigInt, revision)
         .input('updatedAt', sql.NVarChar(40), updatedAt)
       if (options.overwrite === false) {
-        const result = await request.query(
+        const result = await query(
+          request,
           `INSERT INTO ${table} (id, state_blob, revision, updated_at)
            SELECT @id, @stateBlob, @revision, @updatedAt
            WHERE NOT EXISTS (
@@ -428,31 +920,107 @@ async function openMssql(config) {
         if (Number(result.rowsAffected?.[0] ?? 0) !== 1) throw createDatabaseTargetNotEmptyError()
         return
       }
-      await request.query(
-          `MERGE ${table} WITH (HOLDLOCK) AS target
-           USING (SELECT @id AS id, @stateBlob AS state_blob, @revision AS revision, @updatedAt AS updated_at) AS source
-           ON target.id = source.id
-           WHEN MATCHED THEN UPDATE SET state_blob = source.state_blob, revision = source.revision, updated_at = source.updated_at
-           WHEN NOT MATCHED THEN INSERT (id, state_blob, revision, updated_at)
-             VALUES (source.id, source.state_blob, source.revision, source.updated_at);`,
-        )
+      const result = await query(
+        request,
+        `SET NOCOUNT ON;
+         SET XACT_ABORT ON;
+         BEGIN TRY
+           BEGIN TRANSACTION;
+           DECLARE @outcome NVARCHAR(16);
+           DECLARE @affected_rows INT = 0;
+           DECLARE @current_revision BIGINT;
+           DECLARE @same_payload BIT;
+
+           UPDATE ${table} WITH (UPDLOCK, HOLDLOCK)
+             SET state_blob = @stateBlob, revision = @revision, updated_at = @updatedAt
+             WHERE id = @id AND revision < @revision;
+           SET @affected_rows = @@ROWCOUNT;
+
+           IF @affected_rows = 1
+             SET @outcome = N'written';
+           ELSE IF EXISTS (SELECT 1 FROM ${table} WITH (UPDLOCK, HOLDLOCK) WHERE id = @id)
+           BEGIN
+             SELECT
+               @current_revision = revision,
+               @same_payload = CASE WHEN state_blob = @stateBlob THEN 1 ELSE 0 END
+             FROM ${table} WITH (UPDLOCK, HOLDLOCK)
+             WHERE id = @id;
+
+             IF @current_revision > @revision
+               SET @outcome = N'stale';
+             ELSE IF @current_revision = @revision AND @same_payload = 1
+               SET @outcome = N'idempotent';
+             ELSE IF @current_revision = @revision
+               SET @outcome = N'conflict';
+             ELSE
+               SET @outcome = N'invalid';
+           END
+           ELSE
+           BEGIN
+             INSERT INTO ${table} (id, state_blob, revision, updated_at)
+               VALUES (@id, @stateBlob, @revision, @updatedAt);
+             SET @affected_rows = @@ROWCOUNT;
+             SET @outcome = N'written';
+           END;
+
+           COMMIT TRANSACTION;
+           SELECT @outcome AS outcome, @affected_rows AS affected_rows;
+         END TRY
+         BEGIN CATCH
+           IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+           THROW;
+         END CATCH;`,
+      )
+      const row = result.recordset?.[0]
+      const outcome = String(row?.outcome ?? '')
+      const affectedRows = Number(row?.affected_rows)
+      if (outcome === 'conflict') throw createDatabaseRevisionConflictError(revision)
+      if (outcome === 'stale' && affectedRows === 0) return { outcome }
+      if (
+        (outcome === 'written' && affectedRows === 1)
+        || (outcome === 'idempotent' && affectedRows === 0)
+      ) return
+      throw new Error('Microsoft SQL Server returned an invalid outcome for the guarded workspace write.')
     },
-    close: () => pool.close(),
+    close: () => deadline.run(() => pool.close(), 'connection close'),
   }
 }
 
-async function openExternalDatabase(config) {
-  const normalized = normalizeDatabaseConfiguration(config)
-  if (normalized.type === 'mysql') return openMysql(normalized)
-  if (normalized.type === 'postgresql') return openPostgres(normalized)
-  if (normalized.type === 'mssql') return openMssql(normalized)
-  throw databaseError('DATABASE_INVALID_CONFIG', 'SQLite does not use a network connection.')
+// Keep driver loading injectable so concurrency and SQL-shape tests exercise
+// the real adapter methods without requiring three database servers.
+export function createExternalDatabaseOpener(driverLoaders = {}, options = {}) {
+  const loadMysql = driverLoaders.mysql ?? (() => import('mysql2/promise'))
+  const loadPostgres = driverLoaders.postgresql ?? (() => import('pg'))
+  const loadMssql = driverLoaders.mssql ?? (() => import('mssql'))
+  return async function openExternalDatabaseWithDrivers(config, connectionOptions = {}) {
+    const normalized = normalizeDatabaseConfiguration(config)
+    const target = connectionOptions.target ?? null
+    const connectionConfig = target
+      ? {
+          ...normalized,
+          connectionAddress: target.address,
+          servername: target.servername,
+        }
+      : normalized
+    const timeoutMs = normalizeExternalDatabaseQueryTimeoutMs(options.queryTimeoutMs)
+    if (normalized.type === 'mysql') return openMysql(connectionConfig, await loadMysql(), timeoutMs)
+    if (normalized.type === 'postgresql') return openPostgres(connectionConfig, await loadPostgres(), timeoutMs)
+    if (normalized.type === 'mssql') return openMssql(connectionConfig, await loadMssql(), timeoutMs)
+    throw databaseError('DATABASE_INVALID_CONFIG', 'SQLite does not use a network connection.')
+  }
 }
+
+const openExternalDatabase = createExternalDatabaseOpener()
 
 function connectionError(error) {
   if (
     error?.code === 'MYSQL_57_COMPATIBILITY_FAILED'
     || error?.code === 'DATABASE_TARGET_NOT_EMPTY'
+    || error?.code === 'DATABASE_REVISION_CONFLICT'
+    || error?.code === 'DATABASE_QUERY_TIMEOUT'
+    || error?.code === 'DATABASE_PATH_OUTSIDE_STORAGE_ROOT'
+    || error?.code === 'DATABASE_HOST_NOT_ALLOWED'
+    || error?.code === 'DATABASE_SNAPSHOT_CAPACITY_EXCEEDED'
   ) return error
   const message = String(error?.message ?? 'Database connection failed.')
   const lower = message.toLowerCase()
@@ -467,12 +1035,16 @@ function connectionError(error) {
 export async function verifyDatabaseConnection(input, options = {}) {
   const config = normalizeDatabaseConfiguration(input, options)
   if (config.type === 'sqlite') {
+    if (options.setupSafety) {
+      await assertSetupSqlitePath(config.sqlitePath, options)
+    }
     await fs.mkdir(path.dirname(config.sqlitePath), { recursive: true })
     return publicDatabaseConfiguration(config)
   }
   let connection
   try {
-    connection = await openExternalDatabase(config)
+    const target = await setupConnectionTarget(config, options)
+    connection = await openExternalDatabase(config, { target })
     if (options.ensure !== false) await connection.ensure()
     return publicDatabaseConfiguration(config)
   } catch (error) {
@@ -482,12 +1054,13 @@ export async function verifyDatabaseConnection(input, options = {}) {
   }
 }
 
-export async function readExternalDatabaseState(config) {
+export async function readExternalDatabaseState(config, options = {}) {
   let connection
   try {
-    connection = await openExternalDatabase(config)
+    const target = await setupConnectionTarget(config, options)
+    connection = await openExternalDatabase(config, { target })
     await connection.ensure()
-    return await connection.read()
+    return await connection.read(options)
   } catch (error) {
     throw connectionError(error)
   } finally {
@@ -495,18 +1068,33 @@ export async function readExternalDatabaseState(config) {
   }
 }
 
-export async function assertExternalDatabaseTargetEmpty(config) {
-  const state = await readExternalDatabaseState(config)
-  if (state?.payload?.length) throw createDatabaseTargetNotEmptyError()
+export async function readExternalDatabaseStateMetadata(config, options = {}) {
+  let connection
+  try {
+    const target = await setupConnectionTarget(config, options)
+    connection = await openExternalDatabase(config, { target })
+    await connection.ensure()
+    return await connection.readMetadata()
+  } catch (error) {
+    throw connectionError(error)
+  } finally {
+    await connection?.close().catch(() => undefined)
+  }
+}
+
+export async function assertExternalDatabaseTargetEmpty(config, options = {}) {
+  const state = await readExternalDatabaseStateMetadata(config, options)
+  if (state?.payloadBytes) throw createDatabaseTargetNotEmptyError()
   return true
 }
 
 export async function writeExternalDatabaseState(config, payload, revision, updatedAt, options = {}) {
   let connection
   try {
-    connection = await openExternalDatabase(config)
+    const target = await setupConnectionTarget(config, options)
+    connection = await openExternalDatabase(config, { target })
     await connection.ensure()
-    await connection.write(payload, revision, updatedAt, options)
+    return await connection.write(payload, revision, updatedAt, options)
   } catch (error) {
     throw connectionError(error)
   } finally {

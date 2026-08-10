@@ -146,6 +146,7 @@ export async function crawlDiscoverOpportunitySource(source, {
   fetchImpl = globalThis.fetch,
   dnsLookup,
   timeoutMs = 12_000,
+  signal,
 } = {}) {
   if (!source?.url) return blockedResult(source, 'invalid-source', 'invalid-source')
   if (source.crawlPolicy?.enabled === false) return blockedResult(source)
@@ -154,14 +155,16 @@ export async function crawlDiscoverOpportunitySource(source, {
 
   const listing = await crawlDiscoverSource(phaseSource(source, listingUrls), {
     fetchImpl, dnsLookup, timeoutMs, maxPages: listingUrls.length, maxCandidatePages: 500,
+    signal,
   })
   const detailUrls = uniqueUrls(source, (listing.candidatePages || [])
     .map((candidate) => candidate.url)
     .filter((url) => isOpportunityDetailUrl(source, url)))
     .slice(0, MAX_DETAIL_PAGES)
   const detail = detailUrls.length
-    ? await crawlDiscoverSource(phaseSource(source, detailUrls), {
+      ? await crawlDiscoverSource(phaseSource(source, detailUrls), {
         fetchImpl, dnsLookup, timeoutMs, maxPages: detailUrls.length, maxCandidatePages: 200,
+        signal,
       })
     : null
   const phases = [listing, detail].filter(Boolean)
@@ -205,7 +208,7 @@ export async function crawlDiscoverOpportunitySource(source, {
 
 export async function crawlDiscoverOpportunitySources({
   sources = listDiscoverOpportunitySources(), concurrency = 2, fetchImpl = globalThis.fetch,
-  dnsLookup, timeoutMs, onProgress,
+  dnsLookup, timeoutMs, onProgress, signal,
 } = {}) {
   const results = new Array(sources.length)
   let cursor = 0
@@ -213,8 +216,14 @@ export async function crawlDiscoverOpportunitySources({
   const workers = Math.min(Math.max(1, Math.floor(concurrency)), sources.length)
   await Promise.all(Array.from({ length: workers }, async () => {
     while (cursor < sources.length) {
+      if (signal?.aborted) throw signal.reason ?? new Error('Discover opportunity crawl was aborted.')
       const index = cursor++
-      results[index] = await crawlDiscoverOpportunitySource(sources[index], { fetchImpl, dnsLookup, timeoutMs })
+      results[index] = await crawlDiscoverOpportunitySource(sources[index], {
+        fetchImpl,
+        dnsLookup,
+        timeoutMs,
+        signal,
+      })
       completed += 1
       await onProgress?.({ completed, total: sources.length, source: sources[index], result: results[index] })
     }

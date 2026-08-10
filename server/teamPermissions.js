@@ -1,10 +1,12 @@
-const MAX_TEAM_MEMBER_LIMIT = 10_000
+import { normalizeOptionalMemberLimit } from '../shared/teamLimits.js'
+
 const PERMISSION_OVERRIDES_VERSION = 1
 
 export const DEFAULT_STUDENT_PERMISSIONS = Object.freeze({
   editApplications: true,
   createApplications: true,
   useDiscover: false,
+  useInterviewPrep: true,
   createShareLinks: true,
   requestTeamTransfers: true,
   activeApplicationLimit: null,
@@ -17,6 +19,7 @@ export const DEFAULT_TEACHER_PERMISSIONS = Object.freeze({
   inviteStudents: true,
   manageStudentPermissions: true,
   useDiscover: true,
+  manageStudentInterviewPrep: true,
   createStudentApplications: true,
   editStudentApplications: true,
   manageStudentShares: true,
@@ -26,6 +29,7 @@ const STUDENT_BOOLEAN_PERMISSION_KEYS = Object.freeze([
   'editApplications',
   'createApplications',
   'useDiscover',
+  'useInterviewPrep',
   'createShareLinks',
   'requestTeamTransfers',
 ])
@@ -39,12 +43,8 @@ const STUDENT_LIMIT_PERMISSION_KEYS = Object.freeze([
 
 const TEACHER_PERMISSION_KEYS = Object.freeze(Object.keys(DEFAULT_TEACHER_PERMISSIONS))
 
-function normalizedOptionalLimit(value) {
-  if (value === null || value === undefined || value === '') return null
-  const parsed = Number(value)
-  if (!Number.isInteger(parsed)) return null
-  return Math.max(1, Math.min(MAX_TEAM_MEMBER_LIMIT, parsed))
-}
+/** Clamped by the same rule the permission editor applies, not a second copy. */
+const normalizedOptionalLimit = normalizeOptionalMemberLimit
 
 function normalizedCounter(value) {
   const parsed = Number(value)

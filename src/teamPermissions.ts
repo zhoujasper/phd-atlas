@@ -6,11 +6,38 @@ import type {
   TeamStudentPermissions,
   TeamTeacherPermissions,
 } from './api/phdApi'
+import { normalizeOptionalMemberLimit } from '../shared/teamLimits.js'
 
-export const DEFAULT_TEAM_STUDENT_PERMISSIONS: Readonly<TeamStudentPermissions> = {
+/**
+ * These intersections keep this compatibility layer assignable to the older
+ * API contract while legacy payloads learn the Interview Prep capabilities.
+ */
+export type InterviewPrepStudentPermissions = TeamStudentPermissions & {
+  useInterviewPrep: boolean
+}
+
+export type InterviewPrepTeacherPermissions = TeamTeacherPermissions & {
+  manageStudentInterviewPrep: boolean
+}
+
+export type InterviewPrepPermissionDefaults = Omit<TeamPermissionDefaults, 'student' | 'teacher'> & {
+  student: InterviewPrepStudentPermissions
+  teacher: InterviewPrepTeacherPermissions
+}
+
+type InterviewPrepMemberRelationships = Omit<
+  TeamMemberRelationships,
+  'studentPermissions' | 'teacherPermissions'
+> & {
+  studentPermissions?: Partial<InterviewPrepStudentPermissions>
+  teacherPermissions?: Partial<InterviewPrepTeacherPermissions>
+}
+
+export const DEFAULT_TEAM_STUDENT_PERMISSIONS: Readonly<InterviewPrepStudentPermissions> = {
   editApplications: true,
   createApplications: true,
   useDiscover: false,
+  useInterviewPrep: true,
   createShareLinks: true,
   requestTeamTransfers: true,
   activeApplicationLimit: null,
@@ -19,27 +46,25 @@ export const DEFAULT_TEAM_STUDENT_PERMISSIONS: Readonly<TeamStudentPermissions> 
   lifetimeShareLimit: null,
 }
 
-export const DEFAULT_TEAM_TEACHER_PERMISSIONS: Readonly<TeamTeacherPermissions> = {
+export const DEFAULT_TEAM_TEACHER_PERMISSIONS: Readonly<InterviewPrepTeacherPermissions> = {
   inviteStudents: true,
   manageStudentPermissions: true,
   useDiscover: true,
+  manageStudentInterviewPrep: true,
   createStudentApplications: true,
   editStudentApplications: true,
   manageStudentShares: true,
 }
 
-function normalizedOptionalLimit(value: unknown): number | null {
-  if (value === null || value === undefined || value === '') return null
-  const parsed = Number(value)
-  return Number.isInteger(parsed) ? Math.max(1, Math.min(10_000, parsed)) : null
-}
+/** Clamped by the same rule the server enforces, not a second copy of it. */
+const normalizedOptionalLimit = normalizeOptionalMemberLimit
 
 export function teamPermissionDefaults(
   value?: Partial<{
-    student: Partial<TeamStudentPermissions>
-    teacher: Partial<TeamTeacherPermissions>
+    student: Partial<InterviewPrepStudentPermissions>
+    teacher: Partial<InterviewPrepTeacherPermissions>
   }> | null,
-): TeamPermissionDefaults {
+): InterviewPrepPermissionDefaults {
   const student = value?.student
   return {
     student: {
@@ -66,9 +91,9 @@ export function teamPermissionDefaults(
 }
 
 export function teamStudentPermissions(
-  relationships?: TeamMemberRelationships | null,
-  defaults?: TeamPermissionDefaults | null,
-): TeamStudentPermissions {
+  relationships?: InterviewPrepMemberRelationships | TeamMemberRelationships | null,
+  defaults?: InterviewPrepPermissionDefaults | TeamPermissionDefaults | null,
+): InterviewPrepStudentPermissions {
   const candidate = relationships?.studentPermissions
   const roleDefaults = teamPermissionDefaults(defaults).student
   return {
@@ -90,9 +115,9 @@ export function teamStudentPermissions(
 }
 
 export function teamTeacherPermissions(
-  relationships?: TeamMemberRelationships | null,
-  defaults?: TeamPermissionDefaults | null,
-): TeamTeacherPermissions {
+  relationships?: InterviewPrepMemberRelationships | TeamMemberRelationships | null,
+  defaults?: InterviewPrepPermissionDefaults | TeamPermissionDefaults | null,
+): InterviewPrepTeacherPermissions {
   return {
     ...teamPermissionDefaults(defaults).teacher,
     ...(relationships?.teacherPermissions ?? {}),
@@ -115,6 +140,24 @@ export function canUseTeamDiscover(
   if (role === 'owner') return true
   if (role === 'admin') return teamTeacherPermissions(membership?.relationships, defaults).useDiscover
   if (role === 'member') return teamStudentPermissions(membership?.relationships, defaults).useDiscover
+  return false
+}
+
+export function canUseTeamInterviewPrep(
+  role: TeamRole | null | undefined,
+  membership?: TeamMember | null,
+  defaults?: InterviewPrepPermissionDefaults | TeamPermissionDefaults | null,
+): boolean {
+  if (role === 'owner') return true
+  if (role === 'admin') {
+    return teamTeacherPermissions(
+      membership?.relationships,
+      defaults,
+    ).manageStudentInterviewPrep
+  }
+  if (role === 'member') {
+    return teamStudentPermissions(membership?.relationships, defaults).useInterviewPrep
+  }
   return false
 }
 

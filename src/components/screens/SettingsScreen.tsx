@@ -1,9 +1,11 @@
+import '../../styles/settings.css'
 import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
   BellRing,
+  Bot,
   CalendarDays,
   Camera,
   Check,
@@ -37,7 +39,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
+import { startTransition, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
 import type { AiKey, AiKeyInput, AuthSession, PasskeyCredentialSummary, UserSettings, UserSettingsPatch, WebPushTestResult } from '../../api/phdApi'
 import {
   normalizeShareSections,
@@ -47,7 +49,9 @@ import {
   type ShareSection,
 } from '../../data/applications'
 import { contentLanguagesFromSettings } from '../../contentLanguages'
+import { formatFrontendBuildTime, frontendBuildInfo } from '../../buildInfo'
 import { preloadLanguage } from '../../i18n'
+import { registerSafeReloadGuard } from '../../safeReload'
 import { CONTENT_LANGUAGE_NAMESPACES } from '../hooks/useI18n'
 import { languageOptions, localeForLanguage, type Language } from '../../i18n'
 import { defaultProfilePresets, remapBuiltInProfilePresets } from '../../profilePresets'
@@ -73,6 +77,7 @@ import { PendingLabel } from '../shared/PendingLabel'
 import { AiKeyManager } from '../shared/AiKeyManager'
 import { AvatarCropDialog } from '../shared/AvatarCropDialog'
 import { UserAvatar } from '../shared/UserAvatar'
+import { CodexAuthorizationManager } from './CodexAuthorizationManager'
 import {
   TableCell,
   TableColGroup,
@@ -100,6 +105,7 @@ import {
   normalizeReceiveEmails,
   type ReceiveEmail,
 } from './settingsReceiveEmailModel'
+import { normalizeBackupFrequency as sharedNormalizeBackupFrequency } from '../../../shared/backupFrequency.js'
 
 type ShareSortColumn = 'application' | 'created' | 'expires' | 'permission'
 type ShareSortState = { column: ShareSortColumn; direction: 'asc' | 'desc' }
@@ -110,6 +116,7 @@ type SettingsSectionId =
   | 'settings-ai-section'
   | 'settings-mail-section'
   | 'settings-security-section'
+  | 'settings-codex-section'
   | 'settings-usage-section'
   | 'settings-data-section'
 
@@ -162,6 +169,7 @@ const SETTINGS_SECTION_IDS: SettingsSectionId[] = [
   'settings-ai-section',
   'settings-mail-section',
   'settings-security-section',
+  'settings-codex-section',
   'settings-usage-section',
   'settings-data-section',
 ]
@@ -170,6 +178,7 @@ const SETTINGS_SECTION_REVEAL_STEP: Record<SettingsSectionId, number> = {
   'settings-ai-section': 1,
   'settings-mail-section': 1,
   'settings-security-section': 2,
+  'settings-codex-section': 2,
   'settings-usage-section': 2,
   'settings-data-section': 3,
 }
@@ -226,10 +235,14 @@ const sharePermissionOptions: Array<{ value: SharePermission; labelKey: string; 
   { value: 'edit', labelKey: 'share.permission.edit', fallback: 'Edit' },
 ]
 
+/**
+ * Any cadence the server accepts must survive a round trip through this screen
+ * untouched. Validating against the picker's own option list instead meant an
+ * account on a sub-hourly schedule — including the `15m` default — was shown
+ * "Daily", and saving anything here wrote that back.
+ */
 function normalizeBackupFrequency(value: string | undefined): BackupFrequency {
-  return backupFrequencyOptions.some((option) => option.value === value)
-    ? (value as BackupFrequency)
-    : 'daily'
+  return sharedNormalizeBackupFrequency(value) as BackupFrequency
 }
 
 const shareExpiryOptions: Array<{ value: ShareExpiryChoice; labelKey: string; fallback: string }> = [
@@ -484,14 +497,18 @@ export function SettingsScreen({
   onAccentColor?: (color: string) => void
   onAvatarSave?: (avatarDataUrl: string) => Promise<boolean | void> | boolean | void
   onUpdateSetting?: (key: string, value: unknown) => void
-  onUpdateSettings?: (patch: UserSettingsPatch, message?: string) => Promise<void> | void
+  onUpdateSettings?: (
+    patch: UserSettingsPatch,
+    message?: string,
+    options?: { throwOnError?: boolean },
+  ) => Promise<void> | void
   passkeys?: PasskeyCredentialSummary[]
   /** Credentials kept mounted briefly while their confirmed removal collapses. */
   removingPasskeyIds?: ReadonlySet<string>
   passkeyAvailable?: boolean
   onCreatePasskey?: (label: string) => void
   onRenamePasskey?: (id: string, label: string) => Promise<void> | void
-  onDeletePasskey?: (id: string) => void
+  onDeletePasskey?: (id: string) => Promise<void> | void
   onTestEmail?: (patch?: Partial<UserSettings>, delivery?: string, source?: 'personal' | 'system') => Promise<void> | void
   onSendReceiveEmailVerification?: (email: string) => Promise<string | void> | string | void
   onTestIncomingMail?: (patch?: Partial<UserSettings>) => Promise<void> | void
@@ -501,14 +518,14 @@ export function SettingsScreen({
   exportApplicationCount?: number
   onDeleteAccount: () => void
   allShares?: SharedLinkInfo[]
-  onRevokeShare?: (applicationId: string, shareId: string) => void
+  onRevokeShare?: (applicationId: string, shareId: string) => Promise<void> | void
   onUpdateShare?: (applicationId: string, shareId: string, expiresAt: string | null, permission?: SharePermission, sections?: ShareSection[]) => void
-  onRevokeAssetShare?: (assetId: string, shareId: string) => void
+  onRevokeAssetShare?: (assetId: string, shareId: string) => Promise<void> | void
   onUpdateAssetShare?: (assetId: string, shareId: string, expiresAt: string | null) => void
   onReplayTutorial?: () => void
   aiKeys?: AiKey[]
   onCreateAiKey?: (input: AiKeyInput) => Promise<void> | void
-  onUpdateAiKey?: (id: string, input: Partial<Pick<AiKeyInput, 'label' | 'model' | 'baseUrl' | 'apiKey'>>) => Promise<void> | void
+  onUpdateAiKey?: (id: string, input: Partial<Pick<AiKeyInput, 'label' | 'model' | 'baseUrl' | 'apiKey' | 'maxConcurrency' | 'requestMode' | 'weight' | 'enabled'>>) => Promise<void> | void
   onDeleteAiKey?: (id: string) => Promise<void> | void
   onTestAiKey?: (id: string) => Promise<{ latencyMs: number; model?: string }>
   onResetAiKeyUsage?: (id: string) => Promise<void> | void
@@ -522,6 +539,11 @@ export function SettingsScreen({
   const lang = session.user.settings.language
   const accent = normalizeThemeAccent(session.user.settings.themeAccent)
   const { tx, format } = useI18n()
+  const [codexDeviceCodeRequested, setCodexDeviceCodeRequested] = useState(() => {
+    if (typeof window === 'undefined') return false
+    const query = new URLSearchParams(window.location.search)
+    return Boolean((query.get('mcpCode') || query.get('codexCode'))?.trim())
+  })
   const languages = languageOptions()
   const [contentLangPair, setContentLangPair] = useState(() => contentLanguagesFromSettings(session.user.settings))
   const [sendFrom, setSendFrom] = useState(session.user.settings.sendFrom || session.user.email)
@@ -531,6 +553,8 @@ export function SettingsScreen({
   // The server never returns the real secret (see session.user.settings.smtpPassSet) — this only ever holds a NEW value being typed.
   const [smtpPass, setSmtpPass] = useState('')
   const [smtpTls, setSmtpTls] = useState(session.user.settings.smtpTls ?? true)
+  const [outgoingMailDirty, setOutgoingMailDirty] = useState(false)
+  const outgoingMailEditVersionRef = useRef(0)
 
   // Keep dual content-language selects in sync with the session after a successful save/reload.
   useEffect(() => {
@@ -548,6 +572,19 @@ export function SettingsScreen({
   const [incomingUser, setIncomingUser] = useState(session.user.settings.incomingUser || session.user.settings.receiveAt || session.user.email)
   const [incomingPass, setIncomingPass] = useState('')
   const [incomingTls, setIncomingTls] = useState(session.user.settings.incomingTls ?? true)
+  const [incomingMailDirty, setIncomingMailDirty] = useState(false)
+  const mailConfigurationDirtyRef = useRef(false)
+  const mailConfigurationMutationBusyRef = useRef(false)
+  const mailConfigurationReloadGuardId = useId()
+  mailConfigurationDirtyRef.current = outgoingMailDirty || incomingMailDirty
+
+  useEffect(() => registerSafeReloadGuard(`settings-mail-configuration:${mailConfigurationReloadGuardId}`, {
+    // SMTP/IMAP secrets intentionally never enter browser recovery storage.
+    // Keep the resident form mounted until the user saves or discards it.
+    prepare: () => !(mailConfigurationDirtyRef.current || mailConfigurationMutationBusyRef.current),
+    hasUnsavedChanges: () => mailConfigurationDirtyRef.current || mailConfigurationMutationBusyRef.current,
+  }), [mailConfigurationReloadGuardId])
+  const incomingMailEditVersionRef = useRef(0)
   const [incomingMailTesting, setIncomingMailTesting] = useState(false)
   const [mailSyncAction, setMailSyncAction] = useState<'new' | 'history' | null>(null)
   const [webPushTestState, setWebPushTestState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
@@ -576,15 +613,19 @@ export function SettingsScreen({
   const passkeyRenameTimerRef = useRef<number | null>(null)
   const [confirmDeletePasskey, setConfirmDeletePasskey] = useState<PasskeyCredentialSummary | null>(null)
   const [confirmRestoreProfilePresets, setConfirmRestoreProfilePresets] = useState(false)
+  const [restoreProfilePresetsBusy, setRestoreProfilePresetsBusy] = useState(false)
   const [sharePage, setSharePage] = useState(0)
   const [shareSearch, setShareSearch] = useState('')
   const [shareSort, setShareSort] = useState<ShareSortState>({ column: 'created', direction: 'desc' })
   const [confirmRevokeShare, setConfirmRevokeShare] = useState<SharedLinkInfo | null>(null)
   const [settingsRevealStep, setSettingsRevealStep] = useState(() => {
+    if (codexDeviceCodeRequested) return 2
     if (navigator.userAgent.toLowerCase().includes('jsdom')) return 3
     return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 3 : 0
   })
-  const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSectionId>('settings-appearance-section')
+  const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSectionId>(() => (
+    codexDeviceCodeRequested ? 'settings-codex-section' : 'settings-appearance-section'
+  ))
   const settingsIndexNavRef = useRef<HTMLElement | null>(null)
   const settingsProgressiveSentinelRef = useRef<HTMLDivElement | null>(null)
   const pendingSettingsScrollRef = useRef<SettingsSectionId | null>(null)
@@ -595,6 +636,25 @@ export function SettingsScreen({
   useEffect(() => {
     setSelectedAccent(accent)
   }, [accent])
+
+  useEffect(() => {
+    const syncCodexDeviceCode = () => {
+      const query = new URLSearchParams(window.location.search)
+      setCodexDeviceCodeRequested(Boolean((query.get('mcpCode') || query.get('codexCode'))?.trim()))
+    }
+    window.addEventListener('popstate', syncCodexDeviceCode)
+    return () => window.removeEventListener('popstate', syncCodexDeviceCode)
+  }, [])
+
+  useEffect(() => {
+    if (!codexDeviceCodeRequested) return
+    setSettingsRevealStep((step) => Math.max(step, 2))
+    setActiveSettingsSection('settings-codex-section')
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById('settings-codex-section')?.scrollIntoView?.({ block: 'start' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [codexDeviceCodeRequested])
   const receiveEmails = fallbackReceiveEmails(session)
   const emailNotificationsEnabled = session.user.settings.emailNotificationsEnabled !== false
   const backupFrequency = normalizeBackupFrequency(session.user.settings.backupFrequency ?? session.settings.backupFrequency)
@@ -866,13 +926,37 @@ export function SettingsScreen({
     }
   }
 
+  const markOutgoingMailDirty = () => {
+    outgoingMailEditVersionRef.current += 1
+    setOutgoingMailDirty(true)
+  }
+
+  const markIncomingMailDirty = () => {
+    incomingMailEditVersionRef.current += 1
+    setIncomingMailDirty(true)
+  }
+
   useEffect(() => {
+    if (outgoingMailDirty) return
     setSendFrom(session.user.settings.sendFrom || session.user.email)
     setSmtpHost(session.user.settings.smtpHost || '')
     setSmtpPort(String(session.user.settings.smtpPort ?? 587))
     setSmtpUser(session.user.settings.smtpUser || session.user.settings.sendFrom || session.user.email)
     setSmtpPass('')
     setSmtpTls(session.user.settings.smtpTls ?? true)
+  }, [
+    outgoingMailDirty,
+    session.user.email,
+    session.user.settings.sendFrom,
+    session.user.settings.smtpHost,
+    session.user.settings.smtpPassSet,
+    session.user.settings.smtpPort,
+    session.user.settings.smtpTls,
+    session.user.settings.smtpUser,
+  ])
+
+  useEffect(() => {
+    if (incomingMailDirty) return
     setIncomingProtocol(session.user.settings.incomingProtocol ?? 'imap')
     setIncomingHost(session.user.settings.incomingHost || '')
     setIncomingPort(String(session.user.settings.incomingPort ?? (
@@ -882,18 +966,15 @@ export function SettingsScreen({
     setIncomingPass('')
     setIncomingTls(session.user.settings.incomingTls ?? true)
   }, [
+    incomingMailDirty,
     session.user.email,
     session.user.settings.incomingHost,
+    session.user.settings.incomingPassSet,
     session.user.settings.incomingPort,
     session.user.settings.incomingProtocol,
     session.user.settings.incomingTls,
     session.user.settings.incomingUser,
     session.user.settings.receiveAt,
-    session.user.settings.sendFrom,
-    session.user.settings.smtpHost,
-    session.user.settings.smtpPort,
-    session.user.settings.smtpTls,
-    session.user.settings.smtpUser,
   ])
 
   useEffect(() => {
@@ -1220,28 +1301,78 @@ export function SettingsScreen({
     }
   }
 
-  const saveOutgoingMail = () => {
+  const saveOutgoingMail = async () => {
+    if (!onUpdateSettings) return
     const patch = buildOutgoingMailPatch()
     if (!patch) return
-    onUpdateSettings?.(patch, tx('settings.mailSettingsSaved'))
+    const submittedVersion = outgoingMailEditVersionRef.current
+    mailConfigurationMutationBusyRef.current = true
+    try {
+      await onUpdateSettings(patch, tx('settings.mailSettingsSaved'), { throwOnError: true })
+    } catch {
+      // The parent owns the localized failure toast. Keep the resident draft,
+      // including a newly typed password, available for correction or retry.
+      return
+    } finally {
+      mailConfigurationMutationBusyRef.current = false
+    }
+    if (outgoingMailEditVersionRef.current !== submittedVersion) return
+    setOutgoingMailDirty(false)
     setSmtpPass('')
   }
 
-  const saveIncomingMail = () => {
+  const saveIncomingMail = async () => {
+    if (!onUpdateSettings) return
     const patch = buildIncomingMailPatch()
     if (!patch) return
-    onUpdateSettings?.(patch, tx('settings.mailSettingsSaved'))
+    const submittedVersion = incomingMailEditVersionRef.current
+    mailConfigurationMutationBusyRef.current = true
+    try {
+      await onUpdateSettings(patch, tx('settings.mailSettingsSaved'), { throwOnError: true })
+    } catch {
+      // Keep the complete receiving-mail draft mounted after a failed write.
+      return
+    } finally {
+      mailConfigurationMutationBusyRef.current = false
+    }
+    if (incomingMailEditVersionRef.current !== submittedVersion) return
+    setIncomingMailDirty(false)
     setIncomingPass('')
   }
 
-  const clearOutgoingMailPass = () => {
-    onUpdateSettings?.({ clearSmtpPass: true }, tx('settings.mailSettingsSaved'))
-    setSmtpPass('')
+  const clearOutgoingMailPass = async () => {
+    if (!onUpdateSettings) return
+    mailConfigurationMutationBusyRef.current = true
+    try {
+      await onUpdateSettings(
+        { clearSmtpPass: true },
+        tx('settings.mailSettingsSaved'),
+        { throwOnError: true },
+      )
+      setSmtpPass('')
+    } catch {
+      // The saved-secret indicator and resident draft remain authoritative
+      // until the server durably acknowledges the clear operation.
+    } finally {
+      mailConfigurationMutationBusyRef.current = false
+    }
   }
 
-  const clearIncomingMailPass = () => {
-    onUpdateSettings?.({ clearIncomingPass: true }, tx('settings.mailSettingsSaved'))
-    setIncomingPass('')
+  const clearIncomingMailPass = async () => {
+    if (!onUpdateSettings) return
+    mailConfigurationMutationBusyRef.current = true
+    try {
+      await onUpdateSettings(
+        { clearIncomingPass: true },
+        tx('settings.mailSettingsSaved'),
+        { throwOnError: true },
+      )
+      setIncomingPass('')
+    } catch {
+      // Keep the receiving-mail editor retryable after a rejected clear.
+    } finally {
+      mailConfigurationMutationBusyRef.current = false
+    }
   }
 
   const testOutgoingMail = async (delivery: string) => {
@@ -1284,15 +1415,63 @@ export function SettingsScreen({
     return Object.keys(patch).length > 0 ? patch : null
   }
 
-  const updateAutoFetchMail = (checked: boolean) => {
+  const updateAutoFetchMail = async (checked: boolean) => {
     if (!checked) {
-      onUpdateSetting?.('autoFetchMail', false)
+      if (!onUpdateSettings) {
+        onUpdateSetting?.('autoFetchMail', false)
+        return
+      }
+      mailConfigurationMutationBusyRef.current = true
+      try {
+        await onUpdateSettings(
+          { autoFetchMail: false },
+          tx('settings.mailSettingsSaved'),
+          { throwOnError: true },
+        )
+      } catch {
+        // The controlled switch keeps the saved value when persistence fails.
+      } finally {
+        mailConfigurationMutationBusyRef.current = false
+      }
       return
     }
+    if (!onUpdateSettings) return
     const patch = buildIncomingMailPatch()
     if (!patch) return
-    onUpdateSettings?.({ ...patch, autoFetchMail: true }, tx('settings.mailSettingsSaved'))
+    const submittedVersion = incomingMailEditVersionRef.current
+    mailConfigurationMutationBusyRef.current = true
+    try {
+      await onUpdateSettings(
+        { ...patch, autoFetchMail: true },
+        tx('settings.mailSettingsSaved'),
+        { throwOnError: true },
+      )
+    } catch {
+      return
+    } finally {
+      mailConfigurationMutationBusyRef.current = false
+    }
+    if (incomingMailEditVersionRef.current !== submittedVersion) return
+    setIncomingMailDirty(false)
     setIncomingPass('')
+  }
+
+  const restoreProfilePresets = async () => {
+    if (!onUpdateSettings || restoreProfilePresetsBusy) return
+    setRestoreProfilePresetsBusy(true)
+    try {
+      await onUpdateSettings(
+        { profilePresets: defaultProfilePresets(contentLanguagesFromSettings(session.user.settings)) },
+        tx('settings.profilePresetsRestored'),
+        { throwOnError: true },
+      )
+      setConfirmRestoreProfilePresets(false)
+    } catch {
+      // The parent owns the localized error toast. Keep the confirmation open
+      // so a failed restore cannot look complete or lose the current presets.
+    } finally {
+      setRestoreProfilePresetsBusy(false)
+    }
   }
 
   const runMailSync = async (mode: 'new' | 'history') => {
@@ -1357,6 +1536,7 @@ export function SettingsScreen({
     { id: 'settings-ai-section', label: tx('settings.ai.title'), icon: KeyRound },
     { id: 'settings-mail-section', label: tx('settings.emailConfiguration'), icon: Mail },
     { id: 'settings-security-section', label: tx('settings.security'), icon: Shield },
+    { id: 'settings-codex-section', label: tx('settings.codex.title'), icon: Bot },
     { id: 'settings-usage-section', label: tx('settings.usageAndLimits'), icon: HardDrive },
     { id: 'settings-data-section', label: tx('settings.dataManagement'), icon: Database },
   ] as const
@@ -1671,6 +1851,10 @@ export function SettingsScreen({
                             },
                             tx('settings.contentLanguagesSaved'),
                           )
+                        }).catch(() => {
+                          // Keep the selected pair visible for retry, but never
+                          // leak a rejected preload into the global event loop.
+                          onNotify?.(tx('apiErrors.REQUEST_FAILED'), 'error')
                         })
                       }
                       return (
@@ -1746,18 +1930,15 @@ export function SettingsScreen({
                     <InlineConfirm
                       className="settings-inline-restore"
                       open={confirmRestoreProfilePresets}
+                      busy={restoreProfilePresetsBusy}
                       confirmLabel={tx('settings.profilePresetsRestore')}
                       idleClassName="quiet-action settings-inline-restore-idle"
                       idleAriaLabel={tx('settings.profilePresetsRestore')}
                       onOpen={() => setConfirmRestoreProfilePresets(true)}
-                      onCancel={() => setConfirmRestoreProfilePresets(false)}
-                      onConfirm={() => {
-                        onUpdateSettings?.(
-                          { profilePresets: defaultProfilePresets(contentLanguagesFromSettings(session.user.settings)) },
-                          tx('settings.profilePresetsRestored'),
-                        )
-                        setConfirmRestoreProfilePresets(false)
+                      onCancel={() => {
+                        if (!restoreProfilePresetsBusy) setConfirmRestoreProfilePresets(false)
                       }}
+                      onConfirm={restoreProfilePresets}
                     >
                       <RefreshCw size={13} aria-hidden="true" />
                       {tx('settings.profilePresetsRestore')}
@@ -1981,13 +2162,23 @@ export function SettingsScreen({
                     <input
                       className={sendFromValid ? '' : 'invalid'}
                       value={sendFrom}
-                      onChange={(event) => setSendFrom(event.target.value)}
+                      onChange={(event) => {
+                        setSendFrom(event.target.value)
+                        markOutgoingMailDirty()
+                      }}
                       aria-invalid={!sendFromValid}
                     />
                   </label>
                   <label>
                     <span>{tx('settings.smtpHost')}</span>
-                    <input value={smtpHost} onChange={(event) => setSmtpHost(event.target.value)} placeholder="smtp.example.com" />
+                    <input
+                      value={smtpHost}
+                      onChange={(event) => {
+                        setSmtpHost(event.target.value)
+                        markOutgoingMailDirty()
+                      }}
+                      placeholder="smtp.example.com"
+                    />
                   </label>
                   <label>
                     <span>{tx('settings.smtpPort')}</span>
@@ -1997,13 +2188,23 @@ export function SettingsScreen({
                       min={1}
                       max={65535}
                       value={smtpPort}
-                      onChange={(event) => setSmtpPort(event.target.value)}
+                      onChange={(event) => {
+                        setSmtpPort(event.target.value)
+                        markOutgoingMailDirty()
+                      }}
                       aria-invalid={!smtpPortValid}
                     />
                   </label>
                   <label>
                     <span>{tx('settings.smtpUser')}</span>
-                    <input value={smtpUser} onChange={(event) => setSmtpUser(event.target.value)} placeholder={sendFrom} />
+                    <input
+                      value={smtpUser}
+                      onChange={(event) => {
+                        setSmtpUser(event.target.value)
+                        markOutgoingMailDirty()
+                      }}
+                      placeholder={sendFrom}
+                    />
                   </label>
                   <label className="mail-field-full">
                     <span>{tx('settings.smtpPass')}</span>
@@ -2011,7 +2212,10 @@ export function SettingsScreen({
                       <input
                         type="password"
                         value={smtpPass}
-                        onChange={(event) => setSmtpPass(event.target.value)}
+                        onChange={(event) => {
+                          setSmtpPass(event.target.value)
+                          markOutgoingMailDirty()
+                        }}
                         placeholder={session.user.settings.smtpPassSet ? tx('settings.passwordSavedPlaceholder') : ''}
                       />
                       {session.user.settings.smtpPassSet && !smtpPass ? (
@@ -2027,7 +2231,14 @@ export function SettingsScreen({
                 <div className="mail-config-actions">
                   <div className="settings-switch-label">
                     <span>{tx('settings.smtpTls')}</span>
-                    <SwitchControl checked={smtpTls} label={tx('settings.smtpTls')} onChange={setSmtpTls} />
+                    <SwitchControl
+                      checked={smtpTls}
+                      label={tx('settings.smtpTls')}
+                      onChange={(checked) => {
+                        setSmtpTls(checked)
+                        markOutgoingMailDirty()
+                      }}
+                    />
                   </div>
                   <div className="mail-config-button-row">
                     <button type="button" className="quiet-action compact-action mail-save-btn" onClick={saveOutgoingMail} disabled={!sendFromValid || !smtpPortValid}>
@@ -2083,12 +2294,20 @@ export function SettingsScreen({
                           onChange={(value) => {
                             setIncomingProtocol(value)
                             setIncomingPort(value === 'imap' ? '993' : '995')
+                            markIncomingMailDirty()
                           }}
                         />
                       </label>
                       <label className="mail-incoming-host">
                         <span>{tx('settings.incomingHost')}</span>
-                        <input value={incomingHost} onChange={(event) => setIncomingHost(event.target.value)} placeholder={incomingProtocol === 'imap' ? 'imap.example.com' : 'pop.example.com'} />
+                        <input
+                          value={incomingHost}
+                          onChange={(event) => {
+                            setIncomingHost(event.target.value)
+                            markIncomingMailDirty()
+                          }}
+                          placeholder={incomingProtocol === 'imap' ? 'imap.example.com' : 'pop.example.com'}
+                        />
                       </label>
                       <label className="mail-incoming-port">
                         <span>{tx('settings.incomingPort')}</span>
@@ -2098,13 +2317,23 @@ export function SettingsScreen({
                           min={1}
                           max={65535}
                           value={incomingPort}
-                          onChange={(event) => setIncomingPort(event.target.value)}
+                          onChange={(event) => {
+                            setIncomingPort(event.target.value)
+                            markIncomingMailDirty()
+                          }}
                           aria-invalid={!incomingPortValid}
                         />
                       </label>
                       <label>
                         <span>{tx('settings.incomingUser')}</span>
-                        <input value={incomingUser} onChange={(event) => setIncomingUser(event.target.value)} placeholder={session.user.email} />
+                        <input
+                          value={incomingUser}
+                          onChange={(event) => {
+                            setIncomingUser(event.target.value)
+                            markIncomingMailDirty()
+                          }}
+                          placeholder={session.user.email}
+                        />
                       </label>
                       <label>
                         <span>{tx('settings.incomingPass')}</span>
@@ -2112,7 +2341,10 @@ export function SettingsScreen({
                           <input
                             type="password"
                             value={incomingPass}
-                            onChange={(event) => setIncomingPass(event.target.value)}
+                            onChange={(event) => {
+                              setIncomingPass(event.target.value)
+                              markIncomingMailDirty()
+                            }}
                             placeholder={session.user.settings.incomingPassSet ? tx('settings.passwordSavedPlaceholder') : ''}
                           />
                           {session.user.settings.incomingPassSet && !incomingPass ? (
@@ -2185,7 +2417,14 @@ export function SettingsScreen({
                 <div className="mail-config-actions">
                   <div className="settings-switch-label">
                     <span>{tx('settings.incomingTls')}</span>
-                    <SwitchControl checked={incomingTls} label={tx('settings.incomingTls')} onChange={setIncomingTls} />
+                    <SwitchControl
+                      checked={incomingTls}
+                      label={tx('settings.incomingTls')}
+                      onChange={(checked) => {
+                        setIncomingTls(checked)
+                        markIncomingMailDirty()
+                      }}
+                    />
                   </div>
                   <div className="mail-config-button-row">
                     <button type="button" className="quiet-action compact-action mail-save-btn" onClick={saveIncomingMail} disabled={!incomingPortValid}>
@@ -2630,6 +2869,20 @@ export function SettingsScreen({
           </CollapsiblePanel>
         </section>
         </div>
+
+        <section id="settings-codex-section" className="settings-subsection settings-codex-section">
+          <div className="section-title settings-section-title">
+            <h4>
+              <Bot size={13} aria-hidden="true" />
+              {tx('settings.codex.title')}
+            </h4>
+          </div>
+          <CodexAuthorizationManager
+            sessionToken={session.token}
+            userId={session.user.id}
+            onNotify={onNotify}
+          />
+        </section>
 
         <section id="settings-usage-section" className="settings-subsection">
         <div className="section-title settings-section-title">
@@ -3107,12 +3360,10 @@ export function SettingsScreen({
           variant="danger"
           onConfirm={() => {
             if (!confirmRevokeShare) return
-            if (confirmRevokeShare.kind === 'asset-upload') {
-              onRevokeAssetShare?.(confirmRevokeShare.assetId, confirmRevokeShare.share.id)
-            } else {
-              onRevokeShare?.(confirmRevokeShare.applicationId, confirmRevokeShare.share.id)
-            }
-            setConfirmRevokeShare(null)
+            const action = confirmRevokeShare.kind === 'asset-upload'
+              ? onRevokeAssetShare?.(confirmRevokeShare.assetId, confirmRevokeShare.share.id)
+              : onRevokeShare?.(confirmRevokeShare.applicationId, confirmRevokeShare.share.id)
+            return Promise.resolve(action).then(() => setConfirmRevokeShare(null))
           }}
           onCancel={() => setConfirmRevokeShare(null)}
         />
@@ -3127,10 +3378,9 @@ export function SettingsScreen({
           cancelLabel={tx('cancel')}
           variant="danger"
           onConfirm={() => {
-            if (confirmDeletePasskey) {
-              onDeletePasskey?.(confirmDeletePasskey.id)
-              setConfirmDeletePasskey(null)
-            }
+            if (!confirmDeletePasskey) return
+            return Promise.resolve(onDeletePasskey?.(confirmDeletePasskey.id))
+              .then(() => setConfirmDeletePasskey(null))
           }}
           onCancel={() => setConfirmDeletePasskey(null)}
         />
@@ -3245,7 +3495,12 @@ export function SettingsScreen({
         </div>
         {onLogout ? (
           <section className="settings-mobile-signout" aria-label={tx('signOut')}>
-            <button type="button" className="settings-mobile-signout-action" onClick={onLogout}>
+            <button
+              type="button"
+              className="settings-mobile-signout-action"
+              aria-label={tx('signOut')}
+              onClick={onLogout}
+            >
               <span className="settings-mobile-signout-icon" aria-hidden="true">
                 <LogOut size={16} />
               </span>
@@ -3264,6 +3519,27 @@ export function SettingsScreen({
         ) : null}
         </div>
       </div>
+      <section
+        className="settings-frontend-build"
+        aria-label={tx('settings.frontendBuildTitle')}
+        data-testid="settings-frontend-build"
+        data-frontend-build-id={frontendBuildInfo.buildId}
+      >
+        <div className="settings-frontend-build-inner">
+          <div className="settings-frontend-build-content">
+            <strong>{tx('settings.frontendBuildTitle')}</strong>
+            <code>{frontendBuildInfo.buildId}</code>
+            <span>
+              {format(tx('settings.frontendBuildDetails'), {
+                version: frontendBuildInfo.version,
+                commit: `${frontendBuildInfo.commit} (${frontendBuildInfo.sourceState})`,
+                builtAt: formatFrontendBuildTime(localeForLanguage(lang)),
+                mode: frontendBuildInfo.mode,
+              })}
+            </span>
+          </div>
+        </div>
+      </section>
       <ProjectFooter />
       <AvatarCropDialog
         open={avatarDialogOpen}

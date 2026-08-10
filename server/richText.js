@@ -204,19 +204,67 @@ function remarkUnderline() {
   }
 }
 
-const markdownProcessor = unified()
-  .use(remarkParse)
-  .use(remarkGfm, { singleTilde: false })
-  .use(remarkUnderline)
-  .use(remarkRehype, {
+function remarkPreserveSoftBreaks() {
+  return (tree) => {
+    const visit = (node) => {
+      if (!node || !Array.isArray(node.children)) return
+      for (let index = node.children.length - 1; index >= 0; index -= 1) {
+        const child = node.children[index]
+        if (child?.type === 'text' && child.value.includes('\n')) {
+          const replacement = []
+          child.value.split('\n').forEach((part, partIndex) => {
+            if (partIndex > 0) replacement.push({ type: 'break' })
+            if (part) replacement.push({ ...child, value: part })
+          })
+          node.children.splice(index, 1, ...replacement)
+          continue
+        }
+        if (!['code', 'inlineCode', 'html'].includes(child?.type)) visit(child)
+      }
+    }
+    visit(tree)
+  }
+}
+
+function rehypeNormalizeEmailBreaks() {
+  return (tree) => {
+    const visit = (node) => {
+      if (!node || !Array.isArray(node.children)) return
+      for (let index = 0; index < node.children.length; index += 1) {
+        const child = node.children[index]
+        visit(child)
+        const next = node.children[index + 1]
+        if (child?.type !== 'element' || child.tagName !== 'br' || next?.type !== 'text') continue
+        if (!next.value.startsWith('\n')) continue
+        next.value = next.value.slice(1)
+        if (!next.value) node.children.splice(index + 1, 1)
+      }
+    }
+    visit(tree)
+  }
+}
+
+function createMarkdownProcessor({ preserveSoftBreaks = false } = {}) {
+  const processor = unified()
+    .use(remarkParse)
+    .use(remarkGfm, { singleTilde: false })
+    .use(remarkUnderline)
+  if (preserveSoftBreaks) processor.use(remarkPreserveSoftBreaks)
+  processor.use(remarkRehype, {
     allowDangerousHtml: true,
     footnoteLabel: 'Footnotes',
     footnoteBackLabel: 'Back to content',
   })
-  .use(rehypeRaw)
-  .use(rehypeSanitize, richTextSanitizeSchema)
-  .use(normalizeSafeContentTree)
-  .use(rehypeStringify)
+  processor.use(rehypeRaw)
+  if (preserveSoftBreaks) processor.use(rehypeNormalizeEmailBreaks)
+  return processor
+    .use(rehypeSanitize, richTextSanitizeSchema)
+    .use(normalizeSafeContentTree)
+    .use(rehypeStringify)
+}
+
+const markdownProcessor = createMarkdownProcessor()
+const emailMarkdownProcessor = createMarkdownProcessor({ preserveSoftBreaks: true })
 
 const htmlProcessor = unified()
   .use(rehypeParse, { fragment: true })
@@ -443,8 +491,11 @@ export function renderSafeRichTextEmailHtml(contentHtml) {
 }
 
 export function renderRichTextEmail(value, format = detectRichTextFormat(value)) {
-  const tree = treeForValue(value, format)
-  const contentHtml = stringifyTree(format === 'markdown' ? markdownProcessor : htmlProcessor, tree)
+  const processor = format === 'markdown' ? emailMarkdownProcessor : htmlProcessor
+  const tree = format === 'markdown'
+    ? processTree(emailMarkdownProcessor, value)
+    : treeForValue(value, format)
+  const contentHtml = stringifyTree(processor, tree)
   return {
     format,
     contentHtml,

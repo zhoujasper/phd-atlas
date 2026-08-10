@@ -1,29 +1,25 @@
+import {
+  APPLICATION_SERVER_AUTHORITY_FIELDS,
+  COMMUNICATION_SERVER_AUTHORITY_FIELDS,
+  VAULT_REFERENCE_FIELDS,
+} from '../shared/applicationAuthorityFields.js'
+
+function restoreAuthorityFields(incoming, current, fields) {
+  const restored = { ...incoming }
+  for (const field of fields) {
+    if (current && current[field] !== undefined) restored[field] = current[field]
+    else delete restored[field]
+  }
+  return restored
+}
+
 function restoreMaterialAuthority(incomingItems = [], currentItems = []) {
   const currentById = new Map(currentItems.map((item) => [item.id, item]))
-  return incomingItems.map((item) => {
-    const current = currentById.get(item.id)
-    if (!current) {
-      const {
-        fileId: _fileId,
-        storageName: _storageName,
-        fileName: _fileName,
-        fileSize: _fileSize,
-        mimeType: _mimeType,
-        versions: _versions,
-        ...safe
-      } = item
-      return safe
-    }
-    return {
-      ...item,
-      fileId: current.fileId,
-      storageName: current.storageName,
-      fileName: current.fileName,
-      fileSize: current.fileSize,
-      mimeType: current.mimeType,
-      versions: current.versions,
-    }
-  })
+  return incomingItems.map((item) => restoreAuthorityFields(
+    item,
+    currentById.get(item.id),
+    VAULT_REFERENCE_FIELDS,
+  ))
 }
 
 function restoreCommunicationAuthority(incomingItems = [], currentItems = []) {
@@ -31,34 +27,16 @@ function restoreCommunicationAuthority(incomingItems = [], currentItems = []) {
   return incomingItems.map((item) => {
     const current = currentById.get(item.id)
     if (!current) {
-      const {
-        bodyFormat: _bodyFormat,
-        bodyHtml: _bodyHtml,
-        bodyText: _bodyText,
-        ...safe
-      } = item
-      return { ...safe, attachments: [] }
+      return {
+        ...restoreAuthorityFields(item, null, COMMUNICATION_SERVER_AUTHORITY_FIELDS),
+        attachments: [],
+      }
     }
-    return {
-      ...item,
-      attachments: current.attachments,
-      bodyFormat: current.bodyFormat,
-      bodyHtml: current.bodyHtml,
-      bodyText: current.bodyText,
-      deliveryStatus: current.deliveryStatus,
-      scheduledAt: current.scheduledAt,
-      sentAt: current.sentAt,
-      deliveryId: current.deliveryId,
-      deliveryUserId: current.deliveryUserId,
-      deliveryStartedAt: current.deliveryStartedAt,
-      nextDeliveryAttemptAt: current.nextDeliveryAttemptAt,
-      deliveryAttemptCount: current.deliveryAttemptCount,
-      deliveryLastErrorCode: current.deliveryLastErrorCode,
-      deliveryLastErrorAt: current.deliveryLastErrorAt,
-      sourceMessageKey: current.sourceMessageKey,
-      sourceMailbox: current.sourceMailbox,
-      importedAt: current.importedAt,
+    const restored = restoreAuthorityFields(item, current, COMMUNICATION_SERVER_AUTHORITY_FIELDS)
+    if (!Object.hasOwn(item, 'mailCategories') && Object.hasOwn(current, 'mailCategories')) {
+      restored.mailCategories = current.mailCategories
     }
+    return restored
   })
 }
 
@@ -94,17 +72,18 @@ export function offlineReplayScopeAllowed({
  * file handles even when the client's timestamp still matches.
  */
 export function applyOfflineReplayAuthorityBoundary(current, incoming) {
+  const bounded = restoreAuthorityFields(
+    incoming,
+    current,
+    APPLICATION_SERVER_AUTHORITY_FIELDS,
+  )
   return {
-    ...incoming,
+    ...bounded,
     id: current.id,
-    ownerId: current.ownerId,
+    // Preserve the normalized nullable shape expected by the application
+    // schema even when an older record predates these fields.
     teamId: current.teamId ?? null,
     teamTransferRequest: current.teamTransferRequest ?? null,
-    shares: current.shares,
-    reviewComments: current.reviewComments,
-    backupSettings: current.backupSettings,
-    versions: current.versions,
-    createdAt: current.createdAt,
     materials: restoreMaterialAuthority(incoming.materials, current.materials),
     tasks: restoreMaterialAuthority(incoming.tasks, current.tasks),
     communications: restoreCommunicationAuthority(

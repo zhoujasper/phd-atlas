@@ -1,12 +1,15 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { phdApi, type RealtimeInvalidationEvent } from '../../api/phdApi'
+import { ApiError, phdApi, type RealtimeInvalidationEvent } from '../../api/phdApi'
 import {
   reportApiReachable,
   reportApiUnavailable,
   resetConnectivityForTests,
 } from '../../connectivity'
-import { useRealtimeUpdates } from './useRealtimeUpdates'
+import {
+  realtimeInvalidationBatchDelayMs,
+  useRealtimeUpdates,
+} from './useRealtimeUpdates'
 
 beforeEach(() => {
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
@@ -21,6 +24,24 @@ afterEach(() => {
 })
 
 describe('useRealtimeUpdates', () => {
+  it('assigns 100 clients stable delays across the bounded refresh window', () => {
+    const delays = Array.from({ length: 100 }, (_, index) => (
+      realtimeInvalidationBatchDelayMs('stable-account-token', `client-${index}`)
+    ))
+    const eightyMillisecondBins = Array.from({ length: 6 }, () => 0)
+    for (const delay of delays) {
+      const bin = Math.min(5, Math.floor((delay - 120) / 81))
+      eightyMillisecondBins[bin] += 1
+    }
+
+    expect(delays.every((delay) => delay >= 120 && delay <= 600)).toBe(true)
+    expect(new Set(delays).size).toBeGreaterThan(80)
+    expect(Math.max(...eightyMillisecondBins)).toBeLessThanOrEqual(25)
+    expect(realtimeInvalidationBatchDelayMs('stable-account-token', 'client-42')).toBe(
+      realtimeInvalidationBatchDelayMs('stable-account-token', 'client-42'),
+    )
+  })
+
   it('keeps one stream and batches a burst of scoped invalidations', async () => {
     let emit: ((event: RealtimeInvalidationEvent) => void) | null = null
     const stream = vi.spyOn(phdApi, 'streamRealtimeUpdates').mockImplementation((_token, onEvent, signal) => {
@@ -38,6 +59,7 @@ describe('useRealtimeUpdates', () => {
       token: 'realtime-token',
       enabled: true,
       onInvalidate,
+      invalidationBatchDelayMs: 120,
     }))
 
     await waitFor(() => expect(result.current.connected).toBe(true))
@@ -77,6 +99,7 @@ describe('useRealtimeUpdates', () => {
         token: 'realtime-token',
         enabled: true,
         onInvalidate,
+        invalidationBatchDelayMs: 120,
       }),
       { initialProps: { onInvalidate: firstCallback } },
     )
@@ -179,6 +202,7 @@ describe('useRealtimeUpdates', () => {
       token: 'realtime-token',
       enabled: true,
       onInvalidate,
+      invalidationBatchDelayMs: 0,
     }))
     await act(async () => {
       await Promise.resolve()
@@ -251,5 +275,95 @@ describe('useRealtimeUpdates', () => {
     })
     await waitFor(() => expect(attempts).toHaveLength(2))
     unmount()
+  })
+
+  it('does not reconnect before a SERVER_BUSY retry-after floor', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    const busy = new ApiError('Server busy.', 'SERVER_BUSY', 503)
+    busy.retryAfterMs = 2_500
+    const stream = vi.spyOn(phdApi, 'streamRealtimeUpdates')
+      .mockRejectedValueOnce(busy)
+      .mockImplementation((_token, _onEvent, signal) => (
+        new Promise((resolve) => signal?.addEventListener('abort', () => resolve(), { once: true }))
+      ))
+    const { unmount } = renderHook(() => useRealtimeUpdates({
+      token: 'realtime-token',
+      enabled: true,
+      onInvalidate: vi.fn(),
+    }))
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(stream).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_499)
+    })
+    expect(stream).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(stream).toHaveBeenCalledTimes(2)
+    unmount()
+  })
+
+  it('keeps the ordinary jittered reconnect delay without retry-after', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    const stream = vi.spyOn(phdApi, 'streamRealtimeUpdates')
+      .mockResolvedValueOnce(undefined)
+      .mockImplementation((_token, _onEvent, signal) => (
+        new Promise((resolve) => signal?.addEventListener('abort', () => resolve(), { once: true }))
+      ))
+    const { unmount } = renderHook(() => useRealtimeUpdates({
+      token: 'realtime-token',
+      enabled: true,
+      onInvalidate: vi.fn(),
+    }))
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(stream).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(849)
+    })
+    expect(stream).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(stream).toHaveBeenCalledTimes(2)
+    unmount()
+  })
+
+  it('cancels a retry-after reconnect when the hook unmounts', async () => {
+    vi.useFakeTimers()
+    const busy = new ApiError('Rate limited.', 'RATE_LIMITED', 429)
+    busy.retryAfterMs = 3_000
+    const stream = vi.spyOn(phdApi, 'streamRealtimeUpdates').mockRejectedValue(busy)
+    const { unmount } = renderHook(() => useRealtimeUpdates({
+      token: 'realtime-token',
+      enabled: true,
+      onInvalidate: vi.fn(),
+    }))
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(stream).toHaveBeenCalledTimes(1)
+    unmount()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000)
+    })
+    expect(stream).toHaveBeenCalledTimes(1)
   })
 })

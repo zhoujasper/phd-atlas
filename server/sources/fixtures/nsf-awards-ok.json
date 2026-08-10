@@ -1,0 +1,40 @@
+{
+  "_fixture": {
+    "type": "synthetic-documented",
+    "recordedAt": null,
+    "note": "Synthetic response shaped from the documented NSF Award Search API. It is not claimed to be a live capture."
+  },
+  "response": {
+    "totalResults": 1,
+    "award": [
+      {
+        "id": "2043098",
+        "title": "Collaborative Research: Mechanisms of Active Learning",
+        "pdPIName": "Ada Turing",
+        "pi": {
+          "firstName": "Ada",
+          "lastName": "Turing"
+        },
+        "coPDPI": [
+          {
+            "name": "Grace Hopper"
+          }
+        ],
+        "startDate": "08/01/2024",
+        "expDate": "07/31/2027",
+        "estimatedTotalAmt": 495000,
+        "fundsObligatedAmt": 165000,
+        "activeAwd": true,
+        "awardeeName": "Example University",
+        "awardeeCity": "Cambridge",
+        "awardeeStateCode": "MA",
+        "fundProgramName": "Research on Learning",
+        "abstractText": "This project studies how active learning affects student outcomes.",
+        "date": "08/01/2024",
+        "program": "EHR",
+        "dirAbbr": "EHR",
+        "divAbbr": "DRL"
+      }
+    ]
+  }
+}

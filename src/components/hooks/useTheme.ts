@@ -21,6 +21,9 @@ export interface ThemeColors {
 export const DEFAULT_THEME_ACCENT = '#0071e3'
 
 let accentTransitionTimer: number | null = null
+let themeTransitionFrame: number | null = null
+let themeTransitionTimer: number | null = null
+const THEME_TRANSITION_DURATION = 320
 
 export const THEME_PRESETS: Record<string, ThemeColors> = {
   '#0071e3': { name: 'Arctic Blue', nameZh: '极光蓝', accent: '#0071e3', hover: '#0077ed', pressed: '#0060c0', soft: '#f1f7ff', softHover: '#dcecff', ring: 'rgba(0,113,227,0.24)', darkSoft: 'rgba(0,122,255,0.14)', darkSoftHover: 'rgba(0,122,255,0.20)', darkRing: 'rgba(0,122,255,0.34)', darkAccentHover: '#0a84ff' },
@@ -106,21 +109,66 @@ function storedThemeAccent(): string | null {
   }
 }
 
+function commitTheme(theme: Theme) {
+  const root = document.documentElement
+  root.setAttribute('data-theme', theme)
+  /* Re-apply accent preset with correct dark/light variants. */
+  applyThemePreset(storedThemeAccent())
+}
+
+function scheduleThemeTransition(nextTheme: Theme) {
+  const root = document.documentElement
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+  const isMobileViewport = window.matchMedia?.('(max-width: 820px)').matches ?? false
+  const canAnimate = !reduceMotion && isMobileViewport && typeof window.requestAnimationFrame === 'function'
+
+  if (themeTransitionFrame !== null) {
+    window.cancelAnimationFrame(themeTransitionFrame)
+    themeTransitionFrame = null
+  }
+  if (themeTransitionTimer !== null) {
+    window.clearTimeout(themeTransitionTimer)
+    themeTransitionTimer = null
+  }
+
+  if (!canAnimate) {
+    root.classList.remove('theme-transitioning')
+    root.removeAttribute('data-theme-transition-target')
+    commitTheme(nextTheme)
+    return
+  }
+
+  /* Keep the old frame visible for one paint. The following attribute update
+     then has a real before/after frame for CSS custom-property transitions to
+     interpolate between, including rapid on/off taps. */
+  root.classList.add('theme-transitioning')
+  root.dataset.themeTransitionTarget = nextTheme
+  themeTransitionFrame = window.requestAnimationFrame(() => {
+    themeTransitionFrame = null
+    if (root.dataset.themeTransitionTarget !== nextTheme) return
+    commitTheme(nextTheme)
+    themeTransitionTimer = window.setTimeout(() => {
+      if (root.dataset.themeTransitionTarget !== nextTheme) return
+      root.classList.remove('theme-transitioning')
+      root.removeAttribute('data-theme-transition-target')
+      themeTransitionTimer = null
+    }, THEME_TRANSITION_DURATION + 40)
+  })
+}
+
 export function useThemeProvider(defaultTheme: Theme = browserDefaultTheme()) {
   const [theme, setThemeState] = useState<Theme>(() => {
     return storedThemePreference() ?? defaultTheme
   })
 
   const setTheme = useCallback((t: Theme) => {
+    scheduleThemeTransition(t)
     setThemeState(t)
     try {
       localStorage.setItem('phd-atlas-theme', t)
     } catch {
       // Storage may be disabled; retain the choice for the current page.
     }
-    document.documentElement.setAttribute('data-theme', t)
-    /* Re-apply accent preset with correct dark/light variants */
-    applyThemePreset(storedThemeAccent())
   }, [])
 
   const toggleTheme = useCallback(() => {
@@ -128,7 +176,12 @@ export function useThemeProvider(defaultTheme: Theme = browserDefaultTheme()) {
   }, [theme, setTheme])
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme)
+    /* The animated setter owns the pending DOM commit. This guard prevents
+       React's effect from collapsing the one-frame theme handoff. */
+    if (document.documentElement.dataset.themeTransitionTarget === theme) return
+    if (document.documentElement.getAttribute('data-theme') !== theme) {
+      commitTheme(theme)
+    }
   }, [theme])
 
   useEffect(() => {

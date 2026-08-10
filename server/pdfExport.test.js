@@ -36,4 +36,12 @@ describe('PDF export localization', () => {
     expect(pdf.subarray(0, 4).toString()).toBe('%PDF')
     expect(pdf.length).toBeGreaterThan(3_000)
   })
+
+  it('destroys generation and rejects instead of retaining a partial oversized PDF', async () => {
+    await expect(toPdfBuffer([application], {
+      scope: 'application',
+      language: 'en',
+      maxOutputBytes: 1_024,
+    })).rejects.toMatchObject({ code: 'PDF_EXPORT_TOO_LARGE' })
+  })
 })

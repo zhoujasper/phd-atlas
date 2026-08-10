@@ -1286,7 +1286,7 @@
 }
 
 .auth-marketing-page .email-code-row {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) max-content;
 }
 
 .auth-marketing-page .captcha-row strong {
@@ -1316,13 +1316,14 @@
 }
 
 .auth-marketing-page .email-code-row > .email-code-send-btn {
-  min-width: 0;
-  max-width: min(48%, 164px);
+  min-width: max-content;
+  width: max-content;
+  max-width: 100%;
   padding: 0 10px;
-  overflow: hidden;
+  overflow: visible;
   border-radius: var(--radius-sm);
   font-size: 11.5px;
-  text-overflow: ellipsis;
+  text-overflow: clip;
 }
 
 .auth-marketing-page .auth-sheet .primary-action {
@@ -8288,7 +8289,7 @@
   }
 
   .auth-marketing-page .email-code-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) max-content;
   }
 
   .upgrade-experience .upgrade-brand strong {

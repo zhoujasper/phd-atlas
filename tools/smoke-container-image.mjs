@@ -135,7 +135,7 @@ async function waitForHealth(port, containerName, attempts = 120) {
   let lastError
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return await requestJson(port, '/api/health', 3_000)
+      return await requestJson(port, '/api/health/ready', 3_000)
     } catch (error) {
       lastError = error
       const state = readContainerState(containerName)
@@ -226,7 +226,7 @@ async function smokeContainerImageAttempt(options, smokeAttempt) {
       await writeFile(diagnosticPath, `${JSON.stringify({ health, setup }, null, 2)}\n`, 'utf8')
 
       if (health?.ok !== true || health?.data?.status !== 'ok') {
-        throw new Error(`linux/${architecture} returned an invalid /api/health payload.`)
+        throw new Error(`linux/${architecture} returned an invalid /api/health/ready payload.`)
       }
       if (setup?.ok !== true || setup?.data?.required !== true) {
         throw new Error(`Fresh linux/${architecture} container did not require one-time /admin setup.`)

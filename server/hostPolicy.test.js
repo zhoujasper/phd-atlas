@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   configuredAllowedHosts,
   normalizeHttpHost,
+  trustedQaLoopbackRequestHost,
   trustedRequestHost,
 } from './hostPolicy.js'
 
@@ -45,5 +46,35 @@ describe('HTTP Host policy', () => {
     expect(normalizeHttpHost('example.com/path')).toBe('')
     expect(normalizeHttpHost('example.com\r\nx: y')).toBe('')
     expect(normalizeHttpHost('example.com:99999')).toBe('')
+  })
+
+  it('allows an ephemeral Host port only across an explicitly enabled loopback QA listener', () => {
+    expect(trustedQaLoopbackRequestHost('127.0.0.1:54321', {
+      enabled: true,
+      remoteAddress: '127.0.0.1',
+      listenerAddress: '127.0.0.1',
+    })).toBe('127.0.0.1:54321')
+    expect(trustedQaLoopbackRequestHost('localhost:54321', {
+      enabled: true,
+      remoteAddress: '::ffff:127.0.0.1',
+      listenerAddress: '127.0.0.1',
+    })).toBe('localhost:54321')
+
+    const common = {
+      remoteAddress: '127.0.0.1',
+      listenerAddress: '127.0.0.1',
+    }
+    expect(trustedQaLoopbackRequestHost('127.0.0.1:54321', common)).toBe('')
+    expect(trustedQaLoopbackRequestHost('example.com:54321', { ...common, enabled: true })).toBe('')
+    expect(trustedQaLoopbackRequestHost('127.0.0.1:54321', {
+      ...common,
+      enabled: true,
+      remoteAddress: '203.0.113.10',
+    })).toBe('')
+    expect(trustedQaLoopbackRequestHost('127.0.0.1:54321', {
+      ...common,
+      enabled: true,
+      listenerAddress: '0.0.0.0',
+    })).toBe('')
   })
 })

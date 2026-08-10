@@ -5,15 +5,44 @@ type FloatingOverlayOptions = {
   maxWidth: number
   estimatedHeight: number
   actualHeight?: number
+  placement?: 'above' | 'below'
+  useEstimatedHeightForPlacement?: boolean
   gap?: number
   viewportPadding?: number
   align?: 'start' | 'end'
+  /** Keep a dynamic above-anchored overlay attached to the trigger while it grows. */
+  anchorAboveToBottom?: boolean
   baseZIndex?: number
 }
 
 export const FLOATING_POPOVER_BASE_Z_INDEX = 420
 export const FLOATING_CONTROL_BASE_Z_INDEX = 440
 export const FLOATING_OVERLAY_LAYER_STEP = 20
+
+/**
+ * Paint a measured overlay position directly on the resident portal node.
+ *
+ * Position updates can happen once per animation frame while an above-opening
+ * panel changes height. Keeping those transient writes out of React state
+ * prevents the complete control tree from rerendering during the motion.
+ */
+export function applyFloatingOverlayStyle(element: HTMLElement, style: CSSProperties) {
+  for (const [property, value] of Object.entries(style)) {
+    const cssProperty = property.startsWith('--')
+      ? property
+      : property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)
+    if (value === undefined || value === null) {
+      element.style.removeProperty(cssProperty)
+      continue
+    }
+    const unit = typeof value === 'number' && property !== 'zIndex' ? 'px' : ''
+    element.style.setProperty(cssProperty, `${value}${unit}`)
+  }
+  // A hidden first-paint style is intentionally replaced by a positioned
+  // layout style. Remove the stale inline visibility declaration explicitly
+  // because this helper bypasses React's style reconciliation.
+  if (style.visibility === undefined) element.style.removeProperty('visibility')
+}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
@@ -61,9 +90,12 @@ export function getAnchoredOverlayStyle(
     maxWidth,
     estimatedHeight,
     actualHeight,
+    placement,
+    useEstimatedHeightForPlacement = false,
     gap = 4,
     viewportPadding = 8,
     align = 'start',
+    anchorAboveToBottom = false,
     baseZIndex,
   }: FloatingOverlayOptions,
 ): CSSProperties {
@@ -82,19 +114,24 @@ export function getAnchoredOverlayStyle(
   const spaceBelow = Math.max(0, viewport.bottom - viewportPadding - rect.bottom - gap)
   const spaceAbove = Math.max(0, rect.top - gap - viewport.top - viewportPadding)
   const measuredHeight = actualHeight && actualHeight > 0 ? actualHeight : estimatedHeight
-  const openAbove = spaceBelow < Math.min(measuredHeight, estimatedHeight) && spaceAbove > spaceBelow
+  const placementHeight = useEstimatedHeightForPlacement ? estimatedHeight : measuredHeight
+  const openAbove = placement === 'above'
+    || (placement !== 'below'
+      && spaceBelow < Math.min(placementHeight, estimatedHeight)
+      && spaceAbove > spaceBelow)
   const availableHeight = Math.max(0, openAbove ? spaceAbove : spaceBelow)
   const renderedHeight = Math.min(measuredHeight, availableHeight)
   const top = openAbove
     ? Math.max(viewport.top + viewportPadding, rect.top - gap - renderedHeight)
     : rect.bottom + gap
+  const pinAboveToBottom = openAbove && anchorAboveToBottom
 
   return {
     position: 'fixed',
     left,
     right: 'auto',
-    top,
-    bottom: 'auto',
+    top: pinAboveToBottom ? 'auto' : top,
+    bottom: pinAboveToBottom ? viewport.bottom - rect.top + gap : 'auto',
     ...(baseZIndex === undefined
       ? {}
       : { zIndex: getFloatingOverlayZIndex(trigger, baseZIndex) }),
@@ -102,6 +139,7 @@ export function getAnchoredOverlayStyle(
     maxWidth: availableWidth,
     maxHeight: availableHeight,
     '--floating-available-height': `${availableHeight}px`,
+    '--floating-placement': openAbove ? 'above' : 'below',
     '--floating-transform-origin': openAbove ? 'bottom left' : 'top left',
     '--floating-enter-y': openAbove ? '4px' : '-4px',
     '--floating-exit-y': openAbove ? '3px' : '-3px',

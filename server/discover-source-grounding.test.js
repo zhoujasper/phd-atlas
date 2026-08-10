@@ -25,6 +25,33 @@ const sourceIndex = {
 }
 
 describe('Discover official-source grounding', () => {
+  it('retains every distinct fetched official advisor in the finite evidence set', () => {
+    const advisors = Array.from({ length: 35 }, (_, index) => ({
+      name: `Researcher Person ${String.fromCharCode(65 + Math.floor(index / 26))}${String.fromCharCode(65 + (index % 26))}`,
+      url: `https://www.example.edu/cs/people/researcher-person-${index}`,
+    }))
+    const exhaustiveSourceIndex = { schools: [{
+      ...sourceIndex.schools[0],
+      advisorPages: advisors.map((advisor) => ({
+        url: advisor.url,
+        title: advisor.name,
+        types: ['advisor'],
+        individualAdvisor: true,
+        fetched: true,
+      })),
+    }] }
+    const result = groundDiscoverPrograms([{
+      id: 'example-cs',
+      school: 'Example University',
+      program: 'PhD in Computer Science',
+      website: 'https://www.example.edu/cs/phd',
+      sources: ['https://www.example.edu/cs/phd'],
+      pis: advisors,
+    }], exhaustiveSourceIndex)
+
+    expect(result.programs[0].pis).toHaveLength(35)
+  })
+
   it('rejects university-wide and placeholder labels as non-programmes', () => {
     for (const label of [
       'Find a Program',
@@ -821,6 +848,139 @@ describe('Discover official-source grounding', () => {
           types: ['advisor'],
           fetched: true,
           individualAdvisor: false,
+        }],
+      }],
+    })
+
+    expect(result.programs[0].pis).toEqual([])
+  })
+
+  it('does not turn a university governance or academic-structure row into a programme advisor', () => {
+    const governanceUrl = 'https://www.example.edu/about/leadership/governance-and-compliance/academic-structure'
+    const result = groundDiscoverPrograms([{
+      id: 'governance_pi',
+      school: 'Example University',
+      program: 'Computer Science PhD',
+      website: 'https://www.example.edu/cs/phd',
+      sources: ['https://www.example.edu/cs/phd'],
+      pis: [{ name: 'Stella Bruzzi', url: governanceUrl }],
+    }], {
+      schools: [{
+        ...sourceIndex.schools[0],
+        pages: [{
+          url: governanceUrl,
+          title: 'Academic structure | Stella Bruzzi',
+          excerpt: 'University governance and compliance. Stella Bruzzi is listed as a faculty dean.',
+          types: ['advisor'],
+          declaredKinds: ['advisor'],
+          individualAdvisor: true,
+          fetched: true,
+        }],
+        advisorPages: [{
+          url: governanceUrl,
+          title: 'Academic structure | Stella Bruzzi',
+          excerpt: 'University governance and compliance. Stella Bruzzi is listed as a faculty dean.',
+          types: ['advisor'],
+          declaredKinds: ['advisor'],
+          individualAdvisor: true,
+          fetched: true,
+        }],
+      }],
+    })
+
+    expect(result.programs[0].pis).toEqual([])
+  })
+
+  it('grounds a fetched official advisor seed whose generic page title hides the person name', () => {
+    const advisorUrl = 'https://www.example.edu/profiles/178236'
+    const result = groundDiscoverPrograms([{
+      id: 'declared_advisor_seed',
+      school: 'Example University',
+      program: 'Computer Science PhD',
+      website: 'https://www.example.edu/cs/phd',
+      sources: ['https://www.example.edu/cs/phd'],
+      pis: [{ name: 'Grace Hopper', url: advisorUrl }],
+    }], {
+      schools: [{
+        ...sourceIndex.schools[0],
+        pages: [{
+          url: advisorUrl,
+          title: 'Machine Learning in Science',
+          excerpt: 'Professor Grace Hopper leads research in machine learning systems.',
+          types: ['homepage'],
+          declaredKinds: ['advisor'],
+          fetched: true,
+        }],
+        advisorPages: [{
+          url: advisorUrl,
+          title: 'Machine Learning in Science',
+          excerpt: 'Professor Grace Hopper leads research in machine learning systems.',
+          types: ['homepage'],
+          declaredKinds: ['advisor'],
+          fetched: true,
+        }],
+      }],
+    })
+
+    expect(result.programs[0].pis).toEqual([
+      expect.objectContaining({ name: 'Grace Hopper', url: advisorUrl }),
+    ])
+  })
+
+  it('retains multiple named supervisors from one fetched official leadership page', () => {
+    const leadershipUrl = 'https://www.example.edu/research/people/team/leadership/'
+    const leadershipPage = {
+      url: leadershipUrl,
+      title: 'Leadership',
+      excerpt: 'Professor Grace Hopper and Professor Ada Lovelace jointly lead the research centre.',
+      types: ['homepage'],
+      declaredKinds: ['advisor'],
+      fetched: true,
+    }
+    const result = groundDiscoverPrograms([{
+      id: 'shared_leadership_page',
+      school: 'Example University',
+      program: 'Computer Science PhD',
+      website: 'https://www.example.edu/cs/phd',
+      sources: ['https://www.example.edu/cs/phd'],
+      pis: [
+        { name: 'Grace Hopper', url: leadershipUrl },
+        { name: 'Ada Lovelace', url: leadershipUrl },
+      ],
+    }], {
+      schools: [{
+        ...sourceIndex.schools[0],
+        pages: [leadershipPage],
+        advisorPages: [leadershipPage],
+      }],
+    })
+
+    expect(result.programs[0].pis.map((pi) => pi.name)).toEqual([
+      'Grace Hopper',
+      'Ada Lovelace',
+    ])
+  })
+
+  it('does not attach an advisor to a different named individual profile through excerpt navigation', () => {
+    const wrongProfileUrl = 'https://www.example.edu/people/dr-benoit-duchet'
+    const result = groundDiscoverPrograms([{
+      id: 'wrong_named_profile',
+      school: 'Example University',
+      program: 'Computer Science PhD',
+      website: 'https://www.example.edu/cs/phd',
+      sources: ['https://www.example.edu/cs/phd'],
+      pis: [{ name: 'Rafal Bogacz', url: wrongProfileUrl }],
+    }], {
+      schools: [{
+        ...sourceIndex.schools[0],
+        advisorPages: [{
+          url: wrongProfileUrl,
+          title: 'Dr Benoit Duchet',
+          excerpt: 'Navigation: Professor Rafal Bogacz. Dr Benoit Duchet studies neural dynamics.',
+          types: ['advisor'],
+          declaredKinds: ['faculty'],
+          individualAdvisor: true,
+          fetched: true,
         }],
       }],
     })

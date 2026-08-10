@@ -75,6 +75,20 @@ function mergeAdapter(left, right) {
     allowedHosts: uniqueStrings([...arrayOf(left?.allowedHosts), ...arrayOf(right.allowedHosts)]).map(cleanHost),
     seeds: [...seeds.values()],
     pathHints: mergePathHints(left?.pathHints, right.pathHints),
+    crawlPolicy: (left?.crawlPolicy || right?.crawlPolicy)
+      ? {
+          ...(left?.crawlPolicy || {}),
+          ...(right?.crawlPolicy || {}),
+          maxPages: Math.max(
+            Number(left?.crawlPolicy?.maxPages) || 0,
+            Number(right?.crawlPolicy?.maxPages) || 0,
+          ) || undefined,
+          followSitemaps: Boolean(
+            left?.crawlPolicy?.followSitemaps
+            || right?.crawlPolicy?.followSitemaps,
+          ),
+        }
+      : undefined,
     verifiedAt: [left?.verifiedAt, right.verifiedAt].filter(Boolean).sort().at(-1) || '',
   }
 }

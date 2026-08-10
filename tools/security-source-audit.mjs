@@ -18,9 +18,9 @@ const SECRET_SIGNATURES = [
   ['npm-token', /\bnpm_[A-Za-z0-9]{30,}\b/u],
 ]
 
-function trackedFiles() {
+function gitFileList(argumentsList) {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
+    const child = spawn('git', argumentsList, {
       cwd: root,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -43,6 +43,22 @@ function trackedFiles() {
       )
     })
   })
+}
+
+export function excludeDeletedTrackedFiles(sourceFiles, deletedFiles) {
+  const deleted = new Set(deletedFiles)
+  return sourceFiles.filter((relativePath) => !deleted.has(relativePath))
+}
+
+async function trackedFiles() {
+  const [sourceFiles, deletedFiles] = await Promise.all([
+    gitFileList(['ls-files', '-z', '--cached', '--others', '--exclude-standard']),
+    gitFileList(['ls-files', '-z', '--deleted']),
+  ])
+  // A path explicitly deleted in the current working tree is not part of the
+  // source that would ship with this change. Other read failures remain
+  // findings below, preserving the audit's fail-closed behavior.
+  return excludeDeletedTrackedFiles(sourceFiles, deletedFiles)
 }
 
 export async function auditTrackedSource(files) {

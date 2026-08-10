@@ -1,0 +1,42 @@
+{
+  "name": "phd-atlas",
+  "version": "0.2.0",
+  "description": "Securely manage PhD Atlas applications, profiles, deadlines, files, communications, and account-scoped workflows through a Codex Skill and local stdio MCP server.",
+  "author": {
+    "name": "PhD Atlas",
+    "url": "https://github.com/zhoujasper/phd-atlas"
+  },
+  "homepage": "https://github.com/zhoujasper/phd-atlas",
+  "repository": "https://github.com/zhoujasper/phd-atlas",
+  "keywords": [
+    "phd",
+    "applications",
+    "research",
+    "productivity",
+    "codex",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "PhD Atlas",
+    "shortDescription": "Manage your PhD application workspace securely from Codex.",
+    "longDescription": "Connect one or more PhD Atlas accounts with revocable long-lived authorizations, then use the bundled Skill and local stdio MCP tools within each account's real permissions across applications, profiles, deadlines, files, communications, discovery, and settings.",
+    "developerName": "PhD Atlas",
+    "category": "Productivity",
+    "capabilities": [
+      "Device authorization",
+      "Multiple accounts",
+      "Local stdio MCP tools",
+      "Read and write",
+      "File upload and download"
+    ],
+    "websiteURL": "https://github.com/zhoujasper/phd-atlas",
+    "brandColor": "#2563EB",
+    "defaultPrompt": [
+      "Show my PhD applications and next deadlines.",
+      "Update an application after checking its current state.",
+      "Review my profile assets and application checklist."
+    ]
+  }
+}

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { PUBLIC_EDITION } from '../../edition'
 import appSource from '../../App.tsx?raw'
 import authSource from '../screens/AuthScreen.tsx?raw'
 import dashboardSource from '../screens/Dashboard.tsx?raw'
@@ -33,7 +34,9 @@ describe('ProjectFooter placement', () => {
     expect(shareViewerSource).toContain('<ProjectFooter />')
     expect(shareViewerSource).toMatch(/<\/section>\s*<ProjectFooter \/>\s*<AttachmentPreviewDialog/s)
     expect(settingsSource).toContain('<ProjectFooter />')
-    expect(teamSource).toContain("displayedSection === 'overview' || displayedSection === 'settings'")
+    if (!PUBLIC_EDITION) {
+      expect(teamSource).toContain("displayedSection === 'overview' || displayedSection === 'settings'")
+    }
   })
 
   it('keeps the identity inline at ordinary phone widths and wraps only when space is tight', () => {

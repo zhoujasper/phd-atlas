@@ -119,6 +119,61 @@ describe('Discover semantic programme identity', () => {
     expect(programs.map((program) => program.id)).toEqual(['quantum-sensing', 'climate-ml'])
   })
 
+  it('merges punctuation and suffix variants that point to one exact official programme URL', () => {
+    const website = 'https://bccn-tuebingen.de/education/doctoral-program'
+    const programs = dedupeDiscoverProgrammeRecords([
+      {
+        id: 'model-row',
+        school: 'University of Tübingen',
+        program: 'PhD Program "Neural Information Processing – Computational Neuroscience" (BCCN Tübingen)',
+        website,
+        verification: partial,
+      },
+      {
+        id: 'official-row',
+        school: 'University of Tübingen',
+        program: 'PhD Program "Neural Information Processing - Computational Neuroscience" (BCCN Tübingen / Graduate Training Centre for Neuroscience)',
+        website: `${website}/`,
+        verification: verified,
+      },
+    ])
+
+    expect(programs).toHaveLength(1)
+    expect(programs[0].id).toBe('official-row')
+  })
+
+  it('collapses the same Edinburgh programme when one title appends MScR', () => {
+    const website = 'https://study.ed.ac.uk/programmes/postgraduate-research/489-informatics-iml-machine-learning-computational-neuroscience'
+    const programs = dedupeDiscoverProgrammeRecords([
+      {
+        id: 'edinburgh-phd',
+        school: 'The University of Edinburgh',
+        program: 'Informatics: IML: Machine Learning, Computational Neuroscience, Computational Biology PhD',
+        website,
+        sources: [website],
+        verification: partial,
+      },
+      {
+        id: 'edinburgh-phd-mscr',
+        school: 'The University of Edinburgh',
+        program: 'Informatics: IML: Machine Learning, Computational Neuroscience, Computational Biology PhD, MScR',
+        website,
+        sources: [`${website}?utm_source=discover`],
+        verification: verified,
+      },
+    ])
+
+    expect(discoverProgramSubjectIdentity(programs[0])).toBe(
+      'informatics iml machine learning computational neuroscience computational biology',
+    )
+    expect(programs).toHaveLength(1)
+    expect(programs[0]).toMatchObject({
+      id: 'edinburgh-phd-mscr',
+      verification: { status: 'verified' },
+    })
+    expect(programs[0].sources).toHaveLength(1)
+  })
+
   it('does not absorb a concrete project into its generic doctoral directory row', () => {
     const programs = dedupeDiscoverProgrammeRecords([
       {

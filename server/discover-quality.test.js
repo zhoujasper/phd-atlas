@@ -16,7 +16,7 @@ describe('Discover evidence quality gate', () => {
       }],
       advisorPages: [{
         url: `https://university${index}.edu/faculty/ada-researcher${index}`,
-        title: `Ada Researcher${index}`,
+        title: `Ada Researcher${String.fromCharCode(65 + Math.floor(index / 26))}${String.fromCharCode(65 + (index % 26))}`,
         types: ['advisor'],
         fetched: true,
         individualAdvisor: true,
@@ -30,7 +30,10 @@ describe('Discover evidence quality gate', () => {
       program: `Computer Science PhD ${index}`,
       website: `https://university${index}.edu/phd`,
       sources: [`https://university${index}.edu/phd`],
-      pis: [{ name: `Ada Researcher${index}`, url: `https://university${index}.edu/faculty/ada-researcher${index}` }],
+      pis: [{
+        name: `Ada Researcher${String.fromCharCode(65 + Math.floor(index / 26))}${String.fromCharCode(65 + (index % 26))}`,
+        url: `https://university${index}.edu/faculty/ada-researcher${index}`,
+      }],
     }))
     const passing = assessDiscoverResearchQuality({ customPrograms }, { schools })
     expect(passing).toMatchObject({
@@ -170,6 +173,117 @@ describe('Discover evidence quality gate', () => {
       'duplicate-program-url-retained',
       'unverified-advisor-profiles-retained',
     ]))
+  })
+
+  it('rejects advisor research or fit prose without the deterministic official-profile match receipt', () => {
+    const programUrl = 'https://example.edu/graduate/phd-computer-science'
+    const advisorUrl = 'https://example.edu/faculty/ada-lovelace'
+    const advisorPage = {
+      url: advisorUrl,
+      title: 'Ada Lovelace',
+      types: ['advisor'],
+      fetched: true,
+      individualAdvisor: true,
+    }
+    const schools = [{
+      school: 'Example University',
+      officialUrl: 'https://example.edu/',
+      crawlStatus: 'ok',
+      programPages: [{ url: programUrl, title: 'Computer Science PhD', types: ['program'], fetched: true }],
+      advisorPages: [advisorPage],
+      pages: [advisorPage],
+      scholarlyEvidence: { status: 'ok' },
+    }]
+    const baseProgram = {
+      id: 'example',
+      provenance: 'ai',
+      school: 'Example University',
+      program: 'Computer Science PhD',
+      website: programUrl,
+      sources: [programUrl],
+      pis: [{
+        name: 'Ada Lovelace',
+        url: advisorUrl,
+        research: 'Graph neural networks',
+        whyFit: 'Perfect fit for the applicant',
+      }],
+    }
+
+    const unsupported = assessDiscoverResearchQuality({ customPrograms: [baseProgram] }, { schools })
+    expect(unsupported.passed).toBe(false)
+    expect(unsupported.unsupportedAdvisorFitClaims).toBe(1)
+    expect(unsupported.failures).toContain('unsupported-advisor-fit-claims-retained')
+
+    const supported = assessDiscoverResearchQuality({
+      customPrograms: [{
+        ...baseProgram,
+        pis: [{
+          ...baseProgram.pis[0],
+          profileMatch: {
+            score: 70,
+            evidenceUrl: advisorUrl,
+            basis: 'applicant-profile+official-individual-profile',
+          },
+        }],
+      }],
+    }, { schools })
+    expect(supported.passed).toBe(true)
+    expect(supported.profileMatchedAdvisorProfiles).toBe(1)
+
+    const explicitUnverified = assessDiscoverResearchQuality({
+      customPrograms: [{
+        ...baseProgram,
+        pis: [{
+          name: 'Ada Lovelace',
+          url: advisorUrl,
+          research: '',
+          whyFit: 'No fetched individual official profile was available to verify research fit.',
+          profileMatch: {
+            score: 0,
+            evidenceUrl: '',
+            basis: 'applicant-profile+official-individual-profile',
+          },
+        }],
+      }],
+    }, { schools })
+    expect(explicitUnverified.passed).toBe(true)
+    expect(explicitUnverified.profileMatchedAdvisorProfiles).toBe(0)
+  })
+
+  it('fails closed when an official organization page is shaped like an advisor profile', () => {
+    const programUrl = 'https://example.edu/graduate/phd'
+    const advisorUrl = 'https://example.edu/people/associated-faculty/phd-co-advisors'
+    const schools = [{
+      school: 'Example University',
+      officialUrl: 'https://example.edu/',
+      crawlStatus: 'ok',
+      programPages: [{ url: programUrl, title: 'Neuroscience PhD', types: ['program'], fetched: true }],
+      advisorPages: [{ url: advisorUrl, title: 'Center For Computational Biology', types: ['advisor'], fetched: true, individualAdvisor: true }],
+      scholarlyEvidence: { status: 'ok' },
+    }]
+    const quality = assessDiscoverResearchQuality({
+      customPrograms: [{
+        id: 'example',
+        provenance: 'ai',
+        school: 'Example University',
+        program: 'Neuroscience PhD',
+        website: programUrl,
+        sources: [programUrl],
+        pis: [{
+          name: 'Center For Computational Biology',
+          url: advisorUrl,
+          profileMatch: {
+            score: 0,
+            evidenceUrl: advisorUrl,
+            basis: 'applicant-profile+official-individual-profile',
+          },
+        }],
+      }],
+    }, { schools })
+
+    expect(quality.passed).toBe(false)
+    expect(quality.nonPersonAdvisorRows).toBe(1)
+    expect(quality.failures).toContain('non-person-advisor-rows-retained')
   })
 
   it('fails when a field citation does not contain the retained deadline value', () => {

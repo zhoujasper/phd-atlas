@@ -1,7 +1,14 @@
 import { withAbortDeadline } from './abortDeadline.js'
+import {
+  cancelResponseBody,
+  readBoundedResponseJson,
+  readBoundedResponseText,
+} from './boundedResponse.js'
 
 const OPENALEX_BASE = 'https://api.openalex.org'
 const CACHE_TTL_MS = 6 * 60 * 60 * 1_000
+const CACHE_MAX_ENTRIES = 256
+const OPENALEX_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
 const TOPIC_STOP_WORDS = new Set([
   'a', 'an', 'and', 'approach', 'for', 'in', 'method', 'methods', 'model', 'modeling',
@@ -17,6 +24,30 @@ const GEOGRAPHIC_TOKENS = new Set([
 ])
 
 const topicCache = new Map()
+
+function cachedTopicResult(cacheKey, now) {
+  const cached = topicCache.get(cacheKey)
+  if (!cached) return null
+  if (now - cached.cachedAt >= CACHE_TTL_MS) {
+    topicCache.delete(cacheKey)
+    return null
+  }
+  // Map insertion order owns the LRU order.
+  topicCache.delete(cacheKey)
+  topicCache.set(cacheKey, cached)
+  return cached.result
+}
+
+function rememberTopicResult(cacheKey, cachedAt, result) {
+  for (const [candidateKey, candidate] of topicCache) {
+    if (cachedAt - candidate.cachedAt >= CACHE_TTL_MS) topicCache.delete(candidateKey)
+  }
+  topicCache.delete(cacheKey)
+  topicCache.set(cacheKey, { cachedAt, result })
+  while (topicCache.size > CACHE_MAX_ENTRIES) {
+    topicCache.delete(topicCache.keys().next().value)
+  }
+}
 
 function normalizedWords(value, ignored = TOPIC_STOP_WORDS) {
   return String(value || '')
@@ -70,18 +101,51 @@ async function fetchOpenAlexJson(url, {
   let lastError = null
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const response = await withAbortDeadline(
-        (signal) => fetchImpl(applyOpenAlexAccess(new URL(url)).toString(), {
-          signal,
-          headers: {
-            accept: 'application/json',
-            'user-agent': 'PhD-Atlas/0.1 (discipline topic resolution)',
-          },
-        }),
+      const { response, payload, refusalDetail } = await withAbortDeadline(
+        async (signal) => {
+          const response = await fetchImpl(applyOpenAlexAccess(new URL(url)).toString(), {
+            signal,
+            headers: {
+              accept: 'application/json',
+              'user-agent': 'PhD-Atlas/0.1 (discipline topic resolution)',
+            },
+          })
+          // Keep a bounded slice of a refusal body. OpenAlex explains an
+          // exhausted budget there, and discarding it makes a daily quota
+          // indistinguishable from a transient blip worth retrying.
+          let refusalDetail = ''
+          if (!response.ok) {
+            try {
+              refusalDetail = String(await readBoundedResponseText(response, {
+                maxBytes: 4_096,
+                signal,
+                bodyKind: 'OpenAlex Topics refusal',
+              }) || '').slice(0, 600)
+            } catch {
+              await cancelResponseBody(response)
+            }
+          }
+          return {
+            response,
+            refusalDetail,
+            payload: response.ok
+              ? await readBoundedResponseJson(response, {
+                maxBytes: OPENALEX_RESPONSE_MAX_BYTES,
+                signal,
+                bodyKind: 'OpenAlex Topics response',
+              })
+              : null,
+          }
+        },
         { timeoutMs },
       )
-      if (response.ok) return await response.json()
+      if (response.ok) return payload
       lastError = new Error(`OpenAlex Topics HTTP ${response.status}`)
+      lastError.detail = refusalDetail
+      if (/insufficient budget|add funds|quota|rate limit exceeded/i.test(refusalDetail)) {
+        lastError.code = 'SCHOLARLY_PROVIDER_QUOTA_EXHAUSTED'
+        break
+      }
       if (!RETRYABLE_STATUS.has(response.status) || attempt + 1 >= attempts) break
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs(response, attempt)))
     } catch (error) {
@@ -220,8 +284,8 @@ export async function resolveDiscoverOpenAlexTopics({
   }
   const boundedLimit = Math.max(1, Math.min(12, Number(limit) || 8))
   const cacheKey = JSON.stringify([searches, excludedMeanings, boundedLimit])
-  const cached = topicCache.get(cacheKey)
-  if (cached && now - cached.cachedAt < CACHE_TTL_MS) return cached.result
+  const cached = cachedTopicResult(cacheKey, now)
+  if (cached) return cached
 
   let failures = 0
   const groups = await mapWithConcurrency(searches, 4, async (query) => {
@@ -274,7 +338,7 @@ export async function resolveDiscoverOpenAlexTopics({
     topics,
     failures,
   }
-  topicCache.set(cacheKey, { cachedAt: now, result })
+  rememberTopicResult(cacheKey, now, result)
   return result
 }
 

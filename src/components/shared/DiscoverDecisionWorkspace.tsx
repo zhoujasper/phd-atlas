@@ -25,29 +25,31 @@ import {
   deadlineUrgencyClass,
   primaryDeadline,
 } from '../../data/discover'
-import { localeForLanguage } from '../../i18n'
+import { formatList, localeForLanguage } from '../../i18n'
 import { useI18n } from '../hooks/useI18n'
 import { CollapsiblePanel } from './CollapsiblePanel'
 
 type DecisionView = 'tradeoff' | 'deadline' | 'evidence'
 
+type EvidenceGap = 'sources' | 'funding' | 'deadline' | 'restrictions' | 'advisors'
+
 type EvidenceSummary = {
   score: number
-  missing: string[]
+  missing: EvidenceGap[]
   official: number
   reviewed: number
 }
 
-function money(value: number | null | undefined, currency = 'USD') {
+function money(value: number | null | undefined, locale: string, currency = 'USD') {
   if (value == null || !Number.isFinite(value)) return '—'
   try {
-    return new Intl.NumberFormat(undefined, {
+    return new Intl.NumberFormat(locale, {
       style: 'currency',
       currency,
       maximumFractionDigits: 0,
     }).format(value)
   } catch {
-    return `$${Math.round(value).toLocaleString()}`
+    return `$${Math.round(value).toLocaleString(locale)}`
   }
 }
 
@@ -61,7 +63,7 @@ function evidenceFor(program: ScoredDiscoverProgram): EvidenceSummary {
     Boolean(program.requirements?.verified?.restrictions),
     Boolean(program.pis?.some((pi) => pi.url || pi.scholarUrl)),
   ]
-  const missing: string[] = []
+  const missing: EvidenceGap[] = []
   if (!checks[1]) missing.push('sources')
   if (!checks[2]) missing.push('funding')
   if (!checks[3] || !checks[4]) missing.push('deadline')
@@ -74,6 +76,20 @@ function evidenceFor(program: ScoredDiscoverProgram): EvidenceSummary {
     official,
     reviewed: checks.length - official,
   }
+}
+
+function evidenceGapLabel(
+  gap: EvidenceGap,
+  tx: (path: string, fallback?: string) => string,
+): string {
+  const fallbacks: Record<EvidenceGap, string> = {
+    sources: 'sources',
+    funding: 'funding',
+    deadline: 'deadline',
+    restrictions: 'restrictions',
+    advisors: 'advisors',
+  }
+  return tx(`discover.evidenceGap.${gap}`, fallbacks[gap])
 }
 
 function deadlineFor(program: ScoredDiscoverProgram) {
@@ -209,6 +225,12 @@ export function DiscoverDecisionWorkspace({
   const nearest = deadlineRows[0]
   const step = !state.intakeCompleted ? 0 : !state.lastResearchAt ? 1 : watchedCount === 0 ? 2 : 3
   const dateFormatter = new Intl.DateTimeFormat(localeForLanguage(lang), { month: 'short', day: 'numeric' })
+  const numberLocale = localeForLanguage(lang)
+  const localizedEvidenceGaps = (gaps: EvidenceGap[]) => formatList(
+    lang,
+    gaps.map((gap) => evidenceGapLabel(gap, tx)),
+    'short',
+  )
 
   if (!selected) {
     return (
@@ -315,7 +337,7 @@ export function DiscoverDecisionWorkspace({
                       <small>{tx('discover.matchShort', 'match')}</small>
                     </span>
                     <span className="discover-shortlist-money">
-                      <strong>{money(program.realStipendUSD)}</strong>
+                      <strong>{money(program.realStipendUSD, numberLocale)}</strong>
                       <small>{tx('discover.realShort', 'real / yr')}</small>
                     </span>
                     <span className={clsx('discover-shortlist-deadline', deadlineUrgencyClass(days))}>
@@ -376,7 +398,7 @@ export function DiscoverDecisionWorkspace({
             <p>{selected.fitRationale}</p>
             <div className="discover-inspector-facts">
               <span><Target size={13} /> {format(tx('discover.matchScore'), { score: selected.matchScore })}</span>
-              <span><WalletCards size={13} /> {money(selected.realStipendUSD)}</span>
+              <span><WalletCards size={13} /> {money(selected.realStipendUSD, numberLocale)}</span>
               <span><ListChecks size={13} /> {format(tx('discover.viewPis'), { count: selected.fittingPiCount ?? 0 })}</span>
             </div>
           </DisclosureSection>
@@ -395,7 +417,7 @@ export function DiscoverDecisionWorkspace({
             {selectedEvidence?.missing.length ? (
               <p className="discover-missing-copy">
                 <CircleAlert size={13} />
-                {format(tx('discover.missingEvidence', 'Needs review: {items}'), { items: selectedEvidence.missing.join(', ') })}
+                {format(tx('discover.missingEvidence', 'Needs review: {items}'), { items: localizedEvidenceGaps(selectedEvidence.missing) })}
               </p>
             ) : null}
           </DisclosureSection>
@@ -468,7 +490,7 @@ export function DiscoverDecisionWorkspace({
                     className={clsx('discover-chart-point', active && 'selected')}
                     role="button"
                     tabIndex={0}
-                    aria-label={`${program.school}, ${format(tx('discover.matchScore'), { score: program.matchScore })}, ${money(program.realStipendUSD)}`}
+                    aria-label={`${program.school}, ${format(tx('discover.matchScore'), { score: program.matchScore })}, ${money(program.realStipendUSD, numberLocale)}`}
                     onClick={() => setSelectedId(program.id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
@@ -486,7 +508,7 @@ export function DiscoverDecisionWorkspace({
             </svg>
             <div className="discover-chart-explanation">
               <strong>{selected.school}</strong>
-              <p>{format(tx('discover.tradeoffSelected', 'Match {match}; real purchasing power {money} per year.'), { match: selected.matchScore, money: money(selected.realStipendUSD) })}</p>
+              <p>{format(tx('discover.tradeoffSelected', 'Match {match}; real purchasing power {money} per year.'), { match: selected.matchScore, money: money(selected.realStipendUSD, numberLocale) })}</p>
               <Guide
                 what={tx('discover.tradeoffWhat', 'Each dot is one program. Right means a stronger match; higher means more spending power after local costs.')}
                 how={tx('discover.tradeoffHow', 'Programs near the upper-right offer the strongest balance. A lower-left dot is not automatically bad, but it needs a clear reason to keep.')}
@@ -509,7 +531,9 @@ export function DiscoverDecisionWorkspace({
             <div className="discover-runway" role="img" aria-label={tx('discover.deadlineRunwayAria', 'Upcoming program deadlines over the next 120 days')}>
               <div className="discover-runway-axis">
                 <span>{tx('discover.today', 'Today')}</span>
-                <span>30d</span><span>60d</span><span>90d</span><span>120d</span>
+                {[30, 60, 90, 120].map((days) => (
+                  <span key={days}>{format(tx('discover.daysShort', '{days}d'), { days })}</span>
+                ))}
               </div>
               {deadlineRows.map(({ program, deadline, days }) => {
                 const position = Math.min(100, Math.max(0, ((days || 0) / 120) * 100))
@@ -557,7 +581,7 @@ export function DiscoverDecisionWorkspace({
                   <span>{program.school}</span>
                   <span className="discover-evidence-bar"><i style={{ width: `${evidence.score}%` }} /></span>
                   <strong>{evidence.score}%</strong>
-                  <small>{evidence.missing.length ? evidence.missing.slice(0, 2).join(', ') : tx('discover.evidenceReady', 'Ready to review')}</small>
+                  <small>{evidence.missing.length ? localizedEvidenceGaps(evidence.missing.slice(0, 2)) : tx('discover.evidenceReady', 'Ready to review')}</small>
                 </button>
               ))}
             </div>

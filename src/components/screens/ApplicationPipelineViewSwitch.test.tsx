@@ -7,7 +7,7 @@ import { ApplicationPipelineViewSwitch } from './ApplicationPipelineViewSwitch'
 const originalMatchMedia = window.matchMedia
 const originalViewTransition = Object.getOwnPropertyDescriptor(document, 'startViewTransition')
 
-function renderSwitch(onChange = vi.fn()) {
+function renderSwitch(onChange = vi.fn(), onPrepare = vi.fn()) {
   render(
     <div>
       <ApplicationPipelineViewSwitch
@@ -18,6 +18,7 @@ function renderSwitch(onChange = vi.fn()) {
         tableLabel="Table"
         scope="personal"
         controlsId="application-pipeline-test-view"
+        onPrepare={onPrepare}
       />
       <div className="kanban-workspace">
         <div
@@ -25,35 +26,43 @@ function renderSwitch(onChange = vi.fn()) {
           className="application-pipeline-view-stage"
           data-pipeline-scope="personal"
         >
-          <span data-application-pipeline-transition-veil />
           Board content
         </div>
       </div>
     </div>,
   )
-  return onChange
+  return { onChange, onPrepare }
 }
 
-function ControlledPipelineSwitch() {
+function ControlledPipelineSwitch({
+  onChange,
+}: {
+  onChange?: (value: 'board' | 'table') => void
+} = {}) {
   const [value, setValue] = useState<'board' | 'table'>('board')
   return (
     <div>
       <ApplicationPipelineViewSwitch
         value={value}
-        onChange={setValue}
+        onChange={(nextValue) => {
+          onChange?.(nextValue)
+          setValue(nextValue)
+        }}
         label="Application presentation"
         boardLabel="Board"
         tableLabel="Table"
         scope="personal"
         controlsId="application-pipeline-controlled-view"
       />
-      <div
-        id="application-pipeline-controlled-view"
-        className="application-pipeline-view-stage"
-        data-pipeline-scope="personal"
-      >
-        <span data-application-pipeline-transition-veil />
-        {value}
+      <div className="kanban-workspace">
+        <div
+          id="application-pipeline-controlled-view"
+          className="application-pipeline-view-stage"
+          data-pipeline-scope="personal"
+          data-view={value}
+        >
+          {value}
+        </div>
       </div>
     </div>
   )
@@ -75,14 +84,13 @@ afterEach(() => {
 })
 
 describe('ApplicationPipelineViewSwitch', () => {
-  it('fades through the lightweight veil without capturing or measuring the stage', () => {
-    vi.useFakeTimers()
+  it('responds immediately and schedules the heavy handoff without capturing or measuring the stage', () => {
     const startViewTransition = vi.fn()
     Object.defineProperty(document, 'startViewTransition', {
       configurable: true,
       value: startViewTransition,
     })
-    const onChange = renderSwitch()
+    const { onChange } = renderSwitch()
     const stage = document.getElementById('application-pipeline-test-view')
     if (!stage) throw new Error('Expected pipeline stage')
     const measure = vi.spyOn(stage, 'getBoundingClientRect')
@@ -91,11 +99,12 @@ describe('ApplicationPipelineViewSwitch', () => {
 
     expect(startViewTransition).not.toHaveBeenCalled()
     expect(measure).not.toHaveBeenCalled()
-    expect(onChange).not.toHaveBeenCalled()
+    expect(onChange).toHaveBeenCalledWith('table')
     expect(document.documentElement.dataset.applicationPipelineTransitionScope).toBeUndefined()
     expect(document.documentElement.dataset.applicationPipelineTransitionDirection).toBeUndefined()
     expect(document.documentElement.dataset.applicationPipelineTransitionMode).toBeUndefined()
-    expect(stage.dataset.applicationPipelineTransitionMode).toBe('veil-in')
+    expect(stage.dataset.applicationPipelineTransitionMode).toBe('preparing')
+    expect(stage.dataset.applicationPipelineTransitionDirection).toBe('to-table')
     expect(stage).toHaveAttribute('data-application-pipeline-transition-token')
     expect(screen.getByRole('group', { name: 'Application presentation' })).toHaveAttribute(
       'data-pipeline-scope',
@@ -105,29 +114,8 @@ describe('ApplicationPipelineViewSwitch', () => {
     expect(stage).toHaveAttribute(
       'data-application-pipeline-busy-token',
     )
-    expect(stage.style.getPropertyValue('--application-pipeline-stable-height')).toBe('')
-    expect(stage).not.toHaveAttribute('data-application-pipeline-stable-token')
-    expect(stage).not.toHaveAttribute('data-application-pipeline-height-release-token')
-
-    act(() => {
-      vi.advanceTimersByTime(80)
-    })
-    expect(onChange).toHaveBeenCalledWith('table')
-    expect(stage.dataset.applicationPipelineTransitionMode).toBe('veil-out')
-    expect(stage).toHaveAttribute('aria-busy', 'true')
-
-    act(() => {
-      vi.advanceTimersByTime(160)
-    })
-    expect(stage).not.toHaveAttribute('data-application-pipeline-transition-token')
-    expect(stage).not.toHaveAttribute('data-application-pipeline-transition-mode')
-    expect(stage.style.getPropertyValue('--application-pipeline-stable-height')).toBe('')
-    expect(stage).not.toHaveAttribute('data-application-pipeline-stable-token')
-    expect(stage).not.toHaveAttribute('data-application-pipeline-height-release-token')
-    expect(stage).not.toHaveAttribute('aria-busy')
-    expect(stage).not.toHaveAttribute(
-      'data-application-pipeline-busy-token',
-    )
+    expect(screen.getByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('group', { name: 'Application presentation' })).toHaveAttribute('data-view', 'table')
   })
 
   it('preserves the owning scroll position across the Activity commit', () => {
@@ -136,67 +124,69 @@ describe('ApplicationPipelineViewSwitch', () => {
     const onChange = vi.fn(() => {
       if (workspace) workspace.scrollTop = 0
     })
-    renderSwitch(onChange)
+    render(<ControlledPipelineSwitch onChange={onChange} />)
     workspace = document.querySelector<HTMLElement>('.kanban-workspace')
     if (!workspace) throw new Error('Expected workspace scroll owner')
     workspace.scrollTop = 240
 
     fireEvent.click(screen.getByRole('button', { name: 'Table' }))
-    act(() => {
-      vi.advanceTimersByTime(80)
-    })
 
     expect(onChange).toHaveBeenCalledWith('table')
     expect(workspace.scrollTop).toBe(240)
   })
 
-  it('keeps the latest veil cycle authoritative during a rapid reversal', () => {
+  it('keeps the latest slide cycle authoritative during a rapid reversal', () => {
     vi.useFakeTimers()
-    render(<ControlledPipelineSwitch />)
+    const { onChange } = renderSwitch()
 
-    const stage = document.getElementById('application-pipeline-controlled-view')
+    const stage = document.getElementById('application-pipeline-test-view')
     if (!stage) throw new Error('Expected controlled pipeline stage')
     fireEvent.click(screen.getByRole('button', { name: 'Table' }))
     const pendingToken = stage.dataset.applicationPipelineTransitionToken
-    act(() => {
-      vi.advanceTimersByTime(40)
-    })
     fireEvent.click(screen.getByRole('button', { name: 'Board' }))
     expect(stage.dataset.applicationPipelineTransitionToken).not.toBe(pendingToken)
-    expect(stage.dataset.applicationPipelineTransitionMode).toBe('veil-out')
-    expect(stage).toHaveTextContent('board')
+    expect(stage.dataset.applicationPipelineTransitionMode).toBe('settling')
+    expect(screen.getByRole('button', { name: 'Board' })).toHaveAttribute('aria-pressed', 'true')
+    expect(onChange).toHaveBeenNthCalledWith(1, 'table')
+    expect(onChange).toHaveBeenNthCalledWith(2, 'board')
     act(() => {
-      vi.advanceTimersByTime(160)
+      vi.advanceTimersByTime(240)
     })
     expect(stage).not.toHaveAttribute('data-application-pipeline-transition-token')
-    expect(stage).toHaveTextContent('board')
+  })
 
+  it('settles the committed destination and supersedes it cleanly', () => {
+    vi.useFakeTimers()
+    render(<ControlledPipelineSwitch />)
+    const stage = document.getElementById('application-pipeline-controlled-view')
+    if (!stage) throw new Error('Expected controlled pipeline stage')
     fireEvent.click(screen.getByRole('button', { name: 'Table' }))
     const firstToken = stage.dataset.applicationPipelineTransitionToken
-    expect(stage.dataset.applicationPipelineTransitionMode).toBe('veil-in')
+    expect(stage.dataset.applicationPipelineTransitionDirection).toBe('to-table')
+    expect(stage).toHaveTextContent('table')
 
     act(() => {
-      vi.advanceTimersByTime(80)
+      vi.advanceTimersByTime(32)
     })
-    expect(document.getElementById('application-pipeline-controlled-view')).toHaveTextContent('table')
-    expect(stage.dataset.applicationPipelineTransitionMode).toBe('veil-out')
+    expect(stage.dataset.applicationPipelineTransitionMode).toBe('settling')
     fireEvent.click(screen.getByRole('button', { name: 'Board' }))
     expect(stage.dataset.applicationPipelineTransitionToken).not.toBe(firstToken)
     expect(document.documentElement.dataset.applicationPipelineTransitionDirection).toBeUndefined()
-    expect(stage.dataset.applicationPipelineTransitionMode).toBe('veil-in')
+    expect(stage.dataset.applicationPipelineTransitionMode).toBe('preparing')
+    expect(stage.dataset.applicationPipelineTransitionDirection).toBe('to-board')
     expect(stage).toHaveAttribute(
       'data-application-pipeline-busy-token',
     )
 
     act(() => {
-      vi.advanceTimersByTime(80)
+      vi.advanceTimersByTime(32)
     })
     expect(document.getElementById('application-pipeline-controlled-view')).toHaveTextContent('board')
-    expect(stage.dataset.applicationPipelineTransitionMode).toBe('veil-out')
+    expect(stage.dataset.applicationPipelineTransitionMode).toBe('settling')
     expect(stage).toHaveAttribute('aria-busy', 'true')
 
     act(() => {
-      vi.advanceTimersByTime(160)
+      vi.advanceTimersByTime(240)
     })
     expect(stage).not.toHaveAttribute('data-application-pipeline-transition-token')
     expect(stage).not.toHaveAttribute('data-application-pipeline-transition-mode')
@@ -221,7 +211,7 @@ describe('ApplicationPipelineViewSwitch', () => {
         dispatchEvent: vi.fn(),
       })),
     })
-    const onChange = renderSwitch()
+    const { onChange } = renderSwitch()
 
     fireEvent.click(screen.getByRole('button', { name: 'Table' }))
 
@@ -229,5 +219,13 @@ describe('ApplicationPipelineViewSwitch', () => {
     expect(startViewTransition).not.toHaveBeenCalled()
     expect(document.documentElement.hasAttribute('data-application-pipeline-transition-token')).toBe(false)
     expect(document.getElementById('application-pipeline-test-view')).not.toHaveAttribute('aria-busy')
+  })
+
+  it('prepares the destination branch from pointer and keyboard intent', () => {
+    const { onPrepare } = renderSwitch()
+    fireEvent.pointerEnter(screen.getByRole('button', { name: 'Table' }))
+    fireEvent.focus(screen.getByRole('button', { name: 'Board' }))
+    expect(onPrepare).toHaveBeenNthCalledWith(1, 'table')
+    expect(onPrepare).toHaveBeenNthCalledWith(2, 'board')
   })
 })

@@ -64,7 +64,7 @@ import { UserAvatar } from './UserAvatar'
 import { useTableColumnMenu } from './useTableColumnMenu'
 import type { TableColumnDef, TableColumnsApi } from './useTableColumns'
 import { DiscreteLevelPicker } from './DiscreteLevelPicker'
-import { uniqueDiscoverSourceLinks } from './discoverSourceLinks'
+import { DISCOVER_EXTERNAL_LINK_PROPS, uniqueDiscoverSourceLinks } from './discoverSourceLinks'
 
 export type DiscoverWorkspaceMode = 'programs' | 'pis' | 'compare'
 export type DiscoverProgramSort = 'program' | 'location' | 'match' | 'funding' | 'deadline' | 'advisors' | 'collectedAt'
@@ -132,6 +132,7 @@ export type DiscoverWorkspaceProps = {
   mode: DiscoverWorkspaceMode
   modeDirection: 'forward' | 'backward'
   query: string
+  catalogProgramCount: number
   programs: ScoredDiscoverProgram[]
   pis: ScoredDiscoverPi[]
   selectedProgram: ScoredDiscoverProgram | null
@@ -195,34 +196,64 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Math.round(value)))
 }
 
-function useProgressiveList<T>(items: T[]) {
-  const [visibleCount, setVisibleCount] = useState(DISCOVER_BATCH_SIZE)
-  const sentinelRef = useRef<HTMLDivElement>(null)
-  const hasMore = visibleCount < items.length
+function useCompactDiscoverViewport() {
+  const [compact, setCompact] = useState(() => (
+    typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(max-width: 820px)').matches
+  ))
 
   useEffect(() => {
-    setVisibleCount((current) => Math.min(items.length, Math.max(DISCOVER_BATCH_SIZE, current)))
-  }, [items.length])
+    if (typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia('(max-width: 820px)')
+    const sync = () => setCompact(query.matches)
+    sync()
+    query.addEventListener?.('change', sync)
+    return () => query.removeEventListener?.('change', sync)
+  }, [])
+
+  return compact
+}
+
+export function useProgressiveList<T>(items: T[], resetKey: string, batchSize = DISCOVER_BATCH_SIZE) {
+  const [progress, setProgress] = useState(() => ({ resetKey, batchSize, visibleCount: batchSize }))
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  // Derive the reset during render so a changed query/filter can never paint
+  // the old, potentially very large visible count before an effect catches up.
+  const visibleCount = progress.resetKey === resetKey && progress.batchSize === batchSize
+    ? progress.visibleCount
+    : batchSize
+  const hasMore = visibleCount < items.length
+
+  const loadMore = useCallback(() => {
+    setProgress((current) => {
+      const currentCount = current.resetKey === resetKey && current.batchSize === batchSize
+        ? current.visibleCount
+        : batchSize
+      const nextCount = Math.min(items.length, currentCount + batchSize)
+      if (current.resetKey === resetKey && current.batchSize === batchSize && current.visibleCount === nextCount) return current
+      return { resetKey, batchSize, visibleCount: nextCount }
+    })
+  }, [batchSize, items.length, resetKey])
 
   useEffect(() => {
     if (!hasMore) return
-    if (typeof IntersectionObserver === 'undefined') {
-      setVisibleCount(items.length)
-      return
-    }
+    if (typeof IntersectionObserver === 'undefined') return
     const sentinel = sentinelRef.current
     if (!sentinel) return
     const observer = new IntersectionObserver((entries) => {
       if (!entries.some((entry) => entry.isIntersecting)) return
-      setVisibleCount((current) => Math.min(items.length, current + DISCOVER_BATCH_SIZE))
+      loadMore()
     }, { rootMargin: '240px 0px' })
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [hasMore, items.length])
+  }, [batchSize, hasMore, loadMore, resetKey])
 
   return {
     visibleItems: items.slice(0, visibleCount),
     hasMore,
+    remainingCount: Math.max(0, items.length - visibleCount),
+    loadMore,
     sentinelRef,
   }
 }
@@ -784,6 +815,8 @@ function ProgramList({
   deletingProgramIds,
   programSort,
   sortDirection,
+  resetKey,
+  compactViewport,
   actions,
 }: {
   programs: ScoredDiscoverProgram[]
@@ -796,6 +829,8 @@ function ProgramList({
   deletingProgramIds: string[]
   programSort: DiscoverProgramSort
   sortDirection: DiscoverSortDirection
+  resetKey: string
+  compactViewport: boolean
   actions: WorkspaceActions
 }) {
   const { tx, lang } = useI18n()
@@ -814,7 +849,11 @@ function ProgramList({
   const { api, openMenu, menuNode } = useTableColumnMenu('discover-programs', columns)
   const hiddenMotion = useSmoothHiddenToggle(actions.toggleProgramHidden, actions.hidePrograms)
   const filterMotion = useAnimatedListPresence(programs, hiddenMotion.hidingIds)
-  const { visibleItems: visiblePrograms, hasMore, sentinelRef } = useProgressiveList(filterMotion.items)
+  const itemIdentityKey = programs.map((program) => program.id).join('\u001f')
+  const { visibleItems: visiblePrograms, hasMore, remainingCount, loadMore, sentinelRef } = useProgressiveList(
+    filterMotion.items,
+    `${resetKey}\u001e${programSort}\u001e${sortDirection}\u001e${itemIdentityKey}`,
+  )
   const selectableProgramIds = useMemo(() => programs.map((program) => program.id), [programs])
   const selection = useExplorerSelection(selectableProgramIds)
   const visibleProgramOrderKey = visiblePrograms.map((program) => program.id).join('\u001f')
@@ -1017,6 +1056,7 @@ function ProgramList({
       <div className="discover-program-table atlas-table-shell">
         {filterMotion.items.length ? (
           <>
+          {compactViewport ? (
           <div ref={mobileResultsRef} className="discover-mobile-results">
             {visiblePrograms.map((program, index) => {
               const selected = selectedProgram?.id === program.id
@@ -1088,6 +1128,7 @@ function ProgramList({
               )
             })}
           </div>
+          ) : (
           <table className="discover-data-table atlas-table" style={{ width: tableWidth, minWidth: '100%' }} onContextMenu={(event) => openMenu(event, tx('table.columns', 'Columns'))}>
             <TableColGroup columns={columns} api={api} />
             <thead className="discover-program-head">
@@ -1191,6 +1232,7 @@ function ProgramList({
               })}
             </tbody>
           </table>
+          )}
           </>
         ) : hasVerifiedCatalog ? (
           <div className="discover-list-empty"><Search size={20} /><strong>{tx('discover.noFilterResults', 'No matching programs')}</strong><span>{tx('discover.adjustFilters', 'Try clearing one or more filters.')}</span></div>
@@ -1204,13 +1246,29 @@ function ProgramList({
         )}
         {menuNode}
         <ExplorerContextMenu menu={selectionContextMenu} onClose={() => setSelectionContextMenu(null)} />
-        {hasMore ? <div ref={sentinelRef} className="discover-lazy-sentinel" role="status" aria-label={tx('discover.loadingCatalog', 'Loading Discover…')}><span className="discover-table-loading-dot" /></div> : null}
+        {hasMore ? (
+          <div ref={sentinelRef} className="discover-lazy-sentinel">
+            <button type="button" className="discover-load-more" onClick={loadMore}>
+              {tx('discover.showMoreResults', 'Show {count} more').replace('{count}', String(Math.min(DISCOVER_BATCH_SIZE, remainingCount)))}
+            </button>
+          </div>
+        ) : null}
       </div>
     </section>
   )
 }
 
-function PiList({ pis, selectedPi, actions }: { pis: ScoredDiscoverPi[]; selectedPi: ScoredDiscoverPi | null; actions: WorkspaceActions }) {
+function PiList({
+  pis,
+  selectedPi,
+  resetKey,
+  actions,
+}: {
+  pis: ScoredDiscoverPi[]
+  selectedPi: ScoredDiscoverPi | null
+  resetKey: string
+  actions: WorkspaceActions
+}) {
   const { tx, lang } = useI18n()
   const [sort, setSort] = useState<DiscoverPiSort>('match')
   const [direction, setDirection] = useState<DiscoverSortDirection>('desc')
@@ -1235,7 +1293,11 @@ function PiList({ pis, selectedPi, actions }: { pis: ScoredDiscoverPi[]; selecte
   }, [direction, lang, pis, sort])
   const hiddenMotion = useSmoothHiddenToggle(actions.togglePiHidden)
   const filterMotion = useAnimatedListPresence(sortedPis, hiddenMotion.hidingIds)
-  const { visibleItems: visiblePis, hasMore, sentinelRef } = useProgressiveList(filterMotion.items)
+  const itemIdentityKey = sortedPis.map((pi) => pi.id).join('\u001f')
+  const { visibleItems: visiblePis, hasMore, sentinelRef } = useProgressiveList(
+    filterMotion.items,
+    `${resetKey}\u001e${sort}\u001e${direction}\u001e${itemIdentityKey}`,
+  )
   const visiblePiOrderKey = visiblePis.map((pi) => pi.id).join('\u001f')
   const mobileResultsRef = useSmoothListReflow<HTMLDivElement>(visiblePiOrderKey)
   const tableBodyRef = useSmoothListReflow<HTMLTableSectionElement>(visiblePiOrderKey)
@@ -1477,7 +1539,7 @@ function ProgramInspector({
         <InspectorSection title={tx('discover.officialSources', 'Official sources')} summary={tx('discover.sourceCount', '{count} sources').replace('{count}', String(program.sources.length))} open>
           <div className="discover-source-list">
             {uniqueDiscoverSourceLinks([program.website, ...program.sources]).map((source) => (
-              <a key={source} href={source} target="_blank" rel="noreferrer"><span>{compactUrl(source)}</span><ExternalLink size={13} /></a>
+              <a key={source} href={source} {...DISCOVER_EXTERNAL_LINK_PROPS}><span>{compactUrl(source)}</span><ExternalLink size={13} /></a>
             ))}
           </div>
         </InspectorSection>
@@ -1519,6 +1581,14 @@ function PiInspector({
   const { tx, lang } = useI18n()
   if (!pi) return <aside className="discover-inspector is-empty" aria-hidden={collapsed} inert={collapsed}><span>{tx('discover.selectAdvisor', 'Select an advisor to inspect them.')}</span></aside>
   const importKey = `${pi.programId}:${pi.id}`
+  const verifiedMatchScore = pi.profileMatch?.score ?? Math.round(pi.matchScore)
+  const profileMatch = pi.profileMatch
+  const scholarly = pi.scholarly
+  const scholarlyTopics = (scholarly?.matchedQueries || []).filter(Boolean).slice(0, 6)
+  const scholarlyLinks = uniqueDiscoverSourceLinks([
+    scholarly?.profileUrl || '',
+    scholarly?.orcid ? `https://orcid.org/${scholarly.orcid.replace(/^https?:\/\/orcid\.org\//i, '')}` : '',
+  ])
   return (
     <aside className={clsx('discover-inspector', mobileOpen && 'is-mobile-open')} aria-label={tx('discover.advisorDetails', 'Advisor details')} aria-hidden={collapsed && !mobileOpen} inert={collapsed && !mobileOpen}>
       <div className="discover-sheet-handle" aria-hidden="true" />
@@ -1526,7 +1596,7 @@ function PiInspector({
         <div><strong>{pi.name}</strong><span>{pi.school} · {pi.program}</span></div>
         <button type="button" className="discover-icon-btn discover-inspector-close" onClick={actions.closeInspector} aria-label={tx('discover.close', 'Close')}><X size={17} /></button>
       </header>
-      <p className="discover-fit-summary">{tx('discover.piSummary', 'This advisor matches your selected topics. Confirm current projects and recruiting status from the official profile before contacting them.')}</p>
+      <p className="discover-fit-summary">{pi.whyFit || tx('discover.piSummary', 'No applicant-profile overlap was verified on the fetched official profile. Confirm current projects and recruiting status before contacting them.')}</p>
       <div className="discover-inspector-scroll">
         <dl className="discover-inspector-facts-v2">
           <div><dt>{tx('discover.category', 'Type')}</dt><dd>{piCategoryDescription(pi.category, lang, tx)}</dd></div>
@@ -1537,10 +1607,28 @@ function PiInspector({
             </dt>
             <dd>{pi.hIndex ?? '—'}</dd>
           </div>
-          <div><dt>{tx('discover.match', 'Match')}</dt><dd>{Math.round(pi.matchScore)}%</dd></div>
+          <div><dt>{tx('discover.match', 'Match')}</dt><dd>{verifiedMatchScore}%</dd></div>
         </dl>
         <InspectorSection title={tx('discover.recruitingStatus', 'Recruiting status')} summary={isRecruiting(pi.recruiting) ? tx('discover.recruitingLikely', 'Possibly recruiting') : tx('discover.recruitingUnknown', 'Recruiting unverified')} open>
+          <p>{pi.recruiting || tx('discover.recruitingUnknown', 'Recruiting unverified')}</p>
           <p>{tx('discover.recruitingCaveat', 'Recruiting status changes frequently. Check the lab page and recent posts before contacting the advisor.')}</p>
+        </InspectorSection>
+        <InspectorSection
+          title={tx('discover.profileMatchEvidence', 'Profile-match evidence')}
+          summary={tx('discover.matchScoreSummary', '{score}% verified overlap').replace('{score}', String(verifiedMatchScore))}
+          open
+        >
+          <dl className="discover-detail-list">
+            <div><dt>{tx('discover.matchedInterests', 'Research interests')}</dt><dd>{(profileMatch?.matchedInterests || []).join(' · ') || '—'}</dd></div>
+            <div><dt>{tx('discover.matchedMethods', 'Methods')}</dt><dd>{(profileMatch?.matchedMethods || []).join(' · ') || '—'}</dd></div>
+            <div><dt>{tx('discover.matchedResearchTerms', 'Research direction')}</dt><dd>{(profileMatch?.matchedResearchTerms || []).join(' · ') || '—'}</dd></div>
+            <div><dt>{tx('discover.evidenceCheckedAt', 'Evidence checked')}</dt><dd>{profileMatch?.checkedAt ? dateLabel(profileMatch.checkedAt, lang) : '—'}</dd></div>
+          </dl>
+          {profileMatch?.evidenceUrl ? (
+            <div className="discover-source-list">
+              <a href={profileMatch.evidenceUrl} {...DISCOVER_EXTERNAL_LINK_PROPS}><span>{compactUrl(profileMatch.evidenceUrl)}</span><ExternalLink size={13} /></a>
+            </div>
+          ) : null}
         </InspectorSection>
         <InspectorSection title={tx('discover.labProfile', 'Lab profile')} summary={pi.labSize || tx('discover.unknown', 'Unknown')} open>
           <dl className="discover-detail-list">
@@ -1549,8 +1637,42 @@ function PiInspector({
             <div><dt>{tx('discover.wetDry', 'Research mode')}</dt><dd>{tx(`discover.wetDry_${pi.wetDry}`, pi.wetDry)}</dd></div>
           </dl>
         </InspectorSection>
-        <InspectorSection title={tx('discover.originalResearchNote', 'Original research note')} summary={tx('discover.expandToRead', 'Expand to read')} open>
+        <InspectorSection title={tx('discover.officialResearchProfile', 'Official research profile')} summary={tx('discover.expandToRead', 'Expand to read')} open>
           <p lang="en">{pi.research || pi.whyFit || tx('discover.notFound', 'Not found')}</p>
+        </InspectorSection>
+        <InspectorSection
+          title={tx('discover.scholarlyRecord', 'Scholarly record')}
+          summary={scholarly
+            ? tx('discover.publicationCount', '{count} matched works').replace('{count}', String(scholarly.recentWorks.length))
+            : tx('discover.scholarlyUnavailable', 'No unique scholarly identity')}
+          open={Boolean(scholarly)}
+        >
+          {scholarly ? (
+            <div className="discover-scholar-evidence">
+              <dl className="discover-detail-list">
+                <div><dt>{tx('discover.identityEvidence', 'Identity evidence')}</dt><dd>{tx('discover.scholarlyVerified', 'Institution-scoped and profile-matched')}</dd></div>
+                <div><dt>{tx('discover.dataProviders', 'Data providers')}</dt><dd>{scholarly.providers.join(' · ') || '—'}</dd></div>
+                <div><dt>{tx('discover.matchedResearchTopics', 'Matched research topics')}</dt><dd>{scholarlyTopics.join(' · ') || '—'}</dd></div>
+                <div><dt>{tx('discover.citations', 'Citations')}</dt><dd>{pi.citations ?? '—'}</dd></div>
+              </dl>
+              {scholarlyLinks.length ? <div className="discover-source-list discover-scholar-identifiers">
+                {scholarlyLinks.map((source) => <a key={source} href={source} {...DISCOVER_EXTERNAL_LINK_PROPS}><span>{compactUrl(source)}</span><ExternalLink size={13} /></a>)}
+              </div> : null}
+              {scholarly.recentWorks.length ? (
+                <div className="discover-publication-ledger">
+                  <strong>{tx('discover.recentMatchedWorks', 'Recent matched works')}</strong>
+                  <ol>
+                    {scholarly.recentWorks.map((work) => (
+                      <li key={`${work.title}:${work.year ?? 'unknown'}`}>
+                        <a href={work.source} {...DISCOVER_EXTERNAL_LINK_PROPS}>{work.title}<ExternalLink size={12} /></a>
+                        <small>{[work.year, `${work.citedByCount} ${tx('discover.citations', 'citations')}`, work.matchedTopic || work.matchedQuery].filter(Boolean).join(' · ')}</small>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              ) : null}
+            </div>
+          ) : <p>{tx('discover.scholarlyUnavailableHint', 'No unique institution-scoped author record could be joined to this verified official profile.')}</p>}
         </InspectorSection>
         <InspectorSection title={tx('discover.personalNote', 'Personal note')} summary={note.trim() ? tx('discover.noteSaved', 'Saved') : tx('discover.addNote', 'Add note')} open>
           <textarea value={note} onChange={(e) => actions.updatePiNote(pi.id, e.target.value)} placeholder={tx('discover.piNotePlaceholder')} />
@@ -1558,7 +1680,8 @@ function PiInspector({
         </InspectorSection>
         <InspectorSection title={tx('discover.links', 'Links')} summary={tx('discover.officialSources', 'Official sources')} open>
           <div className="discover-source-list">
-            {uniqueDiscoverSourceLinks([pi.url, pi.scholarUrl]).map((source) => <a key={source} href={source} target="_blank" rel="noreferrer"><span>{compactUrl(source)}</span><ExternalLink size={13} /></a>)}
+            {uniqueDiscoverSourceLinks([pi.url]).map((source) => <a key={source} href={source} {...DISCOVER_EXTERNAL_LINK_PROPS}><span>{compactUrl(source)}</span><ExternalLink size={13} /></a>)}
+            {pi.email ? <a href={`mailto:${pi.email}`}><span>{pi.email}</span></a> : null}
           </div>
         </InspectorSection>
       </div>
@@ -1658,12 +1781,38 @@ function CompareView({
 export function DiscoverWorkspace(props: DiscoverWorkspaceProps) {
   const { tx } = useI18n()
   const {
-    meta, state, mode, modeDirection, query, programs, pis, selectedProgram, selectedPi, comparePrograms, compareIds,
+    meta, state, mode, modeDirection, query, catalogProgramCount, programs, pis, selectedProgram, selectedPi, comparePrograms, compareIds,
     scoreByProgramId, filters, activeFilterCount, filterRailCollapsed, mobileFiltersOpen,
     mobileInspectorOpen, inspectorOpen, programSort, sortDirection, rankerDraft, programNoteDrafts,
     piNoteDrafts, importingId, deletingProgramIds, researching, saving, hiddenProgramCount, hiddenPiCount,
     teamContext, actions,
   } = props
+  const compactViewport = useCompactDiscoverViewport()
+  const discoverQueryResetKey = useMemo(() => {
+    const requirements = filters.requirements
+    return [
+      query.trim().toLocaleLowerCase(),
+      filters.regionFilters.join('\u001f'),
+      filters.minStipend,
+      filters.minMatch,
+      filters.watchedOnly,
+      filters.meetFloorOnly,
+      filters.showHidden,
+      filters.hedgeFilter,
+      filters.piCategory,
+      filters.minHIndex,
+      requirements.deadlineWithinDays,
+      requirements.greNotRequired,
+      requirements.englishFlexible,
+      requirements.feeWaiver,
+      requirements.multiApplyOnly,
+      requirements.supervisorOptional,
+      requirements.intlFriendly,
+      requirements.rollingOk,
+      state.researchRuns,
+      state.lastResearchAt ?? '',
+    ].join('\u001e')
+  }, [filters, query, state.lastResearchAt, state.researchRuns])
   const setDiscoverMode = actions.setMode
   const [layout, setLayout] = useState<DiscoverLayoutPrefs>(loadDiscoverLayout)
   const [resizingPane, setResizingPane] = useState<'filters' | 'inspector' | null>(null)
@@ -1881,8 +2030,8 @@ export function DiscoverWorkspace(props: DiscoverWorkspaceProps) {
 
       <main ref={workspaceRef} className="discover-workspace" style={workspaceStyle}>
         {mode !== 'compare' ? <FilterRail meta={meta} mode={mode} filters={filters} activeFilterCount={activeFilterCount} hiddenProgramCount={hiddenProgramCount} hiddenPiCount={hiddenPiCount} rankerDraft={rankerDraft} actions={actions} collapsed={filterRailCollapsed} /> : null}
-        {mode === 'programs' ? <ProgramList programs={programs} hasVerifiedCatalog={props.programs.length > 0} selectedProgram={selectedProgram} compareIds={compareIds} scoreByProgramId={scoreByProgramId} currencyCode={meta?.currency || 'USD'} importingId={importingId} deletingProgramIds={deletingProgramIds} programSort={programSort} sortDirection={sortDirection} actions={actions} /> : null}
-        {mode === 'pis' ? <PiList pis={pis} selectedPi={selectedPi} actions={actions} /> : null}
+        {mode === 'programs' ? <ProgramList programs={programs} hasVerifiedCatalog={catalogProgramCount > 0} selectedProgram={selectedProgram} compareIds={compareIds} scoreByProgramId={scoreByProgramId} currencyCode={meta?.currency || 'USD'} importingId={importingId} deletingProgramIds={deletingProgramIds} programSort={programSort} sortDirection={sortDirection} resetKey={discoverQueryResetKey} compactViewport={compactViewport} actions={actions} /> : null}
+        {mode === 'pis' ? <PiList pis={pis} selectedPi={selectedPi} resetKey={discoverQueryResetKey} actions={actions} /> : null}
         {mode === 'compare' ? <CompareView programs={comparePrograms} scoreByProgramId={scoreByProgramId} state={state} importingId={importingId} actions={actions} /> : null}
         {mode === 'programs' ? <ProgramInspector program={selectedProgram} score={selectedProgram ? scoreByProgramId[selectedProgram.id] ?? selectedProgram.matchScore : 0} state={state} note={selectedProgram ? programNoteDrafts[selectedProgram.id] ?? state.programNotes[selectedProgram.id] ?? '' : ''} importingId={importingId} mobileOpen={mobileInspectorOpen} collapsed={!inspectorOpen} actions={actions} /> : null}
         {mode === 'pis' ? <PiInspector pi={selectedPi} note={selectedPi ? piNoteDrafts[selectedPi.id] ?? state.piNotes[selectedPi.id] ?? '' : ''} importingId={importingId} mobileOpen={mobileInspectorOpen} collapsed={!inspectorOpen} actions={actions} /> : null}

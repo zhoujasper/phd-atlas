@@ -7,11 +7,19 @@
   <workingdirectory>%BASE%</workingdirectory>
   <env name="NODE_ENV" value="production" />
   <env name="PORT" value="4317" />
+  <!-- UV_THREADPOOL_SIZE is deliberately unset. start-server.mjs sizes it from
+       the host CPU count and only does so while the variable is absent, so
+       pinning a value here would hold every host at the formula's floor. -->
+  <!-- This template assumes IIS ARR runs on the same host. A remote proxy must
+       replace loopback with its exact trusted private subnet; never use true. -->
+  <env name="TRUST_PROXY" value="loopback" />
   <startmode>Automatic</startmode>
   <delayedAutoStart>true</delayedAutoStart>
   <onfailure action="restart" delay="10 sec" />
   <onfailure action="restart" delay="30 sec" />
-  <stoptimeout>35 sec</stoptimeout>
+  <onfailure action="none" />
+  <resetfailure>1 hour</resetfailure>
+  <stoptimeout>75 sec</stoptimeout>
   <logpath>%BASE%\logs\service</logpath>
   <log mode="roll-by-size">
     <sizeThreshold>10240</sizeThreshold>

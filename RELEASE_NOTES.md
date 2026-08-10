@@ -5,6 +5,161 @@ section per version using the exact heading `## v<package.json version>`.
 Automation extracts only the matching section, so older notes remain immutable
 history while the next version can be prepared in the same file.
 
+## v0.1.0
+
+**First stable public release / 首个公开稳定版。** Back up the complete
+workspace before upgrading an existing Beta installation.
+
+> **Upgrade path:** Beta.6, Beta.7, and Beta.8 installations can use the
+> automatic or manual update flow in Admin. Beta.5 and earlier installations
+> must first complete the documented one-time transition to Beta.6, then update
+> to v0.1.0. The first stable release publishes a complete update package; an
+> exact-base differential package is not produced from a prerelease channel.
+>
+> **升级路径：** Beta.6、Beta.7 和 Beta.8 可直接使用管理后台的自动或手动更新。
+> Beta.5 及更早版本必须先按文档完成一次性 Beta.6 过渡，再升级到 v0.1.0。
+> 首个稳定版会发布完整更新包，不会从预发布通道生成精确基线差异包。
+
+### Highlights
+
+- **A serious non-commercial license boundary.** PhD Atlas now uses the PhD
+  Atlas Community License v1.0 instead of MIT. Individuals and non-profit
+  entities may use it for personal, academic, research, educational,
+  charitable, and other non-commercial purposes. Any use by or for a
+  for-profit company or commercial organization requires prior written
+  authorization — including internal use, SaaS, paid hosting, consulting,
+  resale, and contractor use on its behalf.
+- **The stable public product is personal-only.** Team navigation, setup,
+  upgrades, administration, APIs, background work, tests, and public export
+  paths are archived and fail closed. Existing Team source and stored data are
+  retained rather than reassigned or deleted.
+- **Admissions research is evidence you can inspect.** A new application-level
+  workbench separates outcomes, decision cycles, advisor funding/projects,
+  publications, unmatched evidence, bookmarks, and a final source ledger.
+  UKRI joins NSF, NIH, and OpenAlex, and every result keeps provenance, fetch
+  time, match reasons, and verified-versus-possible status. Advisor grounding
+  now rejects FAQ and staff-directory labels as people, while still accepting
+  numeric profile URLs and shared lab pages when the page contains real name
+  evidence. Princeton neuroscience fallbacks were refreshed across its current
+  official hosts, with a bounded per-school crawl budget that still obeys the
+  global absolute cap. Maintained official name variants also keep a middle
+  initial from splitting one advisor into two apparent identities. Reddit can
+  fall back to its official Atom feed without OAuth; mismatched posts remain
+  inspectable but never enter admission statistics.
+- **Discover reports what it could not prove.** An independent gold set covers
+  eight programmes and 24 advisors, and real-provider rounds score evidence
+  integrity separately from source coverage. The retained final rows pass the
+  implemented integrity gates, but no completed live round passed the full
+  coverage gate, so this release does not claim to have found every programme
+  or advisor on the internet.
+- **Codex and Claude Desktop can work inside your real account boundary.** The
+  release includes a Skill, optional local MCP Plugin, and Claude Desktop MCPB
+  with checksums, browser authorization, explicit scopes, naming,
+  pause/resume, deletion, expiry, inactivity revocation, and server-side
+  invalidation after security changes.
+- **Mail organization is finally flexible.** Create your own categories, put
+  several labels on one incoming message, combine filters, and let AI choose
+  one or more existing labels. AI batches exclude sent mail, drafts, and notes,
+  and the model cannot invent categories.
+- **AI keys have independent routing policy.** Each saved key can be paused,
+  weighted, given a visible 1–2,500 concurrency cap, and configured for Auto,
+  Responses API, or Chat Completions where the provider supports it. The
+  aggregate runtime ceiling remains 2,500.
+- **Applications feel continuous instead of rebuilding around every click.**
+  Dossier entry, tab changes, Board entry, Board/Table switching, application
+  selection, near-bottom table loading, and the page-level batch dock retain
+  the outgoing content until the requested destination is ready.
+- **Checklist and timeline work now match what you see.** Drag order commits to
+  the real destination before the overlay disappears; cross-group moves no
+  longer snap back. Optional due dates, persistent completion marks, explicit
+  file actions, preserved extensions, semantic timeline types, fees, funding,
+  mail, reminders, and direct source navigation are all included.
+- **Correspondence and everyday controls are calmer.** Direction, authorship,
+  filtering, counts, subject/date fields, avatars, fee currency symbols,
+  profile shortcuts, headers, country menus, and compact mobile/desktop
+  controls were simplified without hiding keyboard, touch, high-contrast, or
+  reduced-motion behavior.
+- **Saving, deleting, backups, and offline recovery share one truthful order.**
+  A stale write cannot resurrect a deleted application; a deletion cannot
+  overtake a pending save; automatic backup no longer loops over unchanged
+  records; and old server-owned mail/classification fields no longer create a
+  permanent single-editor conflict.
+- **Short server restarts no longer look like lost connectivity.** A persistent
+  API supervisor owns worker recovery, the browser waits for sustained outage
+  evidence before entering offline mode, and workspace streams ignore unrelated
+  quota, notification, backup, and journal revisions. If an AI provider drops
+  the connection while its response body is still being read, the interruption
+  is classified as temporary provider unavailability and can use the existing
+  bounded retry path instead of terminating the entire Discover batch.
+- **Interview Prep cancellation is explicit on Node 24.** A framework-owned
+  request signal can no longer turn a fully received save or AI request into a
+  false HTTP 499. Only the server's admission-owned AI cancellation signal may
+  stop question generation, mock turns, feedback, or durable saves.
+- **Extreme load was qualified, not guessed.** The final production-like gate
+  served 300 authenticated users, 300 SSE clients, and 300 same-address health
+  WebSockets with zero read/login capacity retries, then verified 300 durable
+  writes and 300 restart readbacks. The final endurance gate completed
+  5,372/5,372 durable autosaves, 70/70 large streams with zero restart, and
+  100/100 restart readbacks; all reservations returned to zero.
+
+### 中文摘要
+
+- **商业授权边界已经正式写清楚。** PhD Atlas 不再使用 MIT，而是使用 PhD Atlas
+  Community License v1.0。个人以及公益、慈善、非营利机构可用于个人、学术、科研、
+  教育、公益和其他非商业目的；任何营利机构、商业组织或企业都必须事先取得书面授权，
+  包括企业内部使用、SaaS、付费托管、咨询、转售和承包商代表企业使用。
+- **公开稳定版只提供个人工作空间。** Team 导航、首次设置、升级、管理、API、后台任务、
+  专属测试和公开导出路径均已归档并失败封闭。原有 Team 源码与历史数据保留，不会被
+  偷偷改归个人或删除。
+- **Admissions 调研变成可以逐条核查的证据工作台。** 录取结果、申请周期、导师经费/
+  项目、论文、未匹配证据、收藏和最终来源清单分开显示；UKRI 与 NSF、NIH、OpenAlex
+  一起提供证据，每条记录保留来源、时间、匹配原因和“已核实/可能匹配”状态。FAQ、
+  staff directory 等栏目名不会再冒充导师；纯数字个人主页或实验室共享页只有在页面中
+  确实找到姓名证据时才会被保留。Princeton 神经科学的当前官方入口与备用域名也已重新
+  核对，并使用仍受全局绝对上限约束的学校级有界抓取预算；官网姓名多一个中间名首字母
+  时，也会按维护过的姓名变体识别为同一位导师。没有 OAuth 时，Reddit 会使用官方 Atom
+  feed；不匹配的帖子仍可检查，但绝不会进入录取统计。
+- **Discover 会把没有证明的部分如实说出来。** 独立金标准覆盖 8 个项目和 24 位导师，
+  真实服务商实测把“证据是否真实”和“来源是否覆盖完整”分开判定。最终保留行通过现有
+  真实性门禁，但没有一轮完整实测通过全部覆盖门槛，因此本版本不会宣称已经找遍互联网
+  上的所有项目和导师。
+- **Codex 与 Claude Desktop 可以在真实账号权限内工作。** 本版本提供带校验文件的
+  Skill、可选 MCP Plugin 和 Claude Desktop MCPB；浏览器授权会显示 scope，并支持
+  改名、暂停、恢复、删除、到期、长期未使用失效和服务端安全撤销。
+- **邮件分类终于可以按自己的习惯组织。** 可以新建分类、一封来信加多个标签、组合筛选，
+  也可以让 AI 从已有分类中选择一个或多个标签。已发送邮件、草稿和笔记不会进入 AI
+  批量分类，模型也不能私自发明分类。
+- **每把 AI 密钥都有独立路由策略。** 可分别暂停、设置权重和 1–2,500 的可见最大并发，
+  并在服务商支持时选择自动、Responses API 或 Chat Completions；运行时全局安全上限
+  仍为 2,500。
+- **申请切换不再每点一下就重建整块界面。** Dossier 进入、标签切换、看板进入、看板/
+  表格切换、申请选择、接近底部加载和页面级批量操作都会保留旧内容，直到目标真正就绪。
+- **清单和时间线现在“看到什么就落到什么”。** 拖拽顺序会先提交到真实落点再收起浮层；
+  跨分组不再弹回。空截止日期、常驻完成勾、明确文件操作、保留扩展名、语义时间线、
+  费用/资助/邮件/提醒事件与精确跳转全部纳入本版。
+- **通信和日常控件更安静。** 收发方向、作者身份、筛选、数量、主题/日期、头像、货币
+  符号、个人资料快捷入口、页头、国家菜单与紧凑控件都重新整理，同时保留键盘、触摸、
+  高对比度和减少动态效果路径。
+- **保存、删除、备份和离线恢复只认同一套顺序。** 旧写入不能在删除后把申请复活，删除
+  不能越过待保存内容，自动备份不会反复处理没变化的数据，旧邮件/分类字段也不会再让
+  单人编辑陷入永远冲突。
+- **短暂服务重启不再被误报成彻底断网。** 持久 API 监督器负责 worker 恢复，浏览器只有
+  在故障持续存在时才进入离线模式；配额、通知、备份和日志写入也不会再让工作区流重启。
+  如果 AI 服务在读取响应正文时突然断开连接，系统会把它视为暂时不可用并走原有的有界
+  重试，而不是让整批 Discover 调研直接失败。
+- **Node 24 上的 Interview Prep 取消边界已经写死。** 运行环境自带的请求信号不会再把
+  已完整接收的保存或 AI 请求误报成 HTTP 499；只有服务端准入层明确创建的 AI 取消信号
+  才能停止问题生成、模拟追问、反馈或持久保存。
+- **极限负载通过实测，而不是靠猜。** 最终类生产门禁服务 300 个登录用户、300 个 SSE
+  和同一地址 300 个健康 WebSocket，读取/登录零容量重试，并完成 300 次写入与重启读回。
+  最终耐久门禁完成 5,372/5,372 次自动保存、70/70 个大型流零重启、100/100 次重启
+  读回，所有资源预留最终归零。
+
+Full details / 完整记录:
+[English changelog](https://github.com/zhoujasper/phd-atlas/blob/v0.1.0/CHANGELOG.md)
+·
+[简体中文更新日志](https://github.com/zhoujasper/phd-atlas/blob/v0.1.0/CHANGELOG.zh-CN.md)
+
 ## v0.1.0-beta.8
 
 **Prerelease - Beta / 预发布版本。** Back up the complete workspace before
@@ -19,6 +174,10 @@ upgrading.
 
 ### Highlights
 
+- **The current release is personal-only.** Team navigation, upgrade surfaces,
+  administration, runtime loading, dedicated tests, and public-export content
+  are archived. Existing Team source and stored data are retained rather than
+  deleted, so a future restoration can be reviewed as one explicit release.
 - **Navigation recovers instead of becoming a white page.** Routes, workspace
   screens, dialogs, profile editors, the rich-text editor, and language packs
   now share one bounded lazy-module recovery path. Recognized stale chunk and
@@ -41,10 +200,19 @@ upgrading.
   native 1600x900 desktop plus 390x844 phone layouts at DPR 2. The public
   English and Chinese READMEs use the same responsive image set. Environments
   without `matchMedia` safely retain the desktop capture.
+- **Smaller downloads and safe differential updates.** High-quality WebP
+  encoding preserves every DPR-2 capture while reducing the capture set from
+  66.16 MB to 22.81 MB and the same-tree full update package by 25.6%.
+  Compatible future updates can publish an exact-base file delta; the server
+  reconstructs and validates a complete local package and falls back to the
+  full asset on any mismatch or failure.
 
 ### 中文摘要
 
-- **页面异常可恢复，不再直接白屏。** 路由、工作区页面、弹窗、个人与 Team 资料
+- **当前版本只提供个人版。** Team 导航、升级界面、管理后台、运行时加载、专属测试
+  与公开导出内容均已归档。现有 Team 源码和已存数据保留而不删除，未来如需恢复，
+  必须作为一次明确版本变更统一评审。
+- **页面异常可恢复，不再直接白屏。** 路由、工作区页面、弹窗、个人资料
   编辑器、富文本编辑器和语言包共用一套有界懒加载恢复机制；可识别的旧资源或网络
   失败会安全重试，持续失败则保留本地化重新加载页面，不向界面暴露原始异常。
 - **Vite 开发环境中的编辑器可稳定打开。** Markdown 源码编辑器仍按需加载，并在
@@ -59,6 +227,10 @@ upgrading.
   亮色/暗色 x 桌面/手机。桌面为 1600x900、手机为真实 390x844 布局，均以 DPR 2
   采集；公开版中英文 README 使用同一套响应式图片。未提供 `matchMedia` 的环境会安全
   保留桌面截图。
+- **下载更小，并为安全差异更新做好准备。** 高质量 WebP 编码保留全部 DPR 2 截图，
+  截图集从 66.16 MB 降至 22.81 MB，同一源码树的完整更新包缩小 25.6%。后续兼容版本
+  可发布仅含变化文件的精确基线差异包；服务端会重建并校验完整本地包，任何不匹配或
+  失败都会回退到完整资产。
 
 Full details / 完整记录:
 [English changelog](https://github.com/zhoujasper/phd-atlas/blob/v0.1.0-beta.8/CHANGELOG.md)

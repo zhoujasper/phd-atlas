@@ -5,6 +5,10 @@ import {
   isLazyModuleLoadFailure,
   loadLazyModule,
 } from './lazyModuleRecovery'
+import {
+  SAFE_RELOAD_BLOCKED_EVENT,
+  type SafeReloadBlockedDetail,
+} from './safeReload'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -44,7 +48,7 @@ describe('lazy module recovery', () => {
     expect(loader).toHaveBeenCalledTimes(1)
   })
 
-  it('reloads once for a stale Vite preload and suppresses refresh loops', () => {
+  it('reloads once for a stale Vite preload and suppresses refresh loops', async () => {
     const reload = vi.fn()
     const setTimer = vi.fn((callback: () => void) => {
       callback()
@@ -55,7 +59,8 @@ describe('lazy module recovery', () => {
       getItem: (key: string) => values.get(key) ?? null,
       setItem: (key: string, value: string) => values.set(key, value),
     }
-    const stop = installLazyModuleRecovery({ reload, setTimer, storage, now: () => 50_000 })
+    const prepareReload = vi.fn(async () => true)
+    const stop = installLazyModuleRecovery({ reload, setTimer, storage, now: () => 50_000, prepareReload })
 
     const firstEvent = new Event('vite:preloadError', { cancelable: true }) as Event & { payload?: unknown }
     firstEvent.payload = new TypeError('Failed to fetch dynamically imported module: /assets/ProfileScreen.js')
@@ -66,8 +71,85 @@ describe('lazy module recovery', () => {
     window.dispatchEvent(repeatedEvent)
 
     expect(firstEvent.defaultPrevented).toBe(true)
-    expect(reload).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+    expect(prepareReload).toHaveBeenCalledWith('lazy-module')
     expect(setTimer).toHaveBeenCalledTimes(1)
     stop()
+  })
+
+  it('does not reload or record a cooldown while a resident draft blocks recovery', async () => {
+    const reload = vi.fn()
+    const values = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    }
+    const stop = installLazyModuleRecovery({
+      reload,
+      storage,
+      now: () => 50_000,
+      prepareReload: async () => false,
+      setTimer: (callback) => {
+        callback()
+        return 1
+      },
+    })
+    const event = new Event('vite:preloadError', { cancelable: true }) as Event & { payload?: unknown }
+    event.payload = new Error('ChunkLoadError: Loading chunk 41 failed.')
+    window.dispatchEvent(event)
+
+    await vi.waitFor(() => expect(event.defaultPrevented).toBe(true))
+    expect(reload).not.toHaveBeenCalled()
+    expect(values.size).toBe(0)
+    stop()
+  })
+
+  it.each([
+    {
+      label: 'throws',
+      storage: {
+        getItem: () => null,
+        setItem: () => {
+          throw new DOMException('Storage is disabled.', 'SecurityError')
+        },
+      },
+    },
+    {
+      label: 'silently discards the write',
+      storage: {
+        getItem: () => null,
+        setItem: () => undefined,
+      },
+    },
+  ])('blocks reload and emits a localizable event when cooldown storage $label', async ({ storage }) => {
+    const reload = vi.fn()
+    const blocked = vi.fn((event: Event) => event)
+    window.addEventListener(SAFE_RELOAD_BLOCKED_EVENT, blocked)
+    const stop = installLazyModuleRecovery({
+      reload,
+      storage,
+      now: () => 50_000,
+      prepareReload: async () => true,
+      setTimer: (callback) => {
+        callback()
+        return 1
+      },
+    })
+
+    const event = new Event('vite:preloadError', { cancelable: true }) as Event & { payload?: unknown }
+    event.payload = new Error('ChunkLoadError: Loading chunk 41 failed.')
+    window.dispatchEvent(event)
+
+    await vi.waitFor(() => expect(blocked).toHaveBeenCalledTimes(1))
+    expect(reload).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(true)
+    const detail = (blocked.mock.calls[0]![0] as CustomEvent<SafeReloadBlockedDetail>).detail
+    expect(detail).toEqual({
+      reason: 'lazy-module',
+      cause: 'recovery-storage-unavailable',
+    })
+
+    stop()
+    window.removeEventListener(SAFE_RELOAD_BLOCKED_EVENT, blocked)
   })
 })

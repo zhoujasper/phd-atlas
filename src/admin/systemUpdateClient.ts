@@ -1,4 +1,6 @@
 import type { SystemUpdateStatus } from '../api/phdApi'
+import { reloadPage } from '../pageReload'
+import { prepareForSafeReload } from '../safeReload'
 
 type WaitForInstalledVersionOptions = {
   expectedVersion: string
@@ -47,6 +49,9 @@ export async function waitForInstalledVersion({
   throw timeout
 }
 
-export function reloadInstalledApplication() {
-  window.location.reload()
+export async function reloadInstalledApplication() {
+  const allowed = await prepareForSafeReload({ reason: 'application-update' })
+  if (!allowed) return false
+  reloadPage()
+  return true
 }

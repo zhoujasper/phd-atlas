@@ -115,6 +115,9 @@ describe('offline replay validation', () => {
         scheduledAt: '2026-07-29T12:00:00.000Z',
         deliveryId: 'delivery-server-owned',
         sourceMessageKey: 'server-message-key',
+        importedAt: '2026-07-29T11:00:00.000Z',
+        mailSecurity: { level: 'caution', signals: ['reply-to-mismatch'] },
+        mailClassification: { category: 'interview_invite' },
       }],
     }
     const incoming = {
@@ -139,6 +142,9 @@ describe('offline replay validation', () => {
         scheduledAt: '2026-07-30T12:00:00.000Z',
         deliveryId: 'forged-delivery',
         sourceMessageKey: 'forged-message-key',
+        importedAt: '2026-07-30T11:00:00.000Z',
+        mailSecurity: { level: 'danger', signals: ['prompt-injection'] },
+        mailClassification: { category: 'rejection' },
       }],
       materials: [
         {
@@ -186,6 +192,9 @@ describe('offline replay validation', () => {
       scheduledAt: '2026-07-29T12:00:00.000Z',
       deliveryId: 'delivery-server-owned',
       sourceMessageKey: 'server-message-key',
+      importedAt: '2026-07-29T11:00:00.000Z',
+      mailSecurity: { level: 'caution', signals: ['reply-to-mismatch'] },
+      mailClassification: { category: 'interview_invite' },
     })
   })
 })

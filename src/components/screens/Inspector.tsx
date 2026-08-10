@@ -3,7 +3,7 @@ import {
   DatabaseBackup, Download, ExternalLink, Globe2, GraduationCap,
   Eye, EyeOff, Lock, Mail, MapPin, Pencil, Trash2, User,
 } from 'lucide-react'
-import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { BackupRecord } from '../../api/phdApi'
 import type { ApplicationRecord } from '../../data/applications'
 import { StatusPill } from '../shared/StatusPill'
@@ -99,6 +99,16 @@ export function Inspector({
   const [editValue, setEditValue] = useState('')
   const [visibleDeadlineCount, setVisibleDeadlineCount] = useState(INSPECTOR_DEADLINE_BATCH_SIZE)
   const [pastDeadlinesOpen, setPastDeadlinesOpen] = useState(Boolean(showPastDeadlines))
+  const previousApplicationIdRef = useRef<string | null>(null)
+  const isApplicationRecordSwitch = Boolean(
+    application?.id &&
+      previousApplicationIdRef.current &&
+      previousApplicationIdRef.current !== application.id,
+  )
+
+  useEffect(() => {
+    previousApplicationIdRef.current = application?.id ?? null
+  }, [application?.id])
 
   useEffect(() => {
     setVisibleDeadlineCount(INSPECTOR_DEADLINE_BATCH_SIZE)
@@ -431,7 +441,12 @@ export function Inspector({
       style={style}
     >
       {resizeHandle}
-      <div key="inspector-default" className="inspector-default-content" aria-hidden={aiActive || undefined} inert={aiActive ? true : undefined}>
+      <div
+        key={application.id}
+        className={`inspector-default-content${isApplicationRecordSwitch ? ' inspector-record-handoff' : ''}`}
+        aria-hidden={aiActive || undefined}
+        inert={aiActive ? true : undefined}
+      >
       <div className="inspector-head">
         <span className="eyebrow">{tx('inspector.title')}</span>
         <StatusPill status={application.status} />

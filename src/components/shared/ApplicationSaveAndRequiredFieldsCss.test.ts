@@ -15,5 +15,11 @@ describe('application save status and required field polish', () => {
     expect(coreStyles).toMatch(
       /\.field-required-mark\s*\{[^}]*margin-inline-start:\s*2px[^}]*color:\s*var\(--danger\)[^}]*letter-spacing:\s*0/s,
     )
+    expect(coreStyles).toMatch(
+      /label:has\(:is\(input, textarea, select\)\[required\], \[aria-required="true"\]\) > span:first-child:not\(\.sr-only\):not\(:has\(\.field-required-mark\)\)::after/s,
+    )
+    expect(coreStyles).toMatch(
+      /content:\s*' \*'[^}]*color:\s*var\(--danger\)/s,
+    )
   })
 })

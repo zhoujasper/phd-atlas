@@ -6,6 +6,8 @@ import {
 import { GraduationCap, RefreshCw } from 'lucide-react'
 import { StandaloneProviders } from '../StandaloneProviders'
 import { useI18n } from '../hooks/useI18n'
+import { reloadPage } from '../../pageReload'
+import { prepareForSafeReload } from '../../safeReload'
 
 function AppRecoveryScreen({ onReload }: { onReload: () => void }) {
   const { tx } = useI18n()
@@ -28,7 +30,7 @@ function AppRecoveryScreen({ onReload }: { onReload: () => void }) {
 
 type AppErrorBoundaryProps = {
   children: ReactNode
-  onReload?: () => void
+  onReload?: () => void | Promise<void>
 }
 
 type AppErrorBoundaryState = {
@@ -37,6 +39,7 @@ type AppErrorBoundaryState = {
 
 export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundaryState> {
   state: AppErrorBoundaryState = { failed: false }
+  private reloadPending = false
 
   static getDerivedStateFromError(): AppErrorBoundaryState {
     return { failed: true }
@@ -46,12 +49,27 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
     console.error('[PhD Atlas] The application render tree was recovered.', error, info)
   }
 
-  private reload = () => {
+  private reload = async () => {
+    if (this.reloadPending) return
+    this.reloadPending = true
     if (this.props.onReload) {
-      this.props.onReload()
+      try {
+        await this.props.onReload()
+      } finally {
+        this.reloadPending = false
+      }
       return
     }
-    window.location.reload()
+    try {
+      if (await prepareForSafeReload({ reason: 'error-recovery' })) {
+        reloadPage()
+        return
+      }
+    } catch (error) {
+      this.reloadPending = false
+      throw error
+    }
+    this.reloadPending = false
   }
 
   render() {

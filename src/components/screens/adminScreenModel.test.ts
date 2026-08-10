@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AdminUser, SystemEvent } from '../../api/phdApi'
+import { DEFAULT_BACKUP_FREQUENCY } from '../../../shared/backupFrequency.js'
 import {
   accountTypeForUser,
   compareAdminUsers,
@@ -67,7 +68,12 @@ describe('admin screen model', () => {
       host: 'db.example.edu',
     })).toMatchObject({ type: 'postgresql', host: 'db.example.edu', port: 5432, ssl: false })
     expect(normalizeBackupFrequency('weekly')).toBe('7d')
-    expect(normalizeBackupFrequency('unexpected')).toBe('daily')
+    // An unreadable stored value falls back to the same cadence the server
+    // falls back to. Disagreeing here is what let the console write a cadence
+    // the account was not on; see backupFrequencyContract.test.ts.
+    expect(normalizeBackupFrequency('unexpected')).toBe(DEFAULT_BACKUP_FREQUENCY)
+    // A cadence the picker does not list still round-trips untouched.
+    expect(normalizeBackupFrequency('15m')).toBe('15m')
     expect(normalizeBackupLimitOption(17)).toBe('10')
   })
 

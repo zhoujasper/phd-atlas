@@ -169,7 +169,9 @@ function mergePeople(preferred = [], fallback = []) {
     }
     output[existingIndex] = mergeMissingFields(output[existingIndex], person)
   }
-  return output.slice(0, 20)
+  // Absolute serialization guard only; evidence-driven advisor discovery is
+  // not truncated by the legacy twenty-advisor UI quota.
+  return output.slice(0, 500)
 }
 
 function mergeScholarships(preferred = [], fallback = []) {
@@ -241,6 +243,10 @@ export function discoverProgramSubjectIdentity(program) {
     .replace(/\bdoctor\s+of\s+philosophy\b/gi, 'PhD')
     .replace(/\bph\s*\.?\s*d\.?/gi, 'PhD')
     .replace(/\bd\s*\.?\s*phil\.?/gi, 'DPhil')
+    // Some official programme pages advertise the same research degree as
+    // "PhD" and "PhD, MScR". The trailing alternative award is not part of
+    // the programme subject and must not create a duplicate decision row.
+    .replace(/(?:\s*[,/]\s*(?:MScR|MRes|MPhil|MSc))+\s*$/gi, '')
     .replace(/\bget\s+(?:a|an|the)?\s*phd\s+education\b/gi, 'PhD')
     .replace(/^\s*about\s+(?:the\s+)?/i, '')
     .split(/\s+(?:\||—|–)\s+/)[0]
@@ -268,6 +274,17 @@ export function isSameDiscoverProgramme(left, right) {
   const leftSubject = discoverProgramSubjectIdentity(left)
   const rightSubject = discoverProgramSubjectIdentity(right)
 
+  const leftCanonicalUrl = canonicalDiscoverProgramUrl(left.website)
+  const rightCanonicalUrl = canonicalDiscoverProgramUrl(right.website)
+  const sameSchool = schoolIdentity(left.school) === schoolIdentity(right.school)
+  if (leftCanonicalUrl && leftCanonicalUrl === rightCanonicalUrl && sameSchool && leftSubject && rightSubject) {
+    const leftWords = new Set(leftSubject.split(/\s+/).filter(Boolean))
+    const rightWords = new Set(rightSubject.split(/\s+/).filter(Boolean))
+    const overlap = [...leftWords].filter((word) => rightWords.has(word)).length
+      / Math.max(1, Math.min(leftWords.size, rightWords.size))
+    if (overlap >= 0.8) return true
+  }
+
   // Never collapse two concrete projects merely because a portal URL or
   // doctoral directory is shared.
   if (leftSubject && rightSubject && leftSubject !== rightSubject) return false
@@ -276,7 +293,6 @@ export function isSameDiscoverProgramme(left, right) {
   const leftUrl = programmeUrl(left.website)
   const rightUrl = programmeUrl(right.website)
   const sameHost = Boolean(leftUrl && rightUrl && leftUrl.hostname === rightUrl.hostname)
-  const sameSchool = schoolIdentity(left.school) === schoolIdentity(right.school)
 
   if (leftUrl && rightUrl && sameProgrammePageFamily(leftUrl, rightUrl)) {
     return sameHost && (sameSchool || doctoralPathRoot(leftUrl) === doctoralPathRoot(rightUrl))
@@ -350,7 +366,7 @@ export function mergeDiscoverProgrammeRecords(preferred, fallback) {
 }
 
 /**
- * Bounded catalog/research dedupe. The list is intentionally small (<=160),
+ * Bounded catalog/research dedupe. The list is intentionally finite,
  * so pairwise strong-identity checks are clearer and safer than fuzzy hashes.
  */
 export function dedupeDiscoverProgrammeRecords(programs = [], {

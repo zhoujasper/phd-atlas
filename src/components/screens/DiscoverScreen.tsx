@@ -1,3 +1,4 @@
+import '../../styles/discover.css'
 import {
   Compass,
   Loader2,
@@ -5,7 +6,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
-import { phdApi, type AiKey, type DiscoverResearchScope } from '../../api/phdApi'
+import { phdApi, readSessionTokenSubject, type AiKey, type DiscoverResearchScope } from '../../api/phdApi'
 import type { ApplicationRecord } from '../../data/applications'
 import { normalizeErrorMessage } from '../../errorMessages'
 import type {
@@ -38,6 +39,16 @@ import {
   type DiscoverSortDirection,
   type DiscoverWorkspaceMode,
 } from '../shared/DiscoverWorkspace'
+import {
+  loadRecoverableDiscoverDraft,
+  opaqueDiscoverDraftUserId,
+  saveRecoverableDiscoverDraft,
+} from './discoverDraftStorage'
+import {
+  normalizeDiscoverQuery,
+  piMatchesDiscoverQuery,
+  programMatchesDiscoverQuery,
+} from './discoverSearch'
 
 function toggleInList(list: string[], id: string) {
   return list.includes(id) ? list.filter((item) => item !== id) : [...list, id]
@@ -124,6 +135,21 @@ export function DiscoverScreen({
       ? { ...activeTeamTarget, onBack: onExitTeamTarget }
       : undefined
   ), [activeTeamTarget, onExitTeamTarget])
+  const personalApplicationOwnerId = useMemo(() => (
+    teamScope ? null : applications.find((application) => application.ownerId)?.ownerId ?? null
+  ), [applications, teamScope])
+  const discoverDraftUserId = readSessionTokenSubject(token)
+    || personalApplicationOwnerId
+    || opaqueDiscoverDraftUserId(token)
+  const discoverDraftApplicationScope = teamScope
+    ? `team-applications:${teamScope.teamId}:${teamScope.targetUserId}`
+    : `personal-applications:${discoverDraftUserId}`
+  const discoverDraftScope = useMemo(() => ({
+    userId: discoverDraftUserId,
+    applicationIds: [discoverDraftApplicationScope],
+    teamId: teamScope?.teamId ?? null,
+    targetUserId: teamScope?.targetUserId ?? null,
+  }), [discoverDraftApplicationScope, discoverDraftUserId, teamScope?.targetUserId, teamScope?.teamId])
 
   const [mode, setMode] = useState<DiscoverWorkspaceMode>('programs')
   const [modeDirection, setModeDirection] = useState<'forward' | 'backward'>('forward')
@@ -158,7 +184,49 @@ export function DiscoverScreen({
   const [intakeDraft, setIntakeDraft] = useState<DiscoverIntake | null>(null)
   const [useApplicationSeeds, setUseApplicationSeeds] = useState(false)
   const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>([])
-  const usableAiKeys = useMemo(() => aiKeys.filter((key) => key.secretSet), [aiKeys])
+  const programNoteDraftsRef = useRef(programNoteDrafts)
+  const piNoteDraftsRef = useRef(piNoteDrafts)
+  const intakeDraftRef = useRef(intakeDraft)
+  const rankerDraftRef = useRef(rankerDraft)
+  const dirtyProgramNoteIdsRef = useRef(new Set<string>())
+  const dirtyPiNoteIdsRef = useRef(new Set<string>())
+  const intakeDraftDirtyRef = useRef(false)
+  const rankerDraftDirtyRef = useRef(false)
+  const recoveryWarningShownRef = useRef(false)
+
+  programNoteDraftsRef.current = programNoteDrafts
+  piNoteDraftsRef.current = piNoteDrafts
+  intakeDraftRef.current = intakeDraft
+  rankerDraftRef.current = rankerDraft
+  const usableAiKeys = useMemo(() => aiKeys.filter((key) => key.secretSet && key.enabled !== false), [aiKeys])
+
+  const persistRecoverableDraft = useCallback(() => {
+    const saved = saveRecoverableDiscoverDraft(discoverDraftScope, {
+      intake: intakeDraftDirtyRef.current ? intakeDraftRef.current : null,
+      ranker: rankerDraftDirtyRef.current ? rankerDraftRef.current : null,
+      programNotes: programNoteDraftsRef.current,
+      piNotes: piNoteDraftsRef.current,
+      dirtyProgramNoteIds: [...dirtyProgramNoteIdsRef.current],
+      dirtyPiNoteIds: [...dirtyPiNoteIdsRef.current],
+    })
+    if (!saved && !recoveryWarningShownRef.current) {
+      recoveryWarningShownRef.current = true
+      onNotify(tx(
+        'localRecoveryUnavailable',
+        'Local draft recovery is unavailable. This page will not reload automatically; save or discard your changes before leaving.',
+      ), 'warning')
+    } else if (saved) {
+      recoveryWarningShownRef.current = false
+    }
+    return saved
+  }, [discoverDraftScope, onNotify, tx])
+
+  const hasResidentDraft = useCallback(() => (
+    intakeDraftDirtyRef.current
+    || rankerDraftDirtyRef.current
+    || dirtyProgramNoteIdsRef.current.size > 0
+    || dirtyPiNoteIdsRef.current.size > 0
+  ), [])
 
   const applyPayload = useCallback((payload: DiscoverCatalogPayload | DiscoverResearchPayload | DiscoverResearchStartPayload) => {
     if ('meta' in payload) setMeta(payload.meta)
@@ -166,15 +234,72 @@ export function DiscoverScreen({
     setState(payload.state)
     setPrograms(payload.programs)
     setPis(payload.pis)
-    setRankerDraft(payload.state.ranker)
-    setIntakeDraft(payload.state.intake)
-    setProgramNoteDrafts(payload.state.programNotes)
-    setPiNoteDrafts(payload.state.piNotes)
+    setRankerDraft((current) => rankerDraftDirtyRef.current ? current : payload.state.ranker)
+    setIntakeDraft((current) => intakeDraftDirtyRef.current ? current : payload.state.intake)
+    setProgramNoteDrafts((current) => {
+      if (!dirtyProgramNoteIdsRef.current.size) return payload.state.programNotes
+      const next = { ...payload.state.programNotes }
+      dirtyProgramNoteIdsRef.current.forEach((id) => {
+        if (Object.hasOwn(current, id)) next[id] = current[id]
+      })
+      programNoteDraftsRef.current = next
+      return next
+    })
+    setPiNoteDrafts((current) => {
+      if (!dirtyPiNoteIdsRef.current.size) return payload.state.piNotes
+      const next = { ...payload.state.piNotes }
+      dirtyPiNoteIdsRef.current.forEach((id) => {
+        if (Object.hasOwn(current, id)) next[id] = current[id]
+      })
+      piNoteDraftsRef.current = next
+      return next
+    })
     const preferredKeyIds = payload.state.preferredAiKeyIds?.length
       ? payload.state.preferredAiKeyIds
       : (payload.state.preferredAiKeyId ? [payload.state.preferredAiKeyId] : [])
     if (preferredKeyIds.length) setSelectedKeyIds(preferredKeyIds)
   }, [])
+
+  useEffect(() => {
+    const recovered = loadRecoverableDiscoverDraft(discoverDraftScope)
+    const nextProgramNotes = recovered?.programNotes ?? {}
+    const nextPiNotes = recovered?.piNotes ?? {}
+    const nextIntake = recovered?.intake ?? null
+    const nextRanker = recovered?.ranker ?? { ...DEFAULT_RANKER }
+    dirtyProgramNoteIdsRef.current = new Set(recovered?.dirtyProgramNoteIds ?? [])
+    dirtyPiNoteIdsRef.current = new Set(recovered?.dirtyPiNoteIds ?? [])
+    intakeDraftDirtyRef.current = Boolean(recovered?.intake)
+    rankerDraftDirtyRef.current = Boolean(recovered?.ranker)
+    programNoteDraftsRef.current = nextProgramNotes
+    piNoteDraftsRef.current = nextPiNotes
+    intakeDraftRef.current = nextIntake
+    rankerDraftRef.current = nextRanker
+    setProgramNoteDrafts(nextProgramNotes)
+    setPiNoteDrafts(nextPiNotes)
+    setIntakeDraft(nextIntake)
+    setRankerDraft(nextRanker)
+  }, [discoverDraftScope])
+
+  useEffect(() => {
+    persistRecoverableDraft()
+  }, [intakeDraft, persistRecoverableDraft, piNoteDrafts, programNoteDrafts, rankerDraft])
+
+  useEffect(() => {
+    const flush = () => { persistRecoverableDraft() }
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      persistRecoverableDraft()
+      if (!hasResidentDraft()) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('pagehide', flush)
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      flush()
+      window.removeEventListener('pagehide', flush)
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [hasResidentDraft, persistRecoverableDraft])
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true)
@@ -196,7 +321,7 @@ export function DiscoverScreen({
       const preferred = payload.state.preferredAiKeyIds?.length
         ? payload.state.preferredAiKeyIds
         : (payload.state.preferredAiKeyId ? [payload.state.preferredAiKeyId] : [])
-      const usableKeys = scopedKeys.filter((key) => key.secretSet)
+      const usableKeys = scopedKeys.filter((key) => key.secretSet && key.enabled !== false)
       const selected = preferred.filter((id) => usableKeys.some((key) => key.id === id))
       if (selected.length) {
         setSelectedKeyIds(selected)
@@ -262,18 +387,24 @@ export function DiscoverScreen({
     poll: refreshResearchState,
   })
 
-  const saveState = useCallback(async (patch: Partial<DiscoverUserState>, toast = false) => {
+  const saveState = useCallback(async (
+    patch: Partial<DiscoverUserState>,
+    toast = false,
+    beforeApply?: () => void,
+  ) => {
     setSaving(true)
     try {
       const payload = await phdApi.updateDiscoverState(token, patch, teamScope)
+      beforeApply?.()
+      persistRecoverableDraft()
       applyPayload(payload)
-      if (toast) onNotify(tx('discover.savedToast'), 'success')
+      if (toast) onNotify(tx('discover.submittedToast'), 'success')
     } catch (reason) {
       onNotify(normalizeErrorMessage(reason, lang, tx('discover.loadError')), 'error')
     } finally {
       setSaving(false)
     }
-  }, [applyPayload, lang, onNotify, teamScope, token, tx])
+  }, [applyPayload, lang, onNotify, persistRecoverableDraft, teamScope, token, tx])
 
   const toggleLocalListState = useCallback((
     key: 'watchedProgramIds' | 'hiddenProgramIds' | 'hiddenPiIds',
@@ -412,6 +543,9 @@ export function DiscoverScreen({
         ...(teamScope || {}),
         acceptSuggestions: true,
       })
+      if (intakeDraftRef.current === intakeDraft) intakeDraftDirtyRef.current = false
+      if (rankerDraftRef.current === rankerDraft) rankerDraftDirtyRef.current = false
+      persistRecoverableDraft()
       applyPayload(payload)
       setResearchSubmissionPhase('queued')
       onNotify(tx('discover.researchQueuedToast', 'Research is running in the background. We will refresh this page and notify you when it finishes.'), 'info')
@@ -423,7 +557,7 @@ export function DiscoverScreen({
     } finally {
       setResearching(false)
     }
-  }, [applications, applyPayload, intakeDraft, lang, onNotify, rankerDraft, selectedKeyIds, state?.interestPicks, teamScope, token, tx, usableAiKeys, useApplicationSeeds])
+  }, [applications, applyPayload, intakeDraft, lang, onNotify, persistRecoverableDraft, rankerDraft, selectedKeyIds, state?.interestPicks, teamScope, token, tx, usableAiKeys, useApplicationSeeds])
 
   const configureAiKeys = useCallback(async () => {
     if (!intakeDraft) {
@@ -445,9 +579,12 @@ export function DiscoverScreen({
         preferredAiKeyId: preferredAiKeyIds[0] ?? null,
         preferredAiKeyIds,
       }, teamScope)
+      if (intakeDraftRef.current === intakeDraft) intakeDraftDirtyRef.current = false
+      if (rankerDraftRef.current === rankerDraft) rankerDraftDirtyRef.current = false
+      persistRecoverableDraft()
       applyPayload(payload)
       setResearchSubmissionPhase('idle')
-      onNotify(tx('discover.savedToast', 'Discover preferences saved'), 'success')
+      onNotify(tx('discover.submittedToast', 'Discover preferences submitted'), 'success')
       onConfigureAiKeys()
     } catch (reason) {
       const message = normalizeErrorMessage(reason, lang, tx('discover.loadError'))
@@ -455,7 +592,7 @@ export function DiscoverScreen({
       setResearchSubmissionPhase('idle')
       onNotify(message, 'error')
     }
-  }, [applyPayload, intakeDraft, lang, onConfigureAiKeys, onNotify, rankerDraft, selectedKeyIds, state?.interestPicks, teamScope, token, tx, usableAiKeys])
+  }, [applyPayload, intakeDraft, lang, onConfigureAiKeys, onNotify, persistRecoverableDraft, rankerDraft, selectedKeyIds, state?.interestPicks, teamScope, token, tx, usableAiKeys])
 
   const deletePrograms = useCallback(async (ids: string[]) => {
     const uniqueIds = [...new Set(ids)].filter(Boolean)
@@ -476,6 +613,7 @@ export function DiscoverScreen({
       )
     } catch (reason) {
       onNotify(normalizeErrorMessage(reason, lang, tx('discover.loadError')), 'error')
+      throw reason
     } finally {
       setDeletingProgramIds([])
     }
@@ -508,7 +646,7 @@ export function DiscoverScreen({
   const scoreByProgramId = useMemo(() => Object.fromEntries(programs.map((program) => [program.id, weightedScore(program, rankerDraft)])), [programs, rankerDraft])
 
   const filteredPrograms = useMemo(() => {
-    const normalizedQuery = deferredQuery.trim().toLowerCase()
+    const normalizedQuery = normalizeDiscoverQuery(deferredQuery)
     const direction = sortDirection === 'asc' ? 1 : -1
     const visible = programs.filter((program) => {
       if (!showHidden && program.hidden) return false
@@ -519,13 +657,7 @@ export function DiscoverScreen({
       if (minMatch && (scoreByProgramId[program.id] ?? program.matchScore) < minMatch) return false
       if (hedgeFilter !== 'all' && program.multiApply !== hedgeFilter) return false
       if (!programMatchesRequirementFilters(program.requirements, program.multiApply, reqFilters)) return false
-      if (!normalizedQuery) return true
-      const requirements = [
-        ...(program.requirements?.materials || []).map((item) => item.name),
-        ...(program.requirements?.tests || []).map((item) => `${item.name} ${item.status}`),
-      ].join(' ')
-      return [program.school, program.program, program.city, program.country, program.researchFocus, requirements, ...(program.tags || [])]
-        .join(' ').toLowerCase().includes(normalizedQuery)
+      return programMatchesDiscoverQuery(program, normalizedQuery)
     })
     return visible.sort((left, right) => {
       if (programSort === 'program') return direction * `${left.school} ${left.program}`.localeCompare(`${right.school} ${right.program}`)
@@ -539,14 +671,13 @@ export function DiscoverScreen({
   }, [deferredQuery, hedgeFilter, meetFloorOnly, minMatch, minStipend, programSort, programs, regionFilters, reqFilters, scoreByProgramId, showHidden, sortDirection, watchedOnly])
 
   const filteredPis = useMemo(() => {
-    const normalizedQuery = deferredQuery.trim().toLowerCase()
+    const normalizedQuery = normalizeDiscoverQuery(deferredQuery)
     return pis.filter((pi) => {
       if (!showHidden && pi.hidden) return false
       if (regionFilters.length && !regionFilters.includes(pi.region)) return false
       if (piCategory !== 'all' && pi.category !== piCategory) return false
       if (minHIndex && (pi.hIndex == null || pi.hIndex < minHIndex)) return false
-      if (!normalizedQuery) return true
-      return [pi.name, pi.school, pi.program, pi.research, pi.whyFit].join(' ').toLowerCase().includes(normalizedQuery)
+      return piMatchesDiscoverQuery(pi, normalizedQuery)
     }).sort((left, right) => right.matchScore - left.matchScore)
   }, [deferredQuery, minHIndex, piCategory, pis, regionFilters, showHidden])
 
@@ -668,10 +799,44 @@ export function DiscoverScreen({
     hidePrograms,
     togglePiHidden,
     importProgram: (programId: string, piId?: string | null) => void importProgram(programId, piId),
-    updateProgramNote: (id: string, value: string) => setProgramNoteDrafts((current) => ({ ...current, [id]: value })),
-    saveProgramNote: (id: string) => void saveState({ programNotes: { ...state.programNotes, [id]: programNoteDrafts[id] || '' } }, true),
-    updatePiNote: (id: string, value: string) => setPiNoteDrafts((current) => ({ ...current, [id]: value })),
-    savePiNote: (id: string) => void saveState({ piNotes: { ...state.piNotes, [id]: piNoteDrafts[id] || '' } }, true),
+    updateProgramNote: (id: string, value: string) => {
+      dirtyProgramNoteIdsRef.current.add(id)
+      const next = { ...programNoteDraftsRef.current, [id]: value }
+      programNoteDraftsRef.current = next
+      persistRecoverableDraft()
+      setProgramNoteDrafts(next)
+    },
+    saveProgramNote: (id: string) => {
+      const submitted = programNoteDraftsRef.current[id] || ''
+      void saveState(
+        { programNotes: { ...(stateRef.current?.programNotes || {}), [id]: submitted } },
+        true,
+        () => {
+          if ((programNoteDraftsRef.current[id] || '') === submitted) {
+            dirtyProgramNoteIdsRef.current.delete(id)
+          }
+        },
+      )
+    },
+    updatePiNote: (id: string, value: string) => {
+      dirtyPiNoteIdsRef.current.add(id)
+      const next = { ...piNoteDraftsRef.current, [id]: value }
+      piNoteDraftsRef.current = next
+      persistRecoverableDraft()
+      setPiNoteDrafts(next)
+    },
+    savePiNote: (id: string) => {
+      const submitted = piNoteDraftsRef.current[id] || ''
+      void saveState(
+        { piNotes: { ...(stateRef.current?.piNotes || {}), [id]: submitted } },
+        true,
+        () => {
+          if ((piNoteDraftsRef.current[id] || '') === submitted) {
+            dirtyPiNoteIdsRef.current.delete(id)
+          }
+        },
+      )
+    },
     toggleRegion: (region: string) => setRegionFilters((current) => toggleInList(current, region)),
     setMinStipend,
     setMinMatch,
@@ -682,8 +847,19 @@ export function DiscoverScreen({
     setPiCategory,
     setMinHIndex,
     toggleRequirement: (key: keyof RequirementFilterState) => setReqFilters((current) => key === 'deadlineWithinDays' ? { ...current, deadlineWithinDays: current.deadlineWithinDays ? 0 : 60 } : { ...current, [key]: !current[key] }),
-    setRankerWeight: (key: keyof DiscoverRankerWeights, value: number) => setRankerDraft((current) => ({ ...current, [key]: value })),
-    saveRanker: () => void saveState({ ranker: rankerDraft }, true),
+    setRankerWeight: (key: keyof DiscoverRankerWeights, value: number) => {
+      rankerDraftDirtyRef.current = true
+      const next = { ...rankerDraftRef.current, [key]: value }
+      rankerDraftRef.current = next
+      persistRecoverableDraft()
+      setRankerDraft(next)
+    },
+    saveRanker: () => {
+      const submitted = rankerDraftRef.current
+      void saveState({ ranker: submitted }, true, () => {
+        if (rankerDraftRef.current === submitted) rankerDraftDirtyRef.current = false
+      })
+    },
     clearFilters,
     setProgramSort,
     toggleSortDirection: () => setSortDirection((value) => value === 'asc' ? 'desc' : 'asc'),
@@ -697,6 +873,7 @@ export function DiscoverScreen({
         mode={mode}
         modeDirection={modeDirection}
         query={query}
+        catalogProgramCount={programs.length}
         programs={filteredPrograms}
         pis={filteredPis}
         selectedProgram={selectedProgram}
@@ -743,7 +920,12 @@ export function DiscoverScreen({
           setResearchSubmissionPhase('idle')
           setResearchSubmissionError(null)
         }}
-        onDraftChange={setIntakeDraft}
+        onDraftChange={(nextDraft) => {
+          intakeDraftDirtyRef.current = true
+          intakeDraftRef.current = nextDraft
+          persistRecoverableDraft()
+          setIntakeDraft(nextDraft)
+        }}
         onUseApplicationSeedsChange={setUseApplicationSeeds}
         onSelectedKeyIdsChange={setSelectedKeyIds}
         onTeamTargetChange={onTeamTargetChange}
@@ -766,8 +948,7 @@ export function DiscoverScreen({
         variant="danger"
         onConfirm={() => {
           const ids = pendingDeleteProgramIds || []
-          setPendingDeleteProgramIds(null)
-          void deletePrograms(ids)
+          return deletePrograms(ids).then(() => setPendingDeleteProgramIds(null))
         }}
         onCancel={() => setPendingDeleteProgramIds(null)}
       />

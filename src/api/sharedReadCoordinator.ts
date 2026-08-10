@@ -1,5 +1,7 @@
 type SharedReadEntry = {
   controller: AbortController
+  invalidationListeners: Set<(reason: Error) => void>
+  orphanAbortScheduled: boolean
   promise: Promise<unknown>
   settled: boolean
   subscribers: number
@@ -24,8 +26,9 @@ function abortReason(signal: AbortSignal) {
  *
  * Every caller is an independent subscriber. Cancelling one subscriber does
  * not interrupt another; once the final subscriber leaves, the shared
- * transport is aborted and removed immediately so a later caller starts a
- * fresh request. Starters must honor the supplied signal.
+ * transport is aborted after one microtask. That bounded handoff lets React's
+ * development-only effect cleanup/remount rejoin the same transport without
+ * issuing a duplicate request. Starters must honor the supplied signal.
  */
 export class SharedReadCoordinator {
   private readonly entries = new Map<string, SharedReadEntry>()
@@ -50,6 +53,8 @@ export class SharedReadCoordinator {
       })
       entry = {
         controller,
+        invalidationListeners: new Set(),
+        orphanAbortScheduled: false,
         promise,
         settled: false,
         subscribers: 0,
@@ -67,6 +72,7 @@ export class SharedReadCoordinator {
       )
     }
 
+    entry.orphanAbortScheduled = false
     entry.subscribers += 1
     const subscribedEntry = entry
 
@@ -77,10 +83,18 @@ export class SharedReadCoordinator {
         if (released) return
         released = true
         subscriberSignal?.removeEventListener('abort', handleAbort)
+        subscribedEntry.invalidationListeners.delete(handleInvalidation)
         subscribedEntry.subscribers = Math.max(0, subscribedEntry.subscribers - 1)
         if (subscribedEntry.subscribers > 0 || subscribedEntry.settled) return
-        if (this.entries.get(key) === subscribedEntry) this.entries.delete(key)
-        subscribedEntry.controller.abort()
+        if (subscribedEntry.orphanAbortScheduled) return
+        subscribedEntry.orphanAbortScheduled = true
+        queueMicrotask(() => {
+          subscribedEntry.orphanAbortScheduled = false
+          if (subscribedEntry.subscribers > 0 || subscribedEntry.settled) return
+          if (this.entries.get(key) !== subscribedEntry) return
+          this.entries.delete(key)
+          subscribedEntry.controller.abort()
+        })
       }
 
       const handleAbort = () => {
@@ -91,7 +105,13 @@ export class SharedReadCoordinator {
         reject(reason)
       }
 
+      const handleInvalidation = (reason: Error) => {
+        release()
+        reject(reason)
+      }
+
       subscriberSignal?.addEventListener('abort', handleAbort, { once: true })
+      subscribedEntry.invalidationListeners.add(handleInvalidation)
       if (subscriberSignal?.aborted) {
         handleAbort()
         return
@@ -115,13 +135,28 @@ export class SharedReadCoordinator {
     for (const [key, entry] of this.entries) {
       if (!key.startsWith(prefix)) continue
       this.entries.delete(key)
-      entry.controller.abort(new SharedReadInvalidatedError())
+      this.invalidateEntry(entry)
     }
   }
 
-  clear() {
-    for (const entry of this.entries.values()) entry.controller.abort()
+  invalidateMatching(matches: (key: string) => boolean) {
+    for (const [key, entry] of this.entries) {
+      if (!matches(key)) continue
+      this.entries.delete(key)
+      this.invalidateEntry(entry)
+    }
+  }
+
+  clear(reason: Error = new SharedReadInvalidatedError()) {
+    for (const entry of this.entries.values()) this.invalidateEntry(entry, reason)
     this.entries.clear()
+  }
+
+  private invalidateEntry(entry: SharedReadEntry, reason = new SharedReadInvalidatedError()) {
+    if (entry.settled) return
+    entry.controller.abort(reason)
+    for (const invalidate of [...entry.invalidationListeners]) invalidate(reason)
+    entry.invalidationListeners.clear()
   }
 
   private finish(key: string, entry: SharedReadEntry) {

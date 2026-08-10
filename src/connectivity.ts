@@ -13,7 +13,7 @@ export type ConnectivitySnapshot = {
 
 export type ApiRequestBlockReason = 'manual-offline' | 'browser-offline' | 'server-unreachable'
 
-type ApiUnavailableEvidence = 'transport' | 'timeout'
+type ApiUnavailableEvidence = 'confirmed' | 'gateway' | 'transport' | 'timeout'
 
 type ApiUnavailableOptions = {
   evidence?: ApiUnavailableEvidence
@@ -31,6 +31,10 @@ const RECOVERY_PROBE_TIMEOUT_MS = 4_500
 const RECONNECT_MIN_MS = 1_500
 const RECONNECT_MAX_MS = 30_000
 const SLOW_RESPONSE_MS = 1_500
+const TRANSPORT_FAILURE_THRESHOLD = 2
+const TRANSPORT_FAILURE_WINDOW_MS = 5_000
+const TIMEOUT_FAILURE_WINDOW_MS = 60_000
+export const CONNECTIVITY_OUTAGE_GRACE_MS = 7_000
 const MANUAL_OFFLINE_KEY = 'phd-atlas-manual-offline:v1'
 const listeners = new Set<() => void>()
 
@@ -112,9 +116,15 @@ let healthSocketGeneration = 0
 let connectTimeout: number | null = null
 let staleTimeout: number | null = null
 let reconnectTimeout: number | null = null
+let outageConfirmationTimeout: number | null = null
+let outageConfirmationGeneration = 0
+let httpRecoveryPending = false
+const retiredSocketDeadlines = new Map<WebSocket, number>()
 let automaticProbeNotBefore = 0
 let recoveryReconnectAttempt = 0
 let socketReconnectAttempt = 0
+let recentUnconfirmedFailures = 0
+let lastUnconfirmedFailureAt = 0
 let monitorCleanup: (() => void) | null = null
 let monitorConsumers = 0
 
@@ -141,6 +151,12 @@ function clearReconnectTimer({ preserveDeadline = false } = {}) {
   if (!preserveDeadline) automaticProbeNotBefore = 0
 }
 
+function clearOutageConfirmation() {
+  outageConfirmationGeneration += 1
+  if (outageConfirmationTimeout !== null) window.clearTimeout(outageConfirmationTimeout)
+  outageConfirmationTimeout = null
+}
+
 function takeSocketProbeResolver() {
   const resolve = resolveSocketProbe
   resolveSocketProbe = null
@@ -161,25 +177,85 @@ function cancelRecoveryProbe() {
 }
 
 function retireHealthSocket(socket: WebSocket) {
-  const closeAfterOpen = () => {
+  if (retiredSocketDeadlines.has(socket)) return
+
+  const clearRetirement = () => {
+    const deadline = retiredSocketDeadlines.get(socket)
+    if (deadline !== undefined) window.clearTimeout(deadline)
+    retiredSocketDeadlines.delete(socket)
+  }
+  const detachRetiredHandlers = () => {
     socket.onopen = null
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.close(1000, 'connectivity monitoring paused')
+    socket.onmessage = null
+    socket.onerror = null
+    socket.onclose = null
+  }
+  const finishRetirement = () => {
+    clearRetirement()
+    detachRetiredHandlers()
+  }
+  const closeRetiredSocket = () => {
+    clearRetirement()
+    socket.onopen = null
+    socket.onmessage = null
+    // These callbacks are private to the retired socket. They only release
+    // their own references and can never publish connectivity state or touch
+    // the active generation's probe/timers.
+    socket.onerror = finishRetirement
+    socket.onclose = finishRetirement
+    try {
+      if (
+        socket.readyState === WebSocket.CONNECTING
+        || socket.readyState === WebSocket.OPEN
+      ) {
+        socket.close(1000, 'connectivity monitoring paused')
+      } else {
+        finishRetirement()
+      }
+    } catch {
+      // Some browser engines can throw while a handshake is being torn down.
+      // The socket is already detached from Atlas state, so releasing the
+      // private callbacks is the safe terminal action.
+      finishRetirement()
     }
   }
 
   // A browser reports `WebSocket is closed before the connection is
   // established` when close() is called in CONNECTING. Detach this retired
-  // generation immediately, then close it normally if the handshake wins the
-  // race. Generation checks remain the authority for all active callbacks.
+  // generation immediately and give its handshake one bounded window to
+  // finish normally. A black-holed handshake is force-closed at the same
+  // deadline as an active connection attempt, so repeated focus/force probes
+  // cannot retain old sockets forever.
   socket.onmessage = null
-  socket.onerror = null
-  socket.onclose = null
   if (socket.readyState === WebSocket.CONNECTING) {
-    socket.onopen = closeAfterOpen
+    socket.onopen = closeRetiredSocket
+    socket.onerror = finishRetirement
+    socket.onclose = finishRetirement
+    const deadline = window.setTimeout(closeRetiredSocket, SOCKET_CONNECT_TIMEOUT_MS)
+    retiredSocketDeadlines.set(socket, deadline)
   } else {
-    closeAfterOpen()
+    closeRetiredSocket()
   }
+}
+
+function clearRetiredSocketsForTests() {
+  for (const [socket, deadline] of retiredSocketDeadlines) {
+    window.clearTimeout(deadline)
+    socket.onopen = null
+    socket.onmessage = null
+    socket.onerror = null
+    socket.onclose = null
+    try {
+      if (
+        socket.readyState === WebSocket.CONNECTING
+        || socket.readyState === WebSocket.OPEN
+      ) socket.close(1000, 'connectivity test reset')
+    } catch {
+      // Test cleanup must remain best effort and must not surface a noisy
+      // unhandled error from an implementation-specific CONNECTING close.
+    }
+  }
+  retiredSocketDeadlines.clear()
 }
 
 export function resolveHealthSocketUrl(
@@ -225,7 +301,7 @@ function healthHttpUrl() {
 }
 
 function reconnectDelay() {
-  const recoveringServer = snapshot.serverReachable === false
+  const recoveringServer = httpRecoveryPending || snapshot.serverReachable === false
   const attempt = recoveringServer ? recoveryReconnectAttempt : socketReconnectAttempt
   if (recoveringServer) recoveryReconnectAttempt += 1
   else socketReconnectAttempt += 1
@@ -274,18 +350,29 @@ function disconnectHealthSocket() {
   }
 }
 
-async function parseHealthResponse(response: Response) {
-  if (!response.ok) return false
+type HealthResponseState = 'ready' | 'recovering' | 'invalid'
+
+async function parseHealthResponse(response: Response): Promise<HealthResponseState> {
+  if (!response.ok) return 'invalid'
   const contentType = response.headers.get('content-type') ?? ''
-  if (!contentType.toLowerCase().includes('json')) return false
+  if (!contentType.toLowerCase().includes('json')) return 'invalid'
   try {
     const payload = await response.json() as {
       ok?: unknown
-      data?: { status?: unknown }
+      data?: { status?: unknown; ready?: unknown }
     }
-    return payload.ok === true && payload.data?.status === 'ok'
+    if (payload.ok !== true || !payload.data || typeof payload.data.status !== 'string') {
+      return 'invalid'
+    }
+    if (payload.data.status === 'ok' && payload.data.ready !== false) return 'ready'
+    if (
+      payload.data.ready === false
+      || payload.data.status === 'starting'
+      || payload.data.status === 'degraded'
+    ) return 'recovering'
+    return 'invalid'
   } catch {
-    return false
+    return 'invalid'
   }
 }
 
@@ -319,14 +406,18 @@ function probeServerViaHttp({ force = false } = {}) {
         headers: { Accept: 'application/json' },
         signal: controller.signal,
       })
-      const reachable = await parseHealthResponse(response)
+      const healthState = await parseHealthResponse(response)
       if (
         generation !== recoveryGeneration
         || recoveryController !== controller
         || controller.signal.aborted
       ) return snapshot
-      if (!reachable) {
-        reportApiUnavailable({ observedGeneration })
+      if (healthState === 'invalid') {
+        reportApiUnavailable({ evidence: 'gateway', observedGeneration })
+        return snapshot
+      }
+      if (healthState === 'recovering') {
+        reportApiRecovering(performance.now() - startedAt)
         return snapshot
       }
       reportApiReachable(performance.now() - startedAt)
@@ -337,7 +428,7 @@ function probeServerViaHttp({ force = false } = {}) {
         || recoveryController !== controller
         || controller.signal.aborted && !browserIsOnline()
       ) return snapshot
-      reportApiUnavailable({ observedGeneration })
+      reportApiUnavailable({ evidence: 'gateway', observedGeneration })
       return snapshot
     } finally {
       window.clearTimeout(timeout)
@@ -489,13 +580,17 @@ export function reportApiReachable(
   // The health channel and the single recovery probe deliberately omit an
   // observed generation because they are current reachability checks.
   if (
-    snapshot.serverReachable === false
+    (snapshot.serverReachable === false || httpRecoveryPending)
     && observedGeneration !== undefined
     && observedGeneration !== connectivityGeneration
   ) {
     return snapshot
   }
+  clearOutageConfirmation()
+  httpRecoveryPending = false
   connectivityGeneration += 1
+  recentUnconfirmedFailures = 0
+  lastUnconfirmedFailureAt = 0
   recoveryReconnectAttempt = 0
   const measuredLatency = typeof latencyMs === 'number' && Number.isFinite(latencyMs)
     ? Math.max(0, Math.round(latencyMs))
@@ -543,6 +638,8 @@ export function setManualOfflineMode(enabled: boolean) {
   if (enabled === snapshot.manualOffline) return snapshot
   persistManualOffline(enabled)
   if (enabled) {
+    clearOutageConfirmation()
+    httpRecoveryPending = false
     clearReconnectTimer()
     cancelRecoveryProbe()
     disconnectHealthSocket()
@@ -570,24 +667,9 @@ export function setManualOfflineMode(enabled: boolean) {
   })
 }
 
-export function reportApiUnavailable({
-  evidence = 'transport',
-  observedGeneration,
-}: ApiUnavailableOptions = {}) {
-  if (
-    observedGeneration !== undefined
-    && observedGeneration !== connectivityGeneration
-  ) return snapshot
-  if (
-    evidence === 'timeout'
-    && healthSocketReady
-    && healthSocket?.readyState === WebSocket.OPEN
-    && snapshot.serverReachable === true
-  ) {
-    return snapshot
-  }
-
-  const browserOnline = browserIsOnline()
+function publishConfirmedApiUnavailable(browserOnline = browserIsOnline()) {
+  clearOutageConfirmation()
+  httpRecoveryPending = browserOnline && !snapshot.manualOffline
   const nextMode = snapshot.manualOffline ? 'offline' : browserOnline ? 'server-unreachable' : 'offline'
   const stateChanged = snapshot.mode !== nextMode
     || snapshot.browserOnline !== browserOnline
@@ -601,7 +683,7 @@ export function reportApiUnavailable({
         serverReachable: false,
         latencyMs: null,
         checkedAt: nowIso(),
-        consecutiveFailures: snapshot.consecutiveFailures + 1,
+        consecutiveFailures: Math.max(1, snapshot.consecutiveFailures),
       })
     : snapshot
 
@@ -611,6 +693,127 @@ export function reportApiUnavailable({
     scheduleReconnect()
   }
   return next
+}
+
+function beginApiOutageConfirmation() {
+  const browserOnline = browserIsOnline()
+  if (!browserOnline || snapshot.manualOffline) {
+    return publishConfirmedApiUnavailable(browserOnline)
+  }
+  if (snapshot.serverReachable === false && snapshot.mode === 'server-unreachable') {
+    return snapshot
+  }
+
+  httpRecoveryPending = true
+  const startsConfirmation = outageConfirmationTimeout === null
+  if (startsConfirmation) {
+    const confirmationGeneration = ++outageConfirmationGeneration
+    outageConfirmationTimeout = window.setTimeout(() => {
+      if (
+        confirmationGeneration !== outageConfirmationGeneration
+        || !httpRecoveryPending
+        || snapshot.manualOffline
+      ) return
+      outageConfirmationTimeout = null
+      publishConfirmedApiUnavailable()
+    }, CONNECTIVITY_OUTAGE_GRACE_MS)
+  }
+
+  const stateChanged = snapshot.mode !== 'checking'
+    || !snapshot.browserOnline
+    || snapshot.serverReachable !== null
+  if (stateChanged) connectivityGeneration += 1
+  const next = stateChanged
+    ? publish({
+        ...snapshot,
+        mode: 'checking',
+        browserOnline: true,
+        serverReachable: null,
+        latencyMs: null,
+        checkedAt: nowIso(),
+        consecutiveFailures: startsConfirmation
+          ? snapshot.consecutiveFailures + 1
+          : snapshot.consecutiveFailures,
+      })
+    : snapshot
+
+  disconnectHealthSocket()
+  clearReconnectTimer()
+  scheduleReconnect()
+  return next
+}
+
+function reportApiRecovering(latencyMs?: number) {
+  clearOutageConfirmation()
+  httpRecoveryPending = true
+  recentUnconfirmedFailures = 0
+  lastUnconfirmedFailureAt = 0
+  const measuredLatency = typeof latencyMs === 'number' && Number.isFinite(latencyMs)
+    ? Math.max(0, Math.round(latencyMs))
+    : snapshot.latencyMs
+  const stateChanged = snapshot.mode !== 'checking'
+    || !snapshot.browserOnline
+    || snapshot.serverReachable !== true
+    || measuredLatency !== snapshot.latencyMs
+  if (stateChanged) connectivityGeneration += 1
+  const next = stateChanged
+    ? publish({
+        ...snapshot,
+        mode: 'checking',
+        browserOnline: true,
+        serverReachable: true,
+        latencyMs: measuredLatency,
+        checkedAt: nowIso(),
+        consecutiveFailures: Math.max(1, snapshot.consecutiveFailures),
+      })
+    : snapshot
+
+  disconnectHealthSocket()
+  clearReconnectTimer()
+  scheduleReconnect()
+  return next
+}
+
+export function reportApiUnavailable({
+  evidence = 'confirmed',
+  observedGeneration,
+}: ApiUnavailableOptions = {}) {
+  if (
+    observedGeneration !== undefined
+    && observedGeneration !== connectivityGeneration
+  ) return snapshot
+  if (
+    (evidence === 'transport' || evidence === 'timeout')
+    && healthSocketReady
+    && healthSocket?.readyState === WebSocket.OPEN
+    && snapshot.serverReachable === true
+  ) {
+    return snapshot
+  }
+
+  const browserOnline = browserIsOnline()
+  if (
+    (evidence === 'transport' || evidence === 'timeout')
+    && browserOnline
+    && !snapshot.manualOffline
+    && snapshot.serverReachable !== false
+  ) {
+    const now = Date.now()
+    const failureWindowMs = evidence === 'timeout'
+      ? TIMEOUT_FAILURE_WINDOW_MS
+      : TRANSPORT_FAILURE_WINDOW_MS
+    recentUnconfirmedFailures = now - lastUnconfirmedFailureAt <= failureWindowMs
+      ? recentUnconfirmedFailures + 1
+      : 1
+    lastUnconfirmedFailureAt = now
+    if (recentUnconfirmedFailures < TRANSPORT_FAILURE_THRESHOLD) return snapshot
+  }
+  recentUnconfirmedFailures = 0
+  lastUnconfirmedFailureAt = 0
+  if (evidence !== 'confirmed' && browserOnline && !snapshot.manualOffline) {
+    return beginApiOutageConfirmation()
+  }
+  return publishConfirmedApiUnavailable(browserOnline)
 }
 
 /**
@@ -625,7 +828,7 @@ export function probeServerConnectivity(options: { force?: boolean } = {}) {
     return Promise.resolve(snapshot)
   }
   if (recoveryProbeInFlight) return recoveryProbeInFlight
-  if (snapshot.serverReachable === false) {
+  if (httpRecoveryPending || snapshot.serverReachable === false) {
     return probeServerViaHttp({ force })
   }
   if (!force && automaticProbeNotBefore > Date.now()) {
@@ -693,11 +896,16 @@ function stopConnectivityMonitoring() {
 export function resetConnectivityForTests() {
   monitorConsumers = 0
   clearReconnectTimer()
+  clearOutageConfirmation()
+  httpRecoveryPending = false
   cancelRecoveryProbe()
   monitorCleanup?.()
   disconnectHealthSocket()
+  clearRetiredSocketsForTests()
   recoveryReconnectAttempt = 0
   socketReconnectAttempt = 0
+  recentUnconfirmedFailures = 0
+  lastUnconfirmedFailureAt = 0
   connectivityGeneration = 0
   const online = browserIsOnline()
   persistManualOffline(false)

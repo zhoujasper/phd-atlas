@@ -1,13 +1,18 @@
+import '../../styles/ai.css'
 import { Bot, ChevronDown, CircleCheck, Clock3, KeyRound, LoaderCircle, Plus, RotateCcw, Save, ShieldCheck, Trash2, Wifi, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import type { AiKey, AiKeyInput, AiProvider } from '../../api/phdApi'
+import type { AiKey, AiKeyInput, AiKeyRequestMode, AiProvider } from '../../api/phdApi'
+import { AI_KEY_MAX_CONCURRENCY } from '../../../shared/aiConcurrency.js'
+import { AI_KEY_MAX_WEIGHT, AI_KEY_MIN_WEIGHT } from '../../../shared/aiKeyRouting.js'
 import { normalizeErrorMessage } from '../../errorMessages'
 import { localeForLanguage } from '../../i18n'
 import { useI18n } from '../hooks/useI18n'
 import { getMotionDelay } from '../hooks/useAnimatedClose'
 import { CollapsiblePanel } from './CollapsiblePanel'
+import { InfoTooltip } from './InfoTooltip'
 import { InlineConfirm } from './InlineConfirm'
 import { Select } from './Select'
+import { SwitchControl } from './SwitchControl'
 
 type NotifyTone = 'success' | 'error' | 'info' | 'warning'
 
@@ -23,6 +28,10 @@ type KeyForm = {
   model: string
   baseUrl: string
   apiKey: string
+  maxConcurrency: number
+  requestMode: AiKeyRequestMode
+  weight: number
+  enabled: boolean
 }
 
 const providerDefaults: Record<AiProvider, Pick<KeyForm, 'label' | 'model' | 'baseUrl'>> = {
@@ -35,7 +44,15 @@ const providerDefaults: Record<AiProvider, Pick<KeyForm, 'label' | 'model' | 'ba
 const providerOptions = Object.entries(providerDefaults).map(([value, item]) => ({ value, label: item.label }))
 
 function freshForm(): KeyForm {
-  return { provider: 'openai', ...providerDefaults.openai, apiKey: '' }
+  return {
+    provider: 'openai',
+    ...providerDefaults.openai,
+    apiKey: '',
+    maxConcurrency: 4,
+    requestMode: 'auto',
+    weight: 50,
+    enabled: true,
+  }
 }
 
 function formatTimestamp(value: string | null, lang: string, fallback: string) {
@@ -67,7 +84,7 @@ export function AiKeyManager({
   autoOpenAdd?: boolean
   copyPrefix: 'settings' | 'team'
   onCreate?: (input: AiKeyInput) => Promise<void> | void
-  onUpdate?: (id: string, input: Partial<Pick<AiKeyInput, 'label' | 'model' | 'baseUrl' | 'apiKey'>>) => Promise<void> | void
+  onUpdate?: (id: string, input: Partial<Pick<AiKeyInput, 'label' | 'model' | 'baseUrl' | 'apiKey' | 'maxConcurrency' | 'requestMode' | 'weight' | 'enabled'>>) => Promise<void> | void
   onDelete?: (id: string) => Promise<void> | void
   /** Live provider probe for a saved key. Returns latency ms on success; throws on failure. */
   onTest?: (id: string) => Promise<{ latencyMs: number; model?: string }>
@@ -92,6 +109,11 @@ export function AiKeyManager({
   const apiKeyInputRef = useRef<HTMLInputElement | null>(null)
   const copy = (key: string, fallback?: string) => tx(`${copyPrefix}.ai.${key}`, fallback)
   const notify = (message: string, tone: NotifyTone = 'error') => onNotify?.(message, tone)
+  const requestModeOptions = [
+    { value: 'auto', label: copy('requestModeAuto', 'Auto') },
+    { value: 'responses', label: copy('requestModeResponses', 'Responses API') },
+    { value: 'chat_completions', label: copy('requestModeChatCompletions', 'Chat Completions') },
+  ]
   const scopedKeys = useMemo(
     () => keys.filter((key) => key.scope === scope && (scope === 'personal' || key.teamId === teamId)),
     [keys, scope, teamId],
@@ -128,13 +150,30 @@ export function AiKeyManager({
     setClosingDeleteId(null)
     setPendingUsageResetId(null)
     setExpandedId(key.id)
-    setEditing({ provider: key.provider, label: key.label, model: key.model, baseUrl: key.baseUrl, apiKey: '' })
+    setEditing({
+      provider: key.provider,
+      label: key.label,
+      model: key.model,
+      baseUrl: key.baseUrl,
+      apiKey: '',
+      maxConcurrency: key.maxConcurrency ?? 4,
+      requestMode: key.requestMode ?? 'auto',
+      weight: key.weight ?? 50,
+      enabled: key.enabled !== false,
+    })
   }
 
   const updateProvider = (nextProvider: string) => {
     const provider = nextProvider as AiProvider
     const defaults = providerDefaults[provider]
-    setEditing((current) => ({ ...current, provider, label: current.label || defaults.label, model: defaults.model, baseUrl: '' }))
+    setEditing((current) => ({
+      ...current,
+      provider,
+      label: current.label || defaults.label,
+      model: defaults.model,
+      baseUrl: '',
+      requestMode: 'auto',
+    }))
   }
 
   const submitAdd = async (event: FormEvent) => {
@@ -155,6 +194,10 @@ export function AiKeyManager({
         model: editing.model.trim() || providerDefaults[editing.provider].model,
         baseUrl: editing.baseUrl.trim(),
         apiKey: editing.apiKey.trim(),
+        maxConcurrency: editing.maxConcurrency || 4,
+        requestMode: editing.requestMode,
+        weight: editing.weight || 50,
+        enabled: editing.enabled,
       })
       setAdding(false)
       setFormError(null)
@@ -177,6 +220,10 @@ export function AiKeyManager({
         label: editing.label.trim() || key.label,
         model: editing.model.trim() || key.model,
         baseUrl: editing.baseUrl.trim(),
+        maxConcurrency: editing.maxConcurrency || 4,
+        requestMode: editing.requestMode,
+        weight: editing.weight || 50,
+        enabled: editing.enabled,
         ...(editing.apiKey.trim() ? { apiKey: editing.apiKey.trim() } : {}),
       })
       setExpandedId(null)
@@ -193,7 +240,6 @@ export function AiKeyManager({
   const deleteKey = async (id: string) => {
     if (!onDelete) return
     setBusy(true)
-    setPendingDeleteId(null)
     setClosingDeleteId(null)
     setRemovingId(id)
     try {
@@ -201,11 +247,13 @@ export function AiKeyManager({
         window.setTimeout(resolve, getMotionDelay(380))
       })
       await onDelete(id)
+      setPendingDeleteId(null)
       setPendingUsageResetId(null)
       setExpandedId(null)
       setTestResult(null)
     } catch (cause) {
       notify(normalizeErrorMessage(cause, lang, copy('saveError')), 'error')
+      throw cause
     } finally {
       setRemovingId(null)
       setBusy(false)
@@ -233,6 +281,21 @@ export function AiKeyManager({
       await onResetUsage(id)
       setPendingUsageResetId(null)
     } catch (cause) {
+      notify(normalizeErrorMessage(cause, lang, copy('saveError')), 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggleKeyEnabled = async (key: AiKey, enabled: boolean) => {
+    if (!onUpdate || busy) return
+    const previous = editing.enabled
+    setEditing((current) => ({ ...current, enabled }))
+    setBusy(true)
+    try {
+      await onUpdate(key.id, { enabled })
+    } catch (cause) {
+      setEditing((current) => ({ ...current, enabled: previous }))
       notify(normalizeErrorMessage(cause, lang, copy('saveError')), 'error')
     } finally {
       setBusy(false)
@@ -267,11 +330,13 @@ export function AiKeyManager({
 
   const form = (mode: 'add' | 'edit', key?: AiKey) => {
     const formErrorId = `ai-key-${mode}-${key?.id ?? 'new'}-error`
+    const supportsRequestMode = editing.provider === 'openai' || editing.provider === 'deepseek'
+    const enabledLabel = editing.enabled ? copy('enabled', 'Enabled') : copy('disabled', 'Disabled')
     return (
     <form className="ai-key-form" onSubmit={(event) => mode === 'add' ? void submitAdd(event) : key && void submitEdit(event, key)}>
-      <div className="ai-key-form-grid">
-        <label data-tour={mode === 'add' ? 'ai-key-provider-field' : undefined}>
-          <span>{copy('provider')}</span>
+      <div className="ai-key-form-grid ai-key-identity-grid">
+        <label className="ai-key-provider-field" data-tour={mode === 'add' ? 'ai-key-provider-field' : undefined}>
+          <span className="ai-key-field-label">{copy('provider')}</span>
           <Select
             size="small"
             value={editing.provider}
@@ -281,46 +346,157 @@ export function AiKeyManager({
             disabled={mode === 'edit'}
           />
         </label>
-        <label>
-          <span>{copy('label')}</span>
+        <label className="ai-key-name-field">
+          <span className="ai-key-field-label">{copy('label')}</span>
           <input value={editing.label} onChange={(event) => setEditing((current) => ({ ...current, label: event.target.value }))} maxLength={80} placeholder={providerDefaults[editing.provider].label} />
         </label>
-        <label>
-          <span>{copy('model')}</span>
+        <label className="ai-key-model-field">
+          <span className="ai-key-field-label">{copy('model')}</span>
           <input value={editing.model} onChange={(event) => setEditing((current) => ({ ...current, model: event.target.value }))} maxLength={160} placeholder={providerDefaults[editing.provider].model} />
         </label>
-        <label>
-          <span>{copy('baseUrl')}</span>
+      </div>
+      <div className="ai-key-form-grid ai-key-routing-grid">
+        <label className="ai-key-base-url-field">
+          <span className="ai-key-field-label">{copy('baseUrl')}</span>
           <input value={editing.baseUrl} onChange={(event) => setEditing((current) => ({ ...current, baseUrl: event.target.value }))} maxLength={500} placeholder={copy('baseUrlPlaceholder')} inputMode="url" />
         </label>
+        <div className="ai-key-field ai-key-request-mode-field">
+          <span className="ai-key-field-label">
+            {copy('requestMode', 'Request mode')}
+            <InfoTooltip
+              className="ai-key-field-info"
+              content={copy('requestModeHint', 'Auto follows the provider default. Choose Responses or Chat Completions only when the endpoint supports that protocol.')}
+              label={copy('requestModeInfo', 'About request modes')}
+            />
+          </span>
+          <Select
+            size="small"
+            value={supportsRequestMode ? editing.requestMode : 'auto'}
+            options={supportsRequestMode
+              ? requestModeOptions
+              : [{ value: 'auto', label: copy('requestModeNative', 'Provider native') }]}
+            onChange={(value) => setEditing((current) => ({ ...current, requestMode: value as AiKeyRequestMode }))}
+            ariaLabel={copy('requestMode', 'Request mode')}
+            disabled={!supportsRequestMode}
+          />
+        </div>
+        <div className="ai-key-field ai-key-concurrency-field">
+          <span className="ai-key-field-label">
+            {copy('maxConcurrency')}
+            <InfoTooltip
+              className="ai-key-field-info"
+              content={copy('maxConcurrencyHint')}
+              label={copy('maxConcurrencyInfo', 'About concurrency limits')}
+            />
+          </span>
+          <input
+            type="number"
+            min={1}
+            max={AI_KEY_MAX_CONCURRENCY}
+            step={1}
+            value={editing.maxConcurrency || ''}
+            aria-label={copy('maxConcurrency')}
+            onChange={(event) => setEditing((current) => ({
+              ...current,
+              maxConcurrency: event.target.value === ''
+                ? 0
+                : Math.min(AI_KEY_MAX_CONCURRENCY, Math.max(1, Math.floor(event.target.valueAsNumber || 1))),
+            }))}
+          />
+        </div>
+        <div className="ai-key-field ai-key-weight-field">
+          <span className="ai-key-field-label">
+            {copy('weight', 'Weight')}
+            <InfoTooltip
+              className="ai-key-field-info"
+              content={copy('weightHint', 'Higher weights receive a larger share of requests when several enabled keys are selected.')}
+              label={copy('weightInfo', 'About key weights')}
+            />
+          </span>
+          <input
+            type="number"
+            min={AI_KEY_MIN_WEIGHT}
+            max={AI_KEY_MAX_WEIGHT}
+            step={1}
+            value={editing.weight || ''}
+            aria-label={copy('weight', 'Weight')}
+            onChange={(event) => setEditing((current) => ({
+              ...current,
+              weight: event.target.value === ''
+                ? 0
+                : Math.min(AI_KEY_MAX_WEIGHT, Math.max(AI_KEY_MIN_WEIGHT, Math.floor(event.target.valueAsNumber || AI_KEY_MIN_WEIGHT))),
+            }))}
+          />
+        </div>
       </div>
       <label className="ai-key-secret-field">
-        <span>{mode === 'edit' ? copy('replaceKey') : copy('apiKey')}</span>
-        <input ref={mode === 'add' ? apiKeyInputRef : undefined} type="password" autoComplete="new-password" value={editing.apiKey} onChange={(event) => { setFormError(null); setEditing((current) => ({ ...current, apiKey: event.target.value })) }} placeholder={mode === 'edit' ? copy('replaceKeyPlaceholder') : copy('apiKeyPlaceholder')} aria-label={mode === 'edit' ? copy('replaceKey') : copy('apiKey')} aria-invalid={Boolean(formError) || undefined} aria-describedby={formError ? formErrorId : undefined} />
+        <span className="ai-key-field-label">{mode === 'edit' ? copy('replaceKey') : copy('apiKey')}</span>
+        <input ref={mode === 'add' ? apiKeyInputRef : undefined} type="password" autoComplete="new-password" value={editing.apiKey} onChange={(event) => { setFormError(null); setEditing((current) => ({ ...current, apiKey: event.target.value })) }} placeholder={mode === 'edit' ? copy('replaceKeyPlaceholder') : copy('apiKeyPlaceholder')} aria-label={mode === 'edit' ? copy('replaceKey') : copy('apiKey')} aria-required={mode === 'add' || undefined} aria-invalid={Boolean(formError) || undefined} aria-describedby={formError ? formErrorId : undefined} />
         <small>{mode === 'edit' ? copy('replaceKeyHint') : copy('keyEncryptionHint')}</small>
         {formError ? <small id={formErrorId} className="ai-key-form-error" role="alert">{formError}</small> : null}
       </label>
-      <div className="ai-key-form-actions">
-        <button type="submit" className="primary-action ai-key-save-action" disabled={busy || Boolean(testingId)}>
-          {busy ? <LoaderCircle className="ai-spin" size={13} aria-hidden="true" /> : mode === 'edit' ? <Save size={13} aria-hidden="true" /> : <Plus size={13} aria-hidden="true" />}
-          {mode === 'edit' ? copy('save') : copy('add')}
-        </button>
-        {mode === 'edit' && key && onTest ? (
-          <button
-            type="button"
-            className="secondary-action ai-key-test-action"
-            disabled={busy || testingId === key.id}
-            onClick={() => void testKey(key)}
-          >
-            {testingId === key.id
-              ? <LoaderCircle className="ai-spin" size={13} aria-hidden="true" />
-              : <Wifi size={13} aria-hidden="true" />}
-            {testingId === key.id ? copy('testing') : copy('test')}
+      <div className="ai-key-form-footer">
+        <div className="ai-key-form-actions">
+          <button type="submit" className="primary-action ai-key-save-action" disabled={busy || Boolean(testingId)}>
+            {busy ? <LoaderCircle className="ai-spin" size={13} aria-hidden="true" /> : mode === 'edit' ? <Save size={13} aria-hidden="true" /> : <Plus size={13} aria-hidden="true" />}
+            {mode === 'edit' ? copy('save') : copy('add')}
           </button>
-        ) : null}
-        <button type="button" className="quiet-action" disabled={busy || Boolean(testingId)} onClick={() => { setAdding(false); setExpandedId(null); setTestResult(null); setFormError(null); setEditing(freshForm()) }}>
-          <X size={13} aria-hidden="true" /> {copy('cancel')}
-        </button>
+          {mode === 'edit' && key && onTest ? (
+            <button
+              type="button"
+              className="secondary-action ai-key-test-action"
+              disabled={busy || testingId === key.id || !editing.enabled}
+              onClick={() => void testKey(key)}
+            >
+              {testingId === key.id
+                ? <LoaderCircle className="ai-spin" size={13} aria-hidden="true" />
+                : <Wifi size={13} aria-hidden="true" />}
+              {testingId === key.id ? copy('testing') : copy('test')}
+            </button>
+          ) : null}
+          <button type="button" className="quiet-action" disabled={busy || Boolean(testingId)} onClick={() => { setAdding(false); setExpandedId(null); setTestResult(null); setFormError(null); setEditing(freshForm()) }}>
+            <X size={13} aria-hidden="true" /> {copy('cancel')}
+          </button>
+          {mode === 'edit' && key && onDelete ? (
+            <InlineConfirm
+              className="ai-key-delete-inline"
+              open={pendingDeleteId === key.id && closingDeleteId !== key.id}
+              busy={busy}
+              disabled={busy}
+              confirmTone="danger"
+              confirmLabel={copy('remove')}
+              idleTitle={copy('remove')}
+              idleAriaLabel={copy('remove')}
+              idleClassName="ai-key-delete-button"
+              onOpen={() => {
+                if (deleteCloseTimerRef.current) window.clearTimeout(deleteCloseTimerRef.current)
+                setClosingDeleteId(null)
+                setPendingUsageResetId(null)
+                setPendingDeleteId(key.id)
+              }}
+              onCancel={() => closeDeleteConfirm(key.id)}
+              onConfirm={() => deleteKey(key.id)}
+            >
+              <Trash2 size={13} aria-hidden="true" />
+              <span>{copy('remove')}</span>
+            </InlineConfirm>
+          ) : null}
+        </div>
+        <div className={`ai-key-enabled-control${editing.enabled ? ' is-enabled' : ''}`}>
+          <span>
+            <strong>{enabledLabel}</strong>
+            <small>{editing.enabled ? copy('enabledHint', 'Available for requests') : copy('disabledHint', 'Excluded from requests')}</small>
+          </span>
+          <SwitchControl
+            checked={editing.enabled}
+            disabled={busy || Boolean(testingId)}
+            label={copy('enabledToggle', 'Enable this AI key')}
+            onChange={(enabled) => {
+              if (mode === 'edit' && key) void toggleKeyEnabled(key, enabled)
+              else setEditing((current) => ({ ...current, enabled }))
+            }}
+          />
+        </div>
       </div>
     </form>
     )
@@ -359,18 +535,44 @@ export function AiKeyManager({
             const open = expandedId === key.id
             const usage = key.usage ?? { calls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, resetAt: null }
             const number = new Intl.NumberFormat(localeForLanguage(lang))
+            const requestModeLabel = key.provider === 'openai' || key.provider === 'deepseek'
+              ? requestModeOptions.find((option) => option.value === (key.requestMode ?? 'auto'))?.label
+                ?? copy('requestModeAuto', 'Auto')
+              : copy('requestModeNative', 'Provider native')
             return (
-              <article key={key.id} className={`ai-key-item ${open ? 'expanded' : ''}${pendingDeleteId === key.id || closingDeleteId === key.id ? ' is-deleting' : ''}${closingDeleteId === key.id ? ' is-delete-closing' : ''}${removingId === key.id ? ' is-removing' : ''}`} aria-busy={removingId === key.id || undefined}>
+              <article key={key.id} className={`ai-key-item ${open ? 'expanded' : ''}${key.enabled === false ? ' is-disabled' : ''}${pendingDeleteId === key.id || closingDeleteId === key.id ? ' is-deleting' : ''}${closingDeleteId === key.id ? ' is-delete-closing' : ''}${removingId === key.id ? ' is-removing' : ''}`} aria-busy={removingId === key.id || undefined}>
                 <div className="ai-key-summary-row">
-                  <button type="button" className="ai-key-summary" aria-expanded={open} aria-controls={`ai-key-detail-${key.id}`} onClick={() => open ? setExpandedId(null) : openEdit(key)}>
+                  <button
+                    type="button"
+                    className="ai-key-summary"
+                    aria-label={`${key.label} · ${providerDefaults[key.provider].label} · ${key.model} · ${key.enabled === false ? copy('disabled', 'Disabled') : copy('connected')}`}
+                    aria-expanded={open}
+                    aria-controls={`ai-key-detail-${key.id}`}
+                    onClick={() => {
+                      if (open) {
+                        setPendingDeleteId(null)
+                        setPendingUsageResetId(null)
+                        setExpandedId(null)
+                      } else {
+                        openEdit(key)
+                      }
+                    }}
+                  >
                     <span className="ai-key-provider-icon" aria-hidden="true"><KeyRound size={15} /></span>
                     <span className="ai-key-summary-copy">
-                      <small className="ai-key-provider-label">{providerDefaults[key.provider].label}</small>
+                      <small className="ai-key-provider-label">
+                        {providerDefaults[key.provider].label}
+                        <span>{format(copy('weightSummary', 'Weight {count}'), { count: String(key.weight ?? 50) })}</span>
+                      </small>
                       <strong>{key.label}</strong>
-                      <span className="ai-key-summary-model">{key.model}</span>
+                      <span className="ai-key-summary-model">
+                        {key.model} · {requestModeLabel} · {format(copy('concurrencySummary'), { count: String(key.maxConcurrency ?? 4) })}
+                      </span>
                     </span>
                     <span className="ai-key-summary-meta">
-                      {testResult?.keyId === key.id && testResult.ok ? (
+                      {key.enabled === false ? (
+                        <span className="ai-key-ready ai-key-paused">{copy('disabled', 'Disabled')}</span>
+                      ) : testResult?.keyId === key.id && testResult.ok ? (
                         <span className="ai-key-ready ai-key-tested"><CircleCheck size={11} aria-hidden="true" /> {copy('testPassed')}</span>
                       ) : testResult?.keyId === key.id && !testResult.ok ? (
                         <span className="ai-key-ready ai-key-test-failed">{copy('testFailedChip')}</span>
@@ -380,31 +582,6 @@ export function AiKeyManager({
                       <ChevronDown size={15} aria-hidden="true" />
                     </span>
                   </button>
-                  {canManage ? (
-                    <div className="ai-key-summary-actions">
-                      <InlineConfirm
-                        className="ai-key-delete-inline"
-                        open={pendingDeleteId === key.id && closingDeleteId !== key.id}
-                        busy={busy}
-                        disabled={busy}
-                        confirmTone="danger"
-                        confirmLabel={copy('remove')}
-                        idleTitle={copy('remove')}
-                        idleAriaLabel={copy('remove')}
-                        idleClassName="ai-key-delete-button"
-                        onOpen={() => {
-                          if (deleteCloseTimerRef.current) window.clearTimeout(deleteCloseTimerRef.current)
-                          setClosingDeleteId(null)
-                          setPendingUsageResetId(null)
-                          setPendingDeleteId(key.id)
-                        }}
-                        onCancel={() => closeDeleteConfirm(key.id)}
-                        onConfirm={() => void deleteKey(key.id)}
-                      >
-                        <Trash2 size={14} aria-hidden="true" />
-                      </InlineConfirm>
-                    </div>
-                  ) : null}
                 </div>
                 <CollapsiblePanel open={open} id={`ai-key-detail-${key.id}`} className="ai-key-detail" innerClassName="ai-key-detail-inner" collapseMs={260} keepMounted>
                   <div className="ai-key-detail-meta">
@@ -439,7 +616,7 @@ export function AiKeyManager({
                           setPendingUsageResetId(key.id)
                         }}
                         onCancel={() => setPendingUsageResetId(null)}
-                        onConfirm={() => void resetUsage(key.id)}
+                        onConfirm={() => resetUsage(key.id)}
                       >
                         <RotateCcw size={11} aria-hidden="true" />
                         <span>{copy('usageReset')}</span>

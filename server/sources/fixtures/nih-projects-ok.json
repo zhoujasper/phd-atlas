@@ -1,0 +1,38 @@
+{
+  "_fixture": {
+    "type": "synthetic-documented",
+    "recordedAt": null,
+    "note": "Synthetic response shaped from the documented NIH RePORTER v2 search API. It is not claimed to be a live capture."
+  },
+  "meta": {
+    "total": 1
+  },
+  "results": [
+    {
+      "application_id": 1111111,
+      "project_num": "1R01AI000001-01A1",
+      "project_title": "Machine Learning for Immune Cell Dynamics",
+      "project_abstract_text": "This project applies machine learning to immune-cell time series.",
+      "agency_ic_admin": "NIAID",
+      "study_section": "ZRG1",
+      "fiscal_year": 2025,
+      "principal_investigators": [
+        {
+          "full_name": "Rosa Franklin"
+        }
+      ],
+      "organization": {
+        "name": "Example Medical School",
+        "city": "Boston",
+        "state": "MA"
+      },
+      "award_amount": 750000,
+      "project_start_date": "2025-01-01",
+      "project_end_date": "2028-12-31",
+      "project_terms": [
+        "machine learning",
+        "immunology"
+      ]
+    }
+  ]
+}

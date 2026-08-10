@@ -4,15 +4,13 @@ import { LayoutGrid, List } from 'lucide-react'
 export type LibraryViewMode = 'cards' | 'list'
 export type LibraryViewTransitionScope = 'profile' | 'team' | 'team-discover'
 
-type LibraryViewTransition = {
-  finished: Promise<unknown>
-}
-
-type LibraryViewTransitionDocument = {
-  startViewTransition?: (update: () => void) => LibraryViewTransition
+type LibraryScrollAnchor = {
+  owner: HTMLElement
+  scrollTop: number
 }
 
 let libraryViewTransitionSequence = 0
+const LIBRARY_VIEW_HANDOFF_CLEANUP_MS = 280
 
 function prefersReducedMotion() {
   return typeof window !== 'undefined'
@@ -20,23 +18,35 @@ function prefersReducedMotion() {
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
-function clearTransitionAttributes(root: HTMLElement, token: string) {
-  if (root.dataset.libraryViewTransitionToken !== token) return
-  delete root.dataset.libraryViewTransitionToken
-  delete root.dataset.libraryViewTransitionScope
-  delete root.dataset.libraryViewTransitionDirection
-  delete root.dataset.libraryViewTransitionMode
+function findScrollOwner(element: HTMLElement) {
+  let parent = element.parentElement
+  while (parent && parent !== document.body) {
+    const overflowY = window.getComputedStyle(parent).overflowY
+    if (/^(auto|scroll|overlay)$/.test(overflowY)) return parent
+    parent = parent.parentElement
+  }
+
+  const scrollingElement = document.scrollingElement
+  return scrollingElement instanceof HTMLElement ? scrollingElement : document.documentElement
 }
 
-function stabilizeLibraryHeight(controlsId: string) {
+function captureScrollAnchor(controlsId: string): LibraryScrollAnchor | null {
   const currentView = document.getElementById(controlsId)
-  const host = currentView?.parentElement
-  if (!currentView || !host) return
-  const measuredHeight = currentView.getBoundingClientRect().height
-  if (!Number.isFinite(measuredHeight) || measuredHeight <= 0) return
-  const previousHeight = Number.parseFloat(host.style.getPropertyValue('--library-view-stable-height')) || 0
-  host.style.setProperty('--library-view-stable-height', `${Math.max(previousHeight, measuredHeight)}px`)
-  host.dataset.libraryViewStable = 'true'
+  if (!currentView) return null
+  const owner = findScrollOwner(currentView)
+  return { owner, scrollTop: owner.scrollTop }
+}
+
+function restoreScrollAnchor(anchor: LibraryScrollAnchor | null) {
+  if (!anchor || Math.abs(anchor.owner.scrollTop - anchor.scrollTop) < 0.5) return
+  anchor.owner.scrollTop = anchor.scrollTop
+}
+
+function clearLocalTransition(host: HTMLElement, token: string) {
+  if (host.dataset.libraryViewTransitionToken !== token) return
+  delete host.dataset.libraryViewTransitionToken
+  delete host.dataset.libraryViewTransitionScope
+  delete host.dataset.libraryViewTransitionDirection
 }
 
 export function LibraryViewSwitch({
@@ -60,47 +70,41 @@ export function LibraryViewSwitch({
 }) {
   const changeView = (nextValue: LibraryViewMode) => {
     if (value === nextValue) return
-    stabilizeLibraryHeight(controlsId)
-    if (typeof document === 'undefined' || prefersReducedMotion()) {
+    if (typeof document === 'undefined') {
       onChange(nextValue)
       return
     }
 
-    const root = document.documentElement
-    const transitionDocument = document as LibraryViewTransitionDocument
-    const direction = nextValue === 'list' ? 'forward' : 'backward'
+    const currentView = document.getElementById(controlsId)
+    const host = currentView?.parentElement ?? null
+    const scrollAnchor = captureScrollAnchor(controlsId)
+    const reducedMotion = prefersReducedMotion()
     const token = String(++libraryViewTransitionSequence)
-    const nativeTransition = Reflect.get(
-      transitionDocument,
-      'startViewTransition',
-    ) as undefined | ((update: () => void) => LibraryViewTransition)
 
-    root.dataset.libraryViewTransitionToken = token
-    root.dataset.libraryViewTransitionScope = transitionScope
-    root.dataset.libraryViewTransitionDirection = direction
-    root.dataset.libraryViewTransitionMode = nativeTransition ? 'native' : 'fallback'
-
-    if (!nativeTransition) {
-      onChange(nextValue)
-      window.setTimeout(() => clearTransitionAttributes(root, token), 360)
-      return
+    // Keep the handoff entirely inside the library boundary. A document View
+    // Transition always captures the root as well, which made unrelated page
+    // geometry participate in this small card/list toggle.
+    if (host && !reducedMotion) {
+      host.dataset.libraryViewTransitionToken = token
+      host.dataset.libraryViewTransitionScope = transitionScope
+      host.dataset.libraryViewTransitionDirection = nextValue === 'list' ? 'forward' : 'backward'
     }
 
-    let committed = false
-    try {
-      const transition = nativeTransition.call(transitionDocument, () => {
-        committed = true
-        flushSync(() => onChange(nextValue))
+    flushSync(() => onChange(nextValue))
+    restoreScrollAnchor(scrollAnchor)
+
+    if (!host || reducedMotion) return
+
+    // Scroll anchoring can run after React's synchronous commit. Re-assert the
+    // same local scroll position on the next layout frame without holding a
+    // permanent min-height or touching the document transition root.
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => {
+        if (host.dataset.libraryViewTransitionToken !== token) return
+        restoreScrollAnchor(scrollAnchor)
       })
-      void transition.finished.then(
-        () => clearTransitionAttributes(root, token),
-        () => clearTransitionAttributes(root, token),
-      )
-    } catch {
-      root.dataset.libraryViewTransitionMode = 'fallback'
-      if (!committed) onChange(nextValue)
-      window.setTimeout(() => clearTransitionAttributes(root, token), 360)
     }
+    window.setTimeout(() => clearLocalTransition(host, token), LIBRARY_VIEW_HANDOFF_CLEANUP_MS)
   }
 
   return (

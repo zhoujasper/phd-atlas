@@ -1,5 +1,5 @@
 import { Save, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   type ProfilePreset,
   type TeamProfilePreset,
@@ -12,6 +12,7 @@ import {
 import { languageLabel } from '../../i18n'
 import { CUSTOM_PROFILE_KIND, isBuiltInProfilePresetKind } from '../../profileAssets'
 import { profilePresetInsertLabels } from '../../profilePresets'
+import { registerSafeReloadGuard } from '../../safeReload'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { useI18n } from '../hooks/useI18n'
 import { useModalA11y } from '../hooks/useModalA11y'
@@ -71,9 +72,30 @@ export function ProfilePresetEditorDialog({
   const [name, setName] = useState('')
   const [saving, setSaving] = useState(false)
   const nameRef = useRef<HTMLInputElement | null>(null)
+  const draftOwnerRef = useRef<{ scope: 'personal' | 'team'; presetId: string | null } | null>(null)
+  const baselinePendingRef = useRef(false)
+  const baselineSignatureRef = useRef<string | null>(null)
+  const dirtyForSafeReloadRef = useRef(false)
+  const mutationInFlightRef = useRef(false)
+  const safeReloadGuardId = useId()
+  const draftSignature = useMemo(() => JSON.stringify({ name, draft }), [draft, name])
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      draftOwnerRef.current = null
+      baselinePendingRef.current = false
+      baselineSignatureRef.current = null
+      return
+    }
+    const presetId = preset?.id ?? null
+    const currentOwner = draftOwnerRef.current
+    // Session/mail-sync refreshes rebuild preset objects even when the editor is
+    // still owned by the same record. Seed only on a real open/identity change so
+    // those snapshots cannot replace text the user is actively writing.
+    if (currentOwner?.scope === scope && currentOwner.presetId === presetId) return
+    draftOwnerRef.current = { scope, presetId }
+    baselinePendingRef.current = true
+    baselineSignatureRef.current = null
     const teamPreset = preset as TeamProfilePreset | null
     // Built-in system presets: dual-slot insert copy always follows current first/second
     // content languages (every supported language has a pack), not stale stored en/zh text.
@@ -95,12 +117,37 @@ export function ProfilePresetEditorDialog({
     })
     setName(liveInsert?.primary || liveInsert?.secondary || displayNameFromPreset(preset))
     setSaving(false)
-  }, [open, pair, preset])
+  }, [open, pair, preset, scope])
+
+  useLayoutEffect(() => {
+    if (!open || !baselinePendingRef.current) return
+    // The seeding effect schedules state updates first. Capture only the next
+    // rendered frame so the baseline cannot accidentally use the prior editor.
+    baselineSignatureRef.current = draftSignature
+    baselinePendingRef.current = false
+  }, [draftSignature, open])
+
+  const presetDraftDirty = Boolean(
+    open
+    && baselineSignatureRef.current !== null
+    && draftSignature !== baselineSignatureRef.current,
+  )
+  dirtyForSafeReloadRef.current = presetDraftDirty || saving
+
+  useEffect(() => {
+    if (!open) return undefined
+    return registerSafeReloadGuard(`profile-preset-editor:${safeReloadGuardId}`, {
+      prepare: () => !(dirtyForSafeReloadRef.current || mutationInFlightRef.current),
+      hasUnsavedChanges: () => dirtyForSafeReloadRef.current || mutationInFlightRef.current,
+    })
+  }, [open, safeReloadGuardId])
 
   const { exiting, requestClose } = useAnimatedClose(open, onClose, 120)
   const dialogRef = useModalA11y<HTMLElement>({
     open,
-    onClose: () => requestClose(),
+    onClose: () => {
+      if (!saving) requestClose()
+    },
     initialFocusRef: nameRef,
   })
 
@@ -120,14 +167,14 @@ export function ProfilePresetEditorDialog({
 
   return (
     <ModalPortal>
-      <div className={`dialog-layer profile-library-layer${exiting ? ' exiting' : ''}`} onClick={(event) => { if (event.target === event.currentTarget) requestClose() }}>
+      <div className={`dialog-layer profile-library-layer${exiting ? ' exiting' : ''}`} onClick={(event) => { if (event.target === event.currentTarget && !saving) requestClose() }}>
         <section ref={dialogRef} className="new-dialog profile-library-dialog profile-preset-editor-dialog" role="dialog" aria-modal="true" aria-label={tx(preset ? 'profile.editPreset' : 'profile.createPreset')}>
           <div className="dialog-head">
             <div>
               <span className="eyebrow">{tx('profile.presetsEyebrow')}</span>
               <h2>{tx(preset ? 'profile.editPreset' : 'profile.createPreset')}</h2>
             </div>
-            <button type="button" className="icon-action" onClick={() => requestClose()} aria-label={tx('close')}>
+            <button type="button" className="icon-action" onClick={() => { if (!saving) requestClose() }} disabled={saving} aria-label={tx('close')}>
               <X size={16} aria-hidden="true" />
             </button>
           </div>
@@ -135,6 +182,7 @@ export function ProfilePresetEditorDialog({
           <form className="profile-preset-editor-form" onSubmit={async (event) => {
             event.preventDefault()
             if (!valid || saving) return
+            mutationInFlightRef.current = true
             setSaving(true)
             try {
               const safeColor = scope === 'team' && draft.color === 'system' ? 'blue' : draft.color
@@ -153,11 +201,13 @@ export function ProfilePresetEditorDialog({
                 contentZh: draft.contentZh.trim(),
                 contentEn: draft.contentEn.trim(),
               })
+              baselineSignatureRef.current = draftSignature
               requestClose()
             } catch {
               // The parent owns user-facing error reporting. Keep the editor open
               // so the draft is not lost and the user can retry.
             } finally {
+              mutationInFlightRef.current = false
               setSaving(false)
             }
           }}>
@@ -173,6 +223,7 @@ export function ProfilePresetEditorDialog({
                 <span className="sr-only">{tx('profile.presetName')}</span>
                 <input
                   ref={nameRef}
+                  required
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   placeholder={tx('profile.presetNamePlaceholder')}
@@ -252,7 +303,7 @@ export function ProfilePresetEditorDialog({
             </section>
 
             <div className="profile-preset-editor-actions">
-              <button type="button" className="secondary-action" onClick={() => requestClose()}>{tx('cancel')}</button>
+              <button type="button" className="secondary-action" onClick={() => requestClose()} disabled={saving}>{tx('cancel')}</button>
               <button type="submit" className="primary-action" disabled={!valid || saving} aria-busy={saving || undefined}>
                 {saving ? (
                   <PendingLabel label={tx('working')} />

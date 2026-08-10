@@ -72,18 +72,23 @@ describe('signed-out and Pro marketing experiences', () => {
     expect(actualFiles).toEqual(expectedFiles)
     expect(actualFiles).toHaveLength(288)
     expect(captureSource).toContain('deviceScaleFactor: 2')
-    expect(captureSource).toContain('quality: 100')
+    expect(captureSource).toContain('const captureWebpQuality = 82')
+    expect(captureSource).toContain('quality: captureWebpQuality')
     expect(captureSource).toContain("mobile: { width: 390, height: 844")
     expect(captureSource).toContain("type: 'team-discover'")
     expect(captureSource).toContain("localStorage.setItem('phd-atlas-session'")
+    let totalBytes = 0
     for (const file of actualFiles) {
-      const minimumBytes = file.includes('-mobile.webp') ? 80_000 : 200_000
-      expect(statSync(join(screenshotDirectory, file)).size, file).toBeGreaterThan(minimumBytes)
+      const size = statSync(join(screenshotDirectory, file)).size
+      const minimumBytes = file.includes('-mobile.webp') ? 15_000 : 50_000
+      totalBytes += size
+      expect(size, file).toBeGreaterThan(minimumBytes)
     }
+    expect(totalBytes).toBeLessThan(30 * 1024 * 1024)
   })
 
   it('draws mounted checklist checkmarks without an inward press transform', () => {
-    expect(dossierSource).toContain('<AnimatedCheckmark checked={submitted}')
+    expect(dossierSource).toContain('<AnimatedCheckmark checked={visualChecked}')
     expect(dossierSource).toContain('<AnimatedCheckmark checked={task.done}')
     expect(indexStyles).toMatch(
       /\.checklist-check-btn:active:not\(:disabled\)\s*\{[^}]*transform:\s*none;/,
@@ -110,7 +115,10 @@ describe('signed-out and Pro marketing experiences', () => {
       /\.auth-marketing-page \.auth-sheet \.captcha-row > input,[\s\S]*?min-height:\s*36px;[\s\S]*?height:\s*36px;/,
     )
     expect(marketingStyles).toMatch(
-      /@media \(max-width: 560px\)[\s\S]*?\.auth-marketing-page \.email-code-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto/s,
+      /@media \(max-width: 560px\)[\s\S]*?\.auth-marketing-page \.email-code-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) max-content/s,
+    )
+    expect(marketingStyles).toMatch(
+      /\.auth-marketing-page \.email-code-row > \.email-code-send-btn\s*\{[\s\S]*?min-width:\s*max-content;[\s\S]*?overflow:\s*visible;[\s\S]*?text-overflow:\s*clip;/,
     )
     expect(marketingStyles).not.toMatch(
       /\.auth-marketing-page \.email-code-row,\s*\.auth-marketing-page \.captcha-row\s*\{[^}]*grid-template-columns:\s*1fr/s,

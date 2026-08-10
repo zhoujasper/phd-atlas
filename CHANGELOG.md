@@ -8,6 +8,388 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-10
+
+This is the first stable public release. The entries below describe the work
+completed since `0.1.0-beta.8`; they intentionally include both visible product
+changes and the reliability work required to make the stable release honest.
+
+### Added
+
+- Added a continuous Admissions evidence workbench inside each application.
+  Outcomes, decision-cycle distributions, advisor awards, funded projects,
+  publications, unmatched evidence, bookmarks, and the final source ledger are
+  separated clearly so a public post can never be presented as an official
+  acceptance rate.
+- Added a credential-free Reddit Atom fallback for historical applicant
+  evidence. Query variants fail independently, successful posts keep their
+  post-level permanent links, and school/programme mismatches stay visible as
+  unmatched evidence without entering any admission statistic.
+- Added official UKRI Gateway to Research project evidence alongside NSF, NIH,
+  and OpenAlex. Every displayed research record retains its exact source URL,
+  fetch time, match reason, and verified-or-possible status.
+- Refreshed the independently checked Princeton neuroscience programme and
+  advisor gold set with current Graduate School, PNI, QCN, PACM, Computer
+  Science, personal, and research-profile URLs. Maintained school adapters may
+  now request a larger but still absolutely capped page budget so every
+  declared official fallback can be attempted when one university host is
+  intermittently unavailable. Gold-set people can also carry official name
+  variants, so a middle initial on one university page does not turn the same
+  advisor into a false mismatch.
+- Added target-bound saved research reports. Changing the school, programme, or
+  advisor marks an earlier report stale and hides it until a new lookup
+  succeeds, preventing evidence from one application appearing under another.
+- Added installable PhD Atlas integrations for Codex and Claude Desktop: a
+  direct Skill ZIP, optional local MCP Plugin ZIP, and one-click MCPB package,
+  each with a matching checksum and the same account-scoped permission model.
+- Added browser-based device authorization for MCP / Skill connections, with
+  requested-scope review, connection naming, pause/resume, deletion, expiry,
+  inactivity revocation, and immediate invalidation after account-security
+  changes or a full restore.
+- Added user-managed mail categories, custom category creation, multiple labels
+  on one message, combined filtering, and AI classification that can return
+  several allowed labels without inventing new ones.
+- Added per-key AI routing controls. Saved keys can be enabled or paused,
+  weighted independently, assigned a visible maximum concurrency from 1 to
+  2,500, and configured for Auto, Responses API, or Chat Completions where
+  supported. Weighted admission still obeys one aggregate 2,500 safety ceiling.
+- Added an independent eight-programme / 24-advisor Discover gold set and a
+  live-provider evaluation ledger. Integrity and coverage are scored
+  separately, failed rounds remain in the record, and a model can extract
+  evidence but cannot certify its own result.
+- Added semantic timeline event types for deadlines, reminders, tasks, mail,
+  manual notes, scholarships, tuition, and application fees, including direct
+  navigation back to the exact source item.
+- Added explicit Preview, Download, and Delete actions for uploaded checklist
+  files while retaining double-click filename editing and read-only safety.
+- Added a viewport-level application batch-action dock, a sticky real table
+  header, progressive near-bottom row loading, and retained selection when the
+  resident table is temporarily hidden behind Board.
+- Added field-specific multilingual validation and recovery surfaces that name,
+  reveal, and focus the exact invalid control instead of showing only a generic
+  error.
+- Added extreme-scale qualification for 100,000 metadata rows, a real 20,000-row
+  encrypted database, 300 resident SSE clients, 300 same-address health
+  WebSockets, restart readback, long-running autosave, and bounded memory.
+- Added `server/sources/`, a policy-bounded adapter layer for outside admission
+  data. Each source declares its own rate limit, cache lifetime, concurrency,
+  timeout, retry policy and user agent instead of inheriting one global crawl
+  behaviour, and every extracted value carries its source id, exact URL and
+  fetch time so the interface can link back and show when data has gone stale.
+  Shipped adapters: NSF Award Search and NIH RePORTER (official, keyless, and
+  the strongest available signal for whether a professor can currently fund a
+  student), OpenAlex works, GradCafe results, and Reddit through its official
+  OAuth API or Atom feed rather than page scraping.
+- Added `POST /api/interview-prep/ai/mock-turn`. The interview backend already
+  produced follow-up questions, scoring, and strengths and improvements from
+  resume, advisor homepage and paper signals, but none of it was reachable.
+  Mock practice can now request a follow-up, appended to the live session.
+- Added a mail action that captures a message into interview preparation,
+  creating or restoring a workspace carrying the application, source message,
+  subject, school, programme and advisor.
+- Added `GET /api/profile/recommenders` with cursor paging and a per-entry
+  detail route, so the recommender directory no longer has to arrive whole.
+- Added endurance testing under `npm run qa:endurance`: sustained multi-user
+  autosave with read-back verification, single-user saving against concurrent
+  background jobs, long-lived SSE and WebSocket connections, and process
+  liveness monitoring.
+- Added event-loop lag, resident memory, memory budget and pressure level to
+  `/api/health`, so production behaviour can be read directly instead of
+  inferred from response timing.
+- Added evaluation harnesses for mail classification and AI output quality,
+  with labelled fixtures including a prompt-injection attempt.
+
+### Changed
+
+- Replaced the public MIT license with the PhD Atlas Community License v1.0.
+  Individuals and non-profit entities may use the project for personal,
+  academic, research, educational, charitable, and other non-commercial
+  purposes; any use by or for a for-profit or commercial organization requires
+  prior written authorization, including internal use, SaaS, consulting,
+  hosted services, resale, and contractor use on its behalf.
+- Promoted the public edition from Beta to the first stable `0.1.0` line. Stable
+  releases now own the `stable` and `latest` container channels, while Beta
+  releases move only `beta`, so a future prerelease cannot pull stable users
+  backwards.
+- Archived Team collaboration across current runtime, navigation, upgrades,
+  administration, default tests, and public exports. The implementation and
+  stored Team data remain intact for a future deliberate restoration; current
+  releases are personal-only and do not seed or load Team workspaces.
+- Rebuilt application-to-Dossier entry around one focused record read. The
+  outgoing application remains visible while the destination is prepared, and
+  rapid selections are latest-intent-wins without a blank center or stale
+  inspector.
+- Reworked Board entry and Board/Table switching as interruptible resident
+  handoffs. The click updates immediately, heavy trees mount on transition or
+  idle lanes, and a previously opened Board is reused after returning from a
+  Dossier instead of being rebuilt.
+- Deferred dense Dossier tab content while keeping the tab highlight urgent.
+  The previous panel stays painted until the next panel commits, including on
+  narrow touch layouts and reduced-motion systems.
+- Reworked checklist drag-and-drop so the canonical order commits before the
+  overlay is removed. Cross-group moves, interrupted drags, slow React commits,
+  and reduced motion now share one destination owner without snap-back or a
+  second post-drop jump.
+- Made checklist rows smaller and clearer: material type, group, and status
+  share a desktop row; due dates can be empty; completion marks stay mounted;
+  titles are borderless; upload filenames preserve their original extension;
+  and legacy custom material types keep their edit/delete actions.
+- Flattened the application timeline from nested cards into semantic editorial
+  rows. Titles, status, source, dates, notes, money values, and edit controls now
+  follow the meaning of each event and wrap safely on phones.
+- Simplified Correspondence headers and composers. Message counts sit beside
+  the title, filters and bulk AI controls enter and leave as one measured row,
+  sent/received direction uses one accessible sliding control, avatars follow
+  the actual author, and subject/date controls use quiet underlines.
+- Moved the application table's selected-item tools to a compact page-level
+  dock and kept row/table geometry stable during selection. Board and Table now
+  share one heading line, title help, and control baseline.
+- Made application switching, table loading, selection, country disclosures,
+  profile shortcuts, checklist completion, and language handoffs use bounded
+  transform/opacity motion with explicit reduced-motion behavior.
+- Unified compact form geometry across native fields, shared Select controls,
+  date pickers, fee fields, status controls, and adjacent actions on desktop,
+  while preserving phone touch sizes.
+- Changed fee totals and rows to locale-aware currency symbols such as `CA$`;
+  paid, outstanding, and waived states are now text-only instead of decorative
+  status dots.
+- Changed AI mail classification to incoming email only. Sent mail, drafts,
+  notes, and manually recorded outgoing messages remain available for ordinary
+  organization but are excluded from AI batches on both client and server.
+- Removed authored-projection v1 and other retired fallback paths. Browser,
+  API, offline queue, settings writes, workspace streaming, Codex CLI, and
+  stress tools now share one current acknowledgement and mutation protocol.
+- Workspace writes are now sharded per tenant. Each account and team keeps its
+  own revision, so two people saving at the same time no longer contend, and a
+  revision-only conflict is retried and merged on the server instead of being
+  returned to the user. Audit events no longer take part in the
+  compare-and-swap at all; they are appended idempotently.
+- The libuv thread pool is now sized from the host CPU count at startup. It had
+  never been set anywhere, so password hashing, filesystem work and compression
+  shared four threads. Password admission is bounded by the pool size and the
+  memory budget together, so queueing happens where it can be observed and shed
+  rather than inside a library with no timeout or fairness.
+- Payloads above 64 KiB are encrypted and serialised on a worker pool, falling
+  back to the main thread when a worker is unavailable.
+- The default memory budget is 1 GiB, preferring the cgroup value when present.
+  The previous 512 MiB put the hard stop below the peak that normal workspace
+  hydration legitimately reaches.
+- First paint requests list-shaped applications, omitting correspondence
+  bodies, detail prose, file version history and comment text. One
+  representative record drops from 386,221 to 847 bytes; selecting a record
+  loads it in full. The offline snapshot still stores complete records, fetched
+  while the browser is idle.
+- The recommender directory pages from the server, aggregates in a worker and
+  renders in batches. One thousand recommenders across two hundred
+  applications now aggregate in roughly 50 ms.
+- Advisor discovery collects more candidates. OpenAlex was only ever reading
+  the first page of results against institutions holding tens of thousands of
+  authors, so the candidate pool was small before any limit applied. It now
+  pages with a bounded cursor, Crossref backfill triggers whenever the count
+  falls short of target, scholarly evidence per school rose from 36 to 48
+  researchers, recent works per researcher from three to five, and crawl
+  concurrency from three to six. Four further limits were measured and
+  deliberately left unchanged.
+- Discover now treats "evidence-exhaustive" as every distinct item in the
+  finite evidence it actually fetched, not as an internet-wide completeness
+  claim. Programme/advisor display quotas were removed; every retained advisor
+  is grounded on an individual official profile before scholarly enrichment,
+  and deterministic profile overlap ranks even honest zero-match results.
+- Application enrichment extracts more completely. Measured against a live
+  provider, usable results rose from roughly half to roughly nine in ten. The
+  verifier now separates "evidence exists and must be extracted" from "evidence
+  is absent, leave it empty", treats summary fields as required when evidence
+  supports them, enumerates requirements across every page rather than the
+  first, and keeps a named advisor with a caveat instead of blanking them.
+  Anti-fabrication constraints are unchanged, and fabrication counters stayed
+  empty before and after.
+- Motion was audited and selectively corrected. The Discover slider tracks the
+  pointer one-to-one while dragging, indicators animate by transform rather
+  than layout properties, Command Palette opens without motion because it is a
+  keyboard path used many times a day, mobile dialogs leave along the path they
+  arrived on, and toast content and slot timing were unified. Long decorative
+  motion was judged correct and left as it was.
+- Rate-limited responses carry `Retry-After` on every path, and the bundled
+  Nginx template gains authentication-specific limits answering with a
+  structured JSON 429.
+- Conditional requests now cover applications, the recommender routes and the
+  Discover catalogue.
+
+### Fixed
+
+- Fixed shared-directory, administrative-structure, governance, and other
+  generic pages being retained as named advisors. FAQ, curriculum-vitae,
+  research-staff, directory, organisational-structure, university-leadership,
+  and similar labels are rejected as people; declared advisor pages must now
+  contain real name evidence in the title, text, or path. Opaque numeric
+  profile URLs and approved lab/research-group pages remain supported when
+  their page content actually identifies the advisor.
+- Fixed an AI provider connection reset after response headers aborting a
+  complete multi-program Discover run. Connection, header, body, DNS, timeout,
+  and socket interruptions that happen while reading the response are now
+  reported as temporary provider unavailability, so the existing bounded retry
+  path can recover instead of treating the interruption as an unknown failure.
+- Fixed temporary DNS resolution and public-provider connection failures being
+  misreported as invalid URLs. They now enter the bounded retry path as
+  provider unavailability, while malformed, private-network, and reserved
+  destinations remain rejected.
+- Fixed Interview Prep requests being cancelled as HTTP 499 on runtimes that
+  expose their own framework-level request signal. Interview operations now
+  trust only the admission middleware's explicit AI cancellation signal, so
+  consuming a normal request body cannot cancel the work that follows.
+- Fixed two cross-runtime ownership leaks found by the cloud public-release
+  gate: bounded stream output now owns an exact-length backing buffer even when
+  the platform allocator rounds allocations up, and deferred UI-settle
+  callbacks retain their scheduling Window instead of reading a global that a
+  test or host may already have torn down.
+- Fixed false post-suite failures when the release gate verifies the private
+  and exported public trees back to back. Release qualification now runs the
+  complete Vitest suite with one worker and file parallelism disabled; ordinary
+  development tests retain their faster two-worker default.
+- Fixed a Linux-only false failure in the HTTP admission lifecycle coverage.
+  The server still has to prove that it released the partial request and its
+  socket immediately; the test now also waits for Node's bounded asynchronous
+  client-close notification before checking the mirrored client state.
+- Fixed local development and production-like restarts where the API worker
+  could exit while Vite remained reachable. A persistent bounded-jitter
+  supervisor now owns worker restarts without killing an unknown process that
+  happens to own the port.
+- Fixed the browser turning one gateway or health failure into a lasting
+  offline screen. Connectivity now treats a short restart as provisional,
+  probes for recovery, and keeps the resident workspace visible unless the
+  outage is sustained.
+- Fixed a buffered application search being cleared when a remote logout or
+  other safe-reload request was blocked by unsaved work. The search field now
+  participates in the shared synchronous flush boundary, and an older delayed
+  parent echo cannot overwrite a newer local keystroke under heavy load.
+- Fixed recurring single-editor save conflicts caused by an old projection
+  version hashing server-owned mail and classification fields differently from
+  the current server. Editor-owned and server-owned fields now have one shared
+  authority definition across online, offline, delta, and acknowledgement paths.
+- Fixed workspace streams restarting after unrelated quota, backup,
+  notification, or journal writes. Stream validation now follows the authored
+  tenant content instead of a database-wide operational revision.
+- Fixed automatic backups repeatedly walking stable records every minute.
+  Backup passes are bounded, skip unchanged records, and prioritize the oldest
+  missing coverage without starving later applications.
+- Fixed request floods in shared source and logo lookup paths by sharing
+  in-flight work, negative results, cooldowns, and bounded caches across
+  callers instead of multiplying identical external requests.
+- Fixed a large-stream memory spike where the next encrypted workspace could
+  decode before compression and socket callbacks released the previous one.
+  Large leases now end only after the response transport actually settles.
+- Fixed the shared heavy-work queue rejecting many honest first-attempt
+  workspace bootstraps at once. A bounded account-fair feeder keeps one noisy
+  account from creating a retry wave while retaining existing global limits.
+- Fixed password reconnect and double-submit storms by sharing only identical
+  in-flight password/hash verification work; no settled authentication result
+  is cached and Argon2, rate limits, and admission rules remain unchanged.
+- Fixed application deletion overtaking an in-flight save or being followed by
+  a stale full write that resurrected the record. Save, atomic edits, and delete
+  now share per-application ordering and the trash keeps the delete-owned
+  snapshot.
+- Fixed a retention restore race in which cached scan data could decide to
+  remove a record restored after the scan. Destructive cleanup now rechecks
+  live ownership and current timestamps before deletion.
+- Fixed AI drafts that completed successfully but were shown as failed because
+  a later best-effort audit write failed. Stream failures now keep their
+  specific cause, and the successful terminal response is sent first.
+- Fixed timeline icon clipping, Dossier title descenders, partial checkbox
+  ticks, empty disclosure tails, merged version-row backgrounds, and toolbar
+  controls that disappeared at compact desktop widths.
+- Fixed uploaded files losing their extension after a user renamed them without
+  typing a suffix, and fixed share-upload handoff so the exact checklist target
+  and upload permission remain selected.
+- Fixed stale callback captures in guidance drafts, notification publishing,
+  and async message sends so an older continuation cannot clear or overwrite
+  newer user text.
+- Fixed a deadlock in the sharded write path. Re-entrancy had been established
+  by a module-level owner, which a second tenant taking a lane would overwrite,
+  so the inner acquisition stopped being recognised and blocked on the lane its
+  own caller already held.
+- Fixed a crash that ended the server process. A payload worker timeout called
+  a binding that did not exist in the timer scope, and Node terminates on an
+  uncaught exception there, so one slow payload became a restart.
+- Fixed a permanent loading screen for any account that had never added a
+  recommender. The absent setting produced a fresh array on every render, which
+  the aggregation effect depended on, so it re-ran, set state and re-rendered
+  without end and the application never reached a settled paint.
+- Fixed pagination metadata missing from the streamed workspace bootstrap,
+  which would have left streaming clients with a directory silently truncated
+  to its first page and no cursor to continue.
+- Fixed deployment templates pinning values that defeated the runtime sizing: a
+  hardcoded thread pool size held every host at the formula floor, and a
+  512 MiB budget reintroduced the pressure ceiling on Linux.
+- Fixed a service worker update reloading the page on its own. Updates now
+  raise a non-blocking banner, and activation runs the safe-reload guard first,
+  so a dirty editor keeps its content and the prompt returns once it is clean.
+- Fixed two Discover paths reporting "saved" without any acknowledgement that
+  the write had been durably stored; they now report "submitted".
+- Fixed source-scanning contract tests failing on line endings rather than on
+  the ordering they exist to protect.
+
+### Security
+
+- Team runtime entry points, setup, upgrades, administration, notifications,
+  background work, APIs, and public exports now fail closed in the personal-only
+  release. Existing Team source and stored data remain archived rather than
+  being silently reassigned or deleted.
+- MCP / Skill access is bound to a real signed-in account, explicit scopes, a
+  current authorization version, expiry, and server-side revocation. Installing
+  a client never creates administrator access or bypasses application ownership.
+- External admission sources retain per-adapter rate, timeout, cache, retry,
+  user-agent, and provenance policy. Changed envelopes, fuzzy identity matches,
+  private-network targets, and missing evidence fail closed.
+- Source-distribution audits now exclude only files Git explicitly reports as
+  deleted. Any other unreadable source remains a release-blocking failure, and
+  the public exporter continues to reject private paths and runtime data.
+- Strict-Transport-Security is emitted exactly once. The application keeps
+  sending it so deployments behind a different proxy, a cloud load balancer or
+  a direct TLS listener remain covered, and the bundled Nginx template hides
+  the upstream copy before adding its own.
+- Added owner isolation tests for the recommender routes, covering both
+  cross-account reads and non-member access to the team route.
+- Confirmed that mail classification resists prompt injection: a message
+  instructing the model to return a fixed category and echo the system prompt
+  was classified as irrelevant and leaked nothing.
+
+### Performance and scale
+
+- Final production-like qualification served 300 authenticated users, 300
+  resident SSE clients, and 300 same-address health WebSockets with zero
+  read/login capacity retries, then verified 300 durable writes and 300
+  post-restart readbacks.
+- Final endurance qualification completed 5,372 of 5,372 durable autosaves,
+  52 background autosaves, 180 background tasks, 100 SSE clients, 100 health
+  WebSockets, and 11,500 connection reads with 248.5 ms connection-read P95.
+- The same run completed all 70 large workspace streams with zero restart and
+  all 100 restart readbacks. Health, read, login, and mixed P95 were 217.9 ms,
+  592.2 ms, 500.6 ms, and 1,196.2 ms respectively, with reservations released.
+- Keyset validation now scans compact metadata in bounded batches rather than
+  materializing all identifiers or issuing one native query per record. The
+  real 20,000-row encrypted-store gate streams one payload at a time and keeps
+  event-loop progress and memory bounded.
+- Large workspace responses, encryption/decryption, compression, login work,
+  ordinary requests, health traffic, and background jobs now use explicit
+  size-aware lanes so one expensive operation cannot silently consume the
+  capacity reserved for another.
+- Build-time entry budgets keep signed-out pages and conditional feature styles
+  out of the authenticated workspace startup graph; the final production build
+  contains 1,231 modules and passed the current JS/CSS budgets.
+
+### Verification
+
+- Final whole-system interaction coverage passed 9 files / 144 tests; motion
+  and workspace contracts passed 7 files / 34 tests.
+- TypeScript, the production build, release contracts, source-security audit,
+  targeted lint, Node syntax checks, and scoped diff validation passed on the
+  final qualification state.
+- Internationalization structure and key coverage passed 12 languages across
+  18 namespaces, and the final shared UI/error audit reported zero findings.
+- The public exporter, personal-only runtime boundary, update-package
+  reproducibility, rollback verification, Microsoft SQL Server gate, and
+  amd64/arm64 container smoke paths remain release-blocking checks.
+
 ## [0.1.0-beta.8] - 2026-07-31
 
 ### Added
@@ -22,6 +404,10 @@ and the project uses [Semantic Versioning](https://semver.org/).
   12 languages, light and dark themes, and true desktop and mobile layouts.
 - Added an atomic cross-process upload-vault migration lock with live-owner
   waiting, terminated-owner cleanup, and token-checked release.
+- Added integrity-checked file-level differential Release packages. Exact-base
+  installations download only added or changed runtime files and a deletion
+  list, reconstruct a complete local package, and automatically fall back to
+  the full package when the delta cannot be trusted or is not smaller.
 
 ### Changed
 
@@ -30,9 +416,15 @@ and the project uses [Semantic Versioning](https://semver.org/).
   interfaces, while retaining the previous image until the next capture has
   decoded successfully.
 - Updated the public English and Chinese READMEs with responsive light/dark
-  galleries sourced from the same real product captures.
+  galleries sourced from the same real product captures, with all six views
+  visible by default and still collapsible.
 - Kept `react-simple-code-editor` lazy while normalizing Vite's CommonJS/ESM
   wrapper at one typed runtime boundary.
+- Re-encoded the 288 DPR-2 product captures at a visually high-quality WebP
+  setting while preserving every language, theme, layout, and pixel dimension;
+  the capture set fell from 66.16 MB to 22.81 MB and the generated full update
+  package fell by 25.6% in the local controlled build (72.46 MB to 53.94 MB),
+  even after adding the differential-update runtime.
 
 ### Fixed
 
@@ -460,6 +852,8 @@ the selected external database when applicable.
   light/dark themes, and twelve language packs.
 - Published the first GitHub Release update archive and SHA-256 sidecar.
 
+[0.1.0]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0
+[0.1.0-beta.8]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.8
 [0.1.0-beta.7]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.7
 [0.1.0-beta.6]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.6
 [0.1.0-beta.5]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.5

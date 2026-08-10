@@ -1,4 +1,9 @@
 import { z } from 'zod'
+import {
+  mailCategories,
+  mailClassificationActions,
+  MAX_MAIL_CATEGORIES_PER_MESSAGE,
+} from '../mailClassification'
 
 const builtInApplicationStatuses = new Map([
   ['draft', 'Draft'],
@@ -37,9 +42,17 @@ const SchoolLogoSchema = z.object({
 })
 
 const MaterialRecommenderSchema = z.object({
-  id: z.string().min(1),
-  name: z.string(),
-  contact: z.string(),
+  id: z.string().min(1).max(160),
+  name: z.string().trim().max(200),
+  contact: z.string().trim().max(320),
+  email: z.union([z.email().max(320), z.literal('')]).optional().default(''),
+  phone: z.string().max(80).optional().default(''),
+  profileId: z.string().min(1).max(160).optional(),
+  notes: z.string().max(4_000).optional().default(''),
+  deadline: ReminderDateSchema,
+  deadlineTime: z.string().max(32).optional().default(''),
+  reminderDate: ReminderDateSchema,
+  reminderTime: z.string().max(32).optional().default(''),
 })
 
 const CommunicationChannelSchema = z.enum([
@@ -69,6 +82,23 @@ const MailSecuritySchema = z.object({
   signals: z.array(MailSecuritySignalSchema).max(12),
   linksDisabled: z.literal(true),
   quarantinedAttachmentCount: z.number().int().nonnegative().max(100_000),
+})
+export const MailCategorySchema = z.enum(mailCategories)
+export const MailCategoryIdSchema = z.string().trim().min(1).max(64)
+export const MailClassificationActionSchema = z.enum(mailClassificationActions)
+export const MailClassificationSchema = z.object({
+  category: MailCategoryIdSchema,
+  categories: z.array(MailCategoryIdSchema).max(MAX_MAIL_CATEGORIES_PER_MESSAGE).optional(),
+  confidence: z.number().min(0).max(1),
+  summary: z.string().trim().min(1).max(2_000),
+  evidence: z.array(z.string().trim().min(1).max(1_000)).max(8),
+  actions: z.array(MailClassificationActionSchema).max(mailClassificationActions.length),
+  source: z.enum(['ai', 'rule']),
+  provider: z.string().trim().min(1).max(80).optional(),
+  model: z.string().trim().min(1).max(160).optional(),
+  classifiedAt: z.iso.datetime(),
+  inputHash: z.string().trim().min(1).max(128),
+  version: z.number().int().positive(),
 })
 const BackupFrequencySchema = z.enum(['1m', '5m', '15m', '30m', '1h', '3h', '6h', '12h', 'daily', '3d', '7d', 'weekly', 'monthly'])
 const SharePermissionSchema = z.enum(['view', 'upload', 'edit'])
@@ -106,7 +136,7 @@ export const MaterialSchema = z.object({
   uploadReserved: z.boolean().optional().default(false),
   allowedFileTypes: z.array(z.string()).optional().default([]),
   requiredCount: z.number().int().min(1).max(12).default(1),
-  recommenders: z.array(MaterialRecommenderSchema).default([]),
+  recommenders: z.array(MaterialRecommenderSchema).max(12).default([]),
   version: z.string().min(1),
   updatedAt: z.iso.date(),
   fileId: z.string().optional(),
@@ -158,6 +188,9 @@ export const CommunicationSchema = z.object({
   sourceMessageKey: z.string().optional(),
   sourceMailbox: z.string().optional(),
   importedAt: z.string().optional(),
+  mailCategories: z.array(MailCategoryIdSchema).max(MAX_MAIL_CATEGORIES_PER_MESSAGE).nullable().optional(),
+  mailCategoryOverride: MailCategorySchema.nullable().optional(),
+  mailClassification: MailClassificationSchema.optional(),
   mailSecurity: MailSecuritySchema.optional(),
 })
 
@@ -186,8 +219,9 @@ const ScholarshipMaterialSchema = z.object({
 const ScholarshipTaskSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
-  due: z.iso.date(),
+  due: ReminderDateSchema,
   done: z.boolean().default(false),
+  status: MaterialStatusSchema.optional(),
   details: z.string().optional().default(''),
 })
 
@@ -216,8 +250,9 @@ export const ScholarshipSchema = z.object({
 export const TaskSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
-  due: z.iso.date(),
+  due: ReminderDateSchema,
   done: z.boolean(),
+  status: MaterialStatusSchema.optional(),
   details: z.string().optional().default(''),
   reminderEnabled: z.boolean().optional().default(false),
   reminderOffsets: z.array(z.string()).optional().default([]),
@@ -304,6 +339,7 @@ export const ApplicationSchema = z.object({
   tags: z.array(z.string()),
   nextReminder: ReminderDateSchema,
   result: z.string(),
+  recommenders: z.array(MaterialRecommenderSchema).max(12).optional().default([]),
   dossierCards: z.array(DossierCardSchema).optional(),
   materials: z.array(MaterialSchema),
   communications: z.array(CommunicationSchema),

@@ -110,7 +110,7 @@ export function DiscoverApplicationEnrichment({
   onNotify: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
 }) {
   const { tx, format, lang } = useI18n()
-  const usableAiKeys = useMemo(() => aiKeys.filter((key) => key.secretSet), [aiKeys])
+  const usableAiKeys = useMemo(() => aiKeys.filter((key) => key.secretSet && key.enabled !== false), [aiKeys])
   const [applicationId, setApplicationId] = useState(applications[0]?.id ?? '')
   const [keyId, setKeyId] = useState(preferredKeyId || usableAiKeys[0]?.id || '')
   const [busy, setBusy] = useState<'preview' | 'apply' | null>(null)
@@ -166,11 +166,13 @@ export function DiscoverApplicationEnrichment({
 
   const apply = async () => {
     if (!proposal || !applicationId || accepted.size === 0) return
+    const application = applications.find((candidate) => candidate.id === applicationId)
+    if (!application) return
     setBusy('apply')
     try {
       const updated = await phdApi.applyDiscoverApplicationEnrichment(
         token,
-        applicationId,
+        application,
         proposal,
         Array.from(accepted),
       )

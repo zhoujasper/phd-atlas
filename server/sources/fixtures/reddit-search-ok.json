@@ -1,0 +1,24 @@
+{
+  "_fixture": {
+    "type": "synthetic-documented",
+    "recordedAt": null,
+    "note": "Synthetic response shaped from the official Reddit JSON API. It is not claimed to be a live capture."
+  },
+  "data": {
+    "children": [
+      {
+        "data": {
+          "id": "abc123",
+          "title": "Accepted to PhD program, timeline inside",
+          "selftext": "Stanford Computer Science PhD: applied in December, interviewed in February.",
+          "url": "https://www.reddit.com/r/gradadmissions/comments/abc123/",
+          "permalink": "/r/gradadmissions/comments/abc123/accepted_to_phd_program_timeline_inside/",
+          "created_utc": 1738368000,
+          "score": 12,
+          "num_comments": 5,
+          "subreddit": "gradadmissions"
+        }
+      }
+    ]
+  }
+}

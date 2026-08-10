@@ -1,0 +1,51 @@
+{
+  "manifest_version": "0.3",
+  "name": "phd-atlas",
+  "display_name": "PhD Atlas",
+  "version": "0.2.0",
+  "description": "Manage a personal PhD Atlas workspace through a secure local MCP server.",
+  "author": {
+    "name": "PhD Atlas",
+    "url": "https://github.com/zhoujasper/phd-atlas"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhoujasper/phd-atlas.git"
+  },
+  "homepage": "https://github.com/zhoujasper/phd-atlas",
+  "documentation": "https://github.com/zhoujasper/phd-atlas/blob/main/docs/CODEX_SKILL.md",
+  "support": "https://github.com/zhoujasper/phd-atlas/issues",
+  "privacy_policies": [
+    "https://github.com/zhoujasper/phd-atlas/blob/main/docs/PRIVACY.md"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "skills/phd-atlas/scripts/phd-atlas-cli.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/skills/phd-atlas/scripts/phd-atlas-cli.mjs",
+        "mcp"
+      ],
+      "env": {}
+    }
+  },
+  "tools_generated": true,
+  "keywords": [
+    "phd",
+    "applications",
+    "research",
+    "productivity",
+    "mcp"
+  ],
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
+  }
+}

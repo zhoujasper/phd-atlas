@@ -1,5 +1,10 @@
 import { withAbortDeadline } from './abortDeadline.js'
 import {
+  cancelResponseBody,
+  readBoundedResponseJson,
+  readBoundedResponseText,
+} from './boundedResponse.js'
+import {
   buildOpenAlexWorkQueryPlan,
   resolveDiscoverOpenAlexTopics,
 } from './discover-openalex-topics.js'
@@ -9,11 +14,17 @@ const ROR_BASE = 'https://api.ror.org/v2'
 const CROSSREF_BASE = 'https://api.crossref.org'
 const EUROPE_PMC_BASE = 'https://www.ebi.ac.uk/europepmc/webservices/rest'
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
+const SCHOLARLY_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
 const INSTITUTION_STOP_WORDS = new Set([
   'and', 'at', 'college', 'de', 'for', 'in', 'institute', 'of', 'school', 'the',
   'universita', 'universitat', 'universite', 'university',
 ])
-const QUERY_STOP_WORDS = new Set([
+/**
+ * Stop words for this module only. A second list under the same name in another
+ * Discover module is intentionally different — they strip different vocabulary —
+ * so they carry distinct names rather than looking like copies that drifted.
+ */
+const SCHOLARLY_QUERY_STOP_WORDS = new Set([
   'a', 'an', 'and', 'for', 'in', 'of', 'on', 'research', 'the', 'to', 'using', 'with',
 ])
 
@@ -73,17 +84,44 @@ async function fetchJson(url, {
           headers: { accept: 'application/json', 'user-agent': userAgent },
         })
         if (!response.ok) {
+          // Providers explain refusals in the body. Discarding it turned an
+          // exhausted API budget into a generic failure that the caller
+          // reported as "institution not resolved", so the operator saw a
+          // school-matching problem instead of "configure a key".
+          let detail = ''
+          try {
+            const raw = await readBoundedResponseText(response, {
+              maxBytes: 4_096,
+              signal,
+              bodyKind: 'scholarly provider error',
+            })
+            detail = String(raw || '').slice(0, 600)
+          } catch {
+            await cancelResponseBody(response)
+          }
           const error = new Error(`HTTP ${response.status}`)
           error.status = response.status
           error.retryAfter = response.headers?.get?.('retry-after') || ''
+          error.detail = detail
+          if (/insufficient budget|add funds|quota|rate limit exceeded/i.test(detail)) {
+            // Budget resets on a daily boundary, so retrying inside one request
+            // only multiplies the wait on a guaranteed failure.
+            error.code = 'SCHOLARLY_PROVIDER_QUOTA_EXHAUSTED'
+            error.terminal = true
+          }
           throw error
         }
-        return await response.json()
+        return await readBoundedResponseJson(response, {
+          maxBytes: SCHOLARLY_RESPONSE_MAX_BYTES,
+          signal,
+          bodyKind: 'scholarly provider response',
+        })
       }, { timeoutMs })
     } catch (error) {
       lastError = error
       if (
         attempt + 1 >= attempts
+        || error?.terminal === true
         || (error?.status && !RETRYABLE_STATUS.has(error.status))
       ) break
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs(error, attempt)))
@@ -208,8 +246,15 @@ export function buildScholarlyQueryPlan(values, { limit = 8 } = {}) {
   return output
 }
 
-async function findOpenAlexResearchers(institution, workQueryPlan, fetchImpl, maxResearchers = 30) {
+async function findOpenAlexResearchers(
+  institution,
+  workQueryPlan,
+  fetchImpl,
+  maxResearchers = 30,
+  maxPagesPerQuery = 2,
+) {
   const authors = new Map()
+  const boundedPages = Math.max(1, Math.min(3, Number(maxPagesPerQuery) || 2))
   for (const planItem of workQueryPlan) {
     const query = planItem.query
     const url = new URL(`${OPENALEX_BASE}/works`)
@@ -223,72 +268,84 @@ async function findOpenAlexResearchers(institution, workQueryPlan, fetchImpl, ma
     url.searchParams.set('sort', planItem.kind === 'topic' ? 'cited_by_count:desc' : 'relevance_score:desc')
     url.searchParams.set('per-page', '100')
     url.searchParams.set('select', 'id,doi,display_name,publication_year,cited_by_count,authorships,topics,keywords')
-    const payload = await fetchJson(applyOpenAlexAccess(url), { fetchImpl })
-    for (const work of payload?.results || []) {
-      const topicSignal = [
-        work.display_name,
-        ...(work.topics || []).map((topic) => topic?.display_name),
-        ...(work.keywords || []).map((keyword) => keyword?.display_name),
-      ].filter(Boolean).join(' ')
-      if (queryTitleScore(query, topicSignal) < 0.32) continue
-      for (const authorship of work.authorships || []) {
-        if (!(authorship.institutions || []).some((item) => item.id === institution.id)) continue
-        const author = authorship.author
-        if (!author?.id || !author?.display_name) continue
-        if (!likelyIndividualResearcherName(author.display_name)) continue
-        const current = authors.get(author.id) || {
-          openAlexId: author.id,
-          name: author.display_name,
-          orcid: cleanOrcid(author.orcid),
-          profileUrl: author.id,
-          score: 0,
-          providers: ['openalex'],
-          matchedQueries: [],
-          matchedTopics: [],
-          recentWorks: [],
-          workIds: new Set(),
-        }
-        if (!current.matchedQueries.includes(query)) current.matchedQueries.push(query)
-        if (planItem.kind === 'topic' && planItem.topicId) {
-          const matchedTopic = {
-            id: planItem.topicId,
-            name: planItem.topicName,
-            domain: planItem.domain,
-            field: planItem.field,
-            confidence: planItem.confidence,
+    const accessUrl = applyOpenAlexAccess(url)
+    let cursor = null
+    for (let pageIndex = 0; pageIndex < boundedPages; pageIndex += 1) {
+      if (cursor) url.searchParams.set('cursor', cursor)
+      const payload = await fetchJson(accessUrl, { fetchImpl })
+      for (const work of payload?.results || []) {
+        const topicSignal = [
+          work.display_name,
+          ...(work.topics || []).map((topic) => topic?.display_name),
+          ...(work.keywords || []).map((keyword) => keyword?.display_name),
+        ].filter(Boolean).join(' ')
+        if (queryTitleScore(query, topicSignal) < 0.32) continue
+        for (const authorship of work.authorships || []) {
+          if (!(authorship.institutions || []).some((item) => item.id === institution.id)) continue
+          const author = authorship.author
+          if (!author?.id || !author?.display_name) continue
+          if (!likelyIndividualResearcherName(author.display_name)) continue
+          const current = authors.get(author.id) || {
+            openAlexId: author.id,
+            name: author.display_name,
+            orcid: cleanOrcid(author.orcid),
+            profileUrl: author.id,
+            score: 0,
+            providers: ['openalex'],
+            matchedQueries: [],
+            matchedTopics: [],
+            recentWorks: [],
+            workIds: new Set(),
           }
-          if (!current.matchedTopics.some((topic) => topic.id === matchedTopic.id)) {
-            current.matchedTopics.push(matchedTopic)
+          if (!current.matchedQueries.includes(query)) current.matchedQueries.push(query)
+          if (planItem.kind === 'topic' && planItem.topicId) {
+            const matchedTopic = {
+              id: planItem.topicId,
+              name: planItem.topicName,
+              domain: planItem.domain,
+              field: planItem.field,
+              confidence: planItem.confidence,
+            }
+            if (!current.matchedTopics.some((topic) => topic.id === matchedTopic.id)) {
+              current.matchedTopics.push(matchedTopic)
+            }
           }
+          if (!current.workIds.has(work.id)) {
+            current.score += 1 + Math.log10(1 + Math.max(0, Number(work.cited_by_count) || 0))
+            current.workIds.add(work.id)
+          }
+          const source = workSource(work)
+          if (current.recentWorks.length < 20 && source && !current.recentWorks.some((item) => item.source === source)) {
+            current.recentWorks.push({
+              title: String(work.display_name || '').slice(0, 300),
+              year: work.publication_year || null,
+              citedByCount: Math.max(0, Number(work.cited_by_count) || 0),
+              source,
+              matchedQuery: query,
+              matchedTopic: planItem.kind === 'topic' ? planItem.topicName : null,
+            })
+          }
+          authors.set(author.id, current)
         }
-        if (!current.workIds.has(work.id)) {
-          current.score += 1 + Math.log10(1 + Math.max(0, Number(work.cited_by_count) || 0))
-          current.workIds.add(work.id)
-        }
-        const source = workSource(work)
-        if (current.recentWorks.length < 5 && source && !current.recentWorks.some((item) => item.source === source)) {
-          current.recentWorks.push({
-            title: String(work.display_name || '').slice(0, 300),
-            year: work.publication_year || null,
-            citedByCount: Math.max(0, Number(work.cited_by_count) || 0),
-            source,
-            matchedQuery: query,
-            matchedTopic: planItem.kind === 'topic' ? planItem.topicName : null,
-          })
-        }
-        authors.set(author.id, current)
       }
+      const nextCursor = payload?.meta?.next_cursor
+      if (
+        !nextCursor
+        || String(nextCursor).toLowerCase() === 'null'
+        || String(nextCursor) === String(cursor)
+      ) break
+      cursor = String(nextCursor)
     }
   }
   return [...authors.values()]
     .map(({ workIds: _workIds, ...author }) => author)
     .sort((left, right) => (right.matchedQueries.length - left.matchedQueries.length) || (right.score - left.score))
-    .slice(0, Math.min(120, Math.max(1, Number(maxResearchers) || 30)))
+    .slice(0, Math.min(500, Math.max(1, Number(maxResearchers) || 30)))
 }
 
 function queryTitleScore(query, title) {
-  const queryWords = normalizedWords(query, QUERY_STOP_WORDS)
-  const titleWords = normalizedWords(title, QUERY_STOP_WORDS)
+  const queryWords = normalizedWords(query, SCHOLARLY_QUERY_STOP_WORDS)
+  const titleWords = normalizedWords(title, SCHOLARLY_QUERY_STOP_WORDS)
   if (!queryWords.length || !titleWords.length) return 0
   const titleSet = new Set(titleWords)
   const tokenCoverage = queryWords.filter((word) => titleSet.has(word)).length / queryWords.length
@@ -371,7 +428,7 @@ async function findCrossrefResearchers({
           current.score += 0.7 + Math.log10(1 + Math.max(0, Number(work?.['is-referenced-by-count']) || 0)) * 0.7
           current.workIds.add(doi)
         }
-        if (source && current.recentWorks.length < 6 && !current.recentWorks.some((item) => item.source === source)) {
+        if (source && current.recentWorks.length < 20 && !current.recentWorks.some((item) => item.source === source)) {
           current.recentWorks.push({
             title: title.slice(0, 300),
             year: crossrefPublishedYear(work),
@@ -387,7 +444,7 @@ async function findCrossrefResearchers({
   return [...authors.values()]
     .map(({ workIds: _workIds, ...author }) => author)
     .sort((left, right) => (right.matchedQueries.length - left.matchedQueries.length) || (right.score - left.score))
-    .slice(0, Math.min(120, Math.max(1, Number(maxResearchers) || 30)))
+    .slice(0, Math.min(500, Math.max(1, Number(maxResearchers) || 30)))
 }
 
 function europePmcAuthorAffiliations(author) {
@@ -495,7 +552,7 @@ async function findEuropePmcResearchers({
           current.score += 0.9 + Math.log10(1 + Math.max(0, Number(work?.citedByCount) || 0)) * 0.8
           current.workIds.add(workId)
         }
-        if (source && current.recentWorks.length < 6 && !current.recentWorks.some((item) => item.source === source)) {
+        if (source && current.recentWorks.length < 20 && !current.recentWorks.some((item) => item.source === source)) {
           current.recentWorks.push({
             title: String(work?.title || '').slice(0, 300),
             year: Number(work?.pubYear) || null,
@@ -512,7 +569,7 @@ async function findEuropePmcResearchers({
   return [...authors.values()]
     .map(({ workIds: _workIds, ...author }) => author)
     .sort((left, right) => (right.matchedQueries.length - left.matchedQueries.length) || (right.score - left.score))
-    .slice(0, Math.min(120, Math.max(1, Number(maxResearchers) || 30)))
+    .slice(0, Math.min(500, Math.max(1, Number(maxResearchers) || 30)))
 }
 
 function mergeResearchers(groups, maxResearchers) {
@@ -545,7 +602,7 @@ function mergeResearchers(groups, maxResearchers) {
         .slice(0, 8)
       current.recentWorks = [...(current.recentWorks || []), ...(candidate.recentWorks || [])]
         .filter((work, index, all) => work?.source && all.findIndex((item) => item?.source === work.source) === index)
-        .slice(0, 6)
+        .slice(0, 20)
     }
     for (const key of keys) byIdentity.set(key, current)
     if (current.orcid) byIdentity.set(`orcid:${current.orcid.toLowerCase()}`, current)
@@ -558,7 +615,7 @@ function mergeResearchers(groups, maxResearchers) {
       || (right.providers?.length || 0) - (left.providers?.length || 0)
       || Number(right.score || 0) - Number(left.score || 0)
     ))
-    .slice(0, Math.min(120, Math.max(1, Number(maxResearchers) || 30)))
+    .slice(0, Math.min(500, Math.max(1, Number(maxResearchers) || 30)))
 }
 
 function compactTopicResolution(topicResolution) {
@@ -609,6 +666,7 @@ export async function collectScholarlyEvidence({
   fetchImpl = globalThis.fetch,
   concurrency = 3,
   maxResearchersPerSchool = 30,
+  maxOpenAlexPagesPerQuery = 2,
   onProgress,
 } = {}) {
   const targets = (schools || []).filter((school) => school?.crawlStatus === 'ok')
@@ -662,6 +720,7 @@ export async function collectScholarlyEvidence({
             openAlexWorkPlan,
             fetchImpl,
             maxResearchersPerSchool,
+            maxOpenAlexPagesPerQuery,
           )
         } catch (error) {
           openAlexError = error
@@ -685,7 +744,8 @@ export async function collectScholarlyEvidence({
         }
         let crossrefStatus = 'skipped-sufficient-openalex'
         let crossrefResearchers = []
-        if (openAlexResearchers.length < Math.min(24, Math.max(1, Number(maxResearchersPerSchool) || 30))) {
+        const crossrefTarget = Math.min(500, Math.max(1, Number(maxResearchersPerSchool) || 30))
+        if (openAlexResearchers.length < crossrefTarget) {
           try {
             crossrefResearchers = await findCrossrefResearchers({
               school: school.school,
@@ -742,6 +802,11 @@ export async function collectScholarlyEvidence({
           query: queries.join(' | '),
           status: 'unavailable',
           error: String(error?.message || error).slice(0, 160),
+          // An exhausted provider budget is an operator problem with a fix, not
+          // a school that could not be matched. Carry the distinction out so
+          // the quality report can say which one happened.
+          errorCode: error?.code || null,
+          errorDetail: String(error?.detail || '').slice(0, 300),
           institution: null,
           topicResolution: compactTopicResolution(resolvedTopics),
           disciplinePlan: compactDisciplinePlan(disciplinePlan),

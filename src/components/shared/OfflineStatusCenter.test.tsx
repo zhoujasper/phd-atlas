@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { ConnectivitySnapshot } from '../../connectivity'
@@ -28,6 +28,10 @@ const labels: Record<string, string> = {
   'offlineStatus.syncing': 'Syncing local changes',
   'offlineStatus.pending': '{count} pending',
   'offlineStatus.blocked': '{count} not synced',
+  'offlineStatus.blockedReason.conflict': 'The local value is preserved until you review it.',
+  'offlineStatus.blockedReason.missing': 'This application no longer exists on the server.',
+  'offlineStatus.blockedReason.permission': 'Access to this application changed while you were offline.',
+  'offlineStatus.reviewLocalCopy': 'Review local copy',
   'offlineStatus.snapshot': 'Offline snapshot',
   'offlineStatus.accessUntil': 'Offline access until',
   'offlineStatus.personalScopeValue': 'Your personal applications only',
@@ -45,15 +49,17 @@ const baseConnectivity: ConnectivitySnapshot = {
   consecutiveFailures: 1,
 }
 
+type QueueState = { pending: number; blocked: number; blockedReason?: string | null }
+
 function renderCenter(
   overrides: Partial<ConnectivitySnapshot> = {},
-  queue: { pending: number; blocked: number } = { pending: 2, blocked: 0 },
+  queue: QueueState = { pending: 2, blocked: 0 },
 ) {
   const onToggleOffline = vi.fn()
   const onRetry = vi.fn()
   const renderStatusCenter = (
     nextOverrides: Partial<ConnectivitySnapshot>,
-    nextQueue: { pending: number; blocked: number },
+    nextQueue: QueueState,
   ) => (
     <OfflineStatusCenter
       connectivity={{ ...baseConnectivity, ...nextOverrides }}
@@ -63,6 +69,7 @@ function renderCenter(
       offlineAccessExpiresAt="2026-07-19T21:30:00.000Z"
       pendingCount={nextQueue.pending}
       blockedCount={nextQueue.blocked}
+      blockedReason={nextQueue.blockedReason ?? null}
       syncing={false}
       updateReady={false}
       onRetry={onRetry}
@@ -77,9 +84,14 @@ function renderCenter(
     onToggleOffline,
     rerenderCenter: (
       nextOverrides: Partial<ConnectivitySnapshot>,
-      nextQueue: { pending: number; blocked: number } = queue,
+      nextQueue: QueueState = queue,
     ) => view.rerender(renderStatusCenter(nextOverrides, nextQueue)),
   }
+}
+
+function syncQueueValue() {
+  const dialog = screen.getByRole('dialog', { name: 'Connection and offline status' })
+  return within(dialog).getByText('Sync queue').closest('div')?.querySelector('strong')?.textContent
 }
 
 describe('OfflineStatusCenter', () => {
@@ -135,20 +147,56 @@ describe('OfflineStatusCenter', () => {
     expect((screen.getByRole('button', { name: 'Resume online' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('keeps blocked changes on the automatic retry path without opening manual review', async () => {
+  it('offers no manual recovery for an unsynced change, only retry', async () => {
     const user = userEvent.setup()
     const { onRetry } = renderCenter(
       { mode: 'online', serverReachable: true },
-      { pending: 0, blocked: 1 },
+      { pending: 0, blocked: 1, blockedReason: 'conflict:program' },
     )
 
-    await user.click(screen.getByRole('button', { name: /1 pending/i }))
+    await user.click(screen.getByRole('button', { name: /1 not synced/i }))
 
-    expect(screen.queryByRole('button', { name: /review/i })).toBeNull()
-    expect(screen.queryByText(/review/i)).toBeNull()
+    expect(screen.getByText('The local value is preserved until you review it.')).toBeTruthy()
+    // Reconnecting is the whole recovery flow now: a divergent edit is settled
+    // by authoring time on the next sync, so there is nothing to hand-resolve.
+    expect(screen.queryByRole('button', { name: 'Review local copy' })).toBeNull()
     expect(screen.queryByRole('button', { name: /^save$/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /^discard$/i })).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Retry and sync' }))
     expect(onRetry).toHaveBeenCalledOnce()
+  })
+
+  it('never reports a blocked change as merely pending', async () => {
+    const user = userEvent.setup()
+    renderCenter({ mode: 'online', serverReachable: true }, { pending: 2, blocked: 1 })
+
+    const trigger = screen.getByRole('button', { name: /1 not synced/i })
+    expect(screen.queryByRole('button', { name: /3 pending/i })).toBeNull()
+
+    await user.click(trigger)
+
+    expect(syncQueueValue()).toBe('2 pending · 1 not synced')
+  })
+
+  it('summarizes a queue that is only waiting to upload without a blocked count', async () => {
+    const user = userEvent.setup()
+    renderCenter({ mode: 'online', serverReachable: true }, { pending: 2, blocked: 0 })
+
+    await user.click(screen.getByRole('button', { name: /2 pending/i }))
+
+    expect(syncQueueValue()).toBe('2 pending')
+  })
+
+  it('explains the reason the server actually refused the change', async () => {
+    const user = userEvent.setup()
+    renderCenter(
+      { mode: 'online', serverReachable: true },
+      { pending: 0, blocked: 1, blockedReason: 'missing' },
+    )
+
+    await user.click(screen.getByRole('button', { name: /1 not synced/i }))
+
+    expect(screen.getByText('This application no longer exists on the server.')).toBeTruthy()
+    expect(screen.queryByText('The local value is preserved until you review it.')).toBeNull()
   })
 })

@@ -183,11 +183,14 @@ export const dossierResourceIconPresets = [
 const dossierResourceIconIds = new Set(dossierResourceIconPresets.map((preset) => preset.id))
 
 const dossierResourceBuiltinLanguages: Language[] = ['en', 'zh']
+// Program-page and professor-contact are no longer seeded, but records created
+// before that still carry them and must keep localizing their titles.
 const defaultDossierResourceCardTitleKeys: Record<string, string> = {
   'default-application-portal': 'dossier.resourceDefaults.portalTitle',
   'default-program-page': 'dossier.resourceDefaults.programTitle',
   'default-professor-contact': 'dossier.resourceDefaults.professorTitle',
   'default-requirements': 'dossier.resourceDefaults.requirementsTitle',
+  'default-requirements-notes': 'dossier.resourceDefaults.requirementsTitle',
 }
 const defaultDossierResourceFieldLabelKeys: Record<string, string> = {
   'default-portal-link': 'dossier.resourceDefaults.portalLink',
@@ -262,6 +265,12 @@ export function localizeDossierResourceFieldLabel(
   return field.label
 }
 
+/**
+ * A new application starts with just the two cards that always need filling in:
+ * the portal account and the requirements notes. Program page and professor
+ * contact duplicated fields the overview already owns, so they are added by
+ * hand now instead of shipping empty on every record.
+ */
 export function createDefaultDossierResourceCards(
   draft: DossierResourceDefaultValues,
   tx: (key: string, fallback?: string) => string,
@@ -277,30 +286,6 @@ export function createDefaultDossierResourceCards(
         { id: 'default-portal-link', type: 'url', label: tx('dossier.resourceDefaults.portalLink'), value: '', width: 'half' },
         { id: 'default-portal-account', type: 'text', label: tx('dossier.resourceDefaults.portalAccount'), value: '', width: 'half' },
         { id: 'default-portal-notes', type: 'textarea', label: tx('dossier.resourceDefaults.portalNotes'), value: '', width: 'full' },
-      ],
-    },
-    {
-      id: 'default-program-page',
-      title: tx('dossier.resourceDefaults.programTitle'),
-      icon: 'globe',
-      color: 'slate',
-      width: 'half',
-      fields: [
-        { id: 'default-program-website', type: 'url', label: tx('dossier.resourceDefaults.admissionsWebsite'), value: draft.school.website, width: 'half' },
-        { id: 'default-program-name', type: 'text', label: tx('dossier.program'), value: draft.program, width: 'half' },
-        { id: 'default-program-deadline', type: 'date', label: tx('dossier.deadline'), value: draft.deadline, width: 'half' },
-      ],
-    },
-    {
-      id: 'default-professor-contact',
-      title: tx('dossier.resourceDefaults.professorTitle'),
-      icon: 'email',
-      color: 'green',
-      width: 'half',
-      fields: [
-        { id: 'default-professor-email', type: 'email', label: tx('dossier.email'), value: draft.professor.email, width: 'half' },
-        { id: 'default-professor-homepage', type: 'url', label: tx('dossier.homepage'), value: draft.professor.homepage, width: 'half' },
-        { id: 'default-professor-contact', type: 'contact', label: tx('dossier.resourceDefaults.contactMethod'), value: draft.professor.social || draft.professor.phone, width: 'half' },
       ],
     },
     {

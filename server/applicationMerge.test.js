@@ -4,7 +4,9 @@ import {
   buildApplicationAutoMerge,
   compactChangeList,
   isMajorApplicationChange,
+  nextApplicationVersionStamp,
   resolveApplicationAutoMerge,
+  resolveApplicationConcurrentWrite,
   setValueAtPath,
   summarizeApplicationChanges,
   valueAtPath,
@@ -129,5 +131,67 @@ describe('application merge model', () => {
     expect(latestWins.conflicts).toEqual([])
     expect(latestWins.teacherPriorityFields).toEqual([])
     expect(latestWins.retainedFields).toEqual([])
+  })
+
+  it('merges disjoint personal edits but refuses a same-field lost update', () => {
+    const base = {
+      program: 'Original program',
+      tags: ['original'],
+      updatedAt: '2026-08-02T12:00:00.000Z',
+    }
+    const current = {
+      ...base,
+      program: 'Server program',
+      updatedAt: '2026-08-02T12:00:00.001Z',
+    }
+    const disjoint = resolveApplicationConcurrentWrite(
+      base,
+      { ...base, tags: ['original', 'client-tag'] },
+      current,
+    )
+    expect(disjoint.conflicts).toEqual([])
+    expect(disjoint.appliedFields).toEqual(['tags'])
+    expect(disjoint.application).toMatchObject({
+      program: 'Server program',
+      tags: ['original', 'client-tag'],
+    })
+
+    const conflict = resolveApplicationConcurrentWrite(
+      base,
+      { ...base, program: 'Client program' },
+      current,
+    )
+    expect(conflict.application).toBeNull()
+    expect(conflict.appliedFields).toEqual([])
+    expect(conflict.conflicts).toEqual([
+      expect.objectContaining({ field: 'program', status: 'conflict' }),
+    ])
+  })
+
+  it('advances application version stamps under same-millisecond writes and clock rollback', () => {
+    expect(nextApplicationVersionStamp(
+      '2026-08-02T12:00:00.000Z',
+      Date.parse('2026-08-02T12:00:00.000Z'),
+    )).toBe('2026-08-02T12:00:00.001Z')
+    expect(nextApplicationVersionStamp(
+      '2026-08-02T12:00:01.000Z',
+      Date.parse('2026-08-02T11:59:59.000Z'),
+    )).toBe('2026-08-02T12:00:01.001Z')
+  })
+
+  it('never truncates correctness-critical merge fields at the audit summary limit', () => {
+    const base = Object.fromEntries(Array.from({ length: 90 }, (_, index) => [`field${index}`, 'base']))
+    const submitted = { ...base, field89: 'submitted' }
+    const current = { ...base, field0: 'current' }
+
+    expect(summarizeApplicationChanges(base, {
+      ...base,
+      ...Object.fromEntries(Array.from({ length: 90 }, (_, index) => [`field${index}`, 'changed'])),
+    })).toHaveLength(80)
+    expect(resolveApplicationConcurrentWrite(base, submitted, current)).toMatchObject({
+      conflicts: [],
+      appliedFields: ['field89'],
+      application: { field0: 'current', field89: 'submitted' },
+    })
   })
 })

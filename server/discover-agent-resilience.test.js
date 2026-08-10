@@ -91,6 +91,7 @@ describe('Discover agent batch resilience', () => {
   it('classifies output failures and transport failures as retryable, but not auth/config rejection', () => {
     expect(isRetryableDiscoverAgentError({ code: 'PROVIDER_TIMEOUT' })).toBe(true)
     expect(isRetryableDiscoverAgentError({ code: 'PROVIDER_RATE_LIMITED' })).toBe(true)
+    expect(isRetryableDiscoverAgentError({ code: 'AI_CAPACITY_EXCEEDED' })).toBe(true)
     expect(isRetryableDiscoverAgentError({ code: 'EMPTY_DRAFT' })).toBe(true)
     expect(isRetryableDiscoverAgentError({ code: 'AI_RESPONSE_INVALID' })).toBe(true)
     expect(isRetryableDiscoverAgentError({ code: 'AI_RESPONSE_SCHEMA_INVALID' })).toBe(true)

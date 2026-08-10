@@ -1,3 +1,5 @@
+import { isLikelyAdvisorPersonName } from './discover-person-identity.js'
+
 function normaliseWords(value) {
   return String(value || '')
     .normalize('NFKD')
@@ -167,6 +169,7 @@ export function findSchoolSourceEntry(program, sourceIndex) {
 function matchingAdvisorPage(pi, schoolEntry, allowedEvidence = null) {
   return (schoolEntry?.advisorPages || []).find((page) => {
     if (!isObservedOfficialEvidenceUrl(page?.url, schoolEntry, allowedEvidence)) return false
+    if (isGenericAdvisorDirectoryPage(page?.url, schoolEntry)) return false
     return advisorPageMatchesName(pi, page)
   }) || null
 }
@@ -232,6 +235,31 @@ function isPersonOrDirectoryPath(value) {
   return /\/(?:people(?:[_-]?individual)?|persons?|personnel|faculty|staff|directory|profiles?|experts?|researchers?|team|members?|bio|biography|authors?)(?:[/.]|$)/i.test(url.pathname)
     || /\/(?:faculty|staff)[_-](?:directory|profiles?|staff)(?:[/.]|$)/i.test(url.pathname)
     || /\/(?:academic[_-]?staff|our[_-]?people|meet[_-](?:the[_-])?team)(?:[/.]|$)/i.test(url.pathname)
+}
+
+function isGenericAdvisorDirectoryPage(value, schoolEntry) {
+  const pages = indexedPagesForUrl(value, schoolEntry)
+  const pathname = safeUrl(value)?.pathname || ''
+  const signal = `${pathname.replace(/[/_-]+/g, ' ')} ${pages
+    .flatMap((page) => [page?.title, page?.label]).filter(Boolean).join(' ')}`
+  const institutionalGovernancePage = /\b(?:academic structure|administrative structure|governance(?: and compliance)?|organisation(?:al)? structure|organization(?:al)? structure|senior leadership|university leadership)\b/i
+    .test(signal)
+  if (institutionalGovernancePage) return true
+  const approvedNamedSharedPage = /\b(?:leadership|research group|laboratory|lab)\b/i.test(signal)
+  if (approvedNamedSharedPage) return false
+  if (/\/(?:people|faculty|staff|directory|members?|team)\/?$/i.test(pathname)) return true
+  return /\b(?:academic structure|administrative structure|associated faculty|co advisors?|contacts?|curriculum vitae|directory|emeritus faculty|faculty members?|frequently asked questions?|governance(?: and compliance)?|organisation(?:al)? structure|organization(?:al)? structure|principal investigators?|research staff|senior leadership|staff directory|university leadership)\b/i
+    .test(signal)
+}
+
+function isApprovedSharedAdvisorPage(value, schoolEntry) {
+  const pages = indexedPagesForUrl(value, schoolEntry)
+  const signal = `${safeUrl(value)?.pathname?.replace(/[/_-]+/g, ' ') || ''} ${pages
+    .flatMap((page) => [page?.title, page?.label]).filter(Boolean).join(' ')}`
+  if (/\b(?:academic structure|administrative structure|governance(?: and compliance)?|organisation(?:al)? structure|organization(?:al)? structure|senior leadership|university leadership)\b/i.test(signal)) {
+    return false
+  }
+  return /\b(?:leadership|research group|laboratory|lab)\b/i.test(signal)
 }
 
 function isNonProgramContentPath(value) {
@@ -390,24 +418,61 @@ function advisorPageMatchesName(pi, page) {
   const pathWords = normaliseWords(pathname)
   const pathHasIdentity = pathWords.includes(last)
     && (nameWords.length === 1 || pathWords.includes(first) || pathWords.includes(first[0]))
-  const textWords = new Set(normaliseWords(`${page?.title || ''} ${page?.label || ''} ${pathname}`))
+  const personSlug = pathname.match(/\/(?:people|persons?|profiles?|team)\/([^/]+)\/?$/i)?.[1] || ''
+  const personSlugWords = normaliseWords(personSlug)
+    .filter((word) => !['dr', 'prof', 'professor', 'profile', 'about'].includes(word))
+  const titleWords = new Set(normaliseWords([page?.title, page?.label].filter(Boolean).join(' ')))
+  const titleHasIdentity = titleWords.has(last) && (
+    nameWords.length === 1 || titleWords.has(first) || titleWords.has(first[0])
+  )
+  const pathNamesAnotherPerson = personSlugWords.length >= 2
+    && !personSlugWords.includes(last)
+    && !personSlugWords.includes(first)
+  if (pathNamesAnotherPerson && !titleHasIdentity) return false
+  const declaredAdvisor = (page?.declaredKinds || []).some((kind) => (
+    ['advisor', 'faculty'].includes(String(kind || '').toLowerCase())
+  ))
+  const textWords = new Set(normaliseWords([
+    page?.title,
+    page?.label,
+    pathname,
+    // Excerpts can identify a person on an official seed whose title is only
+    // an internal page label or numeric profile id. This wider text boundary
+    // is enabled only for an explicitly declared advisor/faculty seed.
+    declaredAdvisor ? page?.excerpt : '',
+  ].filter(Boolean).join(' ')))
   const textHasIdentity = textWords.has(last) && (
     nameWords.length === 1 || textWords.has(first) || textWords.has(first[0])
   )
+  const opaqueDeclaredSeed = declaredAdvisor && /\/\d+\/?$/.test(pathname)
+  const approvedSharedPage = declaredAdvisor && isApprovedSharedAdvisorPage(page?.url, {
+    advisorPages: [page],
+  })
   return textHasIdentity && (
-    page?.individualAdvisor === true
+    titleHasIdentity
     || (isPersonOrDirectoryPath(page?.url) && pathHasIdentity)
+    || opaqueDeclaredSeed
+    || approvedSharedPage
   )
 }
 
 function suppliedAdvisorProfileUrl(pi, schoolEntry, allowedEvidence = null) {
   if (!isObservedOfficialEvidenceUrl(pi?.url, schoolEntry, allowedEvidence)) return ''
+  if (isGenericAdvisorDirectoryPage(pi?.url, schoolEntry)) return ''
   const supplied = canonicalUrl(pi?.url)
   const indexedMatch = (schoolEntry?.advisorPages || []).some((page) => (
     canonicalUrl(page?.url) === supplied && advisorPageMatchesName(pi, page)
   ))
   if (indexedMatch) return safeUrl(pi.url)?.href || ''
   return ''
+}
+
+function sharedAdvisorEvidencePage(value, schoolEntry) {
+  const pages = indexedPagesForUrl(value, schoolEntry)
+  const pageText = pages.flatMap((page) => [page?.title, page?.label]).filter(Boolean).join(' ')
+  const pathname = safeUrl(value)?.pathname?.replace(/[/_-]+/g, ' ') || ''
+  return /\b(?:leadership|team|members?|faculty|board|committee|research group)\b/i
+    .test(`${pathname} ${pageText}`)
 }
 
 function indexedEvidenceText(value, schoolEntry) {
@@ -506,21 +571,50 @@ function groundedRecruitingClaim(value, officialUrl, schoolEntry) {
 function groundedPis(pis, schoolEntry, allowedEvidence = null) {
   const out = []
   const seen = new Set()
+  const seenNames = new Map()
   for (const raw of pis || []) {
+    if (!isLikelyAdvisorPersonName(raw?.name)) continue
     const supplied = suppliedAdvisorProfileUrl(raw, schoolEntry, allowedEvidence)
     const matched = supplied ? null : matchingAdvisorPage(raw, schoolEntry, allowedEvidence)
     const officialUrl = supplied || matched?.url || ''
     if (!officialUrl) continue
-    const identity = canonicalUrl(officialUrl) || normaliseWords(raw?.name).join(' ')
+    const indexedPages = indexedPagesForUrl(officialUrl, schoolEntry)
+    const individualProfile = !sharedAdvisorEvidencePage(officialUrl, schoolEntry) && (
+      indexedPages.some((page) => page?.individualAdvisor === true)
+      || isPersonOrDirectoryPath(officialUrl)
+    )
+    const identity = canonicalUrl(officialUrl)
+      ? `${canonicalUrl(officialUrl)}${individualProfile ? '' : `\n${normaliseWords(raw?.name).join(' ')}`}`
+      : normaliseWords(raw?.name).join(' ')
     if (!identity || seen.has(identity)) continue
-    seen.add(identity)
-    out.push({
+    const nameWords = normaliseWords(raw?.name)
+    const nameIdentity = nameWords.length > 1
+      ? `${nameWords[0]} ${nameWords.at(-1)}`
+      : nameWords.join(' ')
+    const candidate = {
       ...raw,
       url: officialUrl,
       email: groundedAdvisorEmail(raw.email, officialUrl, schoolEntry),
       recruiting: groundedRecruitingClaim(raw.recruiting, officialUrl, schoolEntry),
-    })
-    if (out.length >= 20) break
+    }
+    const sameNameIndex = seenNames.get(nameIdentity)
+    if (sameNameIndex != null) {
+      const current = out[sameNameIndex]
+      const candidateScore = Number(Boolean(candidate.research)) * 4
+        + Number(Boolean(candidate.scholarly)) * 3
+        + Number(Boolean(candidate.profileMatch)) * 2
+        + Number(indexedPagesForUrl(candidate.url, schoolEntry).some((page) => page?.individualAdvisor === true))
+      const currentScore = Number(Boolean(current.research)) * 4
+        + Number(Boolean(current.scholarly)) * 3
+        + Number(Boolean(current.profileMatch)) * 2
+        + Number(indexedPagesForUrl(current.url, schoolEntry).some((page) => page?.individualAdvisor === true))
+      if (candidateScore > currentScore) out[sameNameIndex] = candidate
+      seen.add(identity)
+      continue
+    }
+    seen.add(identity)
+    seenNames.set(nameIdentity, out.length)
+    out.push(candidate)
   }
   return out
 }

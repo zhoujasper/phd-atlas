@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Select } from './Select'
@@ -236,5 +236,102 @@ describe('Select', () => {
     await user.click(screen.getByRole('button'))
     await user.click(screen.getByRole('button', { name: 'Delete option: Custom value' }))
     expect(onDelete).toHaveBeenCalledWith('custom')
+  })
+
+  it('renders presentational section labels and inline meta without changing option semantics', async () => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+    const user = userEvent.setup()
+
+    render(
+      <Select
+        value="alice"
+        options={[
+          { value: 'alice', label: 'Alice Chen', section: 'Recent', meta: '3 items' },
+          { value: 'bob', label: 'Bob Singh', section: 'Directory' },
+          { value: 'carol', label: 'Carol Rivera', section: 'Directory' },
+        ]}
+        onChange={vi.fn()}
+        ariaLabel="Recommender"
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Recommender' }))
+    const listbox = screen.getByRole('listbox', { name: 'Recommender' })
+
+    expect(listbox.querySelector('.custom-select-menu-header')).toBeNull()
+    const meta = within(listbox).getByText('3 items')
+    expect(meta).toHaveClass('custom-select-option-meta')
+    expect(meta.closest('.custom-select-option-label')).not.toBeNull()
+    expect(within(listbox).getAllByRole('option')).toHaveLength(3)
+    const sections = listbox.querySelectorAll('.custom-select-section')
+    expect(sections).toHaveLength(2)
+    expect(sections[0]).toHaveAttribute('role', 'presentation')
+    expect(sections[0]).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it('keeps a multi-select menu open and reports the toggled values', async () => {
+    const user = userEvent.setup()
+    const onMultiChange = vi.fn()
+
+    render(
+      <Select
+        value="one"
+        options={[
+          { value: 'one', label: 'One' },
+          { value: 'two', label: 'Two' },
+        ]}
+        onChange={vi.fn()}
+        multiple
+        selectedValues={['one']}
+        onMultiChange={onMultiChange}
+        multipleSelectedLabel="1 selected"
+        ariaLabel="Categories"
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Categories' }))
+    const listbox = screen.getByRole('listbox', { name: 'Categories' })
+    expect(listbox).toHaveAttribute('aria-multiselectable', 'true')
+    expect(screen.getByRole('option', { name: 'One' })).toHaveAttribute('aria-selected', 'true')
+
+    await user.click(screen.getByRole('option', { name: 'Two' }))
+
+    expect(onMultiChange).toHaveBeenCalledWith(['one', 'two'])
+    expect(screen.getByRole('listbox', { name: 'Categories' })).toBeInTheDocument()
+  })
+
+  it('keeps filtered keyboard indices and scroll targets aligned across section labels', async () => {
+    const scrolledIndices: string[] = []
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(function (this: HTMLElement) {
+        scrolledIndices.push(this.dataset.selectOptionIndex ?? 'missing')
+      }),
+    })
+    const onChange = vi.fn()
+    const user = userEvent.setup()
+
+    render(
+      <Select
+        value="alice"
+        options={[
+          { value: 'alice', label: 'Alice Chen', section: 'Recent' },
+          { value: 'bob', label: 'Bob Singh', section: 'Directory' },
+          { value: 'carol', label: 'Carol Rivera', section: 'Directory' },
+        ]}
+        onChange={onChange}
+        searchable
+        ariaLabel="Recommender"
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Recommender' }))
+    await user.type(screen.getByRole('searchbox'), 'a')
+    expect(screen.getAllByRole('option')).toHaveLength(2)
+    expect(screen.getByText('Directory')).toBeInTheDocument()
+
+    await user.keyboard('{ArrowDown}{Enter}')
+    expect(onChange).toHaveBeenCalledWith('carol')
+    expect(scrolledIndices.at(-1)).toBe('1')
   })
 })

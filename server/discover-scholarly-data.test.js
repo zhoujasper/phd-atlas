@@ -271,4 +271,216 @@ describe('Discover multi-source scholarly leads', () => {
     })
     expect(entry.evidence.candidateResearchers[0].recentWorks[0].meshHeadings).toContain('Immunotherapy')
   })
+
+  it('follows a bounded OpenAlex cursor to widen researcher recall', async () => {
+    const workPages = [
+      {
+        results: [{
+          id: 'https://openalex.org/W1',
+          doi: 'https://doi.org/10.1000/page-one',
+          display_name: 'Phase-field modeling first wave',
+          publication_year: 2025,
+          cited_by_count: 12,
+          authorships: [{
+            author: { id: 'https://openalex.org/A1', display_name: 'Alice Example' },
+            institutions: [{ id: 'https://openalex.org/I1' }],
+          }, {
+            author: { id: 'https://openalex.org/A2', display_name: 'Bob Example' },
+            institutions: [{ id: 'https://openalex.org/I1' }],
+          }],
+        }],
+        meta: { next_cursor: 'cursor-2' },
+      },
+      {
+        results: [{
+          id: 'https://openalex.org/W2',
+          doi: 'https://doi.org/10.1000/page-two',
+          display_name: 'Phase-field modeling second wave',
+          publication_year: 2025,
+          cited_by_count: 9,
+          authorships: [{
+            author: { id: 'https://openalex.org/A3', display_name: 'Carol Example' },
+            institutions: [{ id: 'https://openalex.org/I1' }],
+          }],
+        }],
+        meta: { next_cursor: 'cursor-3' },
+      },
+    ]
+    const cursorValues = []
+    const fetchImpl = async (value) => {
+      const url = new URL(value)
+      if (url.hostname === 'api.ror.org') {
+        return new Response(JSON.stringify({
+          items: [{
+            id: 'https://ror.org/example',
+            names: [{ value: 'Example University', types: ['ror_display'] }],
+            domains: ['example.edu'],
+          }],
+        }), { status: 200 })
+      }
+      if (url.hostname === 'api.openalex.org' && url.pathname.endsWith('/institutions')) {
+        return new Response(JSON.stringify({
+          results: [{
+            id: 'https://openalex.org/I1',
+            display_name: 'Example University',
+            ror: 'https://ror.org/example',
+            homepage_url: 'https://example.edu/',
+          }],
+        }), { status: 200 })
+      }
+      if (url.hostname === 'api.openalex.org' && url.pathname.endsWith('/works')) {
+        cursorValues.push(url.searchParams.get('cursor'))
+        return new Response(JSON.stringify(workPages.shift()), { status: 200 })
+      }
+      if (url.hostname === 'api.crossref.org') {
+        return new Response(JSON.stringify({ message: { items: [] } }), { status: 200 })
+      }
+      return new Response('', { status: 404 })
+    }
+
+    const [entry] = await collectScholarlyEvidence({
+      schools: [{
+        school: 'Example University',
+        officialUrl: 'https://example.edu/',
+        crawlStatus: 'ok',
+      }],
+      query: ['phase-field modeling'],
+      fetchImpl,
+      maxResearchersPerSchool: 10,
+      maxOpenAlexPagesPerQuery: 2,
+    })
+
+    expect(cursorValues).toEqual([null, 'cursor-2'])
+    expect(entry.evidence.sourceCounts.openalex).toBe(3)
+    expect(entry.evidence.candidateResearchers.map((candidate) => candidate.name))
+      .toEqual(['Alice Example', 'Bob Example', 'Carol Example'])
+  })
+
+  it('keeps Crossref open when OpenAlex is under the requested researcher target', async () => {
+    let crossrefCalls = 0
+    const authorships = Array.from({ length: 24 }, (_, index) => ({
+      author: { id: `https://openalex.org/A${index + 1}`, display_name: `Researcher ${index + 1} Example` },
+      institutions: [{ id: 'https://openalex.org/I1' }],
+    }))
+    const fetchImpl = async (value) => {
+      const url = new URL(value)
+      if (url.hostname === 'api.ror.org') {
+        return new Response(JSON.stringify({
+          items: [{
+            id: 'https://ror.org/example',
+            names: [{ value: 'Example University', types: ['ror_display'] }],
+            domains: ['example.edu'],
+          }],
+        }), { status: 200 })
+      }
+      if (url.hostname === 'api.openalex.org' && url.pathname.endsWith('/institutions')) {
+        return new Response(JSON.stringify({
+          results: [{
+            id: 'https://openalex.org/I1',
+            display_name: 'Example University',
+            ror: 'https://ror.org/example',
+            homepage_url: 'https://example.edu/',
+          }],
+        }), { status: 200 })
+      }
+      if (url.hostname === 'api.openalex.org' && url.pathname.endsWith('/works')) {
+        return new Response(JSON.stringify({
+          results: [{
+            id: 'https://openalex.org/W1',
+            doi: 'https://doi.org/10.1000/openalex',
+            display_name: 'Phase-field modeling with 24 authors',
+            publication_year: 2025,
+            cited_by_count: 4,
+            authorships,
+          }],
+          meta: { next_cursor: null },
+        }), { status: 200 })
+      }
+      if (url.hostname === 'api.crossref.org') {
+        crossrefCalls += 1
+        return new Response(JSON.stringify({
+          message: {
+            items: [{
+              DOI: '10.1000/crossref-extra',
+              title: ['Phase-field modeling with an extra author'],
+              published: { 'date-parts': [[2025]] },
+              'is-referenced-by-count': 3,
+              author: [{
+                given: 'Wei',
+                family: 'Wang',
+                affiliation: [{ name: 'Example University' }],
+              }],
+            }],
+          },
+        }), { status: 200 })
+      }
+      return new Response('', { status: 404 })
+    }
+
+    const [entry] = await collectScholarlyEvidence({
+      schools: [{
+        school: 'Example University',
+        officialUrl: 'https://example.edu/',
+        crawlStatus: 'ok',
+      }],
+      query: ['phase-field modeling'],
+      fetchImpl,
+      maxResearchersPerSchool: 48,
+      maxOpenAlexPagesPerQuery: 1,
+    })
+
+    expect(crossrefCalls).toBeGreaterThanOrEqual(1)
+    expect(entry.evidence.sourceCounts).toMatchObject({
+      openalex: 24,
+      crossref: 1,
+      merged: 25,
+    })
+    expect(entry.evidence.candidateResearchers.map((candidate) => candidate.name)).toContain('Wei Wang')
+  })
+})
+
+describe('scholarly provider budget exhaustion', () => {
+  // OpenAlex moved to a paid model. The free daily budget runs out, every
+  // endpoint then returns the same refusal, and the body explains it. The
+  // fetch helper used to discard that body, so an operator problem with a
+  // known fix surfaced as "institution-not-resolved" -- a school-matching
+  // failure. It also retried a refusal that resets on a daily boundary.
+  it('reports an exhausted budget as its own condition and stops retrying', async () => {
+    const callsByUrl = new Map()
+    const fetchImpl = async (url) => {
+      const key = String(url).split('?')[0]
+      callsByUrl.set(key, (callsByUrl.get(key) || 0) + 1)
+      return new Response(
+        JSON.stringify({
+          error: 'Rate limit exceeded',
+          message: 'Insufficient budget. This request costs $0.001 but you only have $0 remaining.',
+          retryAfter: 83_826,
+        }),
+        { status: 429, headers: { 'content-type': 'application/json' } },
+      )
+    }
+
+    const entries = await collectScholarlyEvidence({
+      schools: [{
+        school: 'University of Oxford',
+        officialUrl: 'https://www.ox.ac.uk/',
+        crawlStatus: 'ok',
+      }],
+      query: ['graph neural networks'],
+      fetchImpl,
+      concurrency: 1,
+    })
+
+    const evidence = entries[0]?.evidence
+    expect(evidence?.status).toBe('unavailable')
+    expect(evidence?.errorCode).toBe('SCHOLARLY_PROVIDER_QUOTA_EXHAUSTED')
+    expect(evidence?.errorDetail).toMatch(/insufficient budget/i)
+    // A daily reset cannot be waited out inside one request. The pipeline
+    // still probes several distinct endpoints, but none of them may burn the
+    // retry budget re-asking a question already answered terminally.
+    expect(callsByUrl.size).toBeGreaterThan(0)
+    for (const [url, count] of callsByUrl) {
+      expect(count, `${url} was retried after a terminal refusal`).toBe(1)
+    }
+  })
 })

@@ -34,10 +34,30 @@
 .application-pipeline-heading-copy {
   grid-area: 1 / 1;
   min-width: 0;
+  align-self: end;
   z-index: 0;
   opacity: 0;
   pointer-events: none;
   transition: opacity 160ms var(--ease-out);
+}
+
+.application-pipeline-heading-copy .application-pipeline-title-row {
+  min-width: 0;
+  height: var(--application-pipeline-switch-height);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 0;
+}
+
+.kanban-hero-info .application-pipeline-title-row h2 {
+  min-width: 0;
+  margin: 0;
+}
+
+.application-pipeline-title-help .info-tooltip-trigger {
+  width: 22px;
+  height: 22px;
 }
 
 .application-pipeline-heading-stack[data-view="board"] .application-pipeline-heading-copy[data-heading-view="board"],
@@ -126,32 +146,74 @@
   overflow-anchor: none;
 }
 
-.application-pipeline-transition-veil {
-  position: absolute;
-  z-index: 24;
-  inset: 0;
-  visibility: hidden;
-  background: var(--canvas);
-  opacity: 0;
-  pointer-events: none;
-}
-
-.application-pipeline-view-stage[data-application-pipeline-transition-mode="veil-in"] > .application-pipeline-transition-veil {
-  visibility: visible;
-  opacity: 0.9;
-  will-change: opacity;
-  transition: opacity 80ms var(--ease-out);
-}
-
-.application-pipeline-view-stage[data-application-pipeline-transition-mode="veil-out"] > .application-pipeline-transition-veil {
-  visibility: visible;
-  opacity: 0;
-  will-change: opacity;
-  transition: opacity 140ms var(--ease-out);
-}
-
 .application-pipeline-view-slot {
-  display: contents;
+  min-width: 0;
+  width: 100%;
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+}
+
+.application-pipeline-view-stage[data-application-pipeline-transition-token] {
+  overflow: clip;
+}
+
+.application-pipeline-view-stage[data-application-pipeline-transition-token] > .application-pipeline-view-slot {
+  will-change: opacity, transform;
+  transition:
+    opacity 190ms var(--ease-out),
+    transform 220ms var(--ease-fluid);
+}
+
+.application-pipeline-view-stage[data-view="board"]
+  [data-pipeline-view-slot="board"],
+.application-pipeline-view-stage[data-view="table"]
+  [data-pipeline-view-slot="table"] {
+  transform: translate3d(0, 0, 0);
+}
+
+.application-pipeline-view-stage[data-view="board"]
+  [data-pipeline-view-slot="board"],
+.application-pipeline-view-stage[data-view="table"]
+  [data-pipeline-view-slot="table"] {
+  opacity: 1;
+}
+
+.application-pipeline-view-stage[data-view="board"]
+  [data-pipeline-view-slot="table"],
+.application-pipeline-view-stage[data-view="table"]
+  [data-pipeline-view-slot="board"] {
+  opacity: 0;
+}
+
+.application-pipeline-view-stage[data-application-pipeline-transition-mode="preparing"]
+  [data-pipeline-view-slot] {
+  opacity: 0.96;
+}
+
+.application-pipeline-view-stage[data-application-pipeline-transition-mode="preparing"]
+  [data-pipeline-view-slot="board"] {
+  transform: translate3d(-18px, 0, 0);
+}
+
+.application-pipeline-view-stage[data-application-pipeline-transition-mode="preparing"]
+  [data-pipeline-view-slot="table"] {
+  transform: translate3d(18px, 0, 0);
+}
+
+.application-pipeline-view-stage[data-application-pipeline-transition-mode="preparing"][data-application-pipeline-transition-direction="to-table"][data-view="board"]
+  [data-pipeline-view-slot="board"] {
+  transform: translate3d(-7px, 0, 0);
+}
+
+.application-pipeline-view-stage[data-application-pipeline-transition-mode="preparing"][data-application-pipeline-transition-direction="to-board"][data-view="table"]
+  [data-pipeline-view-slot="table"] {
+  transform: translate3d(7px, 0, 0);
+}
+
+.application-pipeline-view-stage[data-application-pipeline-transition-mode="settling"]
+  > .application-pipeline-view-slot {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
 }
 
 .application-pipeline-view {
@@ -220,6 +282,7 @@
 }
 
 .application-table-tools {
+  --application-table-action-height: var(--action-height-compact);
   min-width: 0;
   display: flex;
   align-items: center;
@@ -247,44 +310,28 @@
   flex: 0 0 auto;
 }
 
-.application-table-bulk-status {
-  width: 0;
-  max-width: 0;
-  overflow: clip;
-  opacity: 0;
-  pointer-events: none;
-  transform: translate3d(6px, 0, 0);
-  transition:
-    width 240ms var(--ease-fluid),
-    max-width 240ms var(--ease-fluid),
-    opacity 160ms var(--ease-out),
-    transform 240ms var(--ease-fluid);
+.application-table-selection-dock .explorer-selection-leading .custom-select-root {
+  width: 104px !important;
 }
 
-.application-table-bulk-status.is-visible {
-  width: 150px;
-  max-width: 150px;
-  overflow: visible;
-  opacity: 1;
-  pointer-events: auto;
-  transform: translate3d(0, 0, 0);
-}
-
-.application-table-bulk-status .custom-select-trigger {
-  min-height: 30px !important;
-  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+.application-table-selection-dock .explorer-selection-leading .custom-select-trigger {
+  height: 26px !important;
+  min-height: 26px !important;
+  padding-inline: 6px;
+  border-color: var(--border);
   background: var(--surface);
-  font-size: 11.5px !important;
+  font-size: 10.5px !important;
 }
 
 .application-table-tool-button,
 .application-table-new-button {
-  min-height: 30px;
+  height: var(--application-table-action-height);
+  min-height: var(--application-table-action-height);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 0 10px;
+  padding: 0 var(--action-padding-inline-compact);
   border-radius: var(--radius-sm);
   font-size: 11.5px;
   font-weight: 620;
@@ -328,10 +375,6 @@
   font-weight: 700;
 }
 
-.application-smart-table-view .explorer-selection-presence {
-  margin-bottom: 0;
-}
-
 .application-smart-table-shell {
   min-width: 0;
   overflow-x: auto;
@@ -368,7 +411,14 @@
 }
 
 .application-smart-table thead {
-  position: static;
+  position: relative;
+  z-index: 8;
+  transform: translate3d(0, var(--application-table-header-offset, 0px), 0);
+}
+
+.application-smart-table thead[data-stuck] {
+  will-change: transform;
+  filter: drop-shadow(0 8px 8px rgba(15, 23, 42, 0.08));
 }
 
 .application-smart-table th {
@@ -493,6 +543,22 @@
   color: var(--accent);
 }
 
+.application-table-checkbox .animated-checkmark {
+  /* Keep the small table mark crisp and fully painted after a pointer click. */
+  overflow: visible;
+}
+
+.application-table-checkbox .animated-checkmark-tick {
+  stroke-width: 2.2;
+  stroke-dasharray: none;
+  stroke-dashoffset: 0;
+}
+
+.application-table-checkbox .animated-checkmark.is-checked .animated-checkmark-tick {
+  /* The whole tick fades in together; a partial dash reads as a clipped mark. */
+  transition: opacity 90ms var(--ease-out);
+}
+
 .application-table-checkbox input {
   position: absolute;
   inset: 0;
@@ -505,7 +571,13 @@
 }
 
 .application-table-checkbox:focus-within {
-  box-shadow: 0 0 0 3px var(--accent-ring);
+  box-shadow: none;
+}
+
+.application-table-checkbox:has(input:focus-visible) {
+  /* Pointer focus stays quiet; keyboard focus remains discoverable without a glow. */
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 1px;
 }
 
 .application-table-checkbox-mixed {
@@ -860,16 +932,16 @@
   width: min(100%, 560px);
   display: grid;
   place-items: center;
-  padding: 10px 12px 12px;
-  background: var(--surface);
+  padding: 12px 12px 14px;
+  background: transparent;
 }
 
 .application-table-load-more button {
-  min-height: 28px;
+  min-height: 30px;
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 0 9px;
+  padding: 0 10px;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -878,12 +950,21 @@
   font-weight: 600;
   transition:
     color var(--duration-fast) var(--ease-out),
-    background var(--duration-fast) var(--ease-out);
+    background var(--duration-fast) var(--ease-out),
+    transform 100ms var(--ease-out);
 }
 
 .application-table-load-more button:hover {
-  background: var(--surface-secondary);
+  background: color-mix(in srgb, var(--surface-secondary) 72%, transparent);
   color: var(--accent);
+}
+
+.application-table-load-more button:active:not(:disabled) {
+  transform: translateY(1px) scale(0.98);
+}
+
+.application-table-load-more button:disabled {
+  cursor: wait;
 }
 
 .application-table-load-more button:focus-visible {
@@ -891,8 +972,78 @@
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
-.application-table-load-more.is-loading svg {
-  animation: application-table-load-pulse 480ms var(--ease-out) infinite alternate;
+.application-table-load-more.is-loading button {
+  background: color-mix(in srgb, var(--accent-soft) 44%, transparent);
+  color: var(--accent);
+}
+
+.application-table-load-more-icon {
+  position: relative;
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+  display: grid;
+  place-items: center;
+}
+
+.application-table-load-more-icon > svg {
+  grid-area: 1 / 1;
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 220ms var(--ease-fluid);
+}
+
+.application-table-load-more-icon-idle {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+}
+
+.application-table-load-more-icon-busy {
+  opacity: 0;
+  transform: scale(0.62) rotate(-45deg);
+}
+
+.application-table-load-more.is-loading .application-table-load-more-icon-idle {
+  opacity: 0;
+  transform: scale(0.62) rotate(45deg);
+}
+
+.application-table-load-more.is-loading .application-table-load-more-icon-busy {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+  animation: application-table-load-spin 760ms linear infinite;
+}
+
+.application-table-load-more-label {
+  display: grid;
+  white-space: nowrap;
+}
+
+.application-table-load-more-copy {
+  grid-area: 1 / 1;
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 220ms var(--ease-fluid);
+}
+
+.application-table-load-more-copy-idle {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+}
+
+.application-table-load-more-copy-busy {
+  opacity: 0;
+  transform: translate3d(0, 4px, 0);
+}
+
+.application-table-load-more.is-loading .application-table-load-more-copy-idle {
+  opacity: 0;
+  transform: translate3d(0, -4px, 0);
+}
+
+.application-table-load-more.is-loading .application-table-load-more-copy-busy {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
 }
 
 .application-table-empty {
@@ -935,10 +1086,9 @@
   }
 }
 
-@keyframes application-table-load-pulse {
+@keyframes application-table-load-spin {
   to {
-    opacity: 0.35;
-    transform: rotate(90deg);
+    transform: rotate(360deg);
   }
 }
 
@@ -966,17 +1116,6 @@
   .application-pipeline-view-switch {
     width: 160px;
     align-self: flex-start;
-  }
-
-  .application-pipeline-workspace .kanban-summary {
-    flex-wrap: nowrap;
-    justify-content: flex-start;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .application-pipeline-workspace .kanban-summary::-webkit-scrollbar {
-    display: none;
   }
 
   .application-table-toolbar {
@@ -1017,6 +1156,7 @@
   .application-table-new-button {
     width: 32px;
     min-width: 32px;
+    height: 32px;
     min-height: 32px;
     padding: 0;
   }
@@ -1031,9 +1171,13 @@
     display: none;
   }
 
-  .application-table-bulk-status.is-visible {
-    width: 136px;
-    max-width: 136px;
+  .application-table-selection-dock .explorer-selection-leading .custom-select-root {
+    width: 100px !important;
+  }
+
+  .application-table-selection-dock .explorer-selection-leading .custom-select-trigger {
+    height: 38px !important;
+    min-height: 38px !important;
   }
 
   .application-smart-table-shell {
@@ -1069,12 +1213,11 @@
     display: none;
   }
 
-  .application-table-bulk-status.is-visible {
-    width: 124px;
-    max-width: 124px;
+  .application-table-selection-dock .explorer-selection-leading .custom-select-root {
+    width: 92px !important;
   }
 
-  .application-table-bulk-status .custom-select-trigger {
+  .application-table-selection-dock .explorer-selection-leading .custom-select-trigger {
     padding-inline: 7px;
   }
 
@@ -1091,13 +1234,13 @@
   .application-board-action-presence,
   .application-board-action-presence[data-present="false"],
   .application-pipeline-heading-copy,
-  .application-pipeline-transition-veil,
+  .application-pipeline-view-slot,
   .application-pipeline-view-indicator,
-  .application-table-bulk-status,
   .application-smart-table tbody tr.is-entering,
   .application-table-checkbox,
   .application-table-checkbox-mixed,
   .application-table-load-more svg,
+  .application-table-load-more-copy,
   .application-table-sort svg,
   .application-table-progress i,
   .application-table-row-actions {
@@ -1112,10 +1255,6 @@
 }
 
 @media (forced-colors: active) {
-  .application-pipeline-transition-veil {
-    background: Canvas;
-  }
-
   .application-pipeline-view-indicator,
   .application-smart-table-shell,
   .application-table-tool-button {

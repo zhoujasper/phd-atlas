@@ -9,14 +9,6 @@ function buildChecklistMaterial({
   requiredCount = 1,
 }) {
   const id = createId('material')
-  const recommenders = type === 'Request'
-    ? Array.from({ length: requiredCount }, (_, index) => ({
-        id: `${id}-recommender-${index + 1}`,
-        name: '',
-        contact: '',
-      }))
-    : []
-
   return {
     id,
     name,
@@ -27,7 +19,7 @@ function buildChecklistMaterial({
     reminderEnabled: false,
     reminderDate: '',
     requiredCount,
-    recommenders,
+    recommenders: [],
     version: 'v0',
     updatedAt: today(),
     versions: [],
@@ -41,13 +33,6 @@ export function buildDefaultChecklistMaterials() {
       type: 'Document',
       group: 'Core materials',
       details: 'Current CV with education, publications, projects, and awards.',
-    }),
-    buildChecklistMaterial({
-      name: 'Recommendation Letters',
-      type: 'Request',
-      group: 'Recommendations',
-      details: 'Track each recommender, contact method, and request status.',
-      requiredCount: 3,
     }),
     buildChecklistMaterial({
       name: 'Personal Statement (PS)',

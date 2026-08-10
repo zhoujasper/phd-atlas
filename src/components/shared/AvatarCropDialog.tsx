@@ -21,6 +21,7 @@ import {
   type DragEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
+import { normalizeErrorMessage } from '../../errorMessages'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { useI18n } from '../hooks/useI18n'
 import { useModalA11y } from '../hooks/useModalA11y'
@@ -74,7 +75,7 @@ export function AvatarCropDialog({
   onClose: () => void
   onSave: (avatarDataUrl: string) => Promise<boolean | void> | boolean | void
 }) {
-  const { tx } = useI18n()
+  const { tx, lang } = useI18n()
   const titleId = useId()
   const descriptionId = useId()
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -292,20 +293,31 @@ export function AvatarCropDialog({
     return canvas.toDataURL('image/webp', 0.9)
   }
 
+  const persistAvatar = async (avatarDataUrl: string) => {
+    if (busy) return
+    setBusy(true)
+    setError('')
+    try {
+      const saved = await onSave(avatarDataUrl)
+      if (saved !== false) requestClose(onClose)
+    } catch (reason) {
+      // A parent normally reports API failures too, but this boundary must be
+      // safe for every caller (including integrations and tests that reject
+      // directly). Keep the crop resident and make the action retryable.
+      setError(normalizeErrorMessage(reason, lang, tx('apiErrors.REQUEST_FAILED')))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const save = async () => {
     const cropped = createCroppedAvatar()
     if (!cropped) return
-    setBusy(true)
-    const saved = await onSave(cropped)
-    setBusy(false)
-    if (saved !== false) requestClose(onClose)
+    await persistAvatar(cropped)
   }
 
   const remove = async () => {
-    setBusy(true)
-    const saved = await onSave('')
-    setBusy(false)
-    if (saved !== false) requestClose(onClose)
+    await persistAvatar('')
   }
 
   if (!open) return null

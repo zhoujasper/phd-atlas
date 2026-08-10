@@ -2,12 +2,33 @@ services:
   phd-atlas:
     image: ${PHD_ATLAS_IMAGE:-ghcr.io/zhoujasper/phd-atlas:latest}
     init: true
+    # Ordinary isolated exits recover automatically. Repeated rapid worker
+    # failures open a 15-minute fuse persisted in /app/storage, so recreating
+    # the container cannot reset the crash-loop budget.
     restart: unless-stopped
+    stop_grace_period: ${PHD_ATLAS_STOP_GRACE_PERIOD:-75s}
+    mem_limit: ${PHD_ATLAS_MEMORY_LIMIT:-1g}
+    mem_reservation: ${PHD_ATLAS_MEMORY_RESERVATION:-512m}
+    cpus: ${PHD_ATLAS_CPU_LIMIT:-2.0}
+    pids_limit: ${PHD_ATLAS_PIDS_LIMIT:-256}
     env_file:
       - .env
     environment:
       NODE_ENV: production
       PORT: 4317
+      # 8 threads keeps Argon2, fs, and zlib from sharing Node's default 4.
+      UV_THREADPOOL_SIZE: ${UV_THREADPOOL_SIZE:-8}
+      # Keep every durable owner (database, generated keys, uploads, and the
+      # restart fuse) on the named volume below. These values deliberately
+      # override .env so a container recreation cannot silently switch storage.
+      PHD_ATLAS_PROJECT_ROOT: /app
+      PHD_ATLAS_STORAGE_ROOT: /app/storage
+      # Port 4317 is host-loopback-only and expects exactly one host proxy hop.
+      # Operators with a different private proxy topology must set an exact hop
+      # count or trusted subnet; never publish 4317 while using this default.
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      # Trip application backpressure well before the 1 GiB cgroup OOM limit.
+      RUNTIME_MEMORY_BUDGET_BYTES: ${RUNTIME_MEMORY_BUDGET_BYTES:-536870912}
     ports:
       - "127.0.0.1:${APP_PORT:-4317}:4317"
     extra_hosts:
@@ -18,6 +39,11 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "${PHD_ATLAS_LOG_MAX_SIZE:-10m}"
+        max-file: "${PHD_ATLAS_LOG_MAX_FILES:-5}"
 
 volumes:
   phd-atlas-data:

@@ -6,6 +6,10 @@ import {
   normalizeMailAddress,
   normalizeMailAddressList,
 } from './mailFetch.js'
+import { reconcileMailClassificationFingerprints } from './mailClassificationContext.js'
+import { COMMUNICATION_SERVER_AUTHORITY_FIELDS } from '../shared/applicationAuthorityFields.js'
+
+export { reconcileMailClassificationFingerprints } from './mailClassificationContext.js'
 
 function sha256(value) {
   return createHash('sha256').update(String(value)).digest('hex')
@@ -71,25 +75,17 @@ export function mailWhitelistDigest(applications, userId) {
   return sha256(rows.join('|'))
 }
 
-const SERVER_OWNED_COMMUNICATION_FIELDS = [
-  'bodyFormat',
-  'bodyHtml',
-  'bodyText',
-  'deliveryStatus',
-  'scheduledAt',
-  'sentAt',
-  'deliveryId',
-  'deliveryUserId',
-  'deliveryStartedAt',
-  'nextDeliveryAttemptAt',
-  'deliveryAttemptCount',
-  'deliveryLastErrorCode',
-  'deliveryLastErrorAt',
-  'sourceMessageKey',
-  'sourceMailbox',
-  'importedAt',
-  'mailSecurity',
-]
+/**
+ * Enforced here, defined once in the shared protocol. Adding a field to this
+ * enforcement without adding it there refuses every save that carries it — see
+ * the invariant documented beside the shared list.
+ *
+ * `attachments` is excluded from the authored projection but not enforced here,
+ * because a communication's attachment rows are reconciled by their own route.
+ * That direction is safe; the reverse is not.
+ */
+const SERVER_OWNED_COMMUNICATION_FIELDS = [...COMMUNICATION_SERVER_AUTHORITY_FIELDS]
+  .filter((field) => field !== 'attachments')
 
 function isFetchedCommunication(communication) {
   return communication?.messageType === 'fetched-email'
@@ -120,16 +116,43 @@ export function preserveCommunicationAuthority(existing, candidate) {
   return next
 }
 
-export function preserveApplicationCommunicationAuthority(existingApplication, candidateApplication) {
+function hasServerOwnedCommunicationState(communication) {
+  return isFetchedCommunication(communication)
+    || SERVER_OWNED_COMMUNICATION_FIELDS.some((field) => communication?.[field] !== undefined)
+}
+
+export function preserveApplicationCommunicationAuthority(
+  existingApplication,
+  candidateApplication,
+  clientBaseApplication = null,
+) {
   const existingById = new Map(
     (existingApplication?.communications ?? []).map((communication) => [communication.id, communication]),
   )
-  return {
+  const candidateCommunications = candidateApplication?.communications ?? []
+  const candidateIds = new Set(candidateCommunications.map((communication) => communication.id))
+  const clientBaseIds = new Set(
+    (clientBaseApplication?.communications ?? []).map((communication) => communication.id),
+  )
+  const concurrentlyAdded = (existingApplication?.communications ?? []).filter((communication) => {
+    if (candidateIds.has(communication.id)) return false
+    if (clientBaseApplication) return !clientBaseIds.has(communication.id)
+    // Older callers cannot communicate their edit baseline. Keep only rows
+    // whose provenance/delivery fields prove that a server workflow owns them;
+    // normal client notes remain removable through the legacy full-update path.
+    return hasServerOwnedCommunicationState(communication)
+  })
+  const nextApplication = {
     ...candidateApplication,
-    communications: (candidateApplication?.communications ?? []).map((communication) => (
-      preserveCommunicationAuthority(existingById.get(communication.id), communication)
-    )),
+    communications: [
+      ...concurrentlyAdded,
+      ...candidateCommunications.map((communication) => (
+        preserveCommunicationAuthority(existingById.get(communication.id), communication)
+      )),
+    ],
   }
+  reconcileMailClassificationFingerprints(nextApplication)
+  return nextApplication
 }
 
 export function communicationIdForMail(applicationId, messageKey) {
@@ -306,6 +329,7 @@ export function applyFetchedMailMessages(store, user, fetchedMessages, options =
   let duplicates = 0
   let ignored = 0
   let changed = false
+  const classificationAffectedApplications = new Set()
 
   for (const message of messages) {
     const messageKey = message?.key || mailMessageKey(message)
@@ -330,9 +354,15 @@ export function applyFetchedMailMessages(store, user, fetchedMessages, options =
       continue
     }
     handledKeys.add(messageKey)
-    const input = messageToCommunicationInput({ ...message, direction: classification.direction })
+    const baseInput = messageToCommunicationInput({ ...message, direction: classification.direction })
 
     for (const application of matchingApplications) {
+      const selectedAttachments = options.attachmentsForApplication
+        ? options.attachmentsForApplication(application, message, baseInput.attachments)
+        : (options.retainAttachments?.(application, message) === false ? [] : baseInput.attachments)
+      const input = selectedAttachments === baseInput.attachments
+        ? baseInput
+        : { ...baseInput, attachments: Array.isArray(selectedAttachments) ? selectedAttachments : [] }
       application.communications = application.communications ?? []
       application.timeline = application.timeline ?? []
       const deterministicId = communicationIdForMail(application.id, messageKey)
@@ -381,6 +411,7 @@ export function applyFetchedMailMessages(store, user, fetchedMessages, options =
         if (communication.mailSecurity?.level === 'danger') danger += 1
         changed = true
         newlyImported = true
+        classificationAffectedApplications.add(application)
       } else {
         const securityChanged = mergeFetchedMailSecurity(communication, input)
         const attachmentsChanged = input.mailSecurity?.level === 'danger'
@@ -390,12 +421,19 @@ export function applyFetchedMailMessages(store, user, fetchedMessages, options =
           application.updatedAt = now
           changed = true
         }
+        if (securityChanged) classificationAffectedApplications.add(application)
       }
 
       if (mode === 'incremental' && (newlyImported || communication.importedAt)) {
         notifications.push(notificationForImportedMail(application, communication, message, messageKey))
       }
     }
+  }
+
+  for (const application of classificationAffectedApplications) {
+    if (!reconcileMailClassificationFingerprints(application)) continue
+    application.updatedAt = now
+    changed = true
   }
 
   return {

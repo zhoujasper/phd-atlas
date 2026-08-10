@@ -21,6 +21,7 @@ type Props = {
   offlineAccessExpiresAt?: string | null
   pendingCount: number
   blockedCount: number
+  blockedReason?: string | null
   syncing: boolean
   updateReady: boolean
   onRetry: () => void
@@ -32,9 +33,22 @@ type Props = {
 }
 
 const STATUS_MESSAGE_DWELL_MS = 2800
+const BLOCKED_REASON_KINDS = ['conflict', 'missing', 'permission', 'unverifiable']
 
 function connectivityUnavailableForBadge(mode: ConnectivitySnapshot['mode']) {
   return mode === 'offline' || mode === 'server-unreachable' || mode === 'slow'
+}
+
+// Entries parked by an older build still carry the reason the server refused
+// them ('conflict:field,field', 'missing', 'permission', 'unverifiable'). They
+// now clear on the next sync, so the wording explains what will happen rather
+// than asking for an action; a change that no longer exists upstream is still
+// not the same problem as a divergent edit.
+function blockedReasonKey(reason: string | null | undefined) {
+  const kind = (reason ?? '').split(':')[0]
+  return BLOCKED_REASON_KINDS.includes(kind)
+    ? `offlineStatus.blockedReason.${kind}`
+    : 'offlineStatus.blockedReason.conflict'
 }
 
 export function OfflineStatusCenter({
@@ -45,6 +59,7 @@ export function OfflineStatusCenter({
   offlineAccessExpiresAt = null,
   pendingCount,
   blockedCount,
+  blockedReason = null,
   syncing,
   updateReady,
   onRetry,
@@ -92,11 +107,13 @@ export function OfflineStatusCenter({
               ? tx('offlineStatus.checking')
               : connectivity.mode === 'offline'
                 ? tx('offlineStatus.offline')
-                : queuedCount > 0
-                  ? tpl(tx('offlineStatus.pending'), { count: queuedCount })
-                  : updateReady
-                    ? tx('offlineStatus.updateReady')
-                    : tx('offlineStatus.snapshot')
+                : blockedCount > 0
+                  ? tpl(tx('offlineStatus.blocked'), { count: blockedCount })
+                  : pendingCount > 0
+                    ? tpl(tx('offlineStatus.pending'), { count: pendingCount })
+                    : updateReady
+                      ? tx('offlineStatus.updateReady')
+                      : tx('offlineStatus.snapshot')
   const statusPresentationKey = JSON.stringify([mode, label, queuedCount])
 
   useEffect(() => {
@@ -214,8 +231,8 @@ export function OfflineStatusCenter({
               <span>{tx('offlineStatus.syncQueue')}</span>
               <strong>
                 {blockedCount > 0
-                  ? tpl(tx('offlineStatus.pending'), { count: queuedCount })
-                  : tpl(tx('offlineStatus.queueSummary'), { pending: pendingCount, blocked: 0 })}
+                  ? tpl(tx('offlineStatus.queueSummary'), { pending: pendingCount, blocked: blockedCount })
+                  : tpl(tx('offlineStatus.pending'), { count: pendingCount })}
               </strong>
             </div>
           </div>
@@ -226,6 +243,16 @@ export function OfflineStatusCenter({
               <span>
                 <strong>{tx('offlineStatus.personalScopeValue')}</strong>
                 <small>{tx('offlineStatus.permissionProtected')}</small>
+              </span>
+            </div>
+          ) : null}
+
+          {blockedCount > 0 ? (
+            <div className="offline-status-note offline-status-security">
+              <ShieldCheck size={15} aria-hidden="true" />
+              <span>
+                <strong>{tpl(tx('offlineStatus.blocked'), { count: blockedCount })}</strong>
+                <small>{tx(blockedReasonKey(blockedReason))}</small>
               </span>
             </div>
           ) : null}

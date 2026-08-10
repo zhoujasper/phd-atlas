@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>gradadmissions search results</title>
+  <entry>
+    <author><name>/u/example_applicant</name></author>
+    <content type="html">&lt;div&gt;Stanford Computer Science PhD: applied in December and interviewed in February.&lt;/div&gt;</content>
+    <id>t3_atom123</id>
+    <link href="https://www.reddit.com/r/gradadmissions/comments/atom123/accepted_to_phd_program_timeline_inside/" />
+    <updated>2026-02-01T12:30:00+00:00</updated>
+    <title>Accepted to PhD program, timeline inside</title>
+  </entry>
+</feed>

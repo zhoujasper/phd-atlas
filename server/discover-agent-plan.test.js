@@ -16,6 +16,7 @@ import {
 import {
   PROGRAM_AGENT_OUTPUT_SCHEMA,
   VERIFICATION_AGENT_OUTPUT_SCHEMA,
+  discoverReasoningEffortForRole,
 } from './discover-research.js'
 
 const intake = {
@@ -129,9 +130,9 @@ describe('Discover profile-grounded agent plan', () => {
       subfields: ['robotics', 'embodied AI'],
       researchTerms: ['robot learning', '具身智能'],
       targetRegions: ['Europe', 'Canada'],
-      targetProgramCount: 8,
+      coverageMode: 'evidence-exhaustive',
       fundingFloor: { amount: 30_000, currency: 'USD' },
-      targetAdvisorsPerProgram: 7,
+      completionDefinition: expect.stringContaining('every distinct'),
       advisorPreferences: ['hands_on', 'strong_robotics_lab'],
       risingStarBias: 'moderate',
       interestTags: ['robotics', 'safety'],
@@ -188,7 +189,7 @@ describe('Discover profile-grounded agent plan', () => {
     expect(payload.targetCriteria).toMatchObject({
       discipline: 'Computer Science',
       targetRegions: ['Europe'],
-      targetProgramCount: 6,
+      coverageMode: 'evidence-exhaustive',
     })
     expect(payload.applicantProfile.researchProfile.interests).toContain('robot learning')
     expect(payload.evidenceManifest[0]).toHaveProperty('evidenceId')
@@ -273,6 +274,16 @@ describe('Discover profile-grounded agent plan', () => {
     expect(verifier).toContain('did not participate in discovery')
     expect(verifier).toContain('Distrust every earlier agent conclusion')
     expect(verifier).toContain('official QS/THE pages')
+  })
+
+  it('uses maximum reasoning for every requested luna research role', () => {
+    const luna = { model: 'gpt-5.6-luna' }
+    expect(discoverReasoningEffortForRole(luna, 'planner')).toBe('max')
+    expect(discoverReasoningEffortForRole(luna, 'verifier')).toBe('max')
+    expect(discoverReasoningEffortForRole(luna, 'program')).toBe('max')
+    expect(discoverReasoningEffortForRole(luna, 'advisor')).toBe('max')
+    expect(discoverReasoningEffortForRole({ model: 'deepseek-v4-flash' }, 'advisor')).toBe('max')
+    expect(discoverReasoningEffortForRole({ model: 'gpt-4.1-mini' }, 'planner')).toBeNull()
   })
 
   it('fails closed for empty profile and empty evidence inputs', () => {

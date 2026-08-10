@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import {
+  ApiError,
+  getClientInstanceId,
+  invalidateClientReadCacheForScopes,
   phdApi,
+  readSessionTokenSubject,
   type RealtimeInvalidationEvent,
   type RealtimeInvalidationScope,
 } from '../../api/phdApi'
@@ -14,21 +18,57 @@ type UseRealtimeUpdatesOptions = {
   token: string | null
   enabled: boolean
   onInvalidate: (scopes: ReadonlySet<RealtimeInvalidationScope>) => void
+  /** Deterministic override for focused tests; production values are clamped. */
+  invalidationBatchDelayMs?: number
 }
 
 const RECONNECT_MIN_MS = 1_000
 const RECONNECT_MAX_MS = 30_000
-const INVALIDATION_BATCH_MS = 120
+const RECONNECT_RETRY_AFTER_MAX_MS = 5 * 60_000
+const INVALIDATION_BATCH_MIN_MS = 120
+const INVALIDATION_BATCH_MAX_MS = 600
+
+function clampInvalidationBatchDelay(value: number) {
+  if (!Number.isFinite(value)) return INVALIDATION_BATCH_MIN_MS
+  return Math.min(INVALIDATION_BATCH_MAX_MS, Math.max(INVALIDATION_BATCH_MIN_MS, Math.round(value)))
+}
+
+/**
+ * Give each account/browser pair a stable place in the 120–600ms refresh
+ * window. A shared mutation therefore no longer makes every connected tab hit
+ * the API at the exact same 120ms boundary, while UI convergence stays < 1s.
+ */
+export function realtimeInvalidationBatchDelayMs(token: string, clientId: string) {
+  const accountKey = readSessionTokenSubject(token) ?? token
+  const seed = `${accountKey}:${clientId}`
+  let hash = 2_166_136_261
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index)
+    hash = Math.imul(hash, 16_777_619)
+  }
+  const windowSize = INVALIDATION_BATCH_MAX_MS - INVALIDATION_BATCH_MIN_MS + 1
+  return INVALIDATION_BATCH_MIN_MS + ((hash >>> 0) % windowSize)
+}
 
 /**
  * Maintains one authenticated fetch/SSE stream per visible browser tab.
  * Invalidation bursts are coalesced before reaching App, so a multi-row server
  * mutation produces one scoped refresh instead of a request storm.
  */
-export function useRealtimeUpdates({ token, enabled, onInvalidate }: UseRealtimeUpdatesOptions) {
+export function useRealtimeUpdates({
+  token,
+  enabled,
+  onInvalidate,
+  invalidationBatchDelayMs,
+}: UseRealtimeUpdatesOptions) {
   const callbackRef = useRef(onInvalidate)
   callbackRef.current = onInvalidate
   const [connected, setConnected] = useState(false)
+  const batchDelayMs = token
+    ? clampInvalidationBatchDelay(
+        invalidationBatchDelayMs ?? realtimeInvalidationBatchDelayMs(token, getClientInstanceId()),
+      )
+    : INVALIDATION_BATCH_MIN_MS
 
   useEffect(() => {
     if (!token || !enabled) {
@@ -55,29 +95,37 @@ export function useRealtimeUpdates({ token, enabled, onInvalidate }: UseRealtime
       if (!canConnect() || pendingScopes.size === 0) return
       const scopes = new Set(pendingScopes)
       pendingScopes.clear()
+      // Invalidate once per stable client-jittered event batch. Invalidating inside the raw SSE
+      // parser restarts every in-flight read for every frame and amplifies a
+      // collaborative write burst into an O(reads × events) request wave.
+      invalidateClientReadCacheForScopes(token, scopes)
       callbackRef.current(scopes)
     }
 
     const scheduleInvalidationFlush = () => {
       if (canConnect() && pendingScopes.size > 0 && batchTimer === null) {
-        batchTimer = window.setTimeout(flushInvalidations, INVALIDATION_BATCH_MS)
+        batchTimer = window.setTimeout(flushInvalidations, batchDelayMs)
       }
     }
 
-    const scheduleReconnect = (connect: () => void) => {
+    const scheduleReconnect = (connect: () => void, retryAfterMs = 0) => {
       if (!canConnect() || retryTimer !== null) return
       const base = Math.min(RECONNECT_MAX_MS, RECONNECT_MIN_MS * 2 ** retryAttempt)
       retryAttempt += 1
       const jittered = Math.round(base * (0.85 + Math.random() * 0.3))
+      const serverFloor = Number.isFinite(retryAfterMs)
+        ? Math.min(RECONNECT_RETRY_AFTER_MAX_MS, Math.max(0, Math.ceil(retryAfterMs)))
+        : 0
       retryTimer = window.setTimeout(() => {
         retryTimer = null
         connect()
-      }, jittered)
+      }, Math.max(jittered, serverFloor))
     }
 
     const connect = () => {
       if (!canConnect() || activeAttempt !== null) return
       const attempt = { controller: new AbortController() }
+      let retryAfterMs = 0
       activeAttempt = attempt
       const handleEvent = (event: RealtimeInvalidationEvent) => {
         if (activeAttempt !== attempt || attempt.controller.signal.aborted) return
@@ -96,13 +144,20 @@ export function useRealtimeUpdates({ token, enabled, onInvalidate }: UseRealtime
           // Realtime is an optimization layer. Normal API error handling remains
           // authoritative, so a blocked stream never creates a user-facing toast.
           if (error instanceof DOMException && error.name === 'AbortError') return
+          if (
+            error instanceof ApiError
+            && ['SERVER_BUSY', 'RATE_LIMITED'].includes(error.code)
+            && Number.isFinite(error.retryAfterMs)
+          ) {
+            retryAfterMs = Number(error.retryAfterMs)
+          }
         })
         .finally(() => {
           if (activeAttempt !== attempt) return
           activeAttempt = null
           if (disposed) return
           setConnected(false)
-          scheduleReconnect(connect)
+          scheduleReconnect(connect, retryAfterMs)
         })
     }
 
@@ -140,7 +195,7 @@ export function useRealtimeUpdates({ token, enabled, onInvalidate }: UseRealtime
       window.removeEventListener('offline', suspend)
       unsubscribeConnectivity()
     }
-  }, [enabled, token])
+  }, [batchDelayMs, enabled, token])
 
   return { connected }
 }

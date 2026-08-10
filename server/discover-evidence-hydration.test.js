@@ -116,10 +116,73 @@ describe('Discover official evidence hydration', () => {
     expect(fetched).not.toContain('https://attacker.example/phd')
   })
 
+  it('retries transiently unavailable official evidence before recording it', async () => {
+    const { crawls, sourceIndex } = fixture()
+    let programmeAttempts = 0
+    const fetchImpl = async (value) => {
+      const url = String(value)
+      if (url.endsWith('/robots.txt')) {
+        return new Response('User-agent: *\nAllow: /', { status: 200 })
+      }
+      if (url.endsWith('/graduate/phd-computer-science')) {
+        programmeAttempts += 1
+        if (programmeAttempts < 3) throw new Error('temporary network outage')
+        return new Response('<title>PhD in Computer Science</title><main>Official doctoral programme.</main>', { status: 200 })
+      }
+      return new Response('', { status: 404 })
+    }
+
+    const result = await hydrateDiscoverOfficialEvidence({
+      crawls,
+      sourceIndex,
+      fetchImpl,
+      dnsLookup: null,
+      retries: 2,
+      retryDelayMs: 0,
+      includeDeclaredSeeds: false,
+      programs: [{
+        school: 'Example University',
+        website: 'https://cs.example.edu/graduate/phd-computer-science',
+        sources: ['https://cs.example.edu/graduate/phd-computer-science'],
+        pis: [],
+      }],
+    })
+
+    const merged = result.crawls[0]
+    expect(merged.pages.map((page) => page.url)).toContain(
+      'https://cs.example.edu/graduate/phd-computer-science',
+    )
+    expect(programmeAttempts).toBe(3)
+  })
+
   it('merges hydration pages without losing prior evidence types', () => {
     const base = [{ source: { url: 'https://example.edu/' }, pages: [{ url: 'https://example.edu/phd', types: ['program'], fetched: true }], candidatePages: [], health: {} }]
     const additions = [{ source: { url: 'https://example.edu/' }, pages: [{ url: 'https://example.edu/phd', types: ['admissions'], fetched: true }], candidatePages: [], health: {} }]
     const [merged] = mergeDiscoverCrawlResults(base, additions)
     expect(merged.pages[0].types).toEqual(['program', 'admissions'])
+  })
+
+  it('does not claim a hydration source after the research lifecycle is aborted', async () => {
+    const { crawls, sourceIndex } = fixture()
+    const controller = new AbortController()
+    const reason = Object.assign(new Error('server stopping'), {
+      code: 'DISCOVER_RESEARCH_SHUTDOWN_DEFERRED',
+    })
+    controller.abort(reason)
+    let requests = 0
+
+    await expect(hydrateDiscoverOfficialEvidence({
+      crawls,
+      sourceIndex,
+      programs: [{
+        school: 'Example University',
+        website: 'https://cs.example.edu/graduate/phd-computer-science',
+        sources: [],
+        pis: [],
+      }],
+      signal: controller.signal,
+      fetchImpl: async () => { requests += 1; return new Response('must not run') },
+    })).rejects.toBe(reason)
+    expect(requests).toBe(0)
   })
 })

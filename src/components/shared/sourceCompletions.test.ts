@@ -37,6 +37,16 @@ describe('source completions', () => {
     })
   })
 
+  it('keeps completion offsets correct in a long source document', () => {
+    const prefix = 'x'.repeat(5000)
+    const value = `${prefix}<se`
+    const items = getSourceCompletions(value, value.length, 'html')
+    const section = items.find((item) => item.label === 'section')
+
+    expect(section?.from).toBe(prefix.length)
+    expect(section?.to).toBe(value.length)
+  })
+
   it('offers Markdown structures without interrupting ordinary prose', () => {
     expect(getSourceCompletions('ordinary prose', 14, 'markdown')).toEqual([])
 

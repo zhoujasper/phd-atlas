@@ -26,6 +26,21 @@ function offsetToDays(offset) {
   return match ? Number(match[1]) : null
 }
 
+function isIsoDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value ?? ''))) return false
+  const date = new Date(`${value}T00:00:00.000Z`)
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+}
+
+function hasRecommenderIdentity(recommender) {
+  return Boolean(
+    String(recommender?.name ?? '').trim()
+    || String(recommender?.contact ?? '').trim()
+    || String(recommender?.profileId ?? '').trim()
+    || String(recommender?.notes ?? '').trim(),
+  )
+}
+
 /**
  * Walks every application's tasks/materials/deadline and returns notification
  * candidates whose trigger date has arrived. Pure function — callers persist via
@@ -38,7 +53,7 @@ export function evaluateNotificationsForUser(applications, todayStr) {
     const schoolName = application.school?.name ?? ''
 
     for (const task of application.tasks ?? []) {
-      if (task.done || !task.reminderEnabled) continue
+      if (task.done || !task.reminderEnabled || !task.due) continue
       for (const offset of task.reminderOffsets ?? []) {
         const offsetDays = offsetToDays(offset)
         if (offsetDays === null) continue
@@ -63,21 +78,56 @@ export function evaluateNotificationsForUser(applications, todayStr) {
     }
 
     for (const material of application.materials ?? []) {
-      if (!material.reminderEnabled || !material.reminderDate) continue
-      if (material.reminderDate > todayStr) continue
+      if (material.reminderEnabled && material.reminderDate && material.reminderDate <= todayStr) {
+        candidates.push({
+          type: 'material_reminder',
+          applicationId: application.id,
+          dedupeKey: dedupeKey('material_reminder', material.id, material.reminderDate),
+          triggerDate: material.reminderDate,
+          title: `Material reminder: ${material.name}`,
+          body: `Reminder for "${material.name}" (${schoolName}) — due ${material.reminderDate}.`,
+          titleZh: `材料提醒：${material.name}`,
+          bodyZh: `“${material.name}”（${schoolName}）提醒日期为 ${material.reminderDate}。`,
+          targetPath: `/applications/${encodeURIComponent(application.id)}/materials`,
+          targetTab: 'materials',
+          targetId: `material-${material.id}`,
+          metadata: { materialId: material.id },
+        })
+      }
+
+    }
+
+    for (const recommender of application.recommenders ?? []) {
+      const recommenderId = String(recommender?.id ?? '').trim()
+      const reminderDate = String(recommender?.reminderDate ?? '').trim()
+      if (!recommenderId || !hasRecommenderIdentity(recommender) || !isIsoDate(reminderDate)) continue
+      if (reminderDate > todayStr) continue
+
+      const reminderTime = String(recommender?.reminderTime ?? '').trim()
+      const recommenderName = String(recommender?.name ?? '').trim() || 'Unnamed recommender'
       candidates.push({
+        // Reuse the established durable notification type for compatibility,
+        // while its destination and copy make the application-level ownership
+        // explicit to the user.
         type: 'material_reminder',
         applicationId: application.id,
-        dedupeKey: dedupeKey('material_reminder', material.id, material.reminderDate),
-        triggerDate: material.reminderDate,
-        title: `Material reminder: ${material.name}`,
-        body: `Reminder for "${material.name}" (${schoolName}) — due ${material.reminderDate}.`,
-        titleZh: `材料提醒：${material.name}`,
-        bodyZh: `“${material.name}”（${schoolName}）提醒日期为 ${material.reminderDate}。`,
-        targetPath: `/applications/${encodeURIComponent(application.id)}/materials`,
-        targetTab: 'materials',
-        targetId: `material-${material.id}`,
-        metadata: { materialId: material.id },
+        dedupeKey: dedupeKey(
+          'material_reminder',
+          `${application.id}:recommender:${recommenderId}:${reminderTime}`,
+          reminderDate,
+        ),
+        triggerDate: reminderDate,
+        title: `Recommender reminder: ${recommenderName}`,
+        body: `Reminder for "${recommenderName}" (${schoolName}) — due ${reminderDate}.`,
+        titleZh: `推荐人提醒：${recommenderName}`,
+        bodyZh: `“${recommenderName}”（${schoolName}）提醒日期为 ${reminderDate}。`,
+        targetPath: `/applications/${encodeURIComponent(application.id)}/dossier`,
+        targetTab: 'dossier',
+        targetId: 'application-recommenders',
+        metadata: {
+          recommenderId,
+          ...(reminderTime ? { reminderTime } : {}),
+        },
       })
     }
 

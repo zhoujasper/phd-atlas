@@ -28,8 +28,7 @@ describe('startNonOverlappingRecurringTask', () => {
     expect(run).toHaveBeenCalledTimes(1)
 
     releaseFirst()
-    await Promise.resolve()
-    await Promise.resolve()
+    await task.whenIdle()
     expect(task.isRunning()).toBe(false)
 
     await vi.advanceTimersByTimeAsync(1_000)
@@ -102,5 +101,82 @@ describe('startNonOverlappingRecurringTask', () => {
     await stopped
     await vi.advanceTimersByTimeAsync(1_000)
     expect(run).toHaveBeenCalledOnce()
+  })
+
+  it('passes one lifecycle signal to a run and aborts it synchronously on stop', async () => {
+    let receivedSignal
+    const run = vi.fn((signal) => {
+      receivedSignal = signal
+      return new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
+    })
+    const task = startNonOverlappingRecurringTask({ intervalMs: 250, run })
+    const active = task.runNow()
+    await Promise.resolve()
+
+    const reason = new Error('server stopping')
+    task.stop(reason)
+
+    expect(receivedSignal).toBeInstanceOf(AbortSignal)
+    expect(receivedSignal.aborted).toBe(true)
+    expect(receivedSignal.reason).toBe(reason)
+    await expect(active).resolves.toBe(true)
+    expect(task.isRunning()).toBe(false)
+  })
+
+  it('forwards a caller signal without allowing it to cancel the task promise', async () => {
+    const caller = new AbortController()
+    let release
+    let receivedSignal
+    const run = vi.fn((signal) => {
+      receivedSignal = signal
+      return new Promise((resolve) => { release = resolve })
+    })
+    const task = startNonOverlappingRecurringTask({ intervalMs: 250, run })
+    const active = task.runNow({ signal: caller.signal })
+    await Promise.resolve()
+
+    caller.abort(new Error('caller left'))
+    expect(receivedSignal.aborted).toBe(true)
+    expect(task.isRunning()).toBe(true)
+
+    let idle = false
+    void task.whenIdle().then(() => { idle = true })
+    await Promise.resolve()
+    expect(idle).toBe(false)
+
+    release()
+    await expect(active).resolves.toBe(true)
+    await task.whenIdle()
+    task.stop()
+  })
+
+  it('does not report a completed shutdown until an in-progress commit settles', async () => {
+    let startCommit
+    let finishCommit
+    let commitStarted = false
+    const run = vi.fn(async (signal) => {
+      await new Promise((resolve) => { startCommit = resolve })
+      commitStarted = true
+      await new Promise((resolve) => { finishCommit = resolve })
+      return signal.aborted ? 'committed-after-stop' : 'committed'
+    })
+    const task = startNonOverlappingRecurringTask({ intervalMs: 250, run })
+    const active = task.runNow()
+    await Promise.resolve()
+    startCommit()
+    await Promise.resolve()
+    expect(commitStarted).toBe(true)
+
+    const stopped = task.stopAndWait(new Error('deadline approaching'))
+    let settled = false
+    void stopped.then(() => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    expect(task.isRunning()).toBe(true)
+
+    finishCommit()
+    await expect(active).resolves.toBe(true)
+    await stopped
+    expect(task.isRunning()).toBe(false)
   })
 })

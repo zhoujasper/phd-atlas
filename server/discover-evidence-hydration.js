@@ -3,6 +3,8 @@ import { findSchoolSourceEntry, isOfficialSchoolUrl } from './discover-source-gr
 
 const MAX_HYDRATION_SCHOOLS = 16
 const MAX_HYDRATION_SEEDS_PER_SCHOOL = 24
+const MAX_HYDRATION_RETRIES = 1
+const HYDRATION_RETRY_DELAY_MS = 250
 const PROGRAM_PATH_SIGNAL = /(?:^|[/_-])(?:phd|dphil|doctoral|doctorate|doctorats?|doctorad[oa]s?|dottorat[oi]|doutorad[oa]s?|doktorat|promotion(?:en)?|graduate|postgraduate|programme|programs?|admissions?|research[-_]?degrees?|courses?|博士|박사)(?:[/_.-]|$)/iu
 const NON_PROGRAM_PATH_SIGNAL = /\/(?:[^/]+[-_])?(?:news(?:room)?|nouvelles|notizie|noticias|nachrichten|nieuws|nyheter|uutiset|новости|新闻|新聞|ニュース|뉴스|events?|stories|awards?|press|media|blogs?|alumni|privacy|careers?|jobs?)(?:[-_][^/]*)?(?:\/|$)/iu
 
@@ -106,7 +108,7 @@ export function buildDiscoverEvidenceHydrationSources({
     grouped.set(schoolEntry.school, current)
   }
 
-  const schoolLimit = Math.min(64, Math.max(1, Number(maxSchools) || MAX_HYDRATION_SCHOOLS))
+  const schoolLimit = Math.min(96, Math.max(1, Number(maxSchools) || MAX_HYDRATION_SCHOOLS))
   return [...grouped.values()].slice(0, schoolLimit).map(({ base, seeds, extraHosts }) => {
     const declared = includeDeclaredSeeds
       ? (base.source.seeds || []).filter((seed) => canonicalUrl(seed?.url))
@@ -159,6 +161,18 @@ export function mergeDiscoverCrawlResults(baseResults = [], additionalResults = 
   return [...bySource.values()]
 }
 
+async function crawlHydrationSourceWithRetry(source, options, retryCount, retryDelayMs) {
+  let result = await crawlDiscoverSource(source, options)
+  for (let attempt = 1; attempt <= retryCount; attempt += 1) {
+    const unavailable = result?.skipped === 'unavailable' && (result?.pages || []).length === 0
+    if (!unavailable) break
+    if (options.signal?.aborted) throw options.signal.reason ?? new Error('Discover evidence hydration was aborted.')
+    if (retryDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
+    result = await crawlDiscoverSource(source, options)
+  }
+  return result
+}
+
 export async function hydrateDiscoverOfficialEvidence({
   programs = [],
   crawls = [],
@@ -167,9 +181,12 @@ export async function hydrateDiscoverOfficialEvidence({
   fetchImpl = globalThis.fetch,
   dnsLookup,
   concurrency = 3,
+  retries = MAX_HYDRATION_RETRIES,
+  retryDelayMs = HYDRATION_RETRY_DELAY_MS,
   includeDeclaredSeeds = true,
   maxSchools = MAX_HYDRATION_SCHOOLS,
   onProgress,
+  signal,
 } = {}) {
   const sources = buildDiscoverEvidenceHydrationSources({
     programs,
@@ -184,14 +201,16 @@ export async function hydrateDiscoverOfficialEvidence({
   let completed = 0
   await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), sources.length) }, async () => {
     while (cursor < sources.length) {
+      if (signal?.aborted) throw signal.reason ?? new Error('Discover evidence hydration was aborted.')
       const index = cursor++
-      additions[index] = await crawlDiscoverSource(sources[index], {
+      additions[index] = await crawlHydrationSourceWithRetry(sources[index], {
         fetchImpl,
         dnsLookup,
         maxPages: Math.min(32, Number(sources[index].crawlPolicy?.maxPages) || 16),
         maxCandidatePages: 400,
         researchQuery,
-      })
+        signal,
+      }, Math.max(0, Math.min(2, Number(retries) || 0)), retryDelayMs)
       completed += 1
       await onProgress?.({ completed, total: sources.length, result: additions[index] })
     }

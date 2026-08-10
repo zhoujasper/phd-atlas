@@ -15,6 +15,17 @@ let baseUrl
 let token
 let userId
 let endpoint
+let settingsMutationSequence = 0
+
+function currentSettingsHeaders() {
+  settingsMutationSequence += 1
+  return {
+    authorization: `Bearer ${token}`,
+    'content-type': 'application/json',
+    'X-PhD-Settings-Acknowledgement': 'v1',
+    'X-PhD-Settings-Mutation-Id': `web-push-test:${Date.now()}:${settingsMutationSequence}`,
+  }
+}
 
 beforeEach(async () => {
   webPush.getWebPushPublicKey.mockResolvedValue('B'.repeat(87))
@@ -35,7 +46,7 @@ beforeEach(async () => {
   endpoint = `https://push.example.test/subscriptions/${Date.now()}`
   await fetch(`${baseUrl}/api/settings`, {
     method: 'PATCH',
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    headers: currentSettingsHeaders(),
     body: JSON.stringify({ browserNotificationsEnabled: true }),
   })
   await flushBrowserPushBatches({ force: true })
@@ -121,7 +132,7 @@ describe('web push subscription API', () => {
     try {
       const settingResponse = await fetch(`${baseUrl}/api/settings`, {
         method: 'PATCH',
-        headers,
+        headers: currentSettingsHeaders(),
         body: JSON.stringify({ browserNotificationsEnabled: false }),
       })
       expect(settingResponse.status).toBe(200)
@@ -133,7 +144,7 @@ describe('web push subscription API', () => {
     } finally {
       await fetch(`${baseUrl}/api/settings`, {
         method: 'PATCH',
-        headers,
+        headers: currentSettingsHeaders(),
         body: JSON.stringify({ browserNotificationsEnabled: true }),
       })
     }
@@ -168,7 +179,7 @@ describe('web push subscription API', () => {
 
       const settingResponse = await fetch(`${baseUrl}/api/settings`, {
         method: 'PATCH',
-        headers,
+        headers: currentSettingsHeaders(),
         body: JSON.stringify({ browserNotificationsEnabled: false }),
       })
       expect(settingResponse.status).toBe(200)
@@ -181,7 +192,7 @@ describe('web push subscription API', () => {
     } finally {
       await fetch(`${baseUrl}/api/settings`, {
         method: 'PATCH',
-        headers,
+        headers: currentSettingsHeaders(),
         body: JSON.stringify({ browserNotificationsEnabled: true }),
       })
     }

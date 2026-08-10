@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Toast, ToastAction, ToastTone } from '../../appModel'
+import type { Toast, ToastAction, ToastCategory, ToastTone } from '../../appModel'
 
 export type QueuedToast = Toast & {
   id: number
@@ -71,9 +71,23 @@ export function useToastQueue() {
     tone: ToastTone = 'success',
     action?: ToastAction,
     durationMs?: number,
+    options?: {
+      title?: string
+      category?: ToastCategory
+      actions?: ToastAction[]
+    }
   ) => {
     const id = ++nextIdRef.current
-    const item: QueuedToast = { id, message, tone, action, exiting: false }
+    const item: QueuedToast = {
+      id,
+      message,
+      tone,
+      action,
+      exiting: false,
+      title: options?.title,
+      category: options?.category,
+      actions: options?.actions,
+    }
     const current = toastsRef.current
     const active = current.filter((toast) => !toast.exiting)
     const overflowId = active.length >= MAX_VISIBLE_TOASTS

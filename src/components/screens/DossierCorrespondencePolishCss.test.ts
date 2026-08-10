@@ -166,7 +166,7 @@ describe('Dossier correspondence visual polish', () => {
     )
   })
 
-  it('carries mail between the sender and recipient on one responsive behind-card route', () => {
+  it('keeps the responsive sender-to-recipient route still on hover and focus', () => {
     const routeCard = cssRule('.draft-route-info > div')
     const connector = cssRule('.composer-route-connector')
     const track = cssRule('.composer-route-connector::before')
@@ -187,12 +187,15 @@ describe('Dossier correspondence visual polish', () => {
     expect(flight).toContain('border-radius: 50%')
     expect(flight).toContain('background: var(--surface)')
     expect(flight).toContain('animation: composer-route-flight-in 620ms')
-    expect(normalizedStyles).toContain('@keyframes composer-route-flight-pass-mobile')
+    expect(normalizedStyles).not.toContain('composer-route-flight-pass')
+    expect(normalizedStyles).not.toMatch(
+      /\.draft-route-info:(?:hover|focus-within) \.composer-route-flight\s*\{/,
+    )
     expect(normalizedStyles).toMatch(
       /@media \(max-width: 820px\)[\s\S]*?\.composer-route-connector::before\s*\{[^}]*inset:\s*-14px auto[^}]*left:\s*50%[^}]*width:\s*1px/s,
     )
     expect(normalizedStyles).toMatch(
-      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.composer-route-info \.composer-route-flight,[\s\S]*?animation:\s*none/s,
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.composer-route-info \.composer-route-flight\s*\{[^}]*animation:\s*none/s,
     )
   })
 })

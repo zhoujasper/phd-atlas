@@ -20,6 +20,11 @@ export type ExplorerContextMenuItem = {
   /** Single key used while the context menu is already open (for example O, C, Enter, or Space). */
   accessKey?: string
   radio?: boolean
+  /**
+   * Keeps the menu open after selecting. Multi-select groups need it: closing
+   * on the first tick would force the menu to be reopened for every category.
+   */
+  keepOpen?: boolean
   selected?: boolean
   statusTone?: 'neutral' | 'info' | 'warning' | 'success' | 'danger' | 'accent' | 'purple'
   /** Precise status slug for color dots (`missing`, `in-progress`, `submitted`, …). */
@@ -445,7 +450,7 @@ export function ExplorerContextMenu({
         return
       }
       item.onSelect?.()
-      onClose()
+      if (!item.keepOpen) onClose()
     }
     window.addEventListener('pointerdown', close)
     window.addEventListener('resize', close)
@@ -577,7 +582,7 @@ export function ExplorerContextMenu({
                 return
               }
               item.onSelect?.()
-              onClose()
+              if (!item.keepOpen) onClose()
             }}
           >
             <MenuItemContent item={item} />

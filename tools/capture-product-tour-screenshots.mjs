@@ -24,6 +24,7 @@ const appOrigin = process.env.CAPTURE_APP_ORIGIN || 'http://127.0.0.1:5173'
 const apiOrigin = process.env.CAPTURE_API_ORIGIN || 'http://127.0.0.1:4317'
 const captureEmail = process.env.CAPTURE_EMAIL || 'jasper@example.com'
 const capturePassword = process.env.CAPTURE_PASSWORD || 'demo123456'
+const captureWebpQuality = 82
 const viewports = {
   desktop: { width: 1600, height: 900, deviceScaleFactor: 2, mobile: false },
   mobile: { width: 390, height: 844, deviceScaleFactor: 2, mobile: true },
@@ -206,7 +207,7 @@ async function openSurface(send, surface) {
 async function capture(send, surface, language, theme, viewportName) {
   const screenshot = await send('Page.captureScreenshot', {
     format: 'webp',
-    quality: 100,
+    quality: captureWebpQuality,
     fromSurface: true,
     captureBeyondViewport: false,
   })

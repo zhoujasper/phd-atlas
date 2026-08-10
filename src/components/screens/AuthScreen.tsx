@@ -1,3 +1,5 @@
+import '../../styles/marketing.css'
+import '../../styles/homepage.css'
 import {
   ArrowDown,
   ArrowRight,
@@ -20,11 +22,12 @@ import {
   UserRound,
   Users,
 } from 'lucide-react'
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { normalizeErrorMessage } from '../../errorMessages'
-import { PUBLIC_DISTRIBUTION } from '../../edition'
+import { PUBLIC_DISTRIBUTION, PUBLIC_EDITION } from '../../edition'
 import type { Language } from '../../i18n'
 import { createRecoverableModuleLoader } from '../../lazyModuleRecovery'
+import { registerSafeReloadGuard } from '../../safeReload'
 import { useDeadlineCountdown } from '../hooks/useDeadlineCountdown'
 import { useI18n, useI18nValue } from '../hooks/useI18n'
 import { useMarketingReveal, usePointerTilt } from '../hooks/useMarketingMotion'
@@ -34,6 +37,10 @@ import { ProjectFooter } from '../shared/ProjectFooter'
 import { Select } from '../shared/Select'
 import { MarketingProductScreenshot } from './MarketingProductScreenshot'
 import { TurnstileChallenge } from '../shared/TurnstileChallenge'
+import {
+  readRecoverableRegistrationIdentity,
+  saveRecoverableRegistrationIdentity,
+} from './authRegistrationDraft'
 
 const MarketingFeatureTour = lazy(createRecoverableModuleLoader(() => import('./MarketingFeatureTour').then((module) => ({
   default: module.MarketingFeatureTour,
@@ -41,6 +48,9 @@ const MarketingFeatureTour = lazy(createRecoverableModuleLoader(() => import('./
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const EMAIL_CODE_COOLDOWN_SECONDS = 45
+const DEFAULT_AUTH_NAME = PUBLIC_DISTRIBUTION ? '' : 'Jasper'
+const DEFAULT_AUTH_EMAIL = PUBLIC_DISTRIBUTION ? '' : 'jasper@example.com'
+const DEFAULT_AUTH_PASSWORD = PUBLIC_DISTRIBUTION ? '' : 'demo123456'
 
 type AuthMode = 'login' | 'register' | 'forgot'
 type AuthModeDirection = 'forward' | 'back'
@@ -79,7 +89,7 @@ export function AuthScreen({
   onLogin: (email: string, password: string) => void
   onPasskeyLogin?: (email: string) => void
   passkeyAvailable?: boolean
-  onRegister: (name: string, email: string, password: string, captchaToken: string, captchaAnswer: string, emailCodeToken: string, emailCode: string, language: string) => void
+  onRegister: (name: string, email: string, password: string, captchaToken: string, captchaAnswer: string, emailCodeToken: string, emailCode: string, language: string) => void | Promise<void>
   onForgotPassword?: (email: string) => Promise<string | undefined | null>
   onCaptcha: () => Promise<HumanChallenge>
   onSendEmailCode: (
@@ -93,7 +103,7 @@ export function AuthScreen({
   const parentI18n = useI18n()
   const { tx, format, lang } = useI18nValue(
     parentI18n.lang,
-    ['core', 'shared', 'dashboard', 'workspace', 'dossier', 'discover', 'profile', 'settings', 'team'],
+    ['core', 'shared', 'dashboard', 'workspace', 'dossier', 'discover', 'profile', 'settings', ...(!PUBLIC_EDITION ? ['team' as const] : [])],
   )
   const { theme, toggleTheme } = useTheme()
   const heroTitleLines = marketingHeroTitleLines(tx('authMarketingHeroTitle'))
@@ -106,10 +116,13 @@ export function AuthScreen({
   const modePanelRef = useRef<HTMLDivElement | null>(null)
   const modeHeightRef = useRef<number | null>(null)
   const modeRef = useRef<AuthMode>(mode)
+  const registrationReloadGuardId = useId()
+  const registrationIdentityRestoredRef = useRef(false)
+  const registrationSubmissionRef = useRef(false)
   modeRef.current = mode
-  const [name, setName] = useState(PUBLIC_DISTRIBUTION ? '' : 'Jasper')
-  const [email, setEmail] = useState(PUBLIC_DISTRIBUTION ? '' : 'jasper@example.com')
-  const [password, setPassword] = useState(PUBLIC_DISTRIBUTION ? '' : 'demo123456')
+  const [name, setName] = useState(DEFAULT_AUTH_NAME)
+  const [email, setEmail] = useState(DEFAULT_AUTH_EMAIL)
+  const [password, setPassword] = useState(DEFAULT_AUTH_PASSWORD)
   const [showPassword, setShowPassword] = useState(false)
   const [recoveryMessage, setRecoveryMessage] = useState('')
   const [recoveryLink, setRecoveryLink] = useState('')
@@ -127,9 +140,69 @@ export function AuthScreen({
   const [emailCodeError, setEmailCodeError] = useState('')
   const [emailCodeCooldownUntil, setEmailCodeCooldownUntil] = useState<number | null>(null)
   const emailCodeCooldown = useDeadlineCountdown(emailCodeCooldownUntil)
+  const registrationIdentityRef = useRef({ name, email })
+  const registrationDirtyForReloadRef = useRef(false)
+  registrationIdentityRef.current = { name, email }
+  registrationDirtyForReloadRef.current = mode === 'register' && Boolean(
+    name !== DEFAULT_AUTH_NAME
+    || email !== DEFAULT_AUTH_EMAIL
+    || password !== DEFAULT_AUTH_PASSWORD
+    || captchaAnswer
+    || emailCodeToken
+    || emailCodeValue
+    || emailCodeSending
+    || emailCodeCooldownUntil
+    || registrationSubmissionRef.current
+    || busy
+  )
+
+  const persistRegistrationIdentity = useCallback(() => {
+    if (modeRef.current !== 'register' || !registrationDirtyForReloadRef.current) return true
+    return saveRecoverableRegistrationIdentity(registrationIdentityRef.current)
+  }, [])
 
   useMarketingReveal(pageRef)
   usePointerTilt(productStageRef)
+
+  useEffect(() => {
+    if (mode !== 'register' || registrationIdentityRestoredRef.current) return
+    registrationIdentityRestoredRef.current = true
+    const recovered = readRecoverableRegistrationIdentity()
+    if (!recovered) return
+    setName(recovered.name)
+    setEmail(recovered.email)
+  }, [mode])
+
+  useEffect(() => {
+    if (mode !== 'register') return undefined
+    const timer = window.setTimeout(() => {
+      saveRecoverableRegistrationIdentity({ name, email })
+    }, 160)
+    return () => window.clearTimeout(timer)
+  }, [email, mode, name])
+
+  useEffect(() => registerSafeReloadGuard(`anonymous-registration:${registrationReloadGuardId}`, {
+    prepare: persistRegistrationIdentity,
+    hasUnsavedChanges: () => registrationDirtyForReloadRef.current,
+  }), [persistRegistrationIdentity, registrationReloadGuardId])
+
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!registrationDirtyForReloadRef.current) return
+      persistRegistrationIdentity()
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    const handlePageHide = () => {
+      persistRegistrationIdentity()
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    window.addEventListener('pagehide', handlePageHide)
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+      window.removeEventListener('pagehide', handlePageHide)
+    }
+  }, [persistRegistrationIdentity])
 
   const switchMode = useCallback((next: AuthMode) => {
     const current = modeRef.current
@@ -262,7 +335,12 @@ export function AuthScreen({
         setEmailCodeError(tx('emailCodeRequired'))
         return
       }
-      onRegister(name, email, password, captchaToken, captchaAnswer, emailCodeToken, emailCodeValue.trim(), lang)
+      registrationSubmissionRef.current = true
+      try {
+        await onRegister(name, email, password, captchaToken, captchaAnswer, emailCodeToken, emailCodeValue.trim(), lang)
+      } finally {
+        registrationSubmissionRef.current = false
+      }
       return
     }
 
@@ -323,11 +401,11 @@ export function AuthScreen({
       title: tx('profile.title'),
       Icon: UserRound,
     },
-    {
+    ...(!PUBLIC_EDITION ? [{
       key: 'team',
       title: tx('nav.team'),
       Icon: Users,
-    },
+    }] : []),
     {
       key: 'settings',
       title: tx('authMarketingContinuityTitle'),
@@ -411,10 +489,17 @@ export function AuthScreen({
           </div>
         </div>
 
+        {/*
+          No aria-label here. This wrapper is decorative: the screenshot inside
+          carries its own alt and caption, and appDesc is already visible copy
+          further down the page, so labelling the wrapper only repeats it. A
+          roleless div with a name is also exposed inconsistently across
+          browsers, and Chrome surfaced it as a second element matching "email"
+          — which is what made every signed-in e2e test fail to find the field.
+        */}
         <div
           className="auth-product-stage"
           ref={productStageRef}
-          aria-label={tx('appDesc')}
           data-marketing-reveal
           data-marketing-visible="true"
         >

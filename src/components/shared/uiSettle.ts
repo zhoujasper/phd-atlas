@@ -4,6 +4,7 @@
  */
 export function waitForUiSettle(timeoutMs = 480): Promise<void> {
   if (typeof window === 'undefined') return Promise.resolve()
+  const browserWindow = window
 
   return new Promise((resolve) => {
     let settled = false
@@ -13,28 +14,28 @@ export function waitForUiSettle(timeoutMs = 480): Promise<void> {
       resolve()
     }
 
-    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    const reduceMotion = browserWindow.matchMedia?.('(prefers-reduced-motion: reduce)').matches
     if (reduceMotion) {
       finish()
       return
     }
 
-    const hardTimeout = window.setTimeout(finish, Math.max(80, timeoutMs))
-    const idleWindow = window as Window & {
+    const hardTimeout = browserWindow.setTimeout(finish, Math.max(80, timeoutMs))
+    const idleWindow = browserWindow as Window & {
       requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
       cancelIdleCallback?: (handle: number) => void
     }
 
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
+    browserWindow.requestAnimationFrame(() => {
+      browserWindow.requestAnimationFrame(() => {
         if (typeof idleWindow.requestIdleCallback === 'function') {
           idleWindow.requestIdleCallback(() => {
-            window.clearTimeout(hardTimeout)
+            browserWindow.clearTimeout(hardTimeout)
             finish()
           }, { timeout: 140 })
         } else {
-          window.setTimeout(() => {
-            window.clearTimeout(hardTimeout)
+          browserWindow.setTimeout(() => {
+            browserWindow.clearTimeout(hardTimeout)
             finish()
           }, 36)
         }

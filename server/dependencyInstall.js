@@ -243,6 +243,7 @@ async function terminateProcessTree(
 }
 
 function runInstallAttempt(cwd, source, options) {
+  options.signal?.throwIfAborted?.()
   const spawnProcess = options.spawnProcess ?? spawn
   const idleTimeoutMs = options.idleTimeoutMs
   const attemptTimeoutMs = options.attemptTimeoutMs
@@ -284,12 +285,15 @@ function runInstallAttempt(cwd, source, options) {
     const startedAt = Date.now()
     let lastProgressAt = startedAt
     let settled = false
+    let watchdog = null
+    let onAbort = null
     let outputTail = ''
     const outputBuffers = { stdout: '', stderr: '' }
     const claimSettlement = () => {
       if (settled) return false
       settled = true
-      clearInterval(watchdog)
+      if (watchdog) clearInterval(watchdog)
+      if (onAbort) options.signal?.removeEventListener('abort', onAbort)
       return true
     }
     const failForTimeout = (kind, elapsedMs) => {
@@ -335,7 +339,7 @@ function runInstallAttempt(cwd, source, options) {
     }
     child.stdout?.on('data', (chunk) => capture('stdout', chunk))
     child.stderr?.on('data', (chunk) => capture('stderr', chunk))
-    const watchdog = setInterval(() => {
+    watchdog = setInterval(() => {
       const now = Date.now()
       const elapsedMs = now - startedAt
       const idleMs = now - lastProgressAt
@@ -377,10 +381,34 @@ function runInstallAttempt(cwd, source, options) {
         },
       ))
     })
+    onAbort = () => {
+      const abortError = options.signal?.reason instanceof Error
+        ? options.signal.reason
+        : Object.assign(new Error('Dependency installation was aborted.'), { code: 'ABORT_ERR' })
+      if (!claimSettlement()) return
+      void terminateProcessTree(child, {
+        spawnProcess,
+        processPlatform: options.processPlatform,
+        killProcess: options.killProcess,
+        timeoutMs: options.terminationTimeoutMs,
+      })
+        .then(() => reject(abortError))
+        .catch((cause) => reject(Object.assign(
+          new Error(`Dependency installation was aborted but its process tree could not be confirmed stopped: ${cause.message}`),
+          {
+            code: 'UPDATE_DEPENDENCY_INSTALL_FAILED',
+            dependencyRetryable: false,
+            cause,
+          },
+        )))
+    }
+    options.signal?.addEventListener('abort', onAbort, { once: true })
+    if (options.signal?.aborted) onAbort()
   })
 }
 
 export async function runProductionDependencyInstall(cwd, options = {}) {
+  options.signal?.throwIfAborted?.()
   const env = options.env ?? process.env
   const vendored = options.vendored ?? await hasVendoredRuntimePackages(cwd)
   const sources = dependencyInstallSources({
@@ -413,6 +441,7 @@ export async function runProductionDependencyInstall(cwd, options = {}) {
   const startedAt = Date.now()
   const failures = []
   for (let index = 0; index < sources.length; index += 1) {
+    options.signal?.throwIfAborted?.()
     const source = sources[index]
     const remainingMs = totalTimeoutMs - (Date.now() - startedAt)
     if (remainingMs < 1_000) break

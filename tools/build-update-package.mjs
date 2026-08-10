@@ -271,6 +271,8 @@ writeFileSync(
     'After 0.1.0-beta.6 is installed, later Release updates can complete automatically.',
     'The package carries its complete integrity-pinned production dependency graph and',
     'retains bounded international/mainland source fallback for future extensions.',
+    'A Release may also provide an exact-base differential asset; the updater reconstructs',
+    'this complete package locally and falls back here whenever the delta cannot be trusted.',
     'The server validates, stores, installs, and first-boot checks the package with rollback protection.',
   ].join('\n'),
   'utf8',

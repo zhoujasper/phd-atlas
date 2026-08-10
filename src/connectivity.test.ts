@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   apiRequestBlockReason,
+  CONNECTIVITY_OUTAGE_GRACE_MS,
   connectivityUnavailable,
   getConnectivityGeneration,
   getConnectivitySnapshot,
@@ -27,6 +28,7 @@ class TestHealthSocket {
   onclose: (() => void) | null = null
   onerror: (() => void) | null = null
   readonly url: string
+  closeCalls = 0
 
   constructor(url: string) {
     this.url = url
@@ -34,6 +36,7 @@ class TestHealthSocket {
   }
 
   open() {
+    if (this.readyState !== TestHealthSocket.CONNECTING) return
     this.readyState = TestHealthSocket.OPEN
     this.onopen?.()
   }
@@ -43,6 +46,7 @@ class TestHealthSocket {
   }
 
   fail() {
+    if (this.readyState === TestHealthSocket.CLOSED) return
     this.readyState = TestHealthSocket.CLOSED
     this.onerror?.()
     this.onclose?.()
@@ -50,6 +54,7 @@ class TestHealthSocket {
 
   close() {
     if (this.readyState === TestHealthSocket.CLOSED) return
+    this.closeCalls += 1
     this.readyState = TestHealthSocket.CLOSED
     this.onclose?.()
   }
@@ -80,8 +85,9 @@ describe('connectivity state', () => {
   })
 
   afterEach(() => {
-    vi.unstubAllGlobals()
     resetConnectivityForTests()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
   })
 
   it('distinguishes a reachable browser network from an unavailable server', () => {
@@ -95,6 +101,52 @@ describe('connectivity state', () => {
     expect(connectivityUnavailable()).toBe(true)
     expect(apiRequestBlockReason('GET')).toBe('server-unreachable')
     expect(apiRequestBlockReason('POST')).toBeNull()
+  })
+
+  it.each(['transport', 'timeout'] as const)(
+    'requires consecutive %s evidence and a sustained grace window before opening the client circuit',
+    async (evidence) => {
+      vi.useFakeTimers()
+      const observedGeneration = getConnectivityGeneration()
+
+      reportApiUnavailable({ evidence, observedGeneration })
+      expect(getConnectivitySnapshot()).toMatchObject({
+        mode: 'online',
+        serverReachable: true,
+      })
+
+      reportApiUnavailable({ evidence, observedGeneration })
+      expect(getConnectivitySnapshot()).toMatchObject({
+        mode: 'checking',
+        serverReachable: null,
+      })
+
+      await vi.advanceTimersByTimeAsync(CONNECTIVITY_OUTAGE_GRACE_MS - 1)
+      expect(getConnectivitySnapshot().mode).toBe('checking')
+      await vi.advanceTimersByTimeAsync(1)
+      expect(getConnectivitySnapshot()).toMatchObject({
+        mode: 'server-unreachable',
+        serverReachable: false,
+      })
+    },
+  )
+
+  it('lets a ready health socket override repeated endpoint timeouts', async () => {
+    const pending = probeServerConnectivity({ force: true })
+    const socket = latestSocket()
+    socket.open()
+    socket.message({ type: 'ready', ok: true })
+    await expect(pending).resolves.toMatchObject({ serverReachable: true, mode: 'online' })
+    const observedGeneration = getConnectivityGeneration()
+
+    reportApiUnavailable({ evidence: 'timeout', observedGeneration })
+    reportApiUnavailable({ evidence: 'timeout', observedGeneration })
+
+    expect(getConnectivitySnapshot()).toMatchObject({
+      mode: 'online',
+      serverReachable: true,
+      consecutiveFailures: 0,
+    })
   })
 
   it('lets a user choose immediate offline work while the server remains reachable', () => {
@@ -168,6 +220,7 @@ describe('connectivity state', () => {
   })
 
   it('retires a replaced connecting socket only after its handshake completes', async () => {
+    vi.useFakeTimers()
     const first = probeServerConnectivity({ force: true })
     const connectingSocket = latestSocket()
 
@@ -176,25 +229,136 @@ describe('connectivity state', () => {
 
     expect(activeSocket).not.toBe(connectingSocket)
     expect(connectingSocket.readyState).toBe(TestHealthSocket.CONNECTING)
+    expect(connectingSocket.closeCalls).toBe(0)
 
     connectingSocket.open()
     expect(connectingSocket.readyState).toBe(TestHealthSocket.CLOSED)
+    expect(connectingSocket.closeCalls).toBe(1)
 
     activeSocket.open()
     activeSocket.message({ type: 'ready', ok: true })
+    // Only the active connection's heartbeat deadline remains. The retired
+    // socket cleared its private deadline as soon as its handshake completed.
+    expect(vi.getTimerCount()).toBe(1)
     await expect(replacement).resolves.toMatchObject({ serverReachable: true, mode: 'online' })
     await expect(first).resolves.toMatchObject({ serverReachable: true, mode: 'online' })
   })
 
-  it('marks the server unavailable when the health socket closes before readiness', async () => {
+  it('bounds every black-holed retired socket across repeated forced replacements', async () => {
+    vi.useFakeTimers()
+    const pending: Array<Promise<ReturnType<typeof getConnectivitySnapshot>>> = []
+
+    for (let index = 0; index < 7; index += 1) {
+      pending.push(probeServerConnectivity({ force: true }))
+    }
+
+    const activeSocket = latestSocket()
+    const retiredSockets = TestHealthSocket.instances.slice(0, -1)
+    expect(retiredSockets).toHaveLength(6)
+    expect(retiredSockets.every((socket) => socket.readyState === TestHealthSocket.CONNECTING)).toBe(true)
+    expect(retiredSockets.every((socket) => socket.closeCalls === 0)).toBe(true)
+
+    activeSocket.open()
+    activeSocket.message({ type: 'ready', ok: true })
+    const stableSnapshot = getConnectivitySnapshot()
+
+    await vi.advanceTimersByTimeAsync(4_499)
+    expect(retiredSockets.every((socket) => socket.closeCalls === 0)).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(retiredSockets.every((socket) => socket.readyState === TestHealthSocket.CLOSED)).toBe(true)
+    expect(retiredSockets.every((socket) => socket.closeCalls === 1)).toBe(true)
+    expect(activeSocket.readyState).toBe(TestHealthSocket.OPEN)
+    expect(getConnectivitySnapshot()).toBe(stableSnapshot)
+    // All six private retirement timers are gone; only the current socket's
+    // heartbeat timeout remains.
+    expect(vi.getTimerCount()).toBe(1)
+    await expect(Promise.all(pending)).resolves.toHaveLength(7)
+  })
+
+  it('clears a retired connection deadline when the old handshake fails', async () => {
+    vi.useFakeTimers()
+    const first = probeServerConnectivity({ force: true })
+    const retiredSocket = latestSocket()
+    const replacement = probeServerConnectivity({ force: true })
+    const activeSocket = latestSocket()
+
+    expect(vi.getTimerCount()).toBe(2)
+    retiredSocket.fail()
+    expect(retiredSocket.closeCalls).toBe(0)
+    expect(vi.getTimerCount()).toBe(1)
+
+    activeSocket.open()
+    activeSocket.message({ type: 'ready', ok: true })
+    expect(vi.getTimerCount()).toBe(1)
+    await expect(replacement).resolves.toMatchObject({ serverReachable: true, mode: 'online' })
+    await expect(first).resolves.toMatchObject({ serverReachable: true, mode: 'online' })
+  })
+
+  it('keeps a one-probe health interruption in checking before confirming an outage', async () => {
+    vi.useFakeTimers()
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 502 })))
     const pending = probeServerConnectivity({ force: true })
     latestSocket().fail()
 
     await expect(pending).resolves.toMatchObject({
-      mode: 'server-unreachable',
+      mode: 'checking',
       browserOnline: true,
+      serverReachable: null,
+    })
+
+    await vi.advanceTimersByTimeAsync(CONNECTIVITY_OUTAGE_GRACE_MS)
+    expect(getConnectivitySnapshot()).toMatchObject({
+      mode: 'server-unreachable',
       serverReachable: false,
+    })
+  })
+
+  it('cancels outage confirmation when the same-origin HTTP route recovers inside the grace window', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 502 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        data: { status: 'ok', ready: true },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const initial = probeServerConnectivity({ force: true })
+    latestSocket().fail()
+    await expect(initial).resolves.toMatchObject({ mode: 'checking' })
+
+    await expect(probeServerConnectivity({ force: true })).resolves.toMatchObject({
+      mode: 'online',
+      serverReachable: true,
+    })
+    await vi.advanceTimersByTimeAsync(CONNECTIVITY_OUTAGE_GRACE_MS + 1)
+    expect(getConnectivitySnapshot()).toMatchObject({ mode: 'online', serverReachable: true })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps a live Atlas process in checking while startup is not ready', async () => {
+    vi.useFakeTimers()
+    reportApiUnavailable()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      data: { status: 'starting', ready: false },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+
+    await expect(probeServerConnectivity({ force: true })).resolves.toMatchObject({
+      mode: 'checking',
+      serverReachable: true,
+    })
+    await vi.advanceTimersByTimeAsync(CONNECTIVITY_OUTAGE_GRACE_MS + 1)
+    expect(getConnectivitySnapshot()).toMatchObject({
+      mode: 'checking',
+      serverReachable: true,
     })
   })
 
@@ -258,6 +422,13 @@ describe('connectivity state', () => {
       mode: 'online',
       serverReachable: true,
     })
+
+    reportApiUnavailable({ evidence: 'timeout', observedGeneration: staleGeneration })
+    reportApiUnavailable({ evidence: 'timeout', observedGeneration: staleGeneration })
+    expect(getConnectivitySnapshot()).toMatchObject({
+      mode: 'online',
+      serverReachable: true,
+    })
   })
 
   it('does not publish a global render update for every successful API response', () => {
@@ -284,12 +455,18 @@ describe('connectivity state', () => {
   })
 
   it('rejects malformed health socket events instead of treating a proxy response as Atlas', async () => {
+    vi.useFakeTimers()
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 502 })))
     const pending = probeServerConnectivity({ force: true })
     latestSocket().open()
     latestSocket().message({ ok: true, type: 'unexpected' })
 
     expect(latestSocket().readyState).toBe(TestHealthSocket.CLOSED)
-    await expect(pending).resolves.toMatchObject({ serverReachable: false })
+    await expect(pending).resolves.toMatchObject({ mode: 'checking', serverReachable: null })
+    await vi.advanceTimersByTimeAsync(CONNECTIVITY_OUTAGE_GRACE_MS)
+    expect(getConnectivitySnapshot()).toMatchObject({
+      mode: 'server-unreachable',
+      serverReachable: false,
+    })
   })
 })

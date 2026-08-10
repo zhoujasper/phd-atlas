@@ -2,11 +2,12 @@ import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import PDFDocument from 'pdfkit'
+import { collectReadableToBoundedBuffer } from './boundedBufferCollector.js'
+import { SUPPORTED_EXPORT_LANGUAGES as SUPPORTED_LANGUAGES } from './sharedConstants.js'
 
 const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = path.resolve(SERVER_DIR, '..')
 const UI_I18N_ROOT = path.join(PROJECT_ROOT, 'src', 'i18n')
-const SUPPORTED_LANGUAGES = new Set(['en', 'zh', 'ja', 'ko', 'es', 'fr', 'de', 'pt', 'it', 'ru', 'vi', 'th'])
 const LANGUAGE_LOCALES = {
   en: 'en-US',
   zh: 'zh-CN',
@@ -117,35 +118,77 @@ function registerFonts(doc, language) {
     }
     return null
   }
-  const pairRegular = registerOptional('AtlasRegular', [pair.regular])
-  const pairBold = pair.bold === pair.regular
-    ? pairRegular
-    : registerOptional('AtlasBold', [pair.bold, pair.regular])
-  const cjkRegular = (normalizedLanguage === 'zh' || normalizedLanguage === 'ja') && pairRegular
-    ? pairRegular
-    : registerOptional('AtlasCjkRegular', [
+  let pairRegular
+  let pairBold
+  let cjkRegular
+  let cjkBold
+  let koRegular
+  let koBold
+  let thaiRegular
+  let thaiBold
+
+  const resolvePair = (isBold) => {
+    if (pairRegular === undefined) pairRegular = registerOptional('AtlasRegular', [pair.regular])
+    if (isBold && pairBold === undefined) {
+      pairBold = pair.bold === pair.regular
+        ? pairRegular
+        : registerOptional('AtlasBold', [pair.bold, pair.regular])
+    }
+    return isBold ? (pairBold ?? pairRegular ?? 'Helvetica-Bold') : (pairRegular ?? 'Helvetica')
+  }
+  const resolveCjk = (isBold) => {
+    if (cjkRegular === undefined) {
+      cjkRegular = registerOptional('AtlasCjkRegular', [
+        normalizedLanguage === 'zh' || normalizedLanguage === 'ja' ? pair.regular : null,
         path.join(windowsFonts, 'NotoSansSC-VF.ttf'),
+        { file: path.join(windowsFonts, 'msyh.ttc'), family: 'Microsoft YaHei' },
         { file: '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', family: 'Noto Sans CJK SC' },
       ])
-  const cjkBold = registerOptional('AtlasCjkBold', [
-    { file: path.join(windowsFonts, 'msyhbd.ttc'), family: 'MicrosoftYaHei-Bold' },
-    { file: '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc', family: 'Noto Sans CJK SC' },
-  ]) ?? cjkRegular
-  const koRegular = registerOptional('AtlasKoRegular', [path.join(windowsFonts, 'malgun.ttf')])
-  const koBold = registerOptional('AtlasKoBold', [path.join(windowsFonts, 'malgunbd.ttf')]) ?? koRegular
-  const thaiRegular = registerOptional('AtlasThaiRegular', [
-    path.join(windowsFonts, 'LeelawUI.ttf'),
-    '/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf',
-  ])
-  const thaiBold = registerOptional('AtlasThaiBold', [
-    path.join(windowsFonts, 'LEELAWDB.TTF'),
-    '/usr/share/fonts/truetype/noto/NotoSansThai-Bold.ttf',
-  ]) ?? thaiRegular
-  const regular = pairRegular ?? 'Helvetica'
-  const bold = pairBold ?? pairRegular ?? 'Helvetica-Bold'
+    }
+    if (isBold && cjkBold === undefined) {
+      cjkBold = pair.bold && pair.bold === pair.regular
+        ? cjkRegular
+        : registerOptional('AtlasCjkBold', [
+            normalizedLanguage === 'zh' || normalizedLanguage === 'ja' ? pair.bold : null,
+            { file: path.join(windowsFonts, 'msyhbd.ttc'), family: 'MicrosoftYaHei-Bold' },
+            { file: '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc', family: 'Noto Sans CJK SC' },
+          ]) ?? cjkRegular
+    }
+    return isBold ? (cjkBold ?? cjkRegular ?? resolvePair(true)) : (cjkRegular ?? resolvePair(false))
+  }
+  const resolveKorean = (isBold) => {
+    if (koRegular === undefined) {
+      koRegular = registerOptional('AtlasKoRegular', [
+        normalizedLanguage === 'ko' ? pair.regular : null,
+        path.join(windowsFonts, 'malgun.ttf'),
+      ])
+    }
+    if (isBold && koBold === undefined) {
+      koBold = registerOptional('AtlasKoBold', [
+        normalizedLanguage === 'ko' ? pair.bold : null,
+        path.join(windowsFonts, 'malgunbd.ttf'),
+      ]) ?? koRegular
+    }
+    return isBold ? (koBold ?? koRegular ?? resolvePair(true)) : (koRegular ?? resolvePair(false))
+  }
+  const resolveThai = (isBold) => {
+    if (thaiRegular === undefined) {
+      thaiRegular = registerOptional('AtlasThaiRegular', [
+        normalizedLanguage === 'th' ? pair.regular : null,
+        path.join(windowsFonts, 'LeelawUI.ttf'),
+        '/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf',
+      ])
+    }
+    if (isBold && thaiBold === undefined) {
+      thaiBold = registerOptional('AtlasThaiBold', [
+        normalizedLanguage === 'th' ? pair.bold : null,
+        path.join(windowsFonts, 'LEELAWDB.TTF'),
+        '/usr/share/fonts/truetype/noto/NotoSansThai-Bold.ttf',
+      ]) ?? thaiRegular
+    }
+    return isBold ? (thaiBold ?? thaiRegular ?? resolvePair(true)) : (thaiRegular ?? resolvePair(false))
+  }
   return {
-    regular,
-    bold,
     forText(text, isBold = false) {
       const value = String(text ?? '')
       // A Chinese/Japanese report commonly contains Latin user data between
@@ -153,12 +196,18 @@ function registerFonts(doc, language) {
       // avoids repeatedly shaping and subsetting the same CJK font under
       // multiple aliases during large portfolio exports.
       if (normalizedLanguage === 'zh' || normalizedLanguage === 'ja') {
-        return isBold ? (cjkBold ?? bold) : (cjkRegular ?? regular)
+        return resolveCjk(isBold)
       }
-      if (/[\u0E00-\u0E7F]/u.test(value) && thaiRegular) return isBold ? thaiBold : thaiRegular
-      if (/[\uAC00-\uD7AF\u1100-\u11FF]/u.test(value) && koRegular) return isBold ? koBold : koRegular
-      if (/[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF]/u.test(value) && cjkRegular) return isBold ? cjkBold : cjkRegular
-      return isBold ? bold : regular
+      if (normalizedLanguage === 'th' || /[\u0E00-\u0E7F]/u.test(value)) return resolveThai(isBold)
+      if (normalizedLanguage === 'ko' || /[\uAC00-\uD7AF\u1100-\u11FF]/u.test(value)) return resolveKorean(isBold)
+      if (/[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF]/u.test(value)) return resolveCjk(isBold)
+      if (
+        process.env.PHD_ATLAS_PDF_FONT
+        || normalizedLanguage === 'ru'
+        || normalizedLanguage === 'vi'
+        || /[\u0100-\u052F\u1E00-\u1EFF]/u.test(value)
+      ) return resolvePair(isBold)
+      return isBold ? 'Helvetica-Bold' : 'Helvetica'
     },
   }
 }
@@ -232,7 +281,11 @@ export function pdfCopyForLanguage(language) {
   return { language: tr.lang, locale: tr.locale, ...tr.copy }
 }
 
-export function toPdfBuffer(applications, { scope = 'all', language = 'en' } = {}) {
+export function toPdfBuffer(applications, {
+  scope = 'all',
+  language = 'en',
+  maxOutputBytes = 12 * 1024 * 1024,
+} = {}) {
   return new Promise((resolve, reject) => {
     const tr = translator(language)
     const docTitle = scope === 'current' ? tr.copy.currentTitle : tr.copy.portfolioTitle
@@ -241,7 +294,16 @@ export function toPdfBuffer(applications, { scope = 'all', language = 'en' } = {
       margins: { top: 58, right: 52, bottom: 58, left: 52 },
       info: { Title: `PhD Atlas - ${docTitle}`, Author: 'PhD Atlas', Subject: tr.copy.snapshot },
     })
-    const chunks = []
+    const outputLimit = Math.max(1024, Number(maxOutputBytes) || 12 * 1024 * 1024)
+    collectReadableToBoundedBuffer(doc, {
+      maxBytes: outputLimit,
+      createOverflowError: () => {
+        const error = new Error('The selected PDF export is too large for one safe file.')
+        error.code = 'PDF_EXPORT_TOO_LARGE'
+        return error
+      },
+    }).then(resolve, reject)
+    try {
     const fonts = registerFonts(doc, tr.lang)
     const colors = {
       ink: '#1d1d1f', secondary: '#5f6066', muted: '#8a8b91', line: '#e4e5e9',
@@ -252,10 +314,6 @@ export function toPdfBuffer(applications, { scope = 'all', language = 'en' } = {
     const margin = doc.page.margins.left
     const contentWidth = pageWidth - doc.page.margins.left - doc.page.margins.right
     const contentBottom = () => doc.page.height - doc.page.margins.bottom
-
-    doc.on('data', (chunk) => chunks.push(chunk))
-    doc.on('end', () => resolve(Buffer.concat(chunks)))
-    doc.on('error', reject)
 
     function regular(size = 9, color = colors.ink, text = '') {
       doc.font(fonts.forText(text, false)).fontSize(size).fillColor(color)
@@ -590,5 +648,9 @@ export function toPdfBuffer(applications, { scope = 'all', language = 'en' } = {
     }
 
     doc.end()
+    } catch (error) {
+      if (!doc.destroyed) doc.destroy(error)
+      reject(error)
+    }
   })
 }

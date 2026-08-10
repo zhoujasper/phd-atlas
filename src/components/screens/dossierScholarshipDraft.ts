@@ -70,8 +70,9 @@ export function scholarshipToDraft(
     tasks: (scholarship.tasks ?? []).map((task) => ({
       id: task.id,
       title: task.title,
-      due: task.due || scholarship.endDate || today,
+      due: task.due ?? '',
       done: Boolean(task.done),
+      status: task.status || (task.done ? 'Done' : 'Open'),
       details: task.details ?? '',
     })),
     timeline: (scholarship.timeline ?? []).map((event) => ({
@@ -114,8 +115,9 @@ export function cleanScholarshipDraft(draft: ScholarshipFormDraft): Omit<Scholar
       .map((task) => ({
         id: task.id,
         title: task.title.trim(),
-        due: task.due || endDate,
+        due: task.due || '',
         done: Boolean(task.done),
+        status: task.status || (task.done ? 'Done' : 'Open'),
         details: task.details?.trim() ?? '',
       })),
     timeline: draft.timeline
@@ -127,4 +129,59 @@ export function cleanScholarshipDraft(draft: ScholarshipFormDraft): Omit<Scholar
         note: event.note?.trim() ?? '',
       })),
   }
+}
+
+export function scholarshipMaterialDraftHasContent(
+  material: ScholarshipMaterialItem,
+  defaultDue = '',
+): boolean {
+  return Boolean(
+    material.name.trim()
+    || material.details?.trim()
+    || (material.status || 'Draft') !== 'Draft'
+    || Boolean(material.due && material.due !== defaultDue),
+  )
+}
+
+export function scholarshipTaskDraftHasContent(
+  task: ScholarshipTaskItem,
+  defaultDue = '',
+): boolean {
+  return Boolean(
+    task.title.trim()
+    || task.details?.trim()
+    || task.done
+    || (task.status && task.status !== 'Open')
+    || Boolean(task.due && task.due !== defaultDue),
+  )
+}
+
+/**
+ * Blank nested rows are editing affordances, not meaningful scholarship
+ * changes. Compare the exact persistence payload so adding and abandoning an
+ * untouched material/task does not manufacture an unsaved-change warning.
+ */
+export function scholarshipDraftHasMeaningfulChanges(
+  draft: ScholarshipFormDraft,
+  baseline: ScholarshipFormDraft,
+): boolean {
+  const comparableDraft = (value: ScholarshipFormDraft) => ({
+    persisted: cleanScholarshipDraft(value),
+    unfinishedMaterials: value.materials
+      .filter((material) => !material.name.trim() && scholarshipMaterialDraftHasContent(material, value.endDate))
+      .map((material) => ({
+        status: material.status,
+        due: material.due,
+        details: material.details?.trim() ?? '',
+      })),
+    unfinishedTasks: value.tasks
+      .filter((task) => !task.title.trim() && scholarshipTaskDraftHasContent(task, value.endDate))
+      .map((task) => ({
+        due: task.due,
+        done: Boolean(task.done),
+        status: task.status || (task.done ? 'Done' : 'Open'),
+        details: task.details?.trim() ?? '',
+      })),
+  })
+  return JSON.stringify(comparableDraft(draft)) !== JSON.stringify(comparableDraft(baseline))
 }

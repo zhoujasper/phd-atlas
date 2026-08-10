@@ -1,8 +1,8 @@
 import '@testing-library/jest-dom/vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { phdApi, type AdminSettings, type SystemInfo, type SystemUpdateResult } from '../api/phdApi'
+import { ApiError, phdApi, type AdminSettings, type SystemInfo, type SystemUpdateResult } from '../api/phdApi'
 import * as systemUpdateClient from './systemUpdateClient'
 import { AdminScreen } from '../components/screens/AdminScreen'
 
@@ -134,7 +134,7 @@ describe('AdminScreen public system updates', () => {
       operationInFlight: false,
       restartPending: false,
     })
-    vi.spyOn(systemUpdateClient, 'reloadInstalledApplication').mockImplementation(() => undefined)
+    const reloadInstalled = vi.spyOn(systemUpdateClient, 'reloadInstalledApplication').mockResolvedValue(true)
 
     renderSystemUpdate({ onNotify })
 
@@ -164,6 +164,7 @@ describe('AdminScreen public system updates', () => {
       'PhD Atlas is updated and ready. Refreshing the page…',
       'success',
     ))
+    await waitFor(() => expect(reloadInstalled).toHaveBeenCalledTimes(1), { timeout: 2_000 })
   })
 
   it('restores a persisted background failure and exposes its installer log after reopening', async () => {
@@ -235,5 +236,172 @@ describe('AdminScreen public system updates', () => {
       'Upgrade package uploaded. The update will be applied after validation.',
       'success',
     )
+  })
+
+  it('requires confirmation before deleting an uploaded update package', async () => {
+    const user = userEvent.setup()
+    const onNotify = vi.fn()
+    const storedAs = 'phd-atlas-update-0.1.0-beta.2-stored.tar.gz'
+    const deleteSystemUpdate = vi.spyOn(phdApi, 'deleteSystemUpdate').mockResolvedValue({
+      deleted: true,
+      storedAs,
+    })
+    vi.spyOn(phdApi, 'systemUpdateStatus').mockResolvedValue({
+      phase: 'stored',
+      source: 'manual',
+      bytes: 2048,
+      total: 2048,
+      targetVersion: '0.1.0-beta.2',
+      errorCode: null,
+      updatedAt: '2026-07-23T12:02:00.000Z',
+      currentVersion: '0.1.0-beta.1',
+      operationInFlight: false,
+      restartPending: false,
+    })
+    const uploadResult: SystemUpdateResult = {
+      received: true,
+      accepted: true,
+      background: false,
+      jobId: 'update-upload-1',
+      fileName: 'phd-atlas-update-0.1.0-beta.2.tar.gz',
+      size: 2048,
+      storedAs,
+      version: '0.1.0-beta.2',
+      verified: true,
+      restartScheduled: false,
+      source: { id: 'manual', kind: 'manual', host: null },
+      message: 'ok',
+    }
+    renderSystemUpdate({
+      onSystemUpdate: vi.fn().mockResolvedValue(uploadResult),
+      onNotify,
+    })
+
+    await user.click(screen.getByRole('button', { name: /manual update/i }))
+    const packageInput = document.querySelector<HTMLInputElement>('#admin-manual-update-panel input[type="file"]')
+    const updatePackage = new File(
+      ['verified-package'],
+      'phd-atlas-update-0.1.0-beta.2.tar.gz',
+      { type: 'application/gzip' },
+    )
+    await user.upload(packageInput as HTMLInputElement, updatePackage)
+    await user.click(screen.getByRole('button', { name: 'Upload package' }))
+
+    expect(await screen.findByText('phd-atlas-update-0.1.0-beta.2.tar.gz')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Delete package' }))
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument()
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete package' }))
+
+    await waitFor(() => {
+      expect(deleteSystemUpdate).toHaveBeenCalledWith('admin-token', storedAs)
+    })
+    expect(onNotify).toHaveBeenCalledWith('Upgrade package removed.', 'success')
+    await waitFor(() => {
+      expect(screen.queryByText('phd-atlas-update-0.1.0-beta.2.tar.gz')).not.toBeInTheDocument()
+    })
+  })
+
+  it('does not delete an uploaded update package when the confirmation is cancelled', async () => {
+    const user = userEvent.setup()
+    const storedAs = 'phd-atlas-update-cancel.tar.gz'
+    const deleteSystemUpdate = vi.spyOn(phdApi, 'deleteSystemUpdate')
+    vi.spyOn(phdApi, 'systemUpdateStatus').mockResolvedValue({
+      phase: 'stored',
+      source: 'manual',
+      bytes: 1024,
+      total: 1024,
+      targetVersion: '0.1.0-beta.2',
+      errorCode: null,
+      updatedAt: '2026-07-23T12:02:00.000Z',
+      currentVersion: '0.1.0-beta.1',
+      operationInFlight: false,
+      restartPending: false,
+    })
+    const uploadResult: SystemUpdateResult = {
+      received: true,
+      accepted: true,
+      background: false,
+      jobId: 'update-upload-cancel',
+      fileName: 'phd-atlas-update-cancel.tar.gz',
+      size: 1024,
+      storedAs,
+      version: '0.1.0-beta.2',
+      verified: true,
+      restartScheduled: false,
+      source: { id: 'manual', kind: 'manual', host: null },
+      message: 'ok',
+    }
+    renderSystemUpdate({
+      onSystemUpdate: vi.fn().mockResolvedValue(uploadResult),
+    })
+
+    await user.click(screen.getByRole('button', { name: /manual update/i }))
+    const packageInput = document.querySelector<HTMLInputElement>('#admin-manual-update-panel input[type="file"]')
+    await user.upload(
+      packageInput as HTMLInputElement,
+      new File(['verified-package'], 'phd-atlas-update-cancel.tar.gz', { type: 'application/gzip' }),
+    )
+    await user.click(screen.getByRole('button', { name: 'Upload package' }))
+
+    await user.click(await screen.findByRole('button', { name: 'Delete package' }))
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    })
+    expect(deleteSystemUpdate).not.toHaveBeenCalled()
+  })
+
+  it('shows a clear error when deleting an uploaded update package fails', async () => {
+    const user = userEvent.setup()
+    const onNotify = vi.fn()
+    vi.spyOn(phdApi, 'systemUpdateStatus').mockResolvedValue({
+      phase: 'stored',
+      source: 'manual',
+      bytes: 1024,
+      total: 1024,
+      targetVersion: '0.1.0-beta.2',
+      errorCode: null,
+      updatedAt: '2026-07-23T12:02:00.000Z',
+      currentVersion: '0.1.0-beta.1',
+      operationInFlight: false,
+      restartPending: false,
+    })
+    vi.spyOn(phdApi, 'deleteSystemUpdate').mockRejectedValue(
+      new ApiError('Update package not found.', 'NOT_FOUND', 404),
+    )
+    const uploadResult: SystemUpdateResult = {
+      received: true,
+      accepted: true,
+      background: false,
+      jobId: 'update-upload-fail',
+      fileName: 'phd-atlas-update-fail.tar.gz',
+      size: 1024,
+      storedAs: 'phd-atlas-update-fail.tar.gz',
+      version: '0.1.0-beta.2',
+      verified: true,
+      restartScheduled: false,
+      source: { id: 'manual', kind: 'manual', host: null },
+      message: 'ok',
+    }
+    renderSystemUpdate({
+      onSystemUpdate: vi.fn().mockResolvedValue(uploadResult),
+      onNotify,
+    })
+
+    await user.click(screen.getByRole('button', { name: /manual update/i }))
+    const packageInput = document.querySelector<HTMLInputElement>('#admin-manual-update-panel input[type="file"]')
+    await user.upload(
+      packageInput as HTMLInputElement,
+      new File(['verified-package'], 'phd-atlas-update-fail.tar.gz', { type: 'application/gzip' }),
+    )
+    await user.click(screen.getByRole('button', { name: 'Upload package' }))
+
+    await user.click(await screen.findByRole('button', { name: 'Delete package' }))
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete package' }))
+
+    await waitFor(() => {
+      expect(onNotify).toHaveBeenCalledWith('The requested item was not found.', 'error')
+    })
   })
 })

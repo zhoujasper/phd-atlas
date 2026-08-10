@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "phd-atlas": {
+      "title": "PhD Atlas",
+      "description": "Secure account-scoped access to PhD Atlas applications, profiles, files, communications, and personal workflows.",
+      "cwd": ".",
+      "command": "node",
+      "args": [
+        "./skills/phd-atlas/scripts/phd-atlas-cli.mjs",
+        "mcp"
+      ],
+      "startup_timeout_sec": 15,
+      "tool_timeout_sec": 180
+    }
+  }
+}

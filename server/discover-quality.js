@@ -4,6 +4,7 @@ import {
   isGenericProgramLabel,
   isOfficialSchoolUrl,
 } from './discover-source-grounding.js'
+import { isLikelyAdvisorPersonName } from './discover-person-identity.js'
 
 const EVIDENCE_PAGE_KEYS = [
   'pages',
@@ -13,6 +14,7 @@ const EVIDENCE_PAGE_KEYS = [
   'fundingPages',
   'researchPages',
 ]
+const EXPLICIT_UNVERIFIED_ADVISOR_FIT = /^No fetched individual official profile was available to verify research fit\.?$/i
 
 function canonicalEvidenceUrl(value) {
   try {
@@ -87,11 +89,17 @@ export function assessDiscoverResearchQuality(state, sourceIndex, options = {}) 
   let unverifiedProgramEvidenceRows = 0
   let unverifiedProgramSourceViolations = 0
   let unverifiedAdvisorProfiles = 0
+  let profileMatchedAdvisorProfiles = 0
+  let unsupportedAdvisorFitClaims = 0
+  let nonPersonAdvisorRows = 0
   let unverifiedFieldFactSources = 0
   let promptInjectionEvidenceViolations = 0
   let duplicateProgramRows = 0
   const programIdentities = new Set()
   for (const program of aiPrograms) {
+    nonPersonAdvisorRows += (program.pis || []).filter((pi) => (
+      !isLikelyAdvisorPersonName(pi?.name)
+    )).length
     const school = findSchoolSourceEntry(program, sourceIndex)
     if (!school) {
       crossSchoolSourceViolations += Math.max(1, program.sources?.length || 0)
@@ -128,6 +136,21 @@ export function assessDiscoverResearchQuality(state, sourceIndex, options = {}) 
         `${String(pi?.name || '').trim().toLowerCase()}|${canonicalEvidenceUrl(pi?.url)}`,
       )).length
       verifiedAdvisorProfiles += grounded.pis?.length || 0
+      for (const pi of grounded.pis || []) {
+        const match = pi?.profileMatch
+        const whyFit = String(pi?.whyFit || '').trim()
+        const hasAdvisorClaim = Boolean(
+          String(pi?.research || '').trim()
+          || (whyFit && !EXPLICIT_UNVERIFIED_ADVISOR_FIT.test(whyFit)),
+        )
+        const validProfileMatch = match?.basis === 'applicant-profile+official-individual-profile'
+          && canonicalEvidenceUrl(match?.evidenceUrl) === canonicalEvidenceUrl(pi?.url)
+          && Number.isFinite(Number(match?.score))
+          && Number(match.score) >= 0
+          && Number(match.score) <= 100
+        if (validProfileMatch) profileMatchedAdvisorProfiles += 1
+        else if (hasAdvisorClaim) unsupportedAdvisorFitClaims += 1
+      }
     }
 
     const website = canonicalEvidenceUrl(program.website)
@@ -171,10 +194,20 @@ export function assessDiscoverResearchQuality(state, sourceIndex, options = {}) 
     failures.push('unverified-program-evidence-retained')
   }
   if (unverifiedAdvisorProfiles > 0) failures.push('unverified-advisor-profiles-retained')
+  if (unsupportedAdvisorFitClaims > 0) failures.push('unsupported-advisor-fit-claims-retained')
+  if (nonPersonAdvisorRows > 0) failures.push('non-person-advisor-rows-retained')
   if (unverifiedFieldFactSources > 0) failures.push('unverified-field-facts-retained')
   if (promptInjectionEvidenceViolations > 0) failures.push('prompt-injection-evidence-retained')
   if (duplicateProgramRows > 0) failures.push('duplicate-program-url-retained')
-  if (scholarlyInstitutionsResolved < 1) warnings.push('no-scholarly-institution-resolution')
+  // Distinguish an exhausted provider budget from schools that genuinely could
+  // not be matched. Both leave the scholarly pool empty, but only one is fixed
+  // by configuring a key, and reporting it as a matching failure sends the
+  // operator to tune name scoring that was never the problem.
+  const scholarlyQuotaExhausted = schools.some(
+    (school) => school.scholarlyEvidence?.errorCode === 'SCHOLARLY_PROVIDER_QUOTA_EXHAUSTED',
+  )
+  if (scholarlyQuotaExhausted) warnings.push('scholarly-provider-quota-exhausted')
+  else if (scholarlyInstitutionsResolved < 1) warnings.push('no-scholarly-institution-resolution')
   if (verifiedAdvisorProfiles < minimumAdvisors) warnings.push('insufficient-individually-verified-advisors')
   return {
     passed: failures.length === 0,
@@ -197,6 +230,9 @@ export function assessDiscoverResearchQuality(state, sourceIndex, options = {}) 
     promptInjectionEvidenceViolations,
     duplicateProgramRows,
     verifiedAdvisorProfiles,
+    profileMatchedAdvisorProfiles,
+    unsupportedAdvisorFitClaims,
+    nonPersonAdvisorRows,
     scholarlyInstitutionsResolved,
     thresholds: { minimumReadableSites, minimumPrograms, minimumAdvisors },
   }

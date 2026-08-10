@@ -107,9 +107,9 @@ export function ShareDialog({
   onPermission: (permission: SharePermission) => void
   onSections: (sections: ShareSection[]) => void
   onClose: () => void
-  onCreate: () => void
-  onRevoke: (shareId: string) => void
-  onUpdateShare?: (shareId: string, expiresAt: string | null, permission?: SharePermission, sections?: ShareSection[]) => void
+  onCreate: () => void | Promise<void>
+  onRevoke: (shareId: string) => void | Promise<void>
+  onUpdateShare?: (shareId: string, expiresAt: string | null, permission?: SharePermission, sections?: ShareSection[]) => void | Promise<void>
   onNotify?: (message: string, tone?: 'success' | 'error' | 'info' | 'warning') => void
   activeShareCount?: number
   shareQuota?: number
@@ -123,6 +123,7 @@ export function ShareDialog({
     onNotify?.(tx('copyFailed'), 'error')
   }
   const { exiting, requestClose } = useAnimatedClose(open, onClose)
+  const [creating, setCreating] = useState(false)
   const [sharePage, setSharePage] = useState(0)
   const [confirmRevokeShareId, setConfirmRevokeShareId] = useState<string | null>(null)
   const shareTableColumns = useMemo<TableColumnDef[]>(() => [
@@ -164,7 +165,11 @@ export function ShareDialog({
     }
   }, [sharePage, sharePageCount])
 
-  const dialogRef = useModalA11y({ open: open && Boolean(application), onClose: () => requestClose() })
+  const requestDialogClose = () => {
+    if (creating) return
+    requestClose()
+  }
+  const dialogRef = useModalA11y({ open: open && Boolean(application), onClose: requestDialogClose })
 
   if (!open || !application) return null
 
@@ -195,7 +200,7 @@ export function ShareDialog({
   return (
     <ModalPortal>
       <div className={`dialog-layer${exiting ? ' exiting' : ''}`} onClick={(event) => {
-      if (event.target === event.currentTarget) requestClose()
+      if (event.target === event.currentTarget) requestDialogClose()
     }}>
       <section
         ref={dialogRef}
@@ -210,7 +215,7 @@ export function ShareDialog({
             <span className="eyebrow">{tx('share.eyebrow')}</span>
             <h2>{format(tx('share.title'), { name: application.school.name })}</h2>
           </div>
-          <button type="button" className="icon-action" onClick={() => requestClose()} aria-label={tx('close')}>
+          <button type="button" className="icon-action" onClick={requestDialogClose} disabled={creating} aria-label={tx('close')}>
             <X size={16} aria-hidden="true" />
           </button>
         </div>
@@ -340,73 +345,77 @@ export function ShareDialog({
             <span>{tx('share.createNew')}</span>
           </div>
 
-          <div
-            className={`share-package-toggle ${completePackageSelected ? 'is-complete' : 'is-custom'}`}
-            role="tablist"
-            aria-label={tx('share.packageMode')}
-          >
-            <span className="share-package-slider" aria-hidden="true" />
-            <button
-              type="button"
-              className={completePackageSelected ? 'active' : ''}
-              role="tab"
-              aria-selected={completePackageSelected}
-              onClick={setCompletePackage}
-            >
-              <CheckCircle2 size={14} aria-hidden="true" />
-              <span>{tx('share.completePackage')}</span>
-              <small>{tx('share.completePackageDesc')}</small>
-            </button>
-            <button
-              type="button"
-              className={!completePackageSelected ? 'active' : ''}
-              role="tab"
-              aria-selected={!completePackageSelected}
-              onClick={setCustomPackage}
-            >
-              <ListChecks size={14} aria-hidden="true" />
-              <span>{tx('share.customPackage')}</span>
-              <small>{tx('share.customPackageDesc')}</small>
-            </button>
-          </div>
-
-          <div className="share-package-detail-stack">
-            <div className={`share-complete-summary-shell ${completePackageSelected ? 'open' : ''}`}>
-              <div className="share-complete-summary">
-                <span>{tx('share.completeIncludes')}</span>
-                <div>
-                  {shareSections.map((section) => (
-                    <span key={section} className="share-section-mini-chip">{sectionLabel(section)}</span>
-                  ))}
-                </div>
+          <div className={`share-package-configuration-shell ${permission === 'upload' ? '' : 'open'}`}>
+            <div className="share-package-configuration">
+              <div
+                className={`share-package-toggle ${completePackageSelected ? 'is-complete' : 'is-custom'}`}
+                role="tablist"
+                aria-label={tx('share.packageMode')}
+              >
+                <span className="share-package-slider" aria-hidden="true" />
+                <button
+                  type="button"
+                  className={completePackageSelected ? 'active' : ''}
+                  role="tab"
+                  aria-selected={completePackageSelected}
+                  onClick={setCompletePackage}
+                >
+                  <CheckCircle2 size={14} aria-hidden="true" />
+                  <span>{tx('share.completePackage')}</span>
+                  <small>{tx('share.completePackageDesc')}</small>
+                </button>
+                <button
+                  type="button"
+                  className={!completePackageSelected ? 'active' : ''}
+                  role="tab"
+                  aria-selected={!completePackageSelected}
+                  onClick={setCustomPackage}
+                >
+                  <ListChecks size={14} aria-hidden="true" />
+                  <span>{tx('share.customPackage')}</span>
+                  <small>{tx('share.customPackageDesc')}</small>
+                </button>
               </div>
-            </div>
-            <div className={`share-section-picker-shell ${!completePackageSelected ? 'open' : ''}`}>
-              <div className="share-section-picker" aria-label={tx('share.sectionsTitle')}>
-                {shareSectionOptions.map((option) => {
-                  const SectionIcon = option.icon
-                  const checked = normalizedSections.includes(option.value)
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className={`share-section-option ${checked ? 'selected' : ''}`}
-                      onClick={() => toggleSection(option.value)}
-                      aria-pressed={checked}
-                    >
-                      <span className="share-section-option-mark" aria-hidden="true">
-                        {checked ? <Check size={12} /> : null}
-                      </span>
-                      <span className="share-section-option-icon">
-                        <SectionIcon size={15} aria-hidden="true" />
-                      </span>
-                      <span className="share-section-option-copy">
-                        <strong>{tx(option.labelKey, option.fallback)}</strong>
-                        <small>{tx(option.descriptionKey, option.descriptionFallback)}</small>
-                      </span>
-                    </button>
-                  )
-                })}
+
+              <div className="share-package-detail-stack">
+                <div className={`share-complete-summary-shell ${completePackageSelected ? 'open' : ''}`}>
+                  <div className="share-complete-summary">
+                    <span>{tx('share.completeIncludes')}</span>
+                    <div>
+                      {shareSections.map((section) => (
+                        <span key={section} className="share-section-mini-chip">{sectionLabel(section)}</span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <div className={`share-section-picker-shell ${!completePackageSelected ? 'open' : ''}`}>
+                  <div className="share-section-picker" aria-label={tx('share.sectionsTitle')}>
+                    {shareSectionOptions.map((option) => {
+                      const SectionIcon = option.icon
+                      const checked = normalizedSections.includes(option.value)
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={`share-section-option ${checked ? 'selected' : ''}`}
+                          onClick={() => toggleSection(option.value)}
+                          aria-pressed={checked}
+                        >
+                          <span className="share-section-option-mark" aria-hidden="true">
+                            {checked ? <Check size={12} /> : null}
+                          </span>
+                          <span className="share-section-option-icon">
+                            <SectionIcon size={15} aria-hidden="true" />
+                          </span>
+                          <span className="share-section-option-copy">
+                            <strong>{tx(option.labelKey, option.fallback)}</strong>
+                            <small>{tx(option.descriptionKey, option.descriptionFallback)}</small>
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -437,10 +446,18 @@ export function ShareDialog({
             <button
               type="button"
               className="primary-action"
-              onClick={onCreate}
-              disabled={atShareLimit}
+              onClick={() => {
+                if (creating) return
+                setCreating(true)
+                void Promise.resolve()
+                  .then(onCreate)
+                  .catch(() => undefined)
+                  .finally(() => setCreating(false))
+              }}
+              disabled={atShareLimit || creating}
+              aria-busy={creating || undefined}
             >
-              <Plus size={14} aria-hidden="true" /> {tx('share.create')}
+              {creating ? tx('working') : <><Plus size={14} aria-hidden="true" /> {tx('share.create')}</>}
             </button>
           </div>
 
@@ -459,10 +476,8 @@ export function ShareDialog({
         cancelLabel={tx('cancel')}
         variant="danger"
         onConfirm={() => {
-          if (confirmRevokeShareId !== null) {
-            onRevoke(confirmRevokeShareId)
-            setConfirmRevokeShareId(null)
-          }
+          if (confirmRevokeShareId === null) return
+          return Promise.resolve(onRevoke(confirmRevokeShareId)).then(() => setConfirmRevokeShareId(null))
         }}
         onCancel={() => setConfirmRevokeShareId(null)}
       />

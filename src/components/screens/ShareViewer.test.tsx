@@ -8,7 +8,7 @@ import englishShareViewer from '../../i18n/en/shareViewer.json'
 import { getDict, registerLanguage, t as translate, tpl } from '../../i18n'
 import { I18nContext } from '../hooks/useI18n'
 import { ShareViewer } from './ShareViewer'
-import { shareSectionsToDetailTabs, sharedPayloadToApplication } from './shareViewerModel'
+import { mergeSharedAttachmentState, shareSectionsToDetailTabs, sharedPayloadToApplication } from './shareViewerModel'
 
 beforeAll(() => {
   registerLanguage('en', englishDossier, 'dossier')
@@ -61,6 +61,13 @@ function fullViewPayload(): SharedApplicationPayload {
     deadline: '2026-11-15',
     progress: 40,
     priority: 70,
+    recommenders: [{
+      id: 'rec-ada',
+      name: 'Prof. Ada',
+      contact: 'ada@shared.example.edu',
+      notes: 'Mention the systems project.',
+      deadline: '2026-11-01',
+    }],
     materials: [{ id: 'm1', name: 'CV', type: 'Document', status: 'Ready', version: 'v1', updatedAt: '2026-01-01' }],
     tasks: [{ id: 't1', title: 'Polish CV', due: '2026-10-01', done: false }],
     communications: [],
@@ -98,7 +105,33 @@ describe('share section mapping helpers', () => {
     expect(record.school.name).toBe('Shared College')
     expect(record.materials[0]?.name).toBe('CV')
     expect(record.tasks[0]?.title).toBe('Polish CV')
+    expect(record.recommenders?.[0]).toMatchObject({ name: 'Prof. Ada', notes: 'Mention the systems project.' })
     expect(record.ownerId).toBe('share-owner')
+  })
+
+  it('merges attachment responses without replacing newer unsaved application fields', () => {
+    const current = sharedPayloadToApplication(fullViewPayload())
+    current.program = 'Locally edited program'
+    current.materials[0] = { ...current.materials[0], name: 'Locally renamed CV' }
+    const server = sharedPayloadToApplication({
+      ...fullViewPayload(),
+      program: 'Stale server program',
+      materials: [{
+        ...fullViewPayload().materials[0],
+        fileId: 'file-2',
+        fileName: 'cv-latest.pdf',
+        versions: [{ id: 'version-2', file: 'cv-latest.pdf', author: 'Guest', createdAt: '2026-08-02', fileId: 'file-2' }],
+      }],
+    })
+
+    const merged = mergeSharedAttachmentState(current, server)
+
+    expect(merged.program).toBe('Locally edited program')
+    expect(merged.materials[0]).toMatchObject({
+      name: 'Locally renamed CV',
+      fileId: 'file-2',
+      fileName: 'cv-latest.pdf',
+    })
   })
 })
 

@@ -28,6 +28,7 @@ function freezeAdapter(adapter) {
     ...adapter,
     allowedHosts: Object.freeze([...(adapter.allowedHosts || [])]),
     seeds: Object.freeze((adapter.seeds || []).map((seed) => Object.freeze({ ...seed }))),
+    crawlPolicy: adapter.crawlPolicy ? Object.freeze({ ...adapter.crawlPolicy }) : undefined,
     pathHints: Object.freeze(Object.fromEntries(
       Object.entries(adapter.pathHints || {}).map(([key, values]) => [key, Object.freeze([...(values || [])])]),
     )),

@@ -1,15 +1,27 @@
 import '@testing-library/jest-dom/vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useState } from 'react'
+import { createRef, useState, type ChangeEvent, type Ref } from 'react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { getDict, t, tpl, type Language } from '../../i18n'
+import { prepareForSafeReload, registerSafeReloadGuard } from '../../safeReload'
 import { I18nContext } from '../hooks/useI18n'
-import { MarkdownTextarea } from './MarkdownTextarea'
+import { MarkdownTextarea, type MarkdownTextareaController } from './MarkdownTextarea'
 import { resolveCodeEditorExport } from './codeEditorInterop'
 
-function EditorHarness({ initial = '', lang = 'en' }: { initial?: string; lang?: Language }) {
-  const [value, setValue] = useState(initial)
+function ControlledEditorHarness({
+  controllerRef,
+  lang = 'en',
+  onChange,
+  preservePlainLineBreaks = false,
+  value,
+}: {
+  controllerRef?: Ref<MarkdownTextareaController>
+  lang?: Language
+  onChange: (event: ChangeEvent<HTMLTextAreaElement>) => void
+  preservePlainLineBreaks?: boolean
+  value: string
+}) {
   return (
     <I18nContext.Provider
       value={{
@@ -21,13 +33,40 @@ function EditorHarness({ initial = '', lang = 'en' }: { initial?: string; lang?:
     >
       <MarkdownTextarea
         value={value}
-        onChange={(event) => setValue(event.target.value)}
+        onChange={onChange}
         aria-label={lang === 'zh' ? '备注' : 'Notes'}
         placeholder={lang === 'zh' ? '填写备注' : 'Add notes'}
+        controllerRef={controllerRef}
+        preservePlainLineBreaks={preservePlainLineBreaks}
         rows={4}
       />
-      <output data-testid="value">{value}</output>
     </I18nContext.Provider>
+  )
+}
+
+function EditorHarness({
+  controllerRef,
+  initial = '',
+  lang = 'en',
+  preservePlainLineBreaks = false,
+}: {
+  controllerRef?: Ref<MarkdownTextareaController>
+  initial?: string
+  lang?: Language
+  preservePlainLineBreaks?: boolean
+}) {
+  const [value, setValue] = useState(initial)
+  return (
+    <>
+      <ControlledEditorHarness
+        controllerRef={controllerRef}
+        lang={lang}
+        onChange={(event) => setValue(event.target.value)}
+        preservePlainLineBreaks={preservePlainLineBreaks}
+        value={value}
+      />
+      <output data-testid="value">{value}</output>
+    </>
   )
 }
 
@@ -105,6 +144,59 @@ describe('MarkdownTextarea rich editor', () => {
     expect(screen.getByText('portfolio polish', { selector: 'strong' })).toBeInTheDocument()
   })
 
+  it('keeps focused source typing local during the short external sync window', () => {
+    vi.useFakeTimers()
+    render(<EditorHarness />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit source/ }))
+    const source = screen.getByRole('textbox', { name: 'Notes' }) as HTMLTextAreaElement
+    source.focus()
+    fireEvent.change(source, { target: { value: 'Draft' } })
+
+    expect(source).toHaveValue('Draft')
+    expect(screen.getByTestId('value')).toHaveTextContent('')
+
+    act(() => {
+      vi.advanceTimersByTime(47)
+    })
+    expect(screen.getByTestId('value')).toHaveTextContent('')
+
+    act(() => {
+      vi.advanceTimersByTime(1)
+    })
+    expect(screen.getByTestId('value')).toHaveTextContent('Draft')
+  })
+
+  it('does not let a delayed controlled echo overwrite newer source typing', () => {
+    vi.useFakeTimers()
+    const emittedValues: string[] = []
+    const onChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+      emittedValues.push(event.target.value)
+    }
+    const { rerender } = render(
+      <ControlledEditorHarness value="" onChange={onChange} />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit source/ }))
+    const source = screen.getByRole('textbox', { name: 'Notes' }) as HTMLTextAreaElement
+    source.focus()
+    fireEvent.change(source, { target: { value: 'A' } })
+    act(() => {
+      vi.advanceTimersByTime(48)
+    })
+    expect(emittedValues).toEqual(['A'])
+
+    fireEvent.change(source, { target: { value: 'Add' } })
+    rerender(<ControlledEditorHarness value="A" onChange={onChange} />)
+
+    expect(source).toHaveValue('Add')
+    act(() => {
+      vi.advanceTimersByTime(48)
+    })
+    expect(emittedValues).toEqual(['A', 'Add'])
+    expect(source).toHaveValue('Add')
+  })
+
   it('supports Ctrl/Cmd formatting shortcuts without execCommand', async () => {
     const user = userEvent.setup()
     render(<EditorHarness initial="Portfolio" />)
@@ -118,6 +210,50 @@ describe('MarkdownTextarea rich editor', () => {
     })
   })
 
+  it('toggles visual formatting off with the same platform shortcut', async () => {
+    const user = userEvent.setup()
+    render(<EditorHarness initial="Portfolio" />)
+    const editor = screen.getByRole('textbox', { name: 'Notes' })
+
+    await user.click(editor)
+    await user.keyboard('{Control>}a{/Control}{Control>}b{/Control}{Control>}b{/Control}')
+
+    await waitFor(() => {
+      expect(screen.getByTestId('value')).toHaveTextContent('Portfolio')
+    })
+  })
+
+  it('toggles source wrappers instead of nesting duplicate markers', async () => {
+    render(<EditorHarness initial="Portfolio" />)
+    fireEvent.click(screen.getByRole('button', { name: /Edit source/ }))
+    const source = screen.getByRole('textbox', { name: 'Notes' }) as HTMLTextAreaElement
+
+    source.setSelectionRange(0, source.value.length)
+    fireEvent.keyDown(source, { key: 'b', ctrlKey: true })
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('**Portfolio**'))
+
+    source.setSelectionRange(2, source.value.length - 2)
+    fireEvent.keyDown(source, { key: 'b', ctrlKey: true })
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('Portfolio'))
+  })
+
+  it('shows the platform-specific primary modifier in the formatting menu', () => {
+    render(<EditorHarness initial="Portfolio" />)
+    fireEvent.contextMenu(screen.getByRole('textbox', { name: 'Notes' }), { clientX: 80, clientY: 80 })
+
+    expect(within(screen.getByRole('menuitem', { name: /Bold/ })).getByText('Ctrl+B')).toBeInTheDocument()
+    expect(within(screen.getByRole('menuitem', { name: /Strikethrough/ })).getByText('Ctrl+Shift+X')).toBeInTheDocument()
+  })
+
+  it('uses Command and Shift symbols on macOS', () => {
+    vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue('Macintosh')
+    render(<EditorHarness initial="Portfolio" />)
+    fireEvent.contextMenu(screen.getByRole('textbox', { name: 'Notes' }), { clientX: 80, clientY: 80 })
+
+    expect(within(screen.getByRole('menuitem', { name: /Bold/ })).getByText('⌘B')).toBeInTheDocument()
+    expect(within(screen.getByRole('menuitem', { name: /Strikethrough/ })).getByText('⌘⇧X')).toBeInTheDocument()
+  })
+
   it('highlights and automatically formats HTML source', async () => {
     render(<EditorHarness initial="<section><h2>Plan</h2><p>Ready</p></section>" />)
 
@@ -127,7 +263,9 @@ describe('MarkdownTextarea rich editor', () => {
     await waitFor(() => {
       expect(source).toHaveValue('<section>\n  <h2>Plan</h2>\n  <p>Ready</p>\n</section>')
     })
-    expect(document.querySelector('.markdown-source-highlight .token.tag')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(document.querySelector('.markdown-source-highlight .token.tag')).toBeInTheDocument()
+    })
     expect(document.querySelector('.markdown-source-language')).toHaveTextContent('HTML')
     expect(screen.getByRole('button', { name: /Format source · HTML/ })).toBeInTheDocument()
   })
@@ -190,7 +328,12 @@ describe('MarkdownTextarea rich editor', () => {
   })
 
   it('keeps complex GFM structures in a fidelity preview', () => {
-    render(<EditorHarness initial={'| Stage | Status |\n| --- | --- |\n| Draft | Ready |'} />)
+    render(
+      <EditorHarness
+        initial={'| Stage | Status |\n| --- | --- |\n| Draft | Ready |'}
+        preservePlainLineBreaks
+      />,
+    )
 
     const preview = document.querySelector<HTMLElement>('.markdown-fidelity-layer')
     expect(preview).toBeInTheDocument()
@@ -210,6 +353,223 @@ describe('MarkdownTextarea rich editor', () => {
     expect(screen.getByRole('textbox', { name: 'Notes' })).toHaveTextContent('Mixed Case: PhD Atlas')
     fireEvent.click(screen.getByRole('button', { name: /Edit source/ }))
     expect(screen.getByRole('textbox', { name: 'Notes' })).toHaveValue('Mixed Case: PhD Atlas')
+  })
+
+  it('keeps ordinary email line breaks visible and exact through a visual round-trip', async () => {
+    const controllerRef = createRef<MarkdownTextareaController>()
+    const initial = 'Dear **Professor**,\nThank you for your time.\nBest regards,'
+    render(
+      <EditorHarness
+        controllerRef={controllerRef}
+        initial={initial}
+        preservePlainLineBreaks
+      />,
+    )
+
+    const visual = screen.getByRole('textbox', { name: 'Notes' })
+    expect(screen.getByText('Professor', { selector: 'strong' })).toBeInTheDocument()
+    expect(visual.querySelectorAll('br')).toHaveLength(2)
+
+    act(() => controllerRef.current?.focus({ atEnd: true }))
+    act(() => controllerRef.current?.insertText('!'))
+    const edited = `${initial}!`
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(edited))
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit source/ }))
+    expect(screen.getByRole('textbox', { name: 'Notes' })).toHaveValue(edited)
+
+    fireEvent.click(screen.getByRole('button', { name: /Show rendered/ }))
+    await waitFor(() => {
+      const rendered = screen.getByRole('textbox', { name: 'Notes' })
+      expect(rendered.querySelectorAll('br')).toHaveLength(2)
+    })
+    expect(screen.getByTestId('value').textContent).toBe(edited)
+  })
+
+  it('keeps single line breaks when pasting formatted Markdown into a plain-line editor', async () => {
+    const controllerRef = createRef<MarkdownTextareaController>()
+    render(
+      <EditorHarness
+        controllerRef={controllerRef}
+        preservePlainLineBreaks
+      />,
+    )
+    const visual = screen.getByRole('textbox', { name: 'Notes' })
+    act(() => controllerRef.current?.focus({ atEnd: true }))
+
+    fireEvent.paste(visual, {
+      clipboardData: {
+        getData: (format: string) => format === 'text/plain' ? '**Hello**\nWorld' : '',
+      },
+    })
+
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('**Hello**\nWorld'))
+    expect(screen.getByText('Hello', { selector: 'strong' })).toBeInTheDocument()
+    expect(visual.querySelectorAll('br')).toHaveLength(1)
+  })
+
+  it('focuses and inserts at the visual Lexical selection through the controller', async () => {
+    const controllerRef = createRef<MarkdownTextareaController>()
+    render(<EditorHarness controllerRef={controllerRef} initial="Hello" />)
+    const visual = screen.getByRole('textbox', { name: 'Notes' })
+
+    act(() => controllerRef.current?.focus({ atEnd: true }))
+    await waitFor(() => expect(visual).toHaveFocus())
+    expect(controllerRef.current?.getMode()).toBe('visual')
+
+    act(() => controllerRef.current?.insertText(' world'))
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('Hello world'))
+    expect(controllerRef.current?.getMode()).toBe('visual')
+  })
+
+  it('reads and replaces a retained visual range without exposing Markdown source offsets', async () => {
+    const controllerRef = createRef<MarkdownTextareaController>()
+    render(<EditorHarness controllerRef={controllerRef} initial="Hello" />)
+
+    act(() => controllerRef.current?.focus({ atEnd: true }))
+    const caret = controllerRef.current?.getSelection()
+    expect(caret?.mode).toBe('visual')
+
+    const firstInsert = {
+      current: null as ReturnType<MarkdownTextareaController['replaceRange']>,
+    }
+    act(() => {
+      firstInsert.current = controllerRef.current?.replaceRange(caret ?? null, ' first') ?? null
+    })
+    expect(firstInsert.current?.selection?.mode).toBe('visual')
+    expect(firstInsert.current?.value).toBe('Hello first')
+    expect(controllerRef.current?.getValue()).toBe('Hello first')
+
+    act(() => {
+      controllerRef.current?.replaceRange(firstInsert.current?.selection ?? null, ' second')
+    })
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('Hello second'))
+    expect(controllerRef.current?.getValue()).toBe('Hello second')
+  })
+
+  it('reads and replaces a retained source range through the same controller', async () => {
+    const controllerRef = createRef<MarkdownTextareaController>()
+    render(<EditorHarness controllerRef={controllerRef} initial="Hello world" />)
+    fireEvent.click(screen.getByRole('button', { name: /Edit source/ }))
+    const source = screen.getByRole('textbox', { name: 'Notes' }) as HTMLTextAreaElement
+    source.setSelectionRange(0, 5)
+
+    const selected = controllerRef.current?.getSelection()
+    expect(selected).toEqual({ mode: 'source', start: 0, end: 5 })
+    let firstInsert: ReturnType<MarkdownTextareaController['replaceRange']> = null
+    act(() => {
+      firstInsert = controllerRef.current?.replaceRange(selected ?? null, 'Hi') ?? null
+    })
+    expect(firstInsert).toEqual({
+      value: 'Hi world',
+      selection: { mode: 'source', start: 0, end: 2 },
+    })
+
+    act(() => {
+      controllerRef.current?.replaceRange(firstInsert?.selection ?? null, 'Greetings')
+    })
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('Greetings world'))
+    expect(controllerRef.current?.getValue()).toBe('Greetings world')
+  })
+
+  it.each(['component unmount', 'pagehide'] as const)(
+    'flushes pending visual input before %s',
+    async (exitKind) => {
+      vi.useFakeTimers()
+      const controllerRef = createRef<MarkdownTextareaController>()
+      const received: string[] = []
+      const view = render(
+        <ControlledEditorHarness
+          controllerRef={controllerRef}
+          value=""
+          onChange={(event) => received.push(event.target.value)}
+        />,
+      )
+
+      await act(async () => {
+        controllerRef.current?.focus({ atEnd: true })
+        controllerRef.current?.insertText('Draft in progress')
+      })
+      expect(received).toEqual([])
+
+      if (exitKind === 'pagehide') {
+        act(() => window.dispatchEvent(new Event('pagehide')))
+      } else {
+        view.unmount()
+      }
+
+      expect(received).toEqual(['Draft in progress'])
+    },
+  )
+
+  it.each([
+    { label: '48ms short-input buffer', initial: '', inserted: 'Draft in progress' },
+    { label: '220ms large-input buffer', initial: 'x'.repeat(12_001), inserted: ' final thought' },
+  ])('flushes the last $label before an automatic reload decision', async ({ initial, inserted }) => {
+    vi.useFakeTimers()
+    const controllerRef = createRef<MarkdownTextareaController>()
+    const received: string[] = []
+    let dirty = false
+    const unregister = registerSafeReloadGuard(`markdown-${initial.length}`, {
+      prepare: () => true,
+      hasUnsavedChanges: () => dirty,
+    })
+    try {
+      render(
+        <ControlledEditorHarness
+          controllerRef={controllerRef}
+          value={initial}
+          onChange={(event) => {
+            received.push(event.target.value)
+            dirty = true
+          }}
+        />,
+      )
+
+      await act(async () => {
+        controllerRef.current?.focus({ atEnd: true })
+        controllerRef.current?.insertText(inserted)
+      })
+      expect(received).toEqual([])
+
+      let allowed = true
+      await act(async () => {
+        allowed = await prepareForSafeReload({ reason: 'application-update' })
+      })
+
+      expect(allowed).toBe(false)
+      expect(received).toEqual([`${initial}${inserted}`])
+    } finally {
+      unregister()
+    }
+  })
+
+  it('does not replace dirty visual input with a stale external snapshot', async () => {
+    vi.useFakeTimers()
+    const controllerRef = createRef<MarkdownTextareaController>()
+    const received: string[] = []
+    const handleChange = (event: ChangeEvent<HTMLTextAreaElement>) => received.push(event.target.value)
+    const renderSurface = (value: string) => (
+      <ControlledEditorHarness
+        controllerRef={controllerRef}
+        value={value}
+        onChange={handleChange}
+      />
+    )
+    const view = render(renderSurface('Original'))
+
+    await act(async () => {
+      controllerRef.current?.focus({ atEnd: true })
+      controllerRef.current?.insertText(' local edit')
+    })
+    view.rerender(renderSurface('Stale server copy'))
+
+    expect(screen.getByRole('textbox', { name: 'Notes' })).toHaveTextContent('Original local edit')
+    expect(received).toEqual([])
+
+    act(() => vi.advanceTimersByTime(48))
+    expect(received).toEqual(['Original local edit'])
+    expect(screen.getByRole('textbox', { name: 'Notes' })).toHaveTextContent('Original local edit')
   })
 
   it('keeps Shift+Enter as a hard Markdown break after a source round-trip', async () => {

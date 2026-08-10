@@ -14,9 +14,13 @@ COPY index.html tsconfig.json tsconfig.app.json tsconfig.node.json vite.config.t
 COPY public ./public
 COPY src ./src
 COPY server ./server
-COPY tools/start-server.mjs tools/apply-update.mjs tools/container-entrypoint.mjs tools/stamp-service-worker.mjs ./tools/
+COPY shared ./shared
+COPY tools/start-server.mjs tools/apply-update.mjs tools/container-entrypoint.mjs tools/stamp-service-worker.mjs tools/verify-build-entry-budget.mjs ./tools/
 
-RUN npm run build \
+# The repository prebuild hook regenerates checked-in Codex distribution
+# archives. Those artifacts were already verified before the minimal Docker
+# context was assembled; the image only needs the explicit production build.
+RUN npm --ignore-scripts run build \
   && mkdir -p bootstrap \
   && ./node_modules/.bin/esbuild tools/container-entrypoint.mjs \
     --bundle \
@@ -68,7 +72,10 @@ RUN npm run build \
 FROM node:24-alpine AS runtime
 ENV NODE_ENV=production \
     PORT=4317 \
+    UV_THREADPOOL_SIZE=8 \
     PHD_ATLAS_PROJECT_ROOT=/app \
+    PHD_ATLAS_STORAGE_ROOT=/app/storage \
+    TRUST_PROXY=loopback \
     npm_config_nodedir=/usr/local
 WORKDIR /app
 
@@ -80,6 +87,7 @@ RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
 COPY --from=build --chown=node:node /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/server ./server
+COPY --from=build --chown=node:node /app/shared ./shared
 COPY --from=build --chown=node:node /app/tools/start-server.mjs /app/tools/apply-update.mjs /app/tools/container-entrypoint.mjs ./tools/
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build /app/bootstrap/container-entrypoint.mjs /usr/local/lib/phd-atlas-bootstrap/container-entrypoint.mjs
@@ -93,6 +101,6 @@ EXPOSE 4317
 VOLUME ["/app/storage"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD ["node", "-e", "const http=require('node:http');const base=new URL(process.env.BASE_URL||'https://localhost');const req=http.get({host:'127.0.0.1',port:process.env.PORT||4317,path:'/api/health',headers:{host:base.host,'x-forwarded-proto':'https'}},r=>process.exit(r.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.setTimeout(4000,()=>{req.destroy();process.exit(1)})"]
+  CMD ["node", "-e", "const http=require('node:http');const base=new URL(process.env.BASE_URL||process.env.DOMAIN||'https://localhost');const req=http.get({host:'127.0.0.1',port:process.env.PORT||4317,path:'/api/health/ready',headers:{host:base.host,'x-forwarded-proto':'https'}},r=>process.exit(r.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.setTimeout(4000,()=>{req.destroy();process.exit(1)})"]
 
 CMD ["node", "/usr/local/lib/phd-atlas-bootstrap/container-entrypoint.mjs"]

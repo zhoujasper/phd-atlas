@@ -1,24 +1,45 @@
+import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { LibraryViewSwitch } from './LibraryViewSwitch'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { LibraryViewSwitch, type LibraryViewMode } from './LibraryViewSwitch'
 import appStyles from '../../index.css?raw'
 
 const originalMatchMedia = window.matchMedia
 const originalViewTransition = Object.getOwnPropertyDescriptor(document, 'startViewTransition')
 
-function renderSwitch(onChange = vi.fn()) {
-  render(
-    <LibraryViewSwitch
-      value="cards"
-      onChange={onChange}
-      label="View mode"
-      cardLabel="Card view"
-      listLabel="List view"
-      transitionScope="profile"
-      controlsId="profile-library-view"
-    />,
+function SwitchHarness({
+  initialView = 'cards',
+  onChange = vi.fn(),
+}: {
+  initialView?: LibraryViewMode
+  onChange?: (value: LibraryViewMode) => void
+}) {
+  const [view, setView] = useState<LibraryViewMode>(initialView)
+  return (
+    <>
+      <LibraryViewSwitch
+        value={view}
+        onChange={(nextView) => {
+          onChange(nextView)
+          setView(nextView)
+        }}
+        label="View mode"
+        cardLabel="Card view"
+        listLabel="List view"
+        transitionScope="profile"
+        controlsId="profile-library-view"
+      />
+      <div className="library-insertion-motion-boundary" data-testid="library-boundary">
+        <div
+          id="profile-library-view"
+          key={view}
+          className={`profile-library-view is-${view}`}
+        >
+          {view}
+        </div>
+      </div>
+    </>
   )
-  return onChange
 }
 
 afterEach(() => {
@@ -29,64 +50,59 @@ afterEach(() => {
   })
   if (originalViewTransition) Object.defineProperty(document, 'startViewTransition', originalViewTransition)
   else Reflect.deleteProperty(document, 'startViewTransition')
-  delete document.documentElement.dataset.libraryViewTransitionToken
-  delete document.documentElement.dataset.libraryViewTransitionScope
-  delete document.documentElement.dataset.libraryViewTransitionDirection
-  delete document.documentElement.dataset.libraryViewTransitionMode
 })
 
 describe('LibraryViewSwitch', () => {
-  it('uses a scoped native view transition for the content handoff', async () => {
-    let finishTransition = () => {}
-    const finished = new Promise<void>((resolve) => {
-      finishTransition = () => resolve()
-    })
-    const startViewTransition = vi.fn((update: () => void) => {
-      update()
-      return { finished }
-    })
-    Object.defineProperty(document, 'startViewTransition', {
-      configurable: true,
-      value: startViewTransition,
-    })
-
-    const onChange = renderSwitch()
-    const listButton = screen.getByRole('button', { name: 'List view' })
-    expect(listButton.getAttribute('aria-controls')).toBe('profile-library-view')
-
-    fireEvent.click(listButton)
-
-    expect(startViewTransition).toHaveBeenCalledTimes(1)
-    expect(onChange).toHaveBeenCalledWith('list')
-    expect(document.documentElement.dataset.libraryViewTransitionScope).toBe('profile')
-    expect(document.documentElement.dataset.libraryViewTransitionDirection).toBe('forward')
-    expect(document.documentElement.dataset.libraryViewTransitionMode).toBe('native')
-
-    finishTransition()
-    await waitFor(() => {
-      expect(document.documentElement.hasAttribute('data-library-view-transition-token')).toBe(false)
-    })
-  })
-
-  it('keeps a directional CSS fallback when native transitions are unavailable', () => {
+  it('uses only a local library handoff and never starts a document transition', () => {
     vi.useFakeTimers()
-    Reflect.deleteProperty(document, 'startViewTransition')
-    const onChange = renderSwitch()
-
-    fireEvent.click(screen.getByRole('button', { name: 'List view' }))
-
-    expect(onChange).toHaveBeenCalledWith('list')
-    expect(document.documentElement.dataset.libraryViewTransitionMode).toBe('fallback')
-    vi.advanceTimersByTime(360)
-    expect(document.documentElement.hasAttribute('data-library-view-transition-token')).toBe(false)
-  })
-
-  it('switches immediately when reduced motion is requested', () => {
     const startViewTransition = vi.fn()
     Object.defineProperty(document, 'startViewTransition', {
       configurable: true,
       value: startViewTransition,
     })
+    const onChange = vi.fn()
+    render(<SwitchHarness onChange={onChange} />)
+
+    const listButton = screen.getByRole('button', { name: 'List view' })
+    expect(listButton.getAttribute('aria-controls')).toBe('profile-library-view')
+    fireEvent.click(listButton)
+
+    const boundary = screen.getByTestId('library-boundary')
+    expect(startViewTransition).not.toHaveBeenCalled()
+    expect(onChange).toHaveBeenCalledWith('list')
+    expect(document.querySelector('.profile-library-view.is-list')).not.toBeNull()
+    expect(boundary.dataset.libraryViewTransitionScope).toBe('profile')
+    expect(boundary.dataset.libraryViewTransitionDirection).toBe('forward')
+    expect(document.documentElement.hasAttribute('data-library-view-transition-token')).toBe(false)
+
+    vi.advanceTimersByTime(280)
+    expect(boundary.hasAttribute('data-library-view-transition-token')).toBe(false)
+  })
+
+  it('restores the active pane scroll position after the synchronous layout change', () => {
+    const onChange = vi.fn(() => {
+      screen.getByTestId('library-boundary').scrollTop = 480
+    })
+    render(<SwitchHarness onChange={onChange} />)
+    const boundary = screen.getByTestId('library-boundary')
+    boundary.style.overflowY = 'auto'
+    boundary.scrollTop = 132
+
+    fireEvent.click(screen.getByRole('button', { name: 'List view' }))
+
+    expect(boundary.scrollTop).toBe(132)
+  })
+
+  it('reverses only the horizontal handoff direction when returning to cards', () => {
+    render(<SwitchHarness initialView="list" />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Card view' }))
+
+    expect(screen.getByTestId('library-boundary').dataset.libraryViewTransitionDirection).toBe('backward')
+    expect(document.querySelector('.profile-library-view.is-cards')).not.toBeNull()
+  })
+
+  it('switches immediately without adding motion state when reduced motion is requested', () => {
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       value: vi.fn(() => ({
@@ -100,59 +116,32 @@ describe('LibraryViewSwitch', () => {
         dispatchEvent: vi.fn(),
       })),
     })
-    const onChange = renderSwitch()
+    render(<SwitchHarness />)
 
     fireEvent.click(screen.getByRole('button', { name: 'List view' }))
 
-    expect(onChange).toHaveBeenCalledWith('list')
-    expect(startViewTransition).not.toHaveBeenCalled()
-    expect(document.documentElement.hasAttribute('data-library-view-transition-token')).toBe(false)
+    expect(document.querySelector('.profile-library-view.is-list')).not.toBeNull()
+    expect(screen.getByTestId('library-boundary').hasAttribute('data-library-view-transition-token')).toBe(false)
   })
 
-  it('reserves the larger library height so switching layouts cannot move the page', () => {
-    Object.defineProperty(window, 'matchMedia', {
-      configurable: true,
-      value: vi.fn(() => ({ matches: true })),
-    })
-    const onChange = vi.fn()
-    render(
-      <div>
-        <LibraryViewSwitch
-          value="cards"
-          onChange={onChange}
-          label="View mode"
-          cardLabel="Card view"
-          listLabel="List view"
-          transitionScope="profile"
-          controlsId="stable-library"
-        />
-        <div>
-          <div id="stable-library">Library</div>
-        </div>
-      </div>,
+  it('keeps the handoff opacity-only with no persistent height or mount animation', () => {
+    const localMotion = appStyles.slice(
+      appStyles.indexOf('/* Card/list switching has one local motion owner.'),
+      appStyles.indexOf('.profile-heading-row'),
     )
-    const library = document.getElementById('stable-library')!
-    vi.spyOn(library, 'getBoundingClientRect').mockReturnValue({
-      x: 0,
-      y: 0,
-      top: 0,
-      right: 300,
-      bottom: 420,
-      left: 0,
-      width: 300,
-      height: 420,
-      toJSON: () => ({}),
-    })
 
-    fireEvent.click(screen.getByRole('button', { name: 'List view' }))
-
-    expect(library.parentElement?.style.getPropertyValue('--library-view-stable-height')).toBe('420px')
-    expect(library.parentElement?.dataset.libraryViewStable).toBe('true')
-  })
-
-  it('does not replay the mount animation after the view transition finishes', () => {
-    expect(appStyles).toMatch(
-      /\[data-library-view-stable="true"\] > \.profile-library-view,\s*\[data-library-view-stable="true"\] > \.team-portrait-library-view\s*\{\s*animation: none;/,
+    expect(localMotion).toContain('animation: atlas-library-view-local-forward 240ms')
+    expect(localMotion).toContain('animation: atlas-library-view-local-backward 240ms')
+    expect(localMotion).toMatch(
+      /data-library-view-transition-token[\s\S]*?\.profile-snippet-list-row,[\s\S]*?\.team-portrait-snippet-card[\s\S]*?animation: none;/,
     )
+    expect(localMotion).toContain('transform: translate3d(10px, 0, 0)')
+    expect(localMotion).toContain('transform: translate3d(-10px, 0, 0)')
+    const translationAxes = [...localMotion.matchAll(/translate3d\(([^,]+),\s*([^,]+),\s*([^)]+)\)/g)]
+    expect(translationAxes.every(([, , y]) => y.trim() === '0')).toBe(true)
+    expect(localMotion).not.toContain('scale(')
+    expect(appStyles).not.toContain('atlas-profile-library-view')
+    expect(appStyles).not.toContain('profile-library-view-enter')
+    expect(appStyles).not.toContain('--library-view-stable-height')
   })
 })

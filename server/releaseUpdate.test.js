@@ -39,6 +39,16 @@ function releaseFixture(version, overrides = {}) {
   }
 }
 
+function withDeltaAssets(release, fromVersion, size = 64) {
+  const toVersion = String(release.tag_name).replace(/^v/, '')
+  const deltaName = `phd-atlas-delta-${fromVersion}-to-${toVersion}-release.tar.gz`
+  release.assets.push(
+    { id: 201, name: deltaName, size, digest: '' },
+    { id: 202, name: `${deltaName}.sha256`, size: 96, digest: '' },
+  )
+  return release
+}
+
 describe('Release update discovery', () => {
   it('orders numeric prerelease identifiers and stable releases using SemVer rules', () => {
     expect(compareSemver('0.1.0-beta.10', '0.1.0-beta.2')).toBe(1)
@@ -118,6 +128,74 @@ describe('Release update discovery', () => {
     expect(result.release.htmlUrl).toBe(
       'https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.2',
     )
+  })
+
+  it('advertises and downloads an exact-base differential asset while retaining the full fallback', async () => {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phd-atlas-release-delta-'))
+    const release = withDeltaAssets(releaseFixture('0.1.0-beta.2'), '0.1.0-beta.1')
+    const deltaPayload = Buffer.alloc(64, 'd')
+    const deltaSha256 = createHash('sha256').update(deltaPayload).digest('hex')
+    release.assets[2].digest = `sha256:${deltaSha256}`
+
+    const checkFetch = vi.fn().mockImplementation(async () => new Response(
+      JSON.stringify([release]),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+    const deltaCheck = await checkForReleaseUpdate('0.1.0-beta.1', {
+      fetchImpl: checkFetch,
+      cache: false,
+      deltaFromVersion: '0.1.0-beta.1',
+    })
+    expect(deltaCheck.release?.package).toMatchObject({
+      name: release.assets[2].name,
+      size: deltaPayload.length,
+      kind: 'delta',
+      fromVersion: '0.1.0-beta.1',
+      fullSize: 128,
+    })
+
+    const fullCheck = await checkForReleaseUpdate('0.1.0-beta.1', {
+      fetchImpl: checkFetch,
+      cache: false,
+    })
+    expect(fullCheck.release?.package).toMatchObject({
+      name: release.assets[0].name,
+      kind: 'full',
+      fromVersion: null,
+    })
+
+    const checksum = `${deltaSha256}  ${release.assets[2].name}\n`
+    const downloadFetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(release), { status: 200 }))
+      .mockResolvedValueOnce(new Response(checksum, { status: 200 }))
+      .mockResolvedValueOnce(new Response(deltaPayload, {
+        status: 200,
+        headers: { 'content-length': String(deltaPayload.length) },
+      }))
+    const downloaded = await downloadReleaseUpdate({
+      tagName: 'v0.1.0-beta.2',
+      currentVersion: '0.1.0-beta.1',
+      deltaFromVersion: '0.1.0-beta.1',
+      destinationRoot: tempRoot,
+      fetchImpl: downloadFetch,
+    })
+    expect(downloaded).toMatchObject({
+      fileName: release.assets[2].name,
+      transfer: { kind: 'delta', fromVersion: '0.1.0-beta.1' },
+      size: deltaPayload.length,
+      sha256: deltaSha256,
+    })
+    expect(await fs.readFile(downloaded.packagePath)).toEqual(deltaPayload)
+  })
+
+  it('rejects duplicate or unpaired differential Release assets', () => {
+    const duplicate = withDeltaAssets(releaseFixture('0.1.0-beta.2'), '0.1.0-beta.1')
+    duplicate.assets.push({ ...duplicate.assets[2], id: 203 })
+    expect(releaseCandidateFromGithub(duplicate)).toBeNull()
+
+    const unpaired = withDeltaAssets(releaseFixture('0.1.0-beta.2'), '0.1.0-beta.1')
+    unpaired.assets = unpaired.assets.filter((asset) => asset.id !== 202)
+    expect(releaseCandidateFromGithub(unpaired)).toBeNull()
   })
 
   it('coalesces concurrent cached checks for the same installed version', async () => {

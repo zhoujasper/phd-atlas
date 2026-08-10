@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, Info, X, XCircle } from 'lucide-react'
+import { AlertTriangle, Check, Info, RefreshCw, X, XCircle } from 'lucide-react'
 import type { Toast } from '../../appModel'
 import { useI18n } from '../hooks/useI18n'
 import type { QueuedToast } from '../hooks/useToastQueue'
@@ -16,21 +16,41 @@ export function ToastView({
   if (!toast) return null
 
   const isUrgent = toast.tone === 'error' || toast.tone === 'warning'
+  const hasMultipleActions = toast.actions && toast.actions.length > 1
+  const categoryClass = toast.category ? ` category-${toast.category}` : ''
 
   return (
     <div
-      className={`atlas-toast ${toast.tone}${exiting ? ' exiting' : ''}`}
+      className={`atlas-toast ${toast.tone}${categoryClass}${exiting ? ' exiting' : ''}`}
       role={isUrgent ? 'alert' : 'status'}
       aria-live={isUrgent ? 'assertive' : 'polite'}
     >
       <span className="atlas-toast-icon" aria-hidden="true">
         {toast.tone === 'success' ? <Check size={13} /> : null}
         {toast.tone === 'error' ? <XCircle size={13} /> : null}
-        {toast.tone === 'info' ? <Info size={13} /> : null}
+        {toast.tone === 'info' ? (
+          toast.category === 'conflict' ? <RefreshCw size={13} /> : <Info size={13} />
+        ) : null}
         {toast.tone === 'warning' ? <AlertTriangle size={13} /> : null}
       </span>
-      <span className="atlas-toast-message">{toast.message}</span>
-      {toast.action ? (
+      <div className="atlas-toast-content">
+        {toast.title ? <div className="atlas-toast-title">{toast.title}</div> : null}
+        <span className="atlas-toast-message">{toast.message}</span>
+      </div>
+      {hasMultipleActions ? (
+        <div className="atlas-toast-actions">
+          {toast.actions?.map((action, index) => (
+            <button
+              key={index}
+              type="button"
+              className="atlas-toast-action-button"
+              onClick={action.onClick}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      ) : toast.action ? (
         <button type="button" className="atlas-toast-action" onClick={toast.action.onClick}>
           {toast.action.label}
         </button>

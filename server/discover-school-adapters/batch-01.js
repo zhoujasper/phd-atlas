@@ -173,15 +173,38 @@ export const SCHOOL_ADAPTERS_BATCH_01 = [
   {
     school: 'Princeton University',
     region: 'US',
-    allowedHosts: ['www.cs.princeton.edu', 'www.princeton.edu'],
+    allowedHosts: [
+      'www.cs.princeton.edu',
+      'www.princeton.edu',
+      'pni.princeton.edu',
+      'gradschool.princeton.edu',
+      'qcn.princeton.edu',
+      'www.pacm.princeton.edu',
+      'collaborate.princeton.edu',
+    ],
     seeds: [
       { kind: 'departments', url: 'https://www.princeton.edu/academics/areas-of-study' },
       { kind: 'faculty', url: 'https://www.cs.princeton.edu/people/faculty' },
       { kind: 'research', url: 'https://www.princeton.edu/research' },
-      { kind: 'doctoral', url: 'https://www.princeton.edu/academics/studying-princeton' },
+      { kind: 'doctoral', url: 'https://pni.princeton.edu/study/graduate-program' },
+      { kind: 'doctoral', url: 'https://gradschool.princeton.edu/academics/degrees-requirements/fields-study/neuroscience' },
+      { kind: 'doctoral', url: 'https://qcn.princeton.edu/graduate-study-qcn' },
+      { kind: 'admissions', url: 'https://pni.princeton.edu/apply/graduate-students' },
+      { kind: 'advisor', url: 'https://www.pacm.princeton.edu/people/jonathan-pillow' },
+      { kind: 'advisor', url: 'https://www.princeton.edu/~yael/' },
+      { kind: 'advisor', url: 'https://www.pacm.princeton.edu/people/carlos-d-brody' },
+      { kind: 'advisor', url: 'https://www.cs.princeton.edu/people/profile/sseung' },
+      { kind: 'advisor', url: 'https://collaborate.princeton.edu/en/persons/jonathan-william-pillow/' },
+      { kind: 'advisor', url: 'https://collaborate.princeton.edu/en/persons/yael-niv/' },
+      { kind: 'advisor', url: 'https://collaborate.princeton.edu/en/persons/carlos-d-brody' },
     ],
     pathHints: US_PATH_HINTS,
-    verifiedAt: '2026-07-22',
+    // This adapter intentionally declares more typed Princeton entry points
+    // because the PNI and Graduate School hosts intermittently reject the
+    // production crawler. Spend enough of the per-school budget to try every
+    // declared official alternative before following newly discovered links.
+    crawlPolicy: { maxPages: 20 },
+    verifiedAt: '2026-08-10',
   },
   {
     school: 'Harvard University',

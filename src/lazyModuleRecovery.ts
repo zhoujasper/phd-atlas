@@ -1,3 +1,10 @@
+import {
+  dispatchSafeReloadBlocked,
+  prepareForSafeReload,
+  type SafeReloadReason,
+} from './safeReload'
+import { reloadPage } from './pageReload'
+
 const DEFAULT_RETRY_DELAYS_MS = [120, 420] as const
 const AUTOMATIC_RELOAD_COOLDOWN_MS = 30_000
 const AUTOMATIC_RELOAD_STORAGE_KEY = 'phd-atlas-lazy-module-recovery:v1'
@@ -7,6 +14,7 @@ type LazyModuleRecoveryOptions = {
   now?: () => number
   storage?: Pick<Storage, 'getItem' | 'setItem'>
   setTimer?: (callback: () => void, delay: number) => unknown
+  prepareReload?: (reason: SafeReloadReason) => Promise<boolean>
 }
 
 type VitePreloadErrorEvent = Event & {
@@ -89,11 +97,16 @@ function readLastAutomaticReload(storage: Pick<Storage, 'getItem'>) {
   }
 }
 
-function recordAutomaticReload(storage: Pick<Storage, 'setItem'>, now: number) {
+function recordAutomaticReload(
+  storage: Pick<Storage, 'getItem' | 'setItem'>,
+  now: number,
+) {
+  const expected = String(now)
   try {
-    storage.setItem(AUTOMATIC_RELOAD_STORAGE_KEY, String(now))
+    storage.setItem(AUTOMATIC_RELOAD_STORAGE_KEY, expected)
+    return storage.getItem(AUTOMATIC_RELOAD_STORAGE_KEY) === expected
   } catch {
-    // The root error boundary remains available when session storage is blocked.
+    return false
   }
 }
 
@@ -103,10 +116,12 @@ function recordAutomaticReload(storage: Pick<Storage, 'setItem'>, now: number) {
  * cooldown prevents a damaged deployment from entering a refresh loop.
  */
 export function installLazyModuleRecovery(options: LazyModuleRecoveryOptions = {}) {
-  const reload = options.reload ?? (() => window.location.reload())
+  const reload = options.reload ?? reloadPage
   const now = options.now ?? Date.now
   const storage = options.storage ?? window.sessionStorage
   const setTimer = options.setTimer ?? ((callback, delay) => window.setTimeout(callback, delay))
+  const prepareReload = options.prepareReload ?? ((reason) => prepareForSafeReload({ reason }))
+  let recoveryPending = false
 
   const handlePreloadError = (rawEvent: Event) => {
     const event = rawEvent as VitePreloadErrorEvent
@@ -114,11 +129,29 @@ export function installLazyModuleRecovery(options: LazyModuleRecoveryOptions = {
 
     const currentTime = now()
     const lastReload = readLastAutomaticReload(storage)
-    if (currentTime - lastReload < AUTOMATIC_RELOAD_COOLDOWN_MS) return
+    if (recoveryPending || currentTime - lastReload < AUTOMATIC_RELOAD_COOLDOWN_MS) return
 
     event.preventDefault()
-    recordAutomaticReload(storage, currentTime)
-    setTimer(reload, 0)
+    recoveryPending = true
+    setTimer(() => {
+      void prepareReload('lazy-module').then((allowed) => {
+        if (!allowed) {
+          recoveryPending = false
+          return
+        }
+        if (!recordAutomaticReload(storage, currentTime)) {
+          // Without an exact read-back there is no durable cooldown. Reloading
+          // could otherwise enter an unbounded refresh loop in privacy modes or
+          // under a storage shim that silently discards writes.
+          dispatchSafeReloadBlocked('lazy-module', 'recovery-storage-unavailable')
+          recoveryPending = false
+          return
+        }
+        reload()
+      }, () => {
+        recoveryPending = false
+      })
+    }, 0)
   }
 
   window.addEventListener('vite:preloadError', handlePreloadError)

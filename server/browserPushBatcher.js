@@ -15,10 +15,23 @@ const DEFAULT_MAX_BATCH_SIZE = 50
 const DEFAULT_MAX_JOURNAL_BYTES = 4 * 1024 * 1024
 const MAX_TIMER_DELAY_MS = 2_147_000_000
 const DIRECT_TEST_TYPES = new Set(['push_test'])
+export const BROWSER_PUSH_BATCHER_STOPPED = 'BROWSER_PUSH_BATCHER_STOPPED'
 const PERSISTENCE_CRYPTO_PROFILE = Object.freeze({
   algorithm: 'aes-256-gcm',
   passwordBinding: '',
 })
+
+export class BrowserPushBatcherStoppedError extends Error {
+  constructor(reason) {
+    super('Browser Push batcher is stopped.')
+    this.name = 'BrowserPushBatcherStoppedError'
+    this.code = BROWSER_PUSH_BATCHER_STOPPED
+    this.status = 503
+    this.retryable = true
+    if (reason !== undefined) this.reason = reason
+    if (reason instanceof Error) this.cause = reason
+  }
+}
 
 function emptySnapshot() {
   return { version: STATE_VERSION, revision: 0, batches: [], userDispatches: [] }
@@ -328,6 +341,39 @@ export function createBrowserPushBatcher({
   let revision = 0
   let timer = null
   let mutation = Promise.resolve()
+  let stopped = false
+  let stoppedOperation = null
+  let stopWaitPromise = null
+  const activeOperations = new Set()
+
+  function reportError(error, context) {
+    try {
+      const report = onError(error, context)
+      void Promise.resolve(report).catch(() => undefined)
+    } catch {
+      // Error reporting is best effort. A detached timer must never create an
+      // unhandled rejection because the reporter itself failed.
+    }
+  }
+
+  function acceptOperation(work) {
+    if (stopped) return stoppedOperation
+
+    let operation
+    try {
+      operation = Promise.resolve(work())
+    } catch (error) {
+      operation = Promise.reject(error)
+    }
+    activeOperations.add(operation)
+    // Observe both outcomes without changing the promise returned to callers.
+    // This also makes abandoned optional-start promises safe during shutdown.
+    operation.then(
+      () => activeOperations.delete(operation),
+      () => activeOperations.delete(operation),
+    )
+    return operation
+  }
 
   function withLock(work) {
     const result = mutation.then(work, work)
@@ -350,9 +396,9 @@ export function createBrowserPushBatcher({
   }
 
   function scheduleUnsafe() {
-    if (!scheduleTimers) return
     if (timer) clearTimeout(timer)
     timer = null
+    if (!scheduleTimers || stopped) return
     const nextDueAt = Math.min(...[...batches.entries()]
       .filter(([key]) => !inFlight.has(key))
       .map(([, batch]) => {
@@ -362,10 +408,12 @@ export function createBrowserPushBatcher({
       }))
     if (!Number.isFinite(nextDueAt)) return
     const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(0, nextDueAt - now()))
-    timer = setTimeout(() => {
-      timer = null
-      void flushDue().catch(onError)
+    const scheduledTimer = setTimeout(() => {
+      if (timer === scheduledTimer) timer = null
+      if (stopped) return
+      void flushDue().catch((error) => reportError(error, { source: 'timer' }))
     }, delay)
+    timer = scheduledTimer
     timer.unref?.()
   }
 
@@ -379,14 +427,14 @@ export function createBrowserPushBatcher({
     scheduleUnsafe()
   }
 
-  async function start() {
+  async function startInternal() {
     return withLock(async () => {
       await loadUnsafe()
       return { batches: batches.size, notifications: [...batches.values()].reduce((sum, batch) => sum + batch.notifications.length, 0) }
     })
   }
 
-  async function enqueue(userId, notification) {
+  async function enqueueInternal(userId, notification) {
     const normalizedUserId = String(userId ?? '').trim()
     if (!normalizedUserId) throw new TypeError('Browser Push enqueue requires a user id.')
     if (!notification?.id) throw new TypeError('Browser Push enqueue requires a notification id.')
@@ -548,12 +596,12 @@ export function createBrowserPushBatcher({
       const attempts = Math.max(...claimed.entries.map(({ batch }) => batch.attempts)) + 1
       const abandoned = attempts >= maxAttempts
       await finishUser(claimed, abandoned ? 'abandoned' : 'retry', now())
-      onError(error, { userId: claimed.userId, topic, topics, attempts, abandoned })
+      reportError(error, { userId: claimed.userId, topic, topics, attempts, abandoned })
       return { status: abandoned ? 'abandoned' : 'retry', userId: claimed.userId, topic, topics, count: notifications.length, error }
     }
   }
 
-  async function flushDue({ at = now(), force = false } = {}) {
+  async function flushDueInternal({ at = now(), force = false } = {}) {
     const userIds = await withLock(async () => {
       await loadUnsafe()
       return [...new Set([...batches.entries()]
@@ -568,17 +616,54 @@ export function createBrowserPushBatcher({
     return results.filter((result) => result.status !== 'throttled' && result.status !== 'skipped')
   }
 
-  async function pending() {
+  async function pendingInternal() {
     return withLock(async () => {
       await loadUnsafe()
       return snapshotUnsafe().batches
     })
   }
 
-  function stop() {
-    if (timer) clearTimeout(timer)
-    timer = null
+  function start() {
+    return acceptOperation(startInternal)
   }
 
-  return { enqueue, flushDue, pending, start, stop }
+  function enqueue(userId, notification) {
+    return acceptOperation(() => enqueueInternal(userId, notification))
+  }
+
+  function flushDue(options) {
+    return acceptOperation(() => flushDueInternal(options))
+  }
+
+  function pending() {
+    return acceptOperation(pendingInternal)
+  }
+
+  async function whenIdle() {
+    while (true) {
+      const operations = [...activeOperations]
+      const currentMutation = mutation
+      await Promise.allSettled([...operations, currentMutation])
+      if (activeOperations.size === 0 && mutation === currentMutation) return
+    }
+  }
+
+  function stop(reason) {
+    if (stopped) return
+    stopped = true
+    if (timer) clearTimeout(timer)
+    timer = null
+    stoppedOperation = Promise.reject(new BrowserPushBatcherStoppedError(reason))
+    // Keep a stable rejected promise for every late fire-and-forget producer,
+    // but mark it observed while preserving rejection for explicit awaiters.
+    stoppedOperation.catch(() => undefined)
+  }
+
+  function stopAndWait(reason) {
+    stop(reason)
+    if (!stopWaitPromise) stopWaitPromise = whenIdle().then(() => undefined)
+    return stopWaitPromise
+  }
+
+  return { enqueue, flushDue, pending, start, stop, stopAndWait, whenIdle }
 }

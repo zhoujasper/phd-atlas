@@ -21,9 +21,12 @@ describe('development startup sequencing', () => {
     const workerCommand = packageJson.scripts['dev:workers']
 
     expect(fullCommand).toBe('node tools/start-dev.mjs')
-    expect(packageJson.scripts['dev:api']).toBe('node --watch tools/start-server.mjs')
-    expect(workerCommand).toContain('node --watch tools/start-server.mjs')
+    expect(packageJson.scripts['dev:api']).toBe('node tools/start-server.mjs')
+    expect(workerCommand).toContain('node tools/start-server.mjs')
     expect(workerCommand).toContain('node tools/wait-for-api.mjs && vite')
+    expect(packageJson.scripts['dev:api:watch']).toBe('node --watch tools/start-server.mjs')
+    expect(packageJson.scripts['dev:workers:watch']).toContain('node --watch tools/start-server.mjs')
+    expect(packageJson.scripts['dev:watch']).toBe('npm run dev:workers:watch')
   })
 
   it('recognizes only the PhD Atlas API and Vite signatures', () => {

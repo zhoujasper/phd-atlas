@@ -2,6 +2,7 @@ import '@testing-library/jest-dom/vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { applications as sampleApplications } from '../../data/applications'
+import { SAFE_RELOAD_FLUSH_EVENT } from '../../safeReload'
 import { I18nContext, type I18nContextValue } from '../hooks/useI18n'
 import { ApplicationPane } from './ApplicationPane'
 
@@ -15,7 +16,42 @@ const i18nContext: I18nContextValue = {
 describe('ApplicationPane owner picker', () => {
   afterEach(() => vi.useRealTimers())
 
-  it('keeps the board action mounted while it smoothly collapses in board mode', () => {
+  it('flushes a buffered search draft before a safe reload can disturb the resident pane', () => {
+    vi.useFakeTimers()
+    const onQuery = vi.fn()
+    render(
+      <I18nContext.Provider value={i18nContext}>
+        <ApplicationPane
+          applications={[]}
+          totalApplicationCount={0}
+          applicationLimit={10}
+          isPro
+          selectedId={null}
+          query=""
+          statusFilters={[]}
+          sort="deadline:asc"
+          onQuery={onQuery}
+          onStatusFilters={vi.fn()}
+          onSort={vi.fn()}
+          onSelect={vi.fn()}
+          onUpgrade={vi.fn()}
+        />
+      </I18nContext.Provider>,
+    )
+
+    const search = screen.getByRole('searchbox', { name: 'workspace.searchApplications' })
+    fireEvent.change(search, { target: { value: 'resident filter' } })
+    expect(search).toHaveValue('resident filter')
+    expect(onQuery).not.toHaveBeenCalled()
+
+    act(() => window.dispatchEvent(new Event(SAFE_RELOAD_FLUSH_EVENT)))
+
+    expect(onQuery).toHaveBeenCalledTimes(1)
+    expect(onQuery).toHaveBeenCalledWith('resident filter')
+    expect(search).toHaveValue('resident filter')
+  })
+
+  it('keeps the board action mounted in a fixed compositor slot during board mode', () => {
     const onShowBoard = vi.fn()
     const renderPane = (boardActive: boolean) => (
       <I18nContext.Provider value={i18nContext}>
@@ -51,6 +87,37 @@ describe('ApplicationPane owner picker', () => {
     expect(view.container.querySelector('.application-board-button')).toBeInTheDocument()
   })
 
+  it('prewarms the board chunk on pointer intent before activation', () => {
+    const onPrefetchBoard = vi.fn()
+    const view = render(
+      <I18nContext.Provider value={i18nContext}>
+        <ApplicationPane
+          applications={[]}
+          totalApplicationCount={0}
+          applicationLimit={10}
+          isPro
+          selectedId={null}
+          query=""
+          statusFilters={[]}
+          sort="deadline:asc"
+          onQuery={vi.fn()}
+          onStatusFilters={vi.fn()}
+          onSort={vi.fn()}
+          onSelect={vi.fn()}
+          onUpgrade={vi.fn()}
+          onShowBoard={vi.fn()}
+          onPrefetchBoard={onPrefetchBoard}
+        />
+      </I18nContext.Provider>,
+    )
+
+    const boardButton = view.container.querySelector<HTMLButtonElement>('.application-board-button')
+    expect(boardButton).not.toBeNull()
+    fireEvent.pointerEnter(boardButton!)
+    fireEvent.focus(boardButton!)
+    expect(onPrefetchBoard).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps the trash dock after a flexible empty application region', () => {
     const view = render(
       <I18nContext.Provider value={i18nContext}>
@@ -79,6 +146,46 @@ describe('ApplicationPane owner picker', () => {
     expect(emptyRegion).toBeInTheDocument()
     expect(trashDock).toBeInTheDocument()
     expect(emptyRegion?.nextElementSibling).toBe(trashDock)
+  })
+
+  it('identifies the student on Team recycle-bin rows without changing a student own row', () => {
+    const application = {
+      ...sampleApplications[0],
+      ownerId: 'student-1',
+      teamId: 'team-1',
+    }
+    const view = render(
+      <I18nContext.Provider value={i18nContext}>
+        <ApplicationPane
+          applications={[]}
+          totalApplicationCount={0}
+          applicationLimit={10}
+          isPro
+          selectedId={null}
+          query=""
+          statusFilters={[]}
+          sort="deadline:asc"
+          onQuery={vi.fn()}
+          onStatusFilters={vi.fn()}
+          onSort={vi.fn()}
+          onSelect={vi.fn()}
+          onUpgrade={vi.fn()}
+          trashEnabled
+          trashItems={[{
+            id: 'trash-team-1',
+            deletedAt: '2026-08-02T10:00:00.000Z',
+            expiresAt: '2026-09-01T10:00:00.000Z',
+            application,
+          }]}
+          trashCount={1}
+          trashOwnerNames={{ 'student-1': 'Omar Patel' }}
+        />
+      </I18nContext.Provider>,
+    )
+
+    expect(view.container.querySelector('.application-trash-copy em')).toHaveTextContent(
+      `Omar Patel · ${application.program} · ${application.professor.english}`,
+    )
   })
 
   it('keeps the picker mounted while its close motion plays', () => {
@@ -232,6 +339,7 @@ describe('ApplicationPane owner picker', () => {
 
     expect(slider?.style.getPropertyValue('--application-selection-y')).toBe('52px')
     expect(slider?.style.getPropertyValue('--application-selection-height')).toBe('46px')
+    expect(slider?.style.getPropertyValue('--application-selection-scale-y')).toBe('1')
     expect(slider).toHaveClass('is-visible', 'is-moving')
     expect(onSelect).not.toHaveBeenCalled()
 

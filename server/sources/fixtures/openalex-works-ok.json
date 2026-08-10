@@ -1,0 +1,42 @@
+{
+  "_fixture": {
+    "type": "synthetic-documented",
+    "recordedAt": null,
+    "note": "Synthetic response shaped from the documented OpenAlex Works API. It is not claimed to be a live capture."
+  },
+  "meta": {
+    "count": 1,
+    "per_page": 25
+  },
+  "results": [
+    {
+      "id": "https://openalex.org/W123456789",
+      "doi": "https://doi.org/10.1000/example",
+      "title": "A Quantitative Study of Doctoral Advising",
+      "display_name": "A Quantitative Study of Doctoral Advising",
+      "publication_date": "2024-06-01",
+      "publication_year": 2024,
+      "authorships": [
+        {
+          "author": {
+            "id": "https://openalex.org/A123",
+            "display_name": "Lin Zhang"
+          },
+          "institutions": [
+            {
+              "id": "https://openalex.org/I123",
+              "display_name": "Example University"
+            }
+          ]
+        }
+      ],
+      "cited_by_count": 42,
+      "topics": [
+        {
+          "id": "https://openalex.org/T123",
+          "display_name": "Higher Education"
+        }
+      ]
+    }
+  ]
+}

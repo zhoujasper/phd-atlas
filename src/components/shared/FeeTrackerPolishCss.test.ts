@@ -5,21 +5,29 @@ import mobileStyles from '../../styles/mobile.css?raw'
 describe('fee tracker visual hierarchy', () => {
   it('keeps saved status compact and semantic without tinting or fading the whole row', () => {
     expect(coreStyles).toMatch(
-      /\.fee-status-summary\s*\{[^}]*min-height:\s*18px[^}]*gap:\s*5px[^}]*font-size:\s*11px/s,
+      /\.fee-status-summary\s*\{[^}]*min-height:\s*18px[^}]*align-items:\s*center[^}]*font-size:\s*11px/s,
     )
-    expect(coreStyles).toMatch(
-      /\.fee-status-summary-dot\s*\{[^}]*width:\s*6px[^}]*height:\s*6px[^}]*border-radius:\s*50%/s,
-    )
+    expect(coreStyles).not.toContain('.fee-status-summary-dot')
     expect(coreStyles).not.toMatch(/\.fee-item\.waived:not\(\.editing\)\s*\{[^}]*opacity:/s)
     expect(coreStyles).not.toMatch(/\.fee-item\.paid\s*\{[^}]*border-color:/s)
   })
 
-  it('uses one restrained segmented status control instead of separate large pills', () => {
+  it('vertically centers saved fee content against the compact row actions', () => {
     expect(coreStyles).toMatch(
-      /\.fee-status-control\s*\{[^}]*position:\s*relative[^}]*min-height:\s*30px[^}]*grid-template-columns:\s*repeat\(var\(--fee-status-count\),\s*minmax\(0,\s*1fr\)\)[^}]*gap:\s*0[^}]*padding:\s*2px[^}]*border-radius:\s*var\(--radius\)/s,
+      /\.fee-item\s*\{[^}]*align-items:\s*center[^}]*min-height:\s*44px[^}]*padding:\s*8px 8px 8px 11px/s,
     )
     expect(coreStyles).toMatch(
-      /\.fee-status-option\s*\{[^}]*min-height:\s*24px[^}]*padding:\s*0 8px[^}]*font-size:\s*11px/s,
+      /\.fee-item-main\s*\{[^}]*min-height:\s*28px[^}]*display:\s*flex[^}]*align-items:\s*center/s,
+    )
+    expect(coreStyles).toMatch(/\.fee-amount\s*\{[^}]*line-height:\s*1\.2/s)
+  })
+
+  it('uses one restrained segmented status control instead of separate large pills', () => {
+    expect(coreStyles).toMatch(
+      /\.fee-status-control\s*\{[^}]*position:\s*relative[^}]*min-height:\s*28px[^}]*grid-template-columns:\s*repeat\(var\(--fee-status-count\),\s*minmax\(0,\s*1fr\)\)[^}]*gap:\s*0[^}]*padding:\s*2px[^}]*border-radius:\s*var\(--radius\)/s,
+    )
+    expect(coreStyles).toMatch(
+      /\.fee-status-option\s*\{[^}]*min-height:\s*22px[^}]*padding:\s*0 6px[^}]*font-size:\s*11px/s,
     )
     expect(coreStyles).toMatch(
       /\.fee-status-indicator\s*\{[^}]*width:\s*calc\(\(100% - 4px\) \/ var\(--fee-status-count\)\)[^}]*transform:\s*translate3d\(calc\(var\(--fee-status-index\) \* 100%\),\s*0,\s*0\)[^}]*transform var\(--duration\) var\(--ease-out\)/s,
@@ -27,19 +35,21 @@ describe('fee tracker visual hierarchy', () => {
     expect(coreStyles).toMatch(
       /\.fee-status-option\.is-active\s*\{[^}]*background:\s*transparent[^}]*box-shadow:\s*none/s,
     )
+    expect(coreStyles).not.toContain('.fee-status-option-dot')
     expect(coreStyles).not.toContain('.fee-state-toggle')
   })
 
-  it('keeps fee fields on one measured height and anchors status in a stable row slot', () => {
+  it('keeps the edit fields on one compact height and restrained widths', () => {
     expect(coreStyles).toMatch(
-      /\.fee-edit-status\s*\{[^}]*align-self:\s*stretch[^}]*grid-template-rows:\s*auto 36px/s,
+      /\.fee-edit-form\s*\{[^}]*grid-template-columns:\s*minmax\(112px, 190px\) 96px minmax\(180px, 1fr\) auto[^}]*gap:\s*8px[^}]*padding:\s*10px 0 2px/s,
     )
     expect(coreStyles).toMatch(
-      /\.fee-edit-field input,\s*\.fee-edit-field \.custom-select-trigger\s*\{[^}]*height:\s*36px[^}]*min-height:\s*36px !important/s,
+      /\.fee-edit-status\s*\{[^}]*align-self:\s*stretch[^}]*grid-template-rows:\s*auto var\(--field-height-compact\)/s,
     )
     expect(coreStyles).toMatch(
-      /\.fee-add-form > \.custom-select-root \.custom-select-trigger\s*\{[^}]*height:\s*36px[^}]*min-height:\s*36px !important/s,
+      /\.fee-edit-field input,\s*\.fee-edit-field \.custom-select-trigger\s*\{[^}]*height:\s*var\(--field-height-compact\)[^}]*min-height:\s*var\(--field-height-compact\) !important/s,
     )
+    expect(coreStyles).toMatch(/\.fee-edit-notes\s*\{[^}]*width:\s*min\(100%, 380px\)/s)
   })
 
   it('keeps the unsaved-choice actions compact instead of stretching them into tiles', () => {

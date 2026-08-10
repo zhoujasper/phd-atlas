@@ -368,6 +368,43 @@ export function releaseCandidateFromGithub(release) {
     || checksumAsset.size < 1
     || checksumAsset.size > MAX_CHECKSUM_BYTES
   ) return null
+  const deltaPattern = new RegExp(
+    `^phd-atlas-delta-(.+)-to-${escapeRegex(parsed.value)}-release\\.tar\\.gz$`,
+  )
+  const deltaAssetsByVersion = new Map()
+  for (const asset of assets) {
+    const match = deltaPattern.exec(asset.name)
+    if (!match) continue
+    const fromVersion = parseSemver(match[1])
+    if (
+      !fromVersion
+      || match[1] !== fromVersion.value
+      || compareSemver(parsed.value, fromVersion.value) <= 0
+      || !Number.isSafeInteger(asset.id)
+      || asset.id <= 0
+      || !isSafeReleaseAssetName(asset.name)
+      || !Number.isSafeInteger(asset.size)
+      || asset.size < 1
+      || asset.size > MAX_RELEASE_PACKAGE_BYTES
+      || deltaAssetsByVersion.has(fromVersion.value)
+    ) return null
+    const matchingChecksums = assets.filter((candidate) => (
+      Number.isSafeInteger(candidate.id)
+      && candidate.id > 0
+      && candidate.name === `${asset.name}.sha256`
+    ))
+    if (
+      matchingChecksums.length !== 1
+      || !Number.isSafeInteger(matchingChecksums[0].size)
+      || matchingChecksums[0].size < 1
+      || matchingChecksums[0].size > MAX_CHECKSUM_BYTES
+    ) return null
+    deltaAssetsByVersion.set(fromVersion.value, {
+      fromVersion: fromVersion.value,
+      packageAsset: asset,
+      checksumAsset: matchingChecksums[0],
+    })
+  }
   return {
     version: parsed.value,
     tagName: String(release.tag_name),
@@ -377,6 +414,8 @@ export function releaseCandidateFromGithub(release) {
     prerelease: isPrerelease,
     packageAsset,
     checksumAsset,
+    deltaAssets: [...deltaAssetsByVersion.values()]
+      .sort((left, right) => compareSemver(left.fromVersion, right.fromVersion)),
   }
 }
 
@@ -393,8 +432,27 @@ export function selectReleaseUpdate(releases, currentVersion) {
   return candidates.find((candidate) => compareSemver(candidate.version, currentVersion) > 0) ?? null
 }
 
-function publicReleaseInfo(candidate) {
+function selectedReleaseTransfer(candidate, deltaFromVersion = '') {
+  const delta = candidate?.deltaAssets?.find((entry) => entry.fromVersion === deltaFromVersion)
+  if (delta) {
+    return {
+      kind: 'delta',
+      fromVersion: delta.fromVersion,
+      packageAsset: delta.packageAsset,
+      checksumAsset: delta.checksumAsset,
+    }
+  }
+  return {
+    kind: 'full',
+    fromVersion: null,
+    packageAsset: candidate.packageAsset,
+    checksumAsset: candidate.checksumAsset,
+  }
+}
+
+function publicReleaseInfo(candidate, deltaFromVersion = '') {
   if (!candidate) return null
+  const transfer = selectedReleaseTransfer(candidate, deltaFromVersion)
   return {
     version: candidate.version,
     tagName: candidate.tagName,
@@ -403,8 +461,11 @@ function publicReleaseInfo(candidate) {
     htmlUrl: candidate.htmlUrl,
     prerelease: candidate.prerelease,
     package: {
-      name: candidate.packageAsset.name,
-      size: candidate.packageAsset.size,
+      name: transfer.packageAsset.name,
+      size: transfer.packageAsset.size,
+      kind: transfer.kind,
+      fromVersion: transfer.fromVersion,
+      fullSize: candidate.packageAsset.size,
     },
   }
 }
@@ -415,9 +476,15 @@ export function clearReleaseUpdateCache() {
 
 export async function checkForReleaseUpdate(currentVersion, options = {}) {
   const now = Date.now()
+  const requestedDeltaBase = parseSemver(options.deltaFromVersion)
+  const deltaFromVersion = requestedDeltaBase
+    && requestedDeltaBase.value === options.deltaFromVersion
+    ? requestedDeltaBase.value
+    : ''
   if (
     options.cache !== false
     && releaseCache?.currentVersion === currentVersion
+    && releaseCache?.deltaFromVersion === deltaFromVersion
     && releaseCache.expiresAt > now
   ) {
     return releaseCache.result
@@ -425,6 +492,7 @@ export async function checkForReleaseUpdate(currentVersion, options = {}) {
   if (
     options.cache !== false
     && releaseCheckInFlight?.currentVersion === currentVersion
+    && releaseCheckInFlight?.deltaFromVersion === deltaFromVersion
   ) {
     return releaseCheckInFlight.promise
   }
@@ -437,12 +505,13 @@ export async function checkForReleaseUpdate(currentVersion, options = {}) {
     const result = {
       currentVersion,
       updateAvailable: Boolean(candidate),
-      release: publicReleaseInfo(candidate),
+      release: publicReleaseInfo(candidate, deltaFromVersion),
       checkedAt: new Date().toISOString(),
     }
     if (options.cache !== false) {
       releaseCache = {
         currentVersion,
+        deltaFromVersion,
         expiresAt: Date.now() + RELEASE_CACHE_TTL_MS,
         result,
       }
@@ -450,7 +519,7 @@ export async function checkForReleaseUpdate(currentVersion, options = {}) {
     return result
   })()
   if (options.cache === false) return check
-  releaseCheckInFlight = { currentVersion, promise: check }
+  releaseCheckInFlight = { currentVersion, deltaFromVersion, promise: check }
   try {
     return await check
   } finally {
@@ -499,14 +568,14 @@ async function downloadAssetBuffer(asset, currentVersion, options, limit) {
   return readBoundedBody(response, limit, 'UPDATE_DOWNLOAD_FAILED')
 }
 
-function releasePackageSources(candidate) {
-  const officialBrowserUrl = `https://github.com/${RELEASE_REPOSITORY}/releases/download/${encodeURIComponent(candidate.tagName)}/${encodeURIComponent(candidate.packageAsset.name)}`
+function releasePackageSources(candidate, packageAsset) {
+  const officialBrowserUrl = `https://github.com/${RELEASE_REPOSITORY}/releases/download/${encodeURIComponent(candidate.tagName)}/${encodeURIComponent(packageAsset.name)}`
   return [
     {
       id: 'github',
       kind: 'official',
       host: 'api.github.com',
-      url: `${GITHUB_API_ROOT}/repos/${RELEASE_REPOSITORY}/releases/assets/${candidate.packageAsset.id}`,
+      url: `${GITHUB_API_ROOT}/repos/${RELEASE_REPOSITORY}/releases/assets/${packageAsset.id}`,
     },
     ...RELEASE_DOWNLOAD_MIRRORS.map((mirror) => ({
       id: mirror.id,
@@ -569,8 +638,8 @@ async function rankReleaseDownloadSources(sources, currentVersion, options) {
   return ranked
 }
 
-async function resolveReleaseDownloadSources(candidate, currentVersion, options) {
-  const sources = releasePackageSources(candidate)
+async function resolveReleaseDownloadSources(candidate, packageAsset, currentVersion, options) {
+  const sources = releasePackageSources(candidate, packageAsset)
   const official = sources[0]
   const mirrors = sources.slice(1)
   emitUpdateStatus(options, { phase: 'probing', source: official.id })
@@ -702,6 +771,7 @@ export async function downloadReleaseUpdate({
   tagName,
   currentVersion,
   destinationRoot,
+  deltaFromVersion = '',
   ...options
 }) {
   emitUpdateStatus(options, { phase: 'resolving', source: 'github' })
@@ -714,16 +784,21 @@ export async function downloadReleaseUpdate({
   ) {
     throw releaseError('UPDATE_NOT_AVAILABLE', 'The selected Release is not newer than the installed version.', 409)
   }
+  const requestedDeltaBase = parseSemver(deltaFromVersion)
+  const normalizedDeltaBase = requestedDeltaBase?.value === deltaFromVersion
+    ? requestedDeltaBase.value
+    : ''
+  const transfer = selectedReleaseTransfer(candidate, normalizedDeltaBase)
   await fs.mkdir(destinationRoot, { recursive: true })
   const checksumBody = await downloadAssetBuffer(
-    candidate.checksumAsset,
+    transfer.checksumAsset,
     currentVersion,
     options,
     MAX_CHECKSUM_BYTES,
   )
-  const expectedSha256 = parseChecksumFile(checksumBody.toString('utf8'), candidate.packageAsset.name)
-  if (candidate.packageAsset.digest?.startsWith('sha256:')) {
-    const githubDigest = candidate.packageAsset.digest.slice('sha256:'.length).toLowerCase()
+  const expectedSha256 = parseChecksumFile(checksumBody.toString('utf8'), transfer.packageAsset.name)
+  if (transfer.packageAsset.digest?.startsWith('sha256:')) {
+    const githubDigest = transfer.packageAsset.digest.slice('sha256:'.length).toLowerCase()
     if (githubDigest !== expectedSha256) {
       throw releaseError('UPDATE_INTEGRITY_FAILED', 'The Release asset and checksum metadata do not match.', 400)
     }
@@ -734,7 +809,7 @@ export async function downloadReleaseUpdate({
     || (options.sourceSelection !== false && !options.fetchImpl)
   try {
     const sourcePlan = useSourceSelection
-      ? await resolveReleaseDownloadSources(candidate, currentVersion, options)
+      ? await resolveReleaseDownloadSources(candidate, transfer.packageAsset, currentVersion, options)
       : { sources: [null], fallbackSources: [] }
     let sources = sourcePlan.sources
     let fallbackSources = sourcePlan.fallbackSources
@@ -748,11 +823,11 @@ export async function downloadReleaseUpdate({
           phase: 'downloading',
           source: source?.id ?? 'github',
           bytes: 0,
-          total: candidate.packageAsset.size,
+          total: transfer.packageAsset.size,
         })
         try {
           const result = await downloadAssetFile(
-            candidate.packageAsset,
+            transfer.packageAsset,
             currentVersion,
             packagePath,
             options,
@@ -762,7 +837,7 @@ export async function downloadReleaseUpdate({
             phase: 'verifying',
             source: source?.id ?? 'github',
             bytes: result.size,
-            total: candidate.packageAsset.size,
+            total: transfer.packageAsset.size,
           })
           if (result.sha256 !== expectedSha256) {
             throw releaseError('UPDATE_INTEGRITY_FAILED', 'The downloaded update package checksum did not match.', 400)
@@ -783,7 +858,7 @@ export async function downloadReleaseUpdate({
     if (!downloaded) throw lastError ?? releaseError('UPDATE_DOWNLOAD_FAILED', 'The Release update package could not be downloaded.')
     return {
       packagePath,
-      fileName: candidate.packageAsset.name,
+      fileName: transfer.packageAsset.name,
       size: downloaded.size,
       sha256: downloaded.sha256,
       source: {
@@ -791,7 +866,11 @@ export async function downloadReleaseUpdate({
         kind: selectedSource?.kind ?? 'official',
         host: selectedSource?.host ?? 'api.github.com',
       },
-      release: publicReleaseInfo(candidate),
+      transfer: {
+        kind: transfer.kind,
+        fromVersion: transfer.fromVersion,
+      },
+      release: publicReleaseInfo(candidate, transfer.fromVersion ?? ''),
     }
   } catch (error) {
     await fs.rm(packagePath, { force: true }).catch(() => undefined)

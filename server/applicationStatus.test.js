@@ -28,3 +28,44 @@ describe('account-scoped custom application statuses', () => {
     })).toThrow()
   })
 })
+
+describe('account-scoped checklist statuses', () => {
+  it('accepts one shared taxonomy for materials and tasks', () => {
+    expect(UserSettingsPatchSchema.parse({
+      customChecklistStatuses: ['Faculty review', 'Waiting on portal'],
+    })).toEqual({
+      customChecklistStatuses: ['Faculty review', 'Waiting on portal'],
+    })
+  })
+
+  it('rejects built-in checklist statuses and case-insensitive duplicates', () => {
+    expect(() => UserSettingsPatchSchema.parse({
+      customChecklistStatuses: ['Done'],
+    })).toThrow()
+    expect(() => UserSettingsPatchSchema.parse({
+      customChecklistStatuses: ['Faculty review', 'faculty review'],
+    })).toThrow()
+  })
+})
+
+describe('account-scoped checklist material formats', () => {
+  it('accepts one taxonomy shared by every application', () => {
+    expect(UserSettingsPatchSchema.parse({
+      customChecklistMaterialFormats: ['Portal upload', 'Sealed envelope'],
+    })).toEqual({
+      customChecklistMaterialFormats: ['Portal upload', 'Sealed envelope'],
+    })
+  })
+
+  it('rejects built-in formats and case-insensitive duplicates', () => {
+    expect(() => UserSettingsPatchSchema.parse({
+      customChecklistMaterialFormats: ['PDF'],
+    })).toThrow()
+    expect(() => UserSettingsPatchSchema.parse({
+      customChecklistMaterialFormats: ['Online form'],
+    })).toThrow()
+    expect(() => UserSettingsPatchSchema.parse({
+      customChecklistMaterialFormats: ['Portal upload', 'portal upload'],
+    })).toThrow()
+  })
+})

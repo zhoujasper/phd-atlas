@@ -172,6 +172,7 @@ export const DISCOVER_SOURCE_REGISTRY = SOURCE_ROWS.trim().split('\n').map((row)
     allowedHosts: adapter.allowedHosts,
     seeds: adapter.seeds,
     pathHints: adapter.pathHints,
+    crawlPolicy: adapter.crawlPolicy,
     adapterVerifiedAt: adapter.verifiedAt,
   })
 })

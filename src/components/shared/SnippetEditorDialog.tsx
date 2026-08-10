@@ -1,6 +1,36 @@
-import { AlertCircle, CheckCircle2, Download, ExternalLink, Eye, FileText, Pencil, Save, Trash2, UploadCloud, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { ProfileAsset, ProfileAssetAttachment, ProfileAssetInput, ProfilePreset, ProfilePresetColor, ProfilePresetIcon } from '../../api/phdApi'
+import {
+  AlertCircle,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  Columns2,
+  Download,
+  ExternalLink,
+  Eye,
+  FileDown,
+  FileText,
+  LockKeyhole,
+  Pencil,
+  Plus,
+  Rows2,
+  Save,
+  SlidersHorizontal,
+  Trash2,
+  UploadCloud,
+  X,
+} from 'lucide-react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import type {
+  ProfileAsset,
+  ProfileAssetAttachment,
+  ProfileAssetInput,
+  ProfilePreset,
+  ProfilePresetColor,
+  ProfilePresetIcon,
+  ProfileWritingBrief,
+  ProfileWritingBriefField,
+  ProfileWritingSection,
+} from '../../api/phdApi'
 import {
   createRenamedFile,
   getUploadPresetSelection,
@@ -8,11 +38,13 @@ import {
   uploadOtherTypeId,
   uploadTypePresets,
 } from '../../checklistFiles'
+import { contentLanguagesFromSettings, type ContentLanguagePair } from '../../contentLanguages'
 import {
-  contentLanguagesFromSettings,
-  type ContentLanguagePair,
-} from '../../contentLanguages'
-import { DEFAULT_UPLOAD_ALLOWED_TYPES, MAX_UPLOAD_FILE_SIZE, MAX_UPLOAD_FILES_PER_BATCH, formatFileSize } from '../../fileUploads'
+  DEFAULT_UPLOAD_ALLOWED_TYPES,
+  MAX_UPLOAD_FILE_SIZE,
+  MAX_UPLOAD_FILES_PER_BATCH,
+  formatFileSize,
+} from '../../fileUploads'
 import { allowedFileTypesLabel, fileMatchesAllowedTypes } from '../../fileTypes'
 import { languageLabel, t as translate, tpl } from '../../i18n'
 import {
@@ -22,12 +54,15 @@ import {
   isBuiltInProfilePresetKind,
   isGenericCustomProfileKind,
 } from '../../profileAssets'
-import {
-  profilePresetInsertLabels,
-  profilePresetPresentation,
-  profilePresetText,
-} from '../../profilePresets'
+import { profilePresetInsertLabels, profilePresetPresentation, profilePresetText } from '../../profilePresets'
+import { registerSafeReloadGuard } from '../../safeReload'
 import { normalizeEscapedMultiline } from '../../textNormalize'
+import {
+  countProfileDocumentWords,
+  createProfileWritingSectionId,
+  supportsProfileWritingBrief,
+  writingBriefHasContent,
+} from '../../profileWritingBrief'
 import { useContentLanguagePacks, useI18n } from '../hooks/useI18n'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { useModalA11y } from '../hooks/useModalA11y'
@@ -42,6 +77,24 @@ import { shareExpiryOptions, type ShareExpiry } from './shareOptions'
 import { AttachmentPreviewDialog, type AttachmentPreviewFile } from './AttachmentPreviewDialog'
 
 type PendingFile = { id: string; file: File; name: string }
+
+type WritingSectionLayoutSnapshot = {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+type SnippetMotionWindow = Window & {
+  matchMedia?: (query: string) => MediaQueryList
+}
+
+function snippetPrefersReducedMotion() {
+  if (typeof window === 'undefined') return false
+  const motionWindow = window as SnippetMotionWindow
+  return typeof motionWindow.matchMedia === 'function'
+    && motionWindow.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
 
 export function SnippetEditorDialog({
   open,
@@ -76,6 +129,7 @@ export function SnippetEditorDialog({
   onLoadFile,
   onCreateShare,
   onRevokeShare,
+  onExport,
 }: {
   open: boolean
   /** null = create mode. A live reference in edit mode — attachments/shares re-render as it updates. */
@@ -100,7 +154,12 @@ export function SnippetEditorDialog({
   /** Open the share-upload panel when editing an existing snippet. */
   initialShowShare?: boolean
   /** Account-wide insert-phrase template (lead + name + tail, per language) — read-only here, used only to render the bottom preview. */
-  globalPhrase: { leadZh: string; tailZh: string; leadEn: string; tailEn: string }
+  globalPhrase: {
+    leadZh: string
+    tailZh: string
+    leadEn: string
+    tailEn: string
+  }
   /** Dual content languages from Settings — drives bilingual labels and previews. */
   contentLanguages?: ContentLanguagePair | null
   /** Team teachers can create student snippets with the same editor while file ownership remains student-only. */
@@ -111,20 +170,19 @@ export function SnippetEditorDialog({
   headerAccessory?: ReactNode
   onClose: () => void
   onCreate: (input: ProfileAssetInput, files: File[]) => void | Promise<void>
-  onUpdate: (id: string, input: Partial<ProfileAssetInput>) => void
+  onUpdate: (id: string, input: Partial<ProfileAssetInput>) => void | Promise<void>
   onUploadFiles: (assetId: string, files: File[]) => void | Promise<void>
-  onRenameFile: (assetId: string, fileId: string, fileName: string) => void
-  onDeleteFile: (assetId: string, fileId: string) => void
+  onRenameFile: (assetId: string, fileId: string, fileName: string) => void | Promise<void>
+  onDeleteFile: (assetId: string, fileId: string) => void | Promise<void>
   onDownloadFile: (fileId: string, fileName: string) => void
   onLoadFile?: (fileId: string) => Promise<Blob>
-  onCreateShare: (assetId: string, expiry: ShareExpiry, note: string) => void
-  onRevokeShare: (assetId: string, shareId: string) => void
+  onCreateShare: (assetId: string, expiry: ShareExpiry, note: string) => void | Promise<void>
+  onRevokeShare: (assetId: string, shareId: string) => void | Promise<void>
+  /** Saves the current draft first, then downloads a polished authored-document export. */
+  onExport?: (assetId: string, format: 'pdf' | 'word') => void | Promise<void>
 }) {
   const { tx, lang, format } = useI18n()
-  const pair = useMemo(
-    () => contentLanguages ?? contentLanguagesFromSettings(null),
-    [contentLanguages],
-  )
+  const pair = useMemo(() => contentLanguages ?? contentLanguagesFromSettings(null), [contentLanguages])
   // Load ja/ko/… profile+dossier packs so insert-phrase previews are not stuck on English.
   const contentPackVersion = useContentLanguagePacks(pair)
   const primaryLabel = languageLabel(pair.primary)
@@ -135,6 +193,7 @@ export function SnippetEditorDialog({
   const assetKind = asset?.kind
   const assetDescription = asset?.description
   const assetNotes = asset?.notes
+  const assetWritingBriefSignature = JSON.stringify(asset?.writingBrief ?? null)
   const assetCustomLabelZh = asset?.customLabelZh
   const assetCustomLabelEn = asset?.customLabelEn
   const assetIcon = asset?.icon
@@ -152,9 +211,22 @@ export function SnippetEditorDialog({
   const [selectedCustomPresetId, setSelectedCustomPresetId] = useState<string | null>(null)
   const [content, setContent] = useState('')
   const nameRef = useRef<HTMLInputElement | null>(null)
-  /** Preset template text shown only as a gray empty-state hint — never saved unless the user types. */
+  /** A quiet hint is retained for preset guidance until the user starts their own draft. */
   const [contentHint, setContentHint] = useState('')
   const [notes, setNotes] = useState('')
+  const [requirements, setRequirements] = useState('')
+  /** System-preset requirements are guidance only; never persist them as user metadata. */
+  const [requirementsHint, setRequirementsHint] = useState('')
+  const [requirementsSourceUrl, setRequirementsSourceUrl] = useState('')
+  const [wordLimit, setWordLimit] = useState('')
+  const [pageLimit, setPageLimit] = useState('')
+  /** Legacy planning fields stay encrypted and round-trip unchanged, but are no longer edited here. */
+  const [legacyBriefFields, setLegacyBriefFields] = useState<ProfileWritingBriefField[]>([])
+  const [writingSections, setWritingSections] = useState<ProfileWritingSection[]>([])
+  const [sectionAddOpen, setSectionAddOpen] = useState(false)
+  const [advancedDesignOpen, setAdvancedDesignOpen] = useState(false)
+  const [exportingFormat, setExportingFormat] = useState<'pdf' | 'word' | null>(null)
+  const [exportComplete, setExportComplete] = useState<'pdf' | 'word' | null>(null)
   const [icon, setIcon] = useState<ProfilePresetIcon>('file-text')
   const [color, setColor] = useState<ProfilePresetColor>('system')
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
@@ -162,12 +234,16 @@ export function SnippetEditorDialog({
   /** Attachment fileId or pending id currently in rename mode. */
   const [renamingFileId, setRenamingFileId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [renamingSubmitting, setRenamingSubmitting] = useState(false)
+  const [deletingFileId, setDeletingFileId] = useState<string | null>(null)
   /** Same pattern as checklist materials: reserve a later upload slot without attaching files now. */
   const [uploadReservationEnabled, setUploadReservationEnabled] = useState(false)
   const [uploadAllowedPresetIds, setUploadAllowedPresetIds] = useState<string[]>([])
   const [uploadCustomTypes, setUploadCustomTypes] = useState('')
   const [uploadTypeError, setUploadTypeError] = useState('')
+  const [saving, setSaving] = useState(false)
   const [showShareForm, setShowShareForm] = useState(false)
+  const [shareSubmitting, setShareSubmitting] = useState<string | null>(null)
   const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreviewFile | null>(null)
   const [shareExpiry, setShareExpiry] = useState<ShareExpiry>('7d')
   const [shareNote, setShareNote] = useState('')
@@ -177,6 +253,17 @@ export function SnippetEditorDialog({
   const [familyIdDraft, setFamilyIdDraft] = useState<string | undefined>(undefined)
   const [versionNumberDraft, setVersionNumberDraft] = useState<number | undefined>(undefined)
   const renameInputRef = useRef<HTMLInputElement | null>(null)
+  const formScrollRef = useRef<HTMLDivElement | null>(null)
+  const writingSectionGridRef = useRef<HTMLDivElement | null>(null)
+  const writingSectionLayoutSnapshotRef = useRef<Map<string, WritingSectionLayoutSnapshot> | null>(null)
+  const writingSectionAnimationsRef = useRef<Map<string, Animation>>(new Map())
+  const advancedRevealRequestedRef = useRef(false)
+  const hydratedEditorKeyRef = useRef<string | null>(null)
+  const baselinePendingEditorKeyRef = useRef<string | null>(null)
+  const baselineDraftSignatureRef = useRef<string | null>(null)
+  const dirtyForSafeReloadRef = useRef(false)
+  const mutationInFlightRef = useRef(false)
+  const safeReloadGuardId = useId()
 
   // Kind chips only for blank create — not when using a preset, not when editing.
   const showKindPicker = !isEditing && !fromPreset
@@ -191,12 +278,26 @@ export function SnippetEditorDialog({
   const assetVersionNumber = asset?.versionNumber
   const hasAsset = Boolean(asset)
 
-  // Re-seed the local draft whenever the dialog opens or switches to a different asset — but not
-  // on every reactive update to the *same* asset (e.g. after an attachment upload), which would
-  // otherwise blow away in-progress name/content edits.
+  // The editor owns its resident draft from open until close. Realtime refreshes,
+  // attachment metadata writes, language-pack updates, and parent rerenders may
+  // replace the live asset object, but must never re-seed the same edit session
+  // and erase text already being written.
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      hydratedEditorKeyRef.current = null
+      baselinePendingEditorKeyRef.current = null
+      baselineDraftSignatureRef.current = null
+      return
+    }
+    const editorKey = assetId ? `asset:${assetId}` : 'create'
+    if (hydratedEditorKeyRef.current === editorKey) return
+    hydratedEditorKeyRef.current = editorKey
+    baselinePendingEditorKeyRef.current = editorKey
+    baselineDraftSignatureRef.current = null
     const nextKind = assetKind ?? initialKind ?? CUSTOM_PROFILE_KIND
+    const savedWritingBrief = assetWritingBriefSignature
+      ? (JSON.parse(assetWritingBriefSignature) as ProfileAsset['writingBrief'])
+      : undefined
     const nextIsBuiltIn = isBuiltInProfilePresetKind(nextKind)
     // A kind that's neither a built-in preset nor the generic Custom/Other sentinel is a
     // pre-migration row whose freeform kind string doubled as its display label — seed both
@@ -204,6 +305,13 @@ export function SnippetEditorDialog({
     const legacyLabel = !nextIsBuiltIn && !isGenericCustomProfileKind(nextKind) ? nextKind : ''
     const presetKey = !assetId && nextIsBuiltIn ? PROFILE_PRESET_DEFAULT_KEYS[nextKind] : undefined
     const presentation = profilePresetPresentation(nextKind)
+    const presetRequirementsHint = nextIsBuiltIn && supportsProfileWritingBrief(nextKind)
+      ? translate(
+        lang,
+        PROFILE_PRESET_KINDS.find((item) => item.kind === nextKind)?.hintKey ?? '',
+        '',
+      )
+      : ''
     setKind(nextIsBuiltIn ? nextKind : CUSTOM_PROFILE_KIND)
     setSelectedCustomPresetId(null)
 
@@ -221,34 +329,58 @@ export function SnippetEditorDialog({
       ? translate(pair.secondary, PROFILE_PRESET_KINDS.find((item) => item.kind === nextKind)?.labelKey ?? '', nextKind)
       : ''
     setPhraseMiddlePrimary((assetCustomLabelEn || initialCustomLabelEn || kindLabelPrimary || '').trim())
-    setPhraseMiddleSecondary((assetCustomLabelZh || initialCustomLabelZh || kindLabelSecondary || legacyLabel || '').trim())
+    setPhraseMiddleSecondary(
+      (assetCustomLabelZh || initialCustomLabelZh || kindLabelSecondary || legacyLabel || '').trim(),
+    )
 
-    // Editing keeps the saved snippet body. Using a preset keeps the field empty and shows
-    // the template only as a gray hint that disappears the moment the user types.
+    // A deliberate "Use preset" action shows a non-destructive starting hint. The first
+    // keystroke belongs to the user's draft, so system guidance is never silently saved.
     if (assetId) {
       setContent(normalizeEscapedMultiline(assetDescription ?? ''))
       setContentHint('')
     } else if (fromPreset) {
-      const hint = normalizeEscapedMultiline(
-        initialContent
-          ?? (presetKey ? translate(lang, `profile.presetDefaults.${presetKey}.content`, '') : ''),
+      const template = normalizeEscapedMultiline(
+        initialContent ?? (presetKey ? translate(lang, `profile.presetDefaults.${presetKey}.content`, '') : ''),
       )
       setContent('')
-      setContentHint(hint)
+      setContentHint(template)
     } else {
       setContent('')
       setContentHint(
-        presetKey
-          ? normalizeEscapedMultiline(translate(lang, `profile.presetDefaults.${presetKey}.content`, ''))
-          : '',
+        presetKey ? normalizeEscapedMultiline(translate(lang, `profile.presetDefaults.${presetKey}.content`, '')) : '',
       )
     }
 
     setNotes(normalizeEscapedMultiline(assetNotes ?? ''))
+    setRequirements(assetId ? normalizeEscapedMultiline(savedWritingBrief?.requirements ?? '') : '')
+    setRequirementsHint(assetId ? '' : presetRequirementsHint)
+    setRequirementsSourceUrl(savedWritingBrief?.sourceUrl ?? '')
+    setWordLimit(savedWritingBrief?.wordLimit ? String(savedWritingBrief.wordLimit) : '')
+    setPageLimit(savedWritingBrief?.pageLimit ? String(savedWritingBrief.pageLimit) : '')
+    setLegacyBriefFields((savedWritingBrief?.customFields ?? []).map((field) => ({ ...field })))
+    setWritingSections(
+      (savedWritingBrief?.sections ?? []).map((section) => ({
+        ...section,
+        width: section.width === 'half' ? 'half' : 'full',
+      })),
+    )
+    setSectionAddOpen(false)
+    advancedRevealRequestedRef.current = false
+    setSaving(false)
+    setRenamingSubmitting(false)
+    setDeletingFileId(null)
+    setShareSubmitting(null)
+    setAdvancedDesignOpen(!assetId && !fromPreset && !nextIsBuiltIn)
+    setExportingFormat(null)
+    setExportComplete(null)
     setIcon(assetIcon ?? initialIcon ?? presentation.icon)
     setColor(assetColor ?? initialColor ?? presentation.color)
     setVersionLabel(
-      (assetVersionLabel || initialVersionLabel || (assetId ? 'v1' : initialVersionNumber ? `v${initialVersionNumber}` : 'v1')).trim(),
+      (
+        assetVersionLabel ||
+        initialVersionLabel ||
+        (assetId ? 'v1' : initialVersionNumber ? `v${initialVersionNumber}` : 'v1')
+      ).trim(),
     )
     setFamilyName((assetFamilyName || initialFamilyName || '').trim())
     setIsPrimary(hasAsset ? Boolean(assetIsPrimary ?? true) : initialIsPrimary !== false)
@@ -259,9 +391,9 @@ export function SnippetEditorDialog({
     setUploadReservationEnabled(Boolean(assetUploadReserved))
     {
       const selection = getUploadPresetSelection(assetAllowedFileTypes)
-      setUploadAllowedPresetIds(selection.customTypes.length
-        ? [...selection.presetIds, uploadOtherTypeId]
-        : selection.presetIds)
+      setUploadAllowedPresetIds(
+        selection.customTypes.length ? [...selection.presetIds, uploadOtherTypeId] : selection.presetIds,
+      )
       setUploadCustomTypes(selection.customTypes.join(', '))
     }
     setUploadTypeError('')
@@ -279,6 +411,7 @@ export function SnippetEditorDialog({
     assetIcon,
     assetColor,
     assetNotes,
+    assetWritingBriefSignature,
     assetUploadReserved,
     assetAllowedFileTypes,
     initialKind,
@@ -306,6 +439,104 @@ export function SnippetEditorDialog({
     hasAsset,
   ])
 
+  const authoredDraftSignature = useMemo(() => JSON.stringify({
+    name,
+    phraseMiddlePrimary,
+    phraseMiddleSecondary,
+    kind,
+    selectedCustomPresetId,
+    content,
+    notes,
+    requirements,
+    requirementsSourceUrl,
+    wordLimit,
+    pageLimit,
+    legacyBriefFields,
+    writingSections,
+    icon,
+    color,
+    pendingFiles: pendingFiles.map((pending) => ({
+      id: pending.id,
+      name: pending.name,
+      size: pending.file.size,
+      type: pending.file.type,
+      lastModified: pending.file.lastModified,
+    })),
+    uploadReservationEnabled,
+    uploadAllowedPresetIds,
+    uploadCustomTypes,
+    versionLabel,
+    familyName,
+    isPrimary,
+    familyIdDraft,
+    versionNumberDraft,
+    renamingFileId,
+    renameValue,
+    shareExpiry,
+    shareNote,
+  }), [
+    color,
+    content,
+    familyIdDraft,
+    familyName,
+    icon,
+    isPrimary,
+    kind,
+    legacyBriefFields,
+    name,
+    notes,
+    pageLimit,
+    pendingFiles,
+    phraseMiddlePrimary,
+    phraseMiddleSecondary,
+    renameValue,
+    renamingFileId,
+    requirements,
+    requirementsSourceUrl,
+    selectedCustomPresetId,
+    shareExpiry,
+    shareNote,
+    uploadAllowedPresetIds,
+    uploadCustomTypes,
+    uploadReservationEnabled,
+    versionLabel,
+    versionNumberDraft,
+    wordLimit,
+    writingSections,
+  ])
+
+  useLayoutEffect(() => {
+    const pendingEditorKey = baselinePendingEditorKeyRef.current
+    if (!open || !pendingEditorKey || pendingEditorKey !== hydratedEditorKeyRef.current) return
+    // State seeding occurs in the preceding passive effect. Capture the next
+    // rendered frame so a previous asset can never become this editor's clean baseline.
+    baselineDraftSignatureRef.current = authoredDraftSignature
+    baselinePendingEditorKeyRef.current = null
+  }, [authoredDraftSignature, open])
+
+  const authoredDraftDirty = Boolean(
+    open
+    && baselineDraftSignatureRef.current !== null
+    && authoredDraftSignature !== baselineDraftSignatureRef.current,
+  )
+  dirtyForSafeReloadRef.current = Boolean(
+    authoredDraftDirty
+    || saving
+    || uploadingFiles
+    || renamingSubmitting
+    || deletingFileId
+    || shareSubmitting
+    || exportingFormat,
+  )
+
+  useEffect(() => {
+    if (!open) return undefined
+    return registerSafeReloadGuard(`profile-snippet-editor:${safeReloadGuardId}`, {
+      prepare: () => !(dirtyForSafeReloadRef.current || mutationInFlightRef.current),
+      hasUnsavedChanges: () => dirtyForSafeReloadRef.current || mutationInFlightRef.current,
+    })
+  }, [open, safeReloadGuardId])
+
   const applyPreset = (nextKind: string) => {
     const preset = PROFILE_PRESET_KINDS.find((item) => item.kind === nextKind)
     const presetKey = isBuiltInProfilePresetKind(nextKind) ? PROFILE_PRESET_DEFAULT_KEYS[nextKind] : undefined
@@ -314,16 +545,24 @@ export function SnippetEditorDialog({
     setSelectedCustomPresetId(null)
     setIcon(presentation.icon)
     setColor(presentation.color)
+    advancedRevealRequestedRef.current = false
+    setAdvancedDesignOpen(false)
     // Seed free name + bilingual insert middles from kind labels when still empty.
     if (preset) {
       if (!name.trim()) setName(tx(preset.labelKey))
       if (!phraseMiddlePrimary.trim()) setPhraseMiddlePrimary(translate(pair.primary, preset.labelKey, nextKind))
       if (!phraseMiddleSecondary.trim()) setPhraseMiddleSecondary(translate(pair.secondary, preset.labelKey, nextKind))
     }
-    // Template copy is a hint only — leave the user's draft empty until they type.
+    setRequirementsHint(preset ? translate(lang, preset.hintKey, '') : '')
+    // Show an untouched preset as guidance, but never replace text the user has started writing.
     if (presetKey) {
-      setContentHint(normalizeEscapedMultiline(translate(lang, `profile.presetDefaults.${presetKey}.content`, '')))
-      if (!content.trim()) setContent('')
+      const template = normalizeEscapedMultiline(translate(lang, `profile.presetDefaults.${presetKey}.content`, ''))
+      if (!content.trim()) {
+        setContent('')
+        setContentHint(template)
+      } else {
+        setContentHint(template)
+      }
     } else {
       setContentHint('')
     }
@@ -335,6 +574,9 @@ export function SnippetEditorDialog({
     setIcon('file-text')
     setColor('system')
     setContentHint('')
+    setRequirementsHint('')
+    advancedRevealRequestedRef.current = true
+    setAdvancedDesignOpen(true)
   }
 
   const applyCustomPreset = (preset: ProfilePreset) => {
@@ -344,19 +586,37 @@ export function SnippetEditorDialog({
     setSelectedCustomPresetId(preset.id)
     setIcon(preset.icon)
     setColor(preset.color)
+    advancedRevealRequestedRef.current = false
+    setAdvancedDesignOpen(false)
+    setRequirementsHint('')
     // Match the built-in picker: choosing a template provides sensible metadata
     // without replacing text the user has already started writing.
     if (!name.trim()) setName(display.name)
     if (!phraseMiddlePrimary.trim()) setPhraseMiddlePrimary(insertLabels.primary || display.name)
     if (!phraseMiddleSecondary.trim()) setPhraseMiddleSecondary(insertLabels.secondary || display.name)
-    setContentHint(normalizeEscapedMultiline(display.content))
-    if (!content.trim()) setContent('')
+    const template = normalizeEscapedMultiline(display.content)
+    if (!content.trim()) {
+      setContent('')
+      setContentHint(template)
+    } else {
+      setContentHint(template)
+    }
   }
 
   const showContentHint = Boolean(contentHint.trim()) && !content.trim()
 
   const { exiting, requestClose } = useAnimatedClose(open, onClose, 120)
-  const dialogRef = useModalA11y({ open, onClose: () => requestClose(), initialFocusRef: nameRef })
+  const requestEditorClose = () => {
+    if (saving || uploadingFiles || renamingSubmitting || deletingFileId || shareSubmitting) return
+    requestClose()
+  }
+  const dialogRef = useModalA11y({
+    open,
+    onClose: () => {
+      requestEditorClose()
+    },
+    initialFocusRef: nameRef,
+  })
 
   const uploadAllowedTypes = useMemo(
     () => resolveUploadAllowedTypes(uploadAllowedPresetIds, uploadCustomTypes),
@@ -381,14 +641,122 @@ export function SnippetEditorDialog({
   // contentPackVersion is read so previews recompute after async pack loads.
   void contentPackVersion
 
-  if (!open && !exiting) return null
-
   const attachments = asset?.attachments ?? []
   const shares = asset?.shares ?? []
   const isCustomKind = kind === CUSTOM_PROFILE_KIND
   const resolvedName = name.trim()
   const resolvedPhrasePrimary = phraseMiddlePrimary.trim()
   const resolvedPhraseSecondary = phraseMiddleSecondary.trim()
+  const documentWordCount = countProfileDocumentWords(content)
+  const parsedWordLimit = Number.parseInt(wordLimit, 10)
+  const activeWordLimit = Number.isFinite(parsedWordLimit) && parsedWordLimit > 0 ? parsedWordLimit : undefined
+  const showWritingBrief = supportsProfileWritingBrief(kind) || Boolean(requirements.trim())
+  const advancedDesignDeferred =
+    isEditing || fromPreset || selectedCustomPresetId !== null || isBuiltInProfilePresetKind(kind)
+
+  useLayoutEffect(() => {
+    const before = writingSectionLayoutSnapshotRef.current
+    const grid = writingSectionGridRef.current
+    if (!before || !grid) return
+    writingSectionLayoutSnapshotRef.current = null
+
+    const elements = Array.from(grid.querySelectorAll<HTMLElement>('[data-writing-section-id]'))
+    const after = elements.map((element) => ({
+      element,
+      id: element.dataset.writingSectionId ?? '',
+      rect: element.getBoundingClientRect(),
+    }))
+
+    // A second toggle can arrive while the previous FLIP is still settling.
+    // Capture the current frame above, then cancel old animations before writing
+    // the new compositor transforms so the reflow remains interruptible.
+    for (const animation of writingSectionAnimationsRef.current.values()) animation.cancel()
+    writingSectionAnimationsRef.current.clear()
+
+    if (snippetPrefersReducedMotion() || typeof HTMLElement.prototype.animate !== 'function') return
+
+    const pendingAnimations: Array<{
+      element: HTMLElement
+      id: string
+      dx: number
+      dy: number
+      scaleX: number
+      scaleY: number
+    }> = []
+    for (const item of after) {
+      const previous = before.get(item.id)
+      if (!previous || !item.id) continue
+      const { rect } = item
+      const dx = previous.left - rect.left
+      const dy = previous.top - rect.top
+      const scaleX = previous.width > 0 && rect.width > 0 ? previous.width / rect.width : 1
+      const scaleY = previous.height > 0 && rect.height > 0 ? previous.height / rect.height : 1
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 && Math.abs(scaleX - 1) < 0.005 && Math.abs(scaleY - 1) < 0.005) {
+        continue
+      }
+      pendingAnimations.push({ element: item.element, id: item.id, dx, dy, scaleX, scaleY })
+    }
+
+    for (const item of pendingAnimations) {
+      item.element.classList.add('is-layout-animating')
+      const animation = item.element.animate(
+        [
+          {
+            transformOrigin: 'top left',
+            transform: `translate3d(${item.dx}px, ${item.dy}px, 0) scale(${item.scaleX}, ${item.scaleY})`,
+            opacity: 0.88,
+          },
+          { transformOrigin: 'top left', transform: 'translate3d(0, 0, 0) scale(1, 1)', opacity: 1 },
+        ],
+        {
+          duration: 320,
+          easing: 'cubic-bezier(0.22, 0.61, 0.36, 1)',
+          fill: 'both',
+        },
+      )
+      writingSectionAnimationsRef.current.set(item.id, animation)
+      void animation.finished
+        .catch(() => undefined)
+        .then(() => {
+          if (writingSectionAnimationsRef.current.get(item.id) !== animation) return
+          writingSectionAnimationsRef.current.delete(item.id)
+          item.element.classList.remove('is-layout-animating')
+          animation.cancel()
+        })
+    }
+  }, [writingSections])
+
+  useEffect(() => () => {
+    for (const animation of writingSectionAnimationsRef.current.values()) animation.cancel()
+    writingSectionAnimationsRef.current.clear()
+  }, [])
+
+  useEffect(() => {
+    if (!open || !advancedDesignOpen || !advancedRevealRequestedRef.current) return undefined
+    advancedRevealRequestedRef.current = false
+    const frame = window.requestAnimationFrame(() => {
+      const panel = formScrollRef.current?.querySelector<HTMLElement>('#snippet-advanced-design')
+      if (!panel || typeof panel.scrollIntoView !== 'function') return
+      panel.scrollIntoView({ behavior: snippetPrefersReducedMotion() ? 'auto' : 'smooth', block: 'nearest' })
+    })
+    const settle = window.setTimeout(() => {
+      const panel = formScrollRef.current?.querySelector<HTMLElement>('#snippet-advanced-design')
+      if (!panel || typeof panel.scrollIntoView !== 'function') return
+      panel.scrollIntoView({ behavior: snippetPrefersReducedMotion() ? 'auto' : 'smooth', block: 'nearest' })
+    }, 340)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.clearTimeout(settle)
+    }
+  }, [advancedDesignDeferred, advancedDesignOpen, open])
+
+  useEffect(() => {
+    if (!exportComplete) return
+    const timer = window.setTimeout(() => setExportComplete(null), 900)
+    return () => window.clearTimeout(timer)
+  }, [exportComplete])
+
+  if (!open && !exiting) return null
 
   const toggleUploadPreset = (id: string) => {
     setUploadTypeError('')
@@ -407,25 +775,137 @@ export function SnippetEditorDialog({
     // En storage = primary, Zh storage = secondary
     const lead = slot === 'primary' ? globalPhrase.leadEn : globalPhrase.leadZh
     const tail = slot === 'primary' ? globalPhrase.tailEn : globalPhrase.tailZh
-    const middle = (slot === 'primary' ? resolvedPhrasePrimary : resolvedPhraseSecondary)
-      || resolvedName
-      || '…'
+    const middle = (slot === 'primary' ? resolvedPhrasePrimary : resolvedPhraseSecondary) || resolvedName || '…'
     if (!lead.trim() && !tail.trim()) {
-      return tpl(translate(language, 'dossier.assetAttachedLine'), { name: middle })
+      return tpl(translate(language, 'dossier.assetAttachedLine'), {
+        name: middle,
+      })
     }
     return `${lead}${middle}${tail}`
   }
 
-  const handleSubmit = (event: React.FormEvent) => {
-    event.preventDefault()
-    if (!resolvedName) return
+  const addWritingSection = (width: 'full' | 'half') => {
+    if (writingSections.length >= 20) return
+    setWritingSections((current) => [
+      ...current,
+      {
+        id: createProfileWritingSectionId(),
+        title: '',
+        content: '',
+        width,
+      },
+    ])
+    setSectionAddOpen(false)
+  }
+
+  const updateWritingSectionWidth = (sectionId: string, width: 'full' | 'half') => {
+    const grid = writingSectionGridRef.current
+    const snapshot = new Map<string, WritingSectionLayoutSnapshot>()
+    if (grid) {
+      for (const element of grid.querySelectorAll<HTMLElement>('[data-writing-section-id]')) {
+        const id = element.dataset.writingSectionId
+        if (!id) continue
+        const rect = element.getBoundingClientRect()
+        snapshot.set(id, {
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height,
+        })
+      }
+    }
+    writingSectionLayoutSnapshotRef.current = snapshot.size > 0 ? snapshot : null
+    setWritingSections((current) => current.map((item) => (item.id === sectionId ? { ...item, width } : item)))
+  }
+
+  const renderInsertPhraseDesign = () => (
+    <div className="snippet-advanced-design-content">
+      <div className="snippet-phrase-field">
+        <div className="snippet-phrase-head">
+          <div>
+            <span className="snippet-section-label">{tx('profile.insertPhraseName')}</span>
+            <p className="snippet-section-hint">
+              {format(tx('profile.insertPhraseNameHint'), {
+                primary: primaryLabel,
+                secondary: secondaryLabel,
+              })}
+            </p>
+          </div>
+        </div>
+        <div className="snippet-phrase-grid snippet-insert-middle-grid">
+          <label className="snippet-insert-middle">
+            <span>{format(tx('profile.bilingualLabel'), { language: primaryLabel })}</span>
+            <input
+              value={phraseMiddlePrimary}
+              onChange={(event) => setPhraseMiddlePrimary(event.target.value)}
+              placeholder={format(tx('profile.insertPhraseNamePlaceholderLang'), { language: primaryLabel })}
+              aria-label={format(tx('profile.bilingualLabel'), {
+                language: primaryLabel,
+              })}
+              maxLength={120}
+            />
+          </label>
+          <label className="snippet-insert-middle">
+            <span>
+              {format(tx('profile.bilingualLabel'), {
+                language: secondaryLabel,
+              })}
+            </span>
+            <input
+              value={phraseMiddleSecondary}
+              onChange={(event) => setPhraseMiddleSecondary(event.target.value)}
+              placeholder={format(tx('profile.insertPhraseNamePlaceholderLang'), { language: secondaryLabel })}
+              aria-label={format(tx('profile.bilingualLabel'), {
+                language: secondaryLabel,
+              })}
+              maxLength={120}
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="snippet-phrase-preview">
+        <span className="snippet-section-label">{tx('profile.snippetPhrasePreviewTitle')}</span>
+        <div className="snippet-phrase-preview-grid">
+          <div className="snippet-template-preview">
+            <span>{primaryLabel}</span>
+            <p>{phrasePreview('primary')}</p>
+          </div>
+          <div className="snippet-template-preview">
+            <span>{secondaryLabel}</span>
+            <p>{phrasePreview('secondary')}</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+
+  const buildAssetInput = (): ProfileAssetInput => {
     const hasFiles = attachmentsEnabled && Boolean(asset ? (asset.attachments?.length ?? 0) : pendingFiles.length)
+    const parsedPageLimit = Number.parseInt(pageLimit, 10)
+    const writingBrief: ProfileWritingBrief = {
+      ...(asset?.writingBrief ?? {}),
+      requirements: requirements.trim(),
+      sourceUrl: requirementsSourceUrl.trim(),
+      wordLimit: activeWordLimit,
+      pageLimit: Number.isFinite(parsedPageLimit) && parsedPageLimit > 0 ? parsedPageLimit : undefined,
+      customFields: legacyBriefFields.map((field) => ({ ...field })),
+      sections: writingSections
+        .map<ProfileWritingSection>((section) => ({
+          ...section,
+          title: section.title.trim(),
+          content: section.content.trim(),
+          width: section.width === 'half' ? 'half' : 'full',
+        }))
+        .filter((section) => section.title || section.content),
+    }
     // Free library name + dual insert-phrase middles (primary → En slot, secondary → Zh slot).
-    const input: ProfileAssetInput = {
+    return {
       name: resolvedName,
       kind,
       description: content.trim(),
       notes: notes.trim(),
+      writingBrief: writingBriefHasContent(writingBrief) || asset?.writingBrief ? writingBrief : undefined,
       customLabelEn: resolvedPhrasePrimary || resolvedName,
       customLabelZh: resolvedPhraseSecondary || resolvedName,
       icon,
@@ -439,25 +919,103 @@ export function SnippetEditorDialog({
       uploadReserved: attachmentsEnabled && !hasFiles ? uploadReservationEnabled : false,
       allowedFileTypes: attachmentsEnabled ? uploadAllowedTypes : undefined,
     }
-    if (asset) {
-      onUpdate(asset.id, input)
-    } else {
-      const files = attachmentsEnabled
-        ? pendingFiles.map((pending) => createRenamedFile(pending.file, pending.name))
-        : []
-      void Promise.resolve(onCreate(input, files))
+  }
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!resolvedName || saving) return
+    const input = buildAssetInput()
+    mutationInFlightRef.current = true
+    setSaving(true)
+    try {
+      if (asset) {
+        await Promise.resolve(onUpdate(asset.id, input))
+      } else {
+        const files = attachmentsEnabled
+          ? pendingFiles.map((pending) => createRenamedFile(pending.file, pending.name))
+          : []
+        await Promise.resolve(onCreate(input, files))
+      }
+      // The awaited create/update is the durable acknowledgement; close only
+      // after that point, while the request is still marked busy.
+      baselineDraftSignatureRef.current = authoredDraftSignature
+      requestClose()
+    } catch {
+      // Keep the editor open when persistence fails so the draft remains
+      // available for retry; the parent owns the localized error toast.
+    } finally {
+      mutationInFlightRef.current = false
+      setSaving(false)
     }
-    requestClose()
+  }
+
+  const handleExport = async (format: 'pdf' | 'word') => {
+    if (!asset || !onExport || exportingFormat || !resolvedName) return
+    mutationInFlightRef.current = true
+    setExportingFormat(format)
+    setExportComplete(null)
+    try {
+      await Promise.resolve(onUpdate(asset.id, buildAssetInput()))
+      baselineDraftSignatureRef.current = authoredDraftSignature
+      await Promise.resolve(onExport(asset.id, format))
+      setExportComplete(format)
+    } catch {
+      // The parent owns the localized error notification. Keep the editor
+      // mounted so the user can retry the export after a failed save/request.
+    } finally {
+      mutationInFlightRef.current = false
+      setExportingFormat(null)
+    }
+  }
+
+  const handleDeleteFile = async (fileId: string) => {
+    if (!asset || deletingFileId) return
+    setDeletingFileId(fileId)
+    try {
+      await Promise.resolve(onDeleteFile(asset.id, fileId))
+    } catch {
+      // Keep the attachment row available for another attempt.
+    } finally {
+      setDeletingFileId(null)
+    }
+  }
+
+  const handleCreateShare = async () => {
+    if (!asset || shareSubmitting) return
+    setShareSubmitting('create')
+    try {
+      await Promise.resolve(onCreateShare(asset.id, shareExpiry, shareNote.trim()))
+      setShareNote('')
+      setShowShareForm(false)
+    } catch {
+      // Keep the form and note intact so a failed share can be retried.
+    } finally {
+      setShareSubmitting(null)
+    }
+  }
+
+  const handleRevokeShare = async (shareId: string) => {
+    if (!asset || shareSubmitting) return
+    setShareSubmitting(shareId)
+    try {
+      await Promise.resolve(onRevokeShare(asset.id, shareId))
+    } catch {
+      // The parent owns the error notification; the share remains visible.
+    } finally {
+      setShareSubmitting(null)
+    }
   }
 
   const handlePickFiles = async (files: File[]) => {
     if (files.length === 0) return
     const rejected = files.filter((file) => !fileMatchesAllowedTypes(file, effectiveUploadAllowedTypes))
     if (rejected.length > 0) {
-      setUploadTypeError(format(tx('dossier.uploadTypeRejected'), {
-        count: rejected.length,
-        types: allowedFileTypesLabel(uploadAllowedTypes, tx('dossier.fileTypeAny')),
-      }))
+      setUploadTypeError(
+        format(tx('dossier.uploadTypeRejected'), {
+          count: rejected.length,
+          types: allowedFileTypesLabel(uploadAllowedTypes, tx('dossier.fileTypeAny')),
+        }),
+      )
       return
     }
     setUploadTypeError('')
@@ -466,6 +1024,9 @@ export function SnippetEditorDialog({
       try {
         await Promise.resolve(onUploadFiles(asset.id, files))
         setUploadReservationEnabled(false)
+      } catch {
+        // The parent reports the server error. Keep the reservation and editor
+        // mounted so the same files can be selected again after the failure.
       } finally {
         setUploadingFiles(false)
       }
@@ -497,21 +1058,31 @@ export function SnippetEditorDialog({
     setRenameValue('')
   }
 
-  const commitRename = () => {
-    if (!renamingFileId) return
+  const commitRename = async () => {
+    if (!renamingFileId || renamingSubmitting) return
     const nextName = renameValue.trim()
     const attachment = (asset?.attachments ?? []).find((item) => item.fileId === renamingFileId)
     if (attachment && asset) {
       if (nextName && nextName !== attachment.fileName) {
-        onRenameFile(asset.id, attachment.fileId, nextName)
+        setRenamingSubmitting(true)
+        try {
+          await Promise.resolve(onRenameFile(asset.id, attachment.fileId, nextName))
+          cancelRename()
+        } catch {
+          // Keep the inline editor open for another attempt; the parent owns
+          // the localized error notification.
+        } finally {
+          setRenamingSubmitting(false)
+        }
+      } else {
+        cancelRename()
       }
-      cancelRename()
       return
     }
     if (nextName) {
-      setPendingFiles((current) => current.map((item) => (
-        item.id === renamingFileId ? { ...item, name: nextName } : item
-      )))
+      setPendingFiles((current) =>
+        current.map((item) => (item.id === renamingFileId ? { ...item, name: nextName } : item)),
+      )
     }
     cancelRename()
   }
@@ -524,502 +1095,742 @@ export function SnippetEditorDialog({
 
   return (
     <ModalPortal>
-      <div className={`dialog-layer profile-library-layer${exiting ? ' exiting' : ''}`} onClick={(event) => { if (event.target === event.currentTarget) requestClose() }}>
-      <section
-        ref={dialogRef}
-        className="new-dialog profile-library-dialog snippet-editor-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label={dialogTitle}
+      <div
+        className={`dialog-layer profile-library-layer${exiting ? ' exiting' : ''}`}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) requestEditorClose()
+        }}
       >
-        <div className={`dialog-head${headerAccessory ? ' has-accessory' : ''}`}>
-          <div className="snippet-editor-heading">
-            <span className="eyebrow">{tx('profile.eyebrow')}</span>
-            <h2>{dialogTitle}</h2>
-            {contextLabel ? <p className="snippet-editor-context">{contextLabel}</p> : null}
-          </div>
-          {headerAccessory ? (
-            <div className="snippet-editor-head-accessory">
-              {headerAccessory}
+        <section
+          ref={dialogRef}
+          className="new-dialog profile-library-dialog snippet-editor-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label={dialogTitle}
+        >
+          <div className={`dialog-head${headerAccessory ? ' has-accessory' : ''}`}>
+            <div className="snippet-editor-heading">
+              <span className="eyebrow">{tx('profile.eyebrow')}</span>
+              <h2>{dialogTitle}</h2>
+              {contextLabel ? <p className="snippet-editor-context">{contextLabel}</p> : null}
             </div>
-          ) : null}
-          <button type="button" className="icon-action snippet-editor-close-action" onClick={() => requestClose()} aria-label={tx('close')}>
-            <X size={16} aria-hidden="true" />
-          </button>
-        </div>
-
-        <form className="snippet-editor-form" onSubmit={handleSubmit}>
-          <div className="snippet-identity-row">
-            <ProfileAppearancePicker
-              icon={icon}
-              color={color}
-              onIconChange={setIcon}
-              onColorChange={setColor}
-              triggerClassName="snippet-identity-icon-trigger"
-              iconSize={18}
-            />
-            <label className="snippet-identity-name">
-              <span className="sr-only">{tx('profile.snippetName')}</span>
-              <input
-                ref={nameRef}
-                required
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder={tx('profile.snippetNamePlaceholder')}
-                aria-label={tx('profile.snippetName')}
-                maxLength={200}
-              />
-            </label>
-          </div>
-
-          {showKindPicker ? (
-            <div className="snippet-preset-row" role="group" aria-label={tx('profile.presetsTitle')}>
-              <span className="snippet-preset-row-label">{tx('profile.presetsTitle')}</span>
-              <div className="snippet-preset-chips">
-                {PROFILE_PRESET_KINDS.map((preset) => (
-                  <button
-                    key={preset.kind}
-                    type="button"
-                    className={`snippet-preset-chip ${kind === preset.kind ? 'active' : ''}`}
-                    onClick={() => {
-                      applyPreset(preset.kind)
-                    }}
-                  >
-                    {tx(preset.labelKey)}
-                  </button>
-                ))}
-                {customPresets.map((preset) => {
-                  const display = profilePresetText(preset, lang, pair)
-                  return (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      className={`snippet-preset-chip ${selectedCustomPresetId === preset.id ? 'active' : ''}`}
-                      onClick={() => applyCustomPreset(preset)}
-                    >
-                      {display.name}
-                    </button>
-                  )
-                })}
-                <button
-                  type="button"
-                  className={`snippet-preset-chip ${isCustomKind && !selectedCustomPresetId ? 'active' : ''}`}
-                  onClick={applyCustomKind}
-                >
-                  {tx('profile.presetCustom')}
-                </button>
-              </div>
-            </div>
-          ) : null}
-
-          <div className={`snippet-content-field${showContentHint ? ' has-preset-hint' : ''}`}>
-            <span className="snippet-section-label">{tx('profile.snippetContent')}</span>
-            <div className={`snippet-content-shell${showContentHint ? ' showing-hint' : ''}`}>
-              {showContentHint ? (
-                <div className="snippet-content-hint" aria-hidden="true">
-                  <pre className="snippet-content-hint-body">{contentHint}</pre>
-                </div>
-              ) : null}
-              <MarkdownTextarea
-                value={content}
-                onChange={(event) => setContent(event.target.value)}
-                placeholder={showContentHint ? '' : tx('profile.snippetContentPlaceholder')}
-                rows={8}
-                aria-label={tx('profile.snippetContent')}
-                className={showContentHint ? 'snippet-content-editor-over-hint' : ''}
-              />
-            </div>
-          </div>
-
-          <label className="snippet-notes-field">
-            <span className="snippet-section-label">{tx('profile.notes')}</span>
-            <MarkdownTextarea
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
-              placeholder={tx('profile.notesPlaceholder')}
-              rows={2}
-            />
-          </label>
-
-          {/* Insert phrase belongs with the reusable text, before any file attachments. */}
-          <div className="snippet-phrase-field">
-            <div className="snippet-phrase-head">
-              <div>
-                <span className="snippet-section-label">{tx('profile.insertPhraseName')}</span>
-                <p className="snippet-section-hint">
-                  {format(tx('profile.insertPhraseNameHint'), {
-                    primary: primaryLabel,
-                    secondary: secondaryLabel,
-                  })}
-                </p>
-              </div>
-            </div>
-            <div className="snippet-phrase-grid snippet-insert-middle-grid">
-              <label className="snippet-insert-middle">
-                <span>{format(tx('profile.bilingualLabel'), { language: primaryLabel })}</span>
-                <input
-                  value={phraseMiddlePrimary}
-                  onChange={(event) => setPhraseMiddlePrimary(event.target.value)}
-                  placeholder={format(tx('profile.insertPhraseNamePlaceholderLang'), { language: primaryLabel })}
-                  aria-label={format(tx('profile.bilingualLabel'), { language: primaryLabel })}
-                  maxLength={120}
-                />
-              </label>
-              <label className="snippet-insert-middle">
-                <span>{format(tx('profile.bilingualLabel'), { language: secondaryLabel })}</span>
-                <input
-                  value={phraseMiddleSecondary}
-                  onChange={(event) => setPhraseMiddleSecondary(event.target.value)}
-                  placeholder={format(tx('profile.insertPhraseNamePlaceholderLang'), { language: secondaryLabel })}
-                  aria-label={format(tx('profile.bilingualLabel'), { language: secondaryLabel })}
-                  maxLength={120}
-                />
-              </label>
-            </div>
-          </div>
-
-          <div className="snippet-phrase-preview">
-            <span className="snippet-section-label">{tx('profile.snippetPhrasePreviewTitle')}</span>
-            <div className="snippet-phrase-preview-grid">
-              <div className="snippet-template-preview">
-                <span>{primaryLabel}</span>
-                <p>{phrasePreview('primary')}</p>
-              </div>
-              <div className="snippet-template-preview">
-                <span>{secondaryLabel}</span>
-                <p>{phrasePreview('secondary')}</p>
-              </div>
-            </div>
-          </div>
-
-          {attachmentsEnabled ? (
-          <div className="snippet-attachments-section">
-            <div className="snippet-section-head">
-              <span className="snippet-section-label">{tx('profile.attachments')}</span>
-            </div>
-
-            <FileDropzone
-              key={effectiveUploadAllowedTypes.join('|')}
-              className="snippet-file-dropzone"
-              compact
-              title={uploadingFiles ? tx('working') : tx('profile.uploadFiles')}
-              allowedTypes={effectiveUploadAllowedTypes}
-              maxFileSize={MAX_UPLOAD_FILE_SIZE}
-              maxFiles={MAX_UPLOAD_FILES_PER_BATCH}
-              existingFileCount={asset ? 0 : pendingFiles.length}
-              disabled={uploadingFiles}
-              onFiles={handlePickFiles}
-            />
-
-            <label className={`checklist-reservation-toggle snippet-reservation-toggle${uploadReservationEnabled ? ' active' : ''}`}>
-              <input
-                type="checkbox"
-                checked={uploadReservationEnabled}
-                onChange={(event) => setUploadReservationEnabled(event.target.checked)}
-              />
-              <span className="checklist-reservation-check" aria-hidden="true">
-                <span className={`snippet-reservation-icon${uploadReservationEnabled ? ' is-on' : ''}`}>
-                  {uploadReservationEnabled ? <CheckCircle2 size={14} /> : <UploadCloud size={13} />}
-                </span>
-              </span>
-              <span>
-                <strong>
-                  {tx('profile.reserveUpload')}
-                  <em className="snippet-reservation-status" data-on={uploadReservationEnabled ? 'true' : 'false'}>
-                    {uploadReservationEnabled ? tx('profile.uploadReservationOn') : tx('profile.uploadReservationOff')}
-                  </em>
-                </strong>
-                <small>{tx('profile.reserveUploadHint')}</small>
-              </span>
-            </label>
-
-            <CollapsiblePanel
-              open={uploadReservationEnabled}
-              className="snippet-upload-types-collapse"
-              openMs={280}
-              closeMs={220}
-              keepMounted
+            {headerAccessory ? <div className="snippet-editor-head-accessory">{headerAccessory}</div> : null}
+            <button
+              type="button"
+              className="icon-action snippet-editor-close-action"
+              onClick={requestEditorClose}
+              disabled={saving || uploadingFiles || renamingSubmitting || deletingFileId !== null || shareSubmitting !== null}
+              aria-label={tx('close')}
             >
-              <div className="checklist-upload-section snippet-upload-types">
-                <div className="checklist-upload-section-head">
-                  <span>{tx('dossier.allowedFileTypes')}</span>
-                  <button
-                    type="button"
-                    className={`checklist-offset-chip ${uploadAllowedPresetIds.length === 0 && !uploadCustomTypes.trim() ? 'active' : ''}`}
-                    onClick={() => {
-                      setUploadAllowedPresetIds([])
-                      setUploadCustomTypes('')
-                      setUploadTypeError('')
-                    }}
-                  >
-                    {tx('dossier.fileTypeAny')}
-                  </button>
-                </div>
-                <div className="checklist-menu-chips">
-                  {uploadTypePresets.map((preset) => {
-                    const title = preset.custom
-                      ? tx('dossier.customFileTypesHint')
-                      : format(tx('dossier.fileTypePresetHint'), { types: preset.accept.join(', ') })
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+
+          <form className="snippet-editor-form" onSubmit={handleSubmit}>
+            <div ref={formScrollRef} className="snippet-editor-scroll">
+            <div className="snippet-identity-row">
+              <ProfileAppearancePicker
+                icon={icon}
+                color={color}
+                onIconChange={setIcon}
+                onColorChange={setColor}
+                triggerClassName="snippet-identity-icon-trigger"
+                iconSize={18}
+              />
+              <label className="snippet-identity-name">
+                <span className="sr-only">{tx('profile.snippetName')}</span>
+                <input
+                  ref={nameRef}
+                  required
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder={tx('profile.snippetNamePlaceholder')}
+                  aria-label={tx('profile.snippetName')}
+                  maxLength={200}
+                />
+              </label>
+            </div>
+
+            {showKindPicker ? (
+              <div className="snippet-preset-row" role="group" aria-label={tx('profile.presetsTitle')}>
+                <span className="snippet-preset-row-label">{tx('profile.presetsTitle')}</span>
+                <div className="snippet-preset-chips">
+                  {PROFILE_PRESET_KINDS.map((preset) => (
+                    <button
+                      key={preset.kind}
+                      type="button"
+                      className={`snippet-preset-chip ${kind === preset.kind ? 'active' : ''}`}
+                      onClick={() => {
+                        applyPreset(preset.kind)
+                      }}
+                    >
+                      {tx(preset.labelKey)}
+                    </button>
+                  ))}
+                  {customPresets.map((preset) => {
+                    const display = profilePresetText(preset, lang, pair)
                     return (
                       <button
                         key={preset.id}
                         type="button"
-                        className={`checklist-offset-chip ${uploadAllowedPresetIds.includes(preset.id) ? 'active' : ''}`}
-                        onClick={() => toggleUploadPreset(preset.id)}
-                        title={title}
+                        className={`snippet-preset-chip ${selectedCustomPresetId === preset.id ? 'active' : ''}`}
+                        onClick={() => applyCustomPreset(preset)}
                       >
-                        {tx(preset.labelKey)}
+                        {display.name}
                       </button>
                     )
                   })}
+                  <button
+                    type="button"
+                    className={`snippet-preset-chip ${isCustomKind && !selectedCustomPresetId ? 'active' : ''}`}
+                    onClick={applyCustomKind}
+                  >
+                    {tx('profile.presetCustom')}
+                  </button>
                 </div>
+              </div>
+            ) : null}
+
+            {showWritingBrief ? (
+              <div className="snippet-writing-requirements-field">
+                <span className="snippet-section-label snippet-private-label">
+                  <LockKeyhole size={11} aria-hidden="true" /> {tx('profile.writingBrief')}
+                </span>
+                <MarkdownTextarea
+                  value={requirements}
+                  onChange={(event) => setRequirements(event.target.value)}
+                  placeholder={requirementsHint || tx('profile.officialRequirementsPlaceholder')}
+                  aria-label={tx('profile.writingBrief')}
+                  rows={4}
+                  maxLength={12000}
+                />
+              </div>
+            ) : null}
+
+            <div className={`snippet-content-field${showContentHint ? ' has-preset-hint' : ''}`}>
+              <div className="snippet-content-head">
+                <span className="snippet-section-label">{tx('profile.snippetContent')}</span>
+                <div className="snippet-content-meta">
+                  <span className="snippet-word-count">
+                    {format(tx('profile.wordCount'), {
+                      count: documentWordCount,
+                    })}
+                  </span>
+                  {asset && onExport ? (
+                    <span className="snippet-export-actions" aria-label={tx('profile.exportDocument')}>
+                      {(['pdf', 'word'] as const).map((formatName) => {
+                        const done = exportComplete === formatName
+                        const pending = exportingFormat === formatName
+                        return (
+                          <button
+                            key={formatName}
+                            type="button"
+                            className={`quiet-action compact-action snippet-export-action${done ? ' is-complete' : ''}`}
+                            onClick={() => void handleExport(formatName)}
+                            disabled={Boolean(exportingFormat) || !content.trim()}
+                            aria-busy={pending || undefined}
+                          >
+                            {done ? <Check size={12} aria-hidden="true" /> : <FileDown size={12} aria-hidden="true" />}
+                            {pending
+                              ? tx('profile.exporting')
+                              : tx(formatName === 'pdf' ? 'profile.exportPdf' : 'profile.exportWord')}
+                          </button>
+                        )
+                      })}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+              <div className={`snippet-content-shell${showContentHint ? ' showing-hint' : ''}`}>
+                {showContentHint ? (
+                  <div className="snippet-content-hint" aria-hidden="true">
+                    <pre className="snippet-content-hint-body">{contentHint}</pre>
+                  </div>
+                ) : null}
+                <MarkdownTextarea
+                  value={content}
+                  onChange={(event) => setContent(event.target.value)}
+                  placeholder={showContentHint ? '' : tx('profile.snippetContentPlaceholder')}
+                  rows={8}
+                  aria-label={tx('profile.snippetContent')}
+                  className={showContentHint ? 'snippet-content-editor-over-hint' : ''}
+                />
+              </div>
+            </div>
+
+            <div className="snippet-notes-field">
+              <span className="snippet-section-label snippet-private-label">
+                <LockKeyhole size={11} aria-hidden="true" /> {tx('profile.notes')}
+              </span>
+              <MarkdownTextarea
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                placeholder={tx('profile.notesPlaceholder')}
+                aria-label={tx('profile.notes')}
+                rows={2}
+              />
+            </div>
+
+            {writingSections.length > 0 ? (
+              <div ref={writingSectionGridRef} className="snippet-writing-section-grid">
+                {writingSections.map((section, index) => {
+                  const width = section.width === 'half' ? 'half' : 'full'
+                  return (
+                    <section
+                      key={section.id}
+                      className={`snippet-writing-section width-${width}`}
+                      data-writing-section-id={section.id}
+                    >
+                      <div className="snippet-writing-section-head">
+                        <input
+                          value={section.title}
+                          onChange={(event) =>
+                            setWritingSections((current) =>
+                              current.map((item) =>
+                                item.id === section.id ? { ...item, title: event.target.value } : item,
+                              ),
+                            )
+                          }
+                          placeholder={tx('profile.sectionTitlePlaceholder')}
+                          aria-label={format(tx('profile.sectionTitleLabel'), {
+                            count: index + 1,
+                          })}
+                          maxLength={160}
+                        />
+                        <div className="snippet-writing-section-tools">
+                          <div
+                            className={`snippet-writing-section-layout is-${width}`}
+                            role="radiogroup"
+                            aria-label={format(tx('profile.sectionLayoutLabel'), { count: index + 1 })}
+                          >
+                            {(['full', 'half'] as const).map((nextWidth) => {
+                              const LayoutIcon = nextWidth === 'full' ? Rows2 : Columns2
+                              const label = tx(
+                                nextWidth === 'full' ? 'profile.sectionSingleColumn' : 'profile.sectionTwoColumns',
+                              )
+                              return (
+                                <button
+                                  key={nextWidth}
+                                  type="button"
+                                  className={width === nextWidth ? 'active' : ''}
+                                  onClick={() => {
+                                    if (width !== nextWidth) updateWritingSectionWidth(section.id, nextWidth)
+                                  }}
+                                  role="radio"
+                                  aria-checked={width === nextWidth}
+                                  aria-label={label}
+                                  title={label}
+                                >
+                                  <LayoutIcon size={12} aria-hidden="true" />
+                                </button>
+                              )
+                            })}
+                          </div>
+                          <button
+                            type="button"
+                            className="icon-action snippet-writing-section-remove"
+                            title={tx('profile.removeSection')}
+                            aria-label={format(tx('profile.removeSectionLabel'), { count: index + 1 })}
+                            onClick={() =>
+                              setWritingSections((current) => current.filter((item) => item.id !== section.id))
+                            }
+                          >
+                            <Trash2 size={12} aria-hidden="true" />
+                          </button>
+                        </div>
+                      </div>
+                      <MarkdownTextarea
+                        value={section.content}
+                        onChange={(event) =>
+                          setWritingSections((current) =>
+                            current.map((item) =>
+                              item.id === section.id ? { ...item, content: event.target.value } : item,
+                            ),
+                          )
+                        }
+                        placeholder={tx('profile.sectionContentPlaceholder')}
+                        aria-label={format(tx('profile.sectionContentLabel'), {
+                          count: index + 1,
+                        })}
+                        rows={width === 'half' ? 3 : 4}
+                        maxLength={12000}
+                      />
+                    </section>
+                  )
+                })}
+              </div>
+            ) : null}
+
+            <div className={`snippet-writing-section-add${sectionAddOpen ? ' open' : ''}`}>
+              <button
+                type="button"
+                className="quiet-action snippet-writing-section-add-trigger"
+                onClick={() => setSectionAddOpen((current) => !current)}
+                aria-expanded={sectionAddOpen}
+                aria-controls="snippet-writing-section-layouts"
+                disabled={writingSections.length >= 20}
+              >
+                <Plus size={13} aria-hidden="true" />
+                <span>{tx('profile.addSection')}</span>
+                <ChevronDown size={12} aria-hidden="true" />
+              </button>
+              <CollapsiblePanel
+                id="snippet-writing-section-layouts"
+                open={sectionAddOpen}
+                className="snippet-writing-section-add-collapse"
+                openMs={220}
+                closeMs={170}
+              >
+                <div
+                  className="snippet-writing-section-layout-options"
+                  role="group"
+                  aria-label={tx('profile.sectionLayout')}
+                >
+                  <button type="button" onClick={() => addWritingSection('full')}>
+                    <Rows2 size={14} aria-hidden="true" />
+                    <span>{tx('profile.sectionSingleColumn')}</span>
+                  </button>
+                  <button type="button" onClick={() => addWritingSection('half')}>
+                    <Columns2 size={14} aria-hidden="true" />
+                    <span>{tx('profile.sectionTwoColumns')}</span>
+                  </button>
+                </div>
+              </CollapsiblePanel>
+            </div>
+
+            {!advancedDesignDeferred ? (
+              <CollapsiblePanel
+                id="snippet-advanced-design"
+                open={advancedDesignOpen}
+                className="snippet-advanced-design-collapse"
+                openMs={320}
+                closeMs={240}
+              >
+                {renderInsertPhraseDesign()}
+              </CollapsiblePanel>
+            ) : null}
+
+            {attachmentsEnabled ? (
+              <div className="snippet-attachments-section">
+                <div className="snippet-section-head">
+                  <span className="snippet-section-label">{tx('profile.attachments')}</span>
+                </div>
+
+                <FileDropzone
+                  key={effectiveUploadAllowedTypes.join('|')}
+                  className="snippet-file-dropzone"
+                  compact
+                  title={uploadingFiles ? tx('working') : tx('profile.uploadFiles')}
+                  allowedTypes={effectiveUploadAllowedTypes}
+                  maxFileSize={MAX_UPLOAD_FILE_SIZE}
+                  maxFiles={MAX_UPLOAD_FILES_PER_BATCH}
+                  existingFileCount={asset ? 0 : pendingFiles.length}
+                  disabled={uploadingFiles}
+                  onFiles={handlePickFiles}
+                />
+
+                <label
+                  className={`checklist-reservation-toggle snippet-reservation-toggle${uploadReservationEnabled ? ' active' : ''}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={uploadReservationEnabled}
+                    onChange={(event) => setUploadReservationEnabled(event.target.checked)}
+                  />
+                  <span className="checklist-reservation-check" aria-hidden="true">
+                    <span className={`snippet-reservation-icon${uploadReservationEnabled ? ' is-on' : ''}`}>
+                      {uploadReservationEnabled ? <CheckCircle2 size={14} /> : <UploadCloud size={13} />}
+                    </span>
+                  </span>
+                  <span>
+                    <strong>
+                      {tx('profile.reserveUpload')}
+                      <em className="snippet-reservation-status" data-on={uploadReservationEnabled ? 'true' : 'false'}>
+                        {uploadReservationEnabled
+                          ? tx('profile.uploadReservationOn')
+                          : tx('profile.uploadReservationOff')}
+                      </em>
+                    </strong>
+                    <small>{tx('profile.reserveUploadHint')}</small>
+                  </span>
+                </label>
+
                 <CollapsiblePanel
-                  open={uploadCustomTypesOpen}
-                  className="checklist-upload-custom-collapse"
-                  innerClassName="checklist-upload-custom-inner"
+                  open={uploadReservationEnabled}
+                  className="snippet-upload-types-collapse"
+                  openMs={280}
+                  closeMs={220}
                   keepMounted
                 >
-                  <label className="checklist-menu-field">
-                    <span>{tx('dossier.customFileTypes')}</span>
-                    <input
-                      value={uploadCustomTypes}
-                      onChange={(event) => {
-                        setUploadCustomTypes(event.target.value)
-                        setUploadTypeError('')
-                      }}
-                      placeholder={tx('dossier.customFileTypesPlaceholder')}
-                      aria-label={tx('dossier.customFileTypes')}
-                    />
-                    <small>{tx('dossier.customFileTypesHint')}</small>
-                  </label>
+                  <div className="checklist-upload-section snippet-upload-types">
+                    <div className="checklist-upload-section-head">
+                      <span>{tx('dossier.allowedFileTypes')}</span>
+                      <button
+                        type="button"
+                        className={`checklist-offset-chip ${uploadAllowedPresetIds.length === 0 && !uploadCustomTypes.trim() ? 'active' : ''}`}
+                        onClick={() => {
+                          setUploadAllowedPresetIds([])
+                          setUploadCustomTypes('')
+                          setUploadTypeError('')
+                        }}
+                      >
+                        {tx('dossier.fileTypeAny')}
+                      </button>
+                    </div>
+                    <div className="checklist-menu-chips">
+                      {uploadTypePresets.map((preset) => {
+                        const title = preset.custom
+                          ? tx('dossier.customFileTypesHint')
+                          : format(tx('dossier.fileTypePresetHint'), {
+                              types: preset.accept.join(', '),
+                            })
+                        return (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            className={`checklist-offset-chip ${uploadAllowedPresetIds.includes(preset.id) ? 'active' : ''}`}
+                            onClick={() => toggleUploadPreset(preset.id)}
+                            title={title}
+                          >
+                            {tx(preset.labelKey)}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    <CollapsiblePanel
+                      open={uploadCustomTypesOpen}
+                      className="checklist-upload-custom-collapse"
+                      innerClassName="checklist-upload-custom-inner"
+                      keepMounted
+                    >
+                      <label className="checklist-menu-field">
+                        <span>{tx('dossier.customFileTypes')}</span>
+                        <input
+                          value={uploadCustomTypes}
+                          onChange={(event) => {
+                            setUploadCustomTypes(event.target.value)
+                            setUploadTypeError('')
+                          }}
+                          placeholder={tx('dossier.customFileTypesPlaceholder')}
+                          aria-label={tx('dossier.customFileTypes')}
+                        />
+                        <small>{tx('dossier.customFileTypesHint')}</small>
+                      </label>
+                    </CollapsiblePanel>
+                    {uploadTypeError ? (
+                      <small className="checklist-upload-conflict">
+                        <AlertCircle size={11} aria-hidden="true" /> {uploadTypeError}
+                      </small>
+                    ) : null}
+                    {attachments.length === 0 && pendingFiles.length === 0 ? (
+                      <div className="snippet-reserved-banner">
+                        <UploadCloud size={13} aria-hidden="true" />
+                        <span>{tx('profile.uploadReservedHint')}</span>
+                      </div>
+                    ) : null}
+                  </div>
                 </CollapsiblePanel>
-                {uploadTypeError ? (
-                  <small className="checklist-upload-conflict">
-                    <AlertCircle size={11} aria-hidden="true" /> {uploadTypeError}
-                  </small>
+
+                <CollapsiblePanel
+                  open={Boolean(asset) && uploadReservationEnabled}
+                  className="snippet-share-upload-collapse"
+                  openMs={280}
+                  closeMs={220}
+                  keepMounted
+                >
+                  <div className="snippet-share-upload-row">
+                    <button
+                      type="button"
+                      className={`quiet-action${showShareForm ? ' active' : ''}`}
+                      onClick={() => setShowShareForm((current) => !current)}
+                      aria-expanded={showShareForm}
+                    >
+                      <ExternalLink size={13} aria-hidden="true" /> {tx('profile.shareUpload')}
+                    </button>
+                  </div>
+                </CollapsiblePanel>
+
+                <CollapsiblePanel
+                  open={Boolean(asset) && uploadReservationEnabled && showShareForm}
+                  className="snippet-share-form-collapse"
+                  openMs={280}
+                  closeMs={220}
+                >
+                  <div className="snippet-share-form">
+                    <Select
+                      size="small"
+                      value={shareExpiry}
+                      options={shareExpiryOptions.map((option) => ({
+                        value: option.value,
+                        label: tx(option.labelKey, option.fallback),
+                      }))}
+                      onChange={setShareExpiry}
+                    />
+                    <input
+                      value={shareNote}
+                      onChange={(event) => setShareNote(event.target.value)}
+                      placeholder={tx('profile.linkNotePlaceholder')}
+                    />
+                    <button
+                      type="button"
+                      className="secondary-action"
+                      onClick={() => void handleCreateShare()}
+                      disabled={shareSubmitting !== null}
+                    >
+                      <ExternalLink size={13} aria-hidden="true" /> {tx('profile.createLink')}
+                    </button>
+                  </div>
+                </CollapsiblePanel>
+
+                {attachments.length === 0 && pendingFiles.length === 0 && shares.length === 0 ? (
+                  <p
+                    className={`snippet-mini-empty${uploadReservationEnabled ? ' is-reserved-placeholder' : ''}`}
+                    aria-hidden={uploadReservationEnabled || undefined}
+                  >
+                    {tx('profile.noAttachments')}
+                  </p>
                 ) : null}
-                {attachments.length === 0 && pendingFiles.length === 0 ? (
-                  <div className="snippet-reserved-banner">
-                    <UploadCloud size={13} aria-hidden="true" />
-                    <span>{tx('profile.uploadReservedHint')}</span>
+
+                {attachments.length > 0 || pendingFiles.length > 0 ? (
+                  <div className="snippet-attachment-list">
+                    {attachments.map((attachment) => {
+                      const renaming = renamingFileId === attachment.fileId
+                      return (
+                        <div
+                          key={attachment.fileId}
+                          className={`snippet-attachment-row${renaming ? ' is-renaming' : ''}`}
+                        >
+                          <FileText size={14} className="snippet-attachment-icon" aria-hidden="true" />
+                          <div className="snippet-attachment-name-wrap">
+                            <button
+                              type="button"
+                              className="snippet-attachment-name"
+                              onDoubleClick={() => startRenameAttachment(attachment)}
+                              onClick={(event) => {
+                                if (event.detail >= 2) {
+                                  startRenameAttachment(attachment)
+                                  return
+                                }
+                                if (onLoadFile) setAttachmentPreview(attachment)
+                              }}
+                              title={
+                                onLoadFile
+                                  ? tx('filePreview.preview')
+                                  : tx('profile.renameFileHint', 'Double-click to rename')
+                              }
+                            >
+                              <span>{attachment.fileName}</span>
+                              {attachment.fileSize ? <em> · {formatFileSize(attachment.fileSize)}</em> : null}
+                            </button>
+                            <input
+                              ref={renaming ? renameInputRef : undefined}
+                              className="snippet-attachment-rename-input"
+                              value={renaming ? renameValue : attachment.fileName}
+                              onChange={(event) => setRenameValue(event.target.value)}
+                              onBlur={() => {
+                                if (renaming) void commitRename()
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault()
+                                  void commitRename()
+                                }
+                                if (event.key === 'Escape' && !renamingSubmitting) {
+                                  event.preventDefault()
+                                  cancelRename()
+                                }
+                              }}
+                              aria-label={tx('profile.renameFile')}
+                              tabIndex={renaming ? 0 : -1}
+                              disabled={renamingSubmitting}
+                            />
+                          </div>
+                          <div className="snippet-attachment-actions">
+                            {onLoadFile ? (
+                              <button
+                                type="button"
+                                className="icon-action"
+                                title={tx('filePreview.preview')}
+                                aria-label={tx('filePreview.preview')}
+                                onClick={() => setAttachmentPreview(attachment)}
+                              >
+                                <Eye size={12} aria-hidden="true" />
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              className={`icon-action${renaming ? ' active' : ''}`}
+                              title={tx('profile.renameFile')}
+                              onClick={() => (renaming ? void commitRename() : startRenameAttachment(attachment))}
+                              disabled={renamingSubmitting}
+                            >
+                              <Pencil size={12} aria-hidden="true" />
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-action"
+                              title={tx('profile.download')}
+                              onClick={() => onDownloadFile(attachment.fileId, attachment.fileName)}
+                            >
+                              <Download size={12} aria-hidden="true" />
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-action"
+                              title={tx('profile.deleteFile')}
+                              onClick={() => void handleDeleteFile(attachment.fileId)}
+                              disabled={deletingFileId !== null || shareSubmitting !== null}
+                            >
+                              <Trash2 size={12} aria-hidden="true" />
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {pendingFiles.map((pending) => {
+                      const renaming = renamingFileId === pending.id
+                      return (
+                        <div
+                          key={pending.id}
+                          className={`snippet-attachment-row pending${renaming ? ' is-renaming' : ''}`}
+                        >
+                          <FileText size={14} className="snippet-attachment-icon" aria-hidden="true" />
+                          <div className="snippet-attachment-name-wrap">
+                            <button
+                              type="button"
+                              className="snippet-attachment-name"
+                              onClick={() => startRenamePending(pending)}
+                              title={tx('profile.renameFile')}
+                            >
+                              <span>{pending.name}</span>
+                              <em>
+                                {' '}
+                                · {formatFileSize(pending.file.size)} · {tx('profile.uploadPending')}
+                              </em>
+                            </button>
+                            <input
+                              ref={renaming ? renameInputRef : undefined}
+                              className="snippet-attachment-rename-input"
+                              value={renaming ? renameValue : pending.name}
+                              onChange={(event) => setRenameValue(event.target.value)}
+                              onBlur={() => {
+                                if (renaming) void commitRename()
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault()
+                                  void commitRename()
+                                }
+                                if (event.key === 'Escape' && !renamingSubmitting) {
+                                  event.preventDefault()
+                                  cancelRename()
+                                }
+                              }}
+                              aria-label={tx('profile.renameFile')}
+                              tabIndex={renaming ? 0 : -1}
+                              disabled={renamingSubmitting}
+                            />
+                          </div>
+                          <div className="snippet-attachment-actions">
+                            <button
+                              type="button"
+                              className={`icon-action${renaming ? ' active' : ''}`}
+                              title={tx('profile.renameFile')}
+                              onClick={() => (renaming ? void commitRename() : startRenamePending(pending))}
+                              disabled={renamingSubmitting}
+                            >
+                              <Pencil size={12} aria-hidden="true" />
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-action"
+                              title={tx('dossier.remove')}
+                              onClick={() =>
+                                setPendingFiles((current) => current.filter((item) => item.id !== pending.id))
+                              }
+                            >
+                              <X size={12} aria-hidden="true" />
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : null}
+
+                {shares.length > 0 ? (
+                  <div className="snippet-share-list">
+                    <span className="snippet-section-label">{tx('profile.shareUpload')}</span>
+                    {shares.map((share) => {
+                      const sharePath = share.url || `/asset-upload/${share.token}`
+                      const url = `${window.location.origin}${sharePath}`
+                      return (
+                        <div key={share.id} className="snippet-share-row">
+                          <code className="snippet-share-link">{sharePath}</code>
+                          <div className="snippet-attachment-actions">
+                            <CopyButton value={url} label={tx('profile.shareUpload')} />
+                            <button
+                              type="button"
+                              className="icon-action"
+                              title={tx('share.revoke')}
+                              onClick={() => void handleRevokeShare(share.id)}
+                              disabled={shareSubmitting !== null || deletingFileId !== null}
+                            >
+                              <Trash2 size={12} aria-hidden="true" />
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
                   </div>
                 ) : null}
               </div>
-            </CollapsiblePanel>
+            ) : null}
 
-            <CollapsiblePanel
-              open={Boolean(asset) && uploadReservationEnabled}
-              className="snippet-share-upload-collapse"
-              openMs={280}
-              closeMs={220}
-              keepMounted
-            >
-              <div className="snippet-share-upload-row">
-                <button
-                  type="button"
-                  className={`quiet-action${showShareForm ? ' active' : ''}`}
-                  onClick={() => setShowShareForm((current) => !current)}
-                  aria-expanded={showShareForm}
-                >
-                  <ExternalLink size={13} aria-hidden="true" /> {tx('profile.shareUpload')}
-                </button>
-              </div>
-            </CollapsiblePanel>
-
-            <CollapsiblePanel open={Boolean(asset) && uploadReservationEnabled && showShareForm} className="snippet-share-form-collapse" openMs={280} closeMs={220}>
-              <div className="snippet-share-form">
-                <Select
-                  size="small"
-                  value={shareExpiry}
-                  options={shareExpiryOptions.map((option) => ({ value: option.value, label: tx(option.labelKey, option.fallback) }))}
-                  onChange={setShareExpiry}
-                />
-                <input
-                  value={shareNote}
-                  onChange={(event) => setShareNote(event.target.value)}
-                  placeholder={tx('profile.linkNotePlaceholder')}
-                />
-                <button
-                  type="button"
-                  className="secondary-action"
-                  onClick={() => {
-                    if (!asset) return
-                    onCreateShare(asset.id, shareExpiry, shareNote.trim())
-                    setShareNote('')
-                    setShowShareForm(false)
-                  }}
-                >
-                  <ExternalLink size={13} aria-hidden="true" /> {tx('profile.createLink')}
-                </button>
-              </div>
-            </CollapsiblePanel>
-
-            {attachments.length === 0 && pendingFiles.length === 0 && shares.length === 0 ? (
-              <p
-                className={`snippet-mini-empty${uploadReservationEnabled ? ' is-reserved-placeholder' : ''}`}
-                aria-hidden={uploadReservationEnabled || undefined}
+            {advancedDesignDeferred ? (
+              <CollapsiblePanel
+                id="snippet-advanced-design"
+                open={advancedDesignOpen}
+                className="snippet-advanced-design-collapse is-deferred"
+                openMs={320}
+                closeMs={240}
               >
-                {tx('profile.noAttachments')}
-              </p>
+                {renderInsertPhraseDesign()}
+              </CollapsiblePanel>
             ) : null}
 
-            {attachments.length > 0 || pendingFiles.length > 0 ? (
-              <div className="snippet-attachment-list">
-                {attachments.map((attachment) => {
-                  const renaming = renamingFileId === attachment.fileId
-                  return (
-                    <div key={attachment.fileId} className={`snippet-attachment-row${renaming ? ' is-renaming' : ''}`}>
-                      <FileText size={14} className="snippet-attachment-icon" aria-hidden="true" />
-                      <div className="snippet-attachment-name-wrap">
-                        <button
-                          type="button"
-                          className="snippet-attachment-name"
-                          onDoubleClick={() => startRenameAttachment(attachment)}
-                          onClick={(event) => {
-                            if (event.detail >= 2) {
-                              startRenameAttachment(attachment)
-                              return
-                            }
-                            if (onLoadFile) setAttachmentPreview(attachment)
-                          }}
-                          title={onLoadFile ? tx('filePreview.preview') : tx('profile.renameFileHint', 'Double-click to rename')}
-                        >
-                          <span>{attachment.fileName}</span>
-                          {attachment.fileSize ? <em> · {formatFileSize(attachment.fileSize)}</em> : null}
-                        </button>
-                        <input
-                          ref={renaming ? renameInputRef : undefined}
-                          className="snippet-attachment-rename-input"
-                          value={renaming ? renameValue : attachment.fileName}
-                          onChange={(event) => setRenameValue(event.target.value)}
-                          onBlur={() => { if (renaming) commitRename() }}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') { event.preventDefault(); commitRename() }
-                            if (event.key === 'Escape') { event.preventDefault(); cancelRename() }
-                          }}
-                          aria-label={tx('profile.renameFile')}
-                          tabIndex={renaming ? 0 : -1}
-                        />
-                      </div>
-                      <div className="snippet-attachment-actions">
-                        {onLoadFile ? (
-                          <button
-                            type="button"
-                            className="icon-action"
-                            title={tx('filePreview.preview')}
-                            aria-label={tx('filePreview.preview')}
-                            onClick={() => setAttachmentPreview(attachment)}
-                          >
-                            <Eye size={12} aria-hidden="true" />
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          className={`icon-action${renaming ? ' active' : ''}`}
-                          title={tx('profile.renameFile')}
-                          onClick={() => (renaming ? commitRename() : startRenameAttachment(attachment))}
-                        >
-                          <Pencil size={12} aria-hidden="true" />
-                        </button>
-                        <button type="button" className="icon-action" title={tx('profile.download')} onClick={() => onDownloadFile(attachment.fileId, attachment.fileName)}>
-                          <Download size={12} aria-hidden="true" />
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-action"
-                          title={tx('profile.deleteFile')}
-                          onClick={() => asset && onDeleteFile(asset.id, attachment.fileId)}
-                        >
-                          <Trash2 size={12} aria-hidden="true" />
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
-                {pendingFiles.map((pending) => {
-                  const renaming = renamingFileId === pending.id
-                  return (
-                    <div key={pending.id} className={`snippet-attachment-row pending${renaming ? ' is-renaming' : ''}`}>
-                      <FileText size={14} className="snippet-attachment-icon" aria-hidden="true" />
-                      <div className="snippet-attachment-name-wrap">
-                        <button
-                          type="button"
-                          className="snippet-attachment-name"
-                          onClick={() => startRenamePending(pending)}
-                          title={tx('profile.renameFile')}
-                        >
-                          <span>{pending.name}</span>
-                          <em> · {formatFileSize(pending.file.size)} · {tx('profile.uploadPending')}</em>
-                        </button>
-                        <input
-                          ref={renaming ? renameInputRef : undefined}
-                          className="snippet-attachment-rename-input"
-                          value={renaming ? renameValue : pending.name}
-                          onChange={(event) => setRenameValue(event.target.value)}
-                          onBlur={() => { if (renaming) commitRename() }}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') { event.preventDefault(); commitRename() }
-                            if (event.key === 'Escape') { event.preventDefault(); cancelRename() }
-                          }}
-                          aria-label={tx('profile.renameFile')}
-                          tabIndex={renaming ? 0 : -1}
-                        />
-                      </div>
-                      <div className="snippet-attachment-actions">
-                        <button
-                          type="button"
-                          className={`icon-action${renaming ? ' active' : ''}`}
-                          title={tx('profile.renameFile')}
-                          onClick={() => (renaming ? commitRename() : startRenamePending(pending))}
-                        >
-                          <Pencil size={12} aria-hidden="true" />
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-action"
-                          title={tx('dossier.remove')}
-                          onClick={() => setPendingFiles((current) => current.filter((item) => item.id !== pending.id))}
-                        >
-                          <X size={12} aria-hidden="true" />
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
+            </div>
+
+            <div className="dialog-actions">
+              <button
+                type="button"
+                className={`quiet-action snippet-advanced-design-trigger${advancedDesignOpen ? ' is-open' : ''}`}
+                onClick={() => {
+                  setAdvancedDesignOpen((current) => {
+                    const next = !current
+                    advancedRevealRequestedRef.current = next
+                    return next
+                  })
+                }}
+                aria-expanded={advancedDesignOpen}
+                aria-controls="snippet-advanced-design"
+              >
+                <SlidersHorizontal size={13} aria-hidden="true" />
+                <span>{tx('profile.advancedSettings')}</span>
+                <ChevronDown size={12} aria-hidden="true" />
+              </button>
+              <div className="snippet-dialog-submit-actions">
+                <button type="button" className="secondary-action" onClick={requestEditorClose} disabled={saving || uploadingFiles || renamingSubmitting || deletingFileId !== null || shareSubmitting !== null}>
+                  {tx('cancel')}
+                </button>
+                <button type="submit" className="primary-action" disabled={!resolvedName || saving || uploadingFiles || renamingSubmitting || deletingFileId !== null || shareSubmitting !== null} aria-busy={saving || undefined}>
+                  <Save size={14} aria-hidden="true" />
+                  {tx('profile.saveSnippet')}
+                </button>
               </div>
-            ) : null}
-
-            {shares.length > 0 ? (
-              <div className="snippet-share-list">
-                <span className="snippet-section-label">{tx('profile.shareUpload')}</span>
-                {shares.map((share) => {
-                  const sharePath = share.url || `/asset-upload/${share.token}`
-                  const url = `${window.location.origin}${sharePath}`
-                  return (
-                    <div key={share.id} className="snippet-share-row">
-                      <code className="snippet-share-link">{sharePath}</code>
-                      <div className="snippet-attachment-actions">
-                        <CopyButton value={url} label={tx('profile.shareUpload')} />
-                        <button type="button" className="icon-action" title={tx('share.revoke')} onClick={() => asset && onRevokeShare(asset.id, share.id)}>
-                          <Trash2 size={12} aria-hidden="true" />
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            ) : null}
-          </div>
-          ) : null}
-
-          <div className="dialog-actions">
-            <button type="button" className="secondary-action" onClick={() => requestClose()}>{tx('cancel')}</button>
-            <button type="submit" className="primary-action" disabled={!resolvedName}>
-              <Save size={14} aria-hidden="true" /> {tx('profile.saveSnippet')}
-            </button>
-          </div>
-        </form>
-      </section>
+            </div>
+          </form>
+        </section>
       </div>
       {onLoadFile ? (
         <AttachmentPreviewDialog

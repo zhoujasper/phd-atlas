@@ -49,6 +49,8 @@ describe('KanbanBoard mobile rendering', () => {
     window.localStorage.removeItem('phd-atlas:application-pipeline-view:v1:team')
     window.localStorage.removeItem('phd-atlas:application-pipeline-sort:v1:personal')
     window.localStorage.removeItem('phd-atlas:application-pipeline-sort:v1:team')
+    window.localStorage.removeItem('phd-atlas-table-cols:application-pipeline-personal-v1')
+    window.localStorage.removeItem('phd-atlas-table-cols:application-pipeline-team-v1')
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       value: vi.fn().mockImplementation((query: string) => ({
@@ -71,6 +73,7 @@ describe('KanbanBoard mobile rendering', () => {
     delete document.documentElement.dataset.applicationPipelineTransitionDirection
     delete document.documentElement.dataset.applicationPipelineTransitionMode
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it('reveals mobile cards in explicit batches without a permanent progressive loader', async () => {
@@ -102,6 +105,36 @@ describe('KanbanBoard mobile rendering', () => {
     expect(withinPipelineView('board').getByText('Mobile school 12')).toBeVisible()
     expect(document.querySelectorAll('.kanban-card')).toHaveLength(12)
     expect(document.querySelector('.kanban-progressive-loader')).not.toBeInTheDocument()
+  })
+
+  it('paints a bounded board scaffold before committing the first card batch', async () => {
+    const applications = Array.from({ length: 12 }, (_, index) => ({
+      ...structuredClone(sampleApplications[0]),
+      id: `staged-card-${index}`,
+      status: 'Draft' as const,
+      school: { ...sampleApplications[0].school, name: `Staged school ${index + 1}` },
+    }))
+
+    const view = render(
+      <I18nContext.Provider value={i18nContext}>
+        <KanbanBoard
+          applications={applications}
+          onStatusChange={vi.fn()}
+          onSelect={vi.fn()}
+          deferInactiveView
+        />
+      </I18nContext.Provider>,
+    )
+
+    const boardView = view.container.querySelector('.application-pipeline-board-view')
+    expect(boardView).toHaveAttribute('aria-busy', 'true')
+    expect(boardView).toHaveAttribute('data-entry-state', 'preview')
+    expect(view.container.querySelectorAll('.kanban-card')).toHaveLength(0)
+    expect(view.container.querySelector('.kanban-column-preview')).toBeInTheDocument()
+
+    await waitFor(() => expect(view.container.querySelectorAll('.kanban-card')).toHaveLength(8))
+    expect(boardView).not.toHaveAttribute('aria-busy')
+    expect(boardView).toHaveAttribute('data-entry-state', 'ready')
   })
 
   it('keeps custom-status applications renderable and offers account-saved statuses in move actions', async () => {
@@ -141,6 +174,7 @@ describe('KanbanBoard mobile rendering', () => {
   it('switches the personal pipeline to an editable smart table', async () => {
     const user = userEvent.setup()
     const onStatusChange = vi.fn()
+    const onPrefetch = vi.fn()
     const application = {
       ...structuredClone(sampleApplications[0]),
       id: 'smart-table-application',
@@ -157,6 +191,7 @@ describe('KanbanBoard mobile rendering', () => {
           applications={[application]}
           onStatusChange={onStatusChange}
           onSelect={vi.fn()}
+          onPrefetch={onPrefetch}
         />
       </I18nContext.Provider>,
     )
@@ -170,16 +205,44 @@ describe('KanbanBoard mobile rendering', () => {
     expect(window.localStorage.getItem('phd-atlas:application-pipeline-view:v1:personal')).toBe('table')
 
     const row = document.querySelector('[data-pipeline-row-id="smart-table-application"]')
+    fireEvent.pointerEnter(row as HTMLElement)
+    expect(onPrefetch).toHaveBeenLastCalledWith('smart-table-application')
     expect(row?.querySelector('.application-table-status .custom-select-root')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Change status for Smart Table University' }))
     expect(row?.querySelector('.application-table-status .custom-select-root')).toBeInTheDocument()
     await user.click(screen.getByRole('option', { name: 'Preparing' }))
     expect(onStatusChange).toHaveBeenCalledWith('smart-table-application', 'Preparing')
 
+    const tableShell = document.querySelector<HTMLElement>('.application-smart-table-shell')
+    expect(tableShell).not.toBeNull()
+    vi.spyOn(tableShell!, 'getBoundingClientRect').mockReturnValue({
+      x: 120,
+      y: 80,
+      top: 80,
+      right: 1000,
+      bottom: 680,
+      left: 120,
+      width: 880,
+      height: 600,
+      toJSON: () => ({}),
+    })
+
     const checkbox = screen.getByRole('checkbox', { name: 'Select Smart Table University' })
     expect(checkbox.closest('.application-table-checkbox')?.querySelector('.animated-checkmark.is-square')).toBeInTheDocument()
     await user.click(checkbox)
     expect(row).toHaveClass('is-selected')
+
+    await waitFor(() => {
+      expect(document.body.querySelector('.application-table-selection-dock')).toHaveClass('is-open')
+    })
+    const selectionDock = document.body.querySelector<HTMLElement>('.application-table-selection-dock')
+    expect(selectionDock?.parentElement).toBe(document.body)
+    expect(selectionDock).toHaveClass('is-viewport-bottom')
+    expect(selectionDock?.style.getPropertyValue('--explorer-selection-anchor-center-x')).toBe('560px')
+    expect(selectionDock?.style.getPropertyValue('--explorer-selection-anchor-width')).toBe('880px')
+    expect(selectionDock?.querySelector('.explorer-selection-dot')).not.toBeInTheDocument()
+    expect(document.querySelector('.application-table-sticky-tools .explorer-selection-presence'))
+      .not.toBeInTheDocument()
 
     const deadline = row?.querySelector('.application-table-deadline')
     expect(deadline?.firstElementChild?.tagName).toBe('TIME')
@@ -192,6 +255,149 @@ describe('KanbanBoard mobile rendering', () => {
     expect(within(actionsCell as HTMLElement).getByRole('button', {
       name: 'Open Smart Table University',
     })).toHaveTextContent('Open')
+
+    await user.click(screen.getByRole('button', { name: 'Board' }))
+    await waitFor(() => expect(selectionDock).not.toBeVisible())
+    fireEvent.pointerEnter(screen.getByRole('button', { name: /Smart Table University/i }))
+    expect(onPrefetch).toHaveBeenLastCalledWith('smart-table-application')
+
+    await user.click(screen.getByRole('button', { name: 'Table' }))
+    await waitFor(() => expect(selectionDock).toBeVisible())
+  })
+
+  it('navigates before deferring selected-row cleanup in the smart table', async () => {
+    const user = userEvent.setup()
+    const application = {
+      ...structuredClone(sampleApplications[0]),
+      id: 'table-open-priority',
+      school: {
+        ...sampleApplications[0].school,
+        name: 'Priority Table University',
+      },
+    }
+    let row: HTMLElement | null = null
+    const onSelect = vi.fn(() => {
+      expect(row).toHaveClass('is-selected')
+    })
+
+    render(
+      <I18nContext.Provider value={i18nContext}>
+        <KanbanBoard
+          applications={[application]}
+          onStatusChange={vi.fn()}
+          onSelect={onSelect}
+        />
+      </I18nContext.Provider>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Table' }))
+    row = document.querySelector('[data-pipeline-row-id="table-open-priority"]')
+    expect(row).not.toBeNull()
+    await user.click(screen.getByRole('checkbox', { name: 'Select Priority Table University' }))
+    expect(row).toHaveClass('is-selected')
+
+    await user.click(row!)
+
+    expect(onSelect).toHaveBeenCalledOnce()
+    expect(onSelect).toHaveBeenCalledWith('table-open-priority')
+    await waitFor(() => expect(row).not.toHaveClass('is-selected'))
+  })
+
+  it('keeps Shift range selection inside the smart table without selecting page text', async () => {
+    const user = userEvent.setup()
+    const onSelect = vi.fn()
+    const applications = Array.from({ length: 4 }, (_, index) => ({
+      ...structuredClone(sampleApplications[0]),
+      id: `range-table-${index}`,
+      deadline: `2027-01-${String(index + 1).padStart(2, '0')}`,
+      school: {
+        ...sampleApplications[0].school,
+        name: `Range school ${index + 1}`,
+      },
+    }))
+
+    render(
+      <I18nContext.Provider value={i18nContext}>
+        <KanbanBoard
+          applications={applications}
+          onStatusChange={vi.fn()}
+          onSelect={onSelect}
+        />
+      </I18nContext.Provider>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Table' }))
+    await waitFor(() => expect(withinPipelineView('table').getByText('Range school 1')).toBeVisible())
+    await user.click(screen.getByRole('checkbox', { name: 'Select Range school 1' }))
+
+    const thirdIdentity = withinPipelineView('table').getByText('Range school 3')
+    const ordinaryMouseDown = new MouseEvent('mousedown', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+    })
+    expect(thirdIdentity.dispatchEvent(ordinaryMouseDown)).toBe(true)
+
+    const shiftMouseDown = new MouseEvent('mousedown', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      shiftKey: true,
+    })
+    expect(thirdIdentity.dispatchEvent(shiftMouseDown)).toBe(false)
+    expect(shiftMouseDown.defaultPrevented).toBe(true)
+
+    fireEvent.click(thirdIdentity, { shiftKey: true })
+
+    expect(document.querySelector('[data-pipeline-row-id="range-table-0"]')).toHaveClass('is-selected')
+    expect(document.querySelector('[data-pipeline-row-id="range-table-1"]')).toHaveClass('is-selected')
+    expect(document.querySelector('[data-pipeline-row-id="range-table-2"]')).toHaveClass('is-selected')
+    expect(document.querySelector('[data-pipeline-row-id="range-table-3"]')).not.toHaveClass('is-selected')
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('opens the persisted column visibility menu from a table-header right click', async () => {
+    const user = userEvent.setup()
+    const application = {
+      ...structuredClone(sampleApplications[0]),
+      id: 'column-menu-application',
+      school: {
+        ...sampleApplications[0].school,
+        name: 'Column Menu University',
+      },
+    }
+
+    render(
+      <I18nContext.Provider value={i18nContext}>
+        <KanbanBoard
+          applications={[application]}
+          onStatusChange={vi.fn()}
+          onSelect={vi.fn()}
+        />
+      </I18nContext.Provider>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Table' }))
+    await waitFor(() => expect(withinPipelineView('table').getByText('Column Menu University')).toBeVisible())
+    const professorHeader = document.querySelector<HTMLElement>('th[data-column="professor"]')
+    expect(professorHeader).not.toBeNull()
+
+    fireEvent.contextMenu(professorHeader!, { clientX: 240, clientY: 120 })
+    expect(screen.getByRole('menu', { name: 'table.columns' })).toBeInTheDocument()
+    await user.click(screen.getByRole('menuitem', { name: 'kanban.tableProfessor' }))
+
+    expect(professorHeader).toHaveAttribute('aria-hidden', 'true')
+    expect(document.querySelector('td[data-column="professor"]')).toHaveAttribute('aria-hidden', 'true')
+    expect(JSON.parse(window.localStorage.getItem(
+      'phd-atlas-table-cols:application-pipeline-personal-v1',
+    ) ?? '{}')).toMatchObject({ hidden: ['professor'] })
+
+    const applicationHeader = document.querySelector<HTMLElement>('th[data-column="application"]')
+    fireEvent.contextMenu(applicationHeader!, { clientX: 180, clientY: 120 })
+    await user.click(screen.getByRole('menuitem', { name: 'kanban.tableProfessor' }))
+
+    expect(professorHeader).toHaveAttribute('aria-hidden', 'false')
+    expect(document.querySelector('td[data-column="professor"]')).toHaveAttribute('aria-hidden', 'false')
   })
 
   it('mounts the smart table in small mobile batches and reveals later rows on demand', async () => {
@@ -221,20 +427,77 @@ describe('KanbanBoard mobile rendering', () => {
 
     await waitFor(() => {
       expect(document.querySelector('.application-smart-table')).toBeVisible()
-      expect(document.querySelectorAll('[data-pipeline-row-id^="lazy-table-"]')).toHaveLength(10)
+      expect(document.querySelectorAll('[data-pipeline-row-id^="lazy-table-"]')).toHaveLength(8)
     })
-    expect(screen.queryByText('Lazy table school 11')).not.toBeInTheDocument()
+    expect(screen.queryByText('Lazy table school 9')).not.toBeInTheDocument()
 
     geometrySpy.mockClear()
-    await user.click(screen.getByRole('button', { name: 'Show 10 more' }))
+    await user.click(screen.getByRole('button', { name: 'Show 8 more' }))
 
-    expect(document.querySelectorAll('[data-pipeline-row-id^="lazy-table-"]')).toHaveLength(20)
-    expect(screen.getByText('Lazy table school 20')).toBeVisible()
-    expect(screen.queryByText('Lazy table school 21')).not.toBeInTheDocument()
+    expect(document.querySelectorAll('[data-pipeline-row-id^="lazy-table-"]')).toHaveLength(16)
+    expect(screen.getByText('Lazy table school 16')).toBeVisible()
+    expect(screen.queryByText('Lazy table school 17')).not.toBeInTheDocument()
     expect(geometrySpy).not.toHaveBeenCalled()
 
     const enteringRows = document.querySelectorAll('tr.is-entering')
-    expect(enteringRows).toHaveLength(10)
+    expect(enteringRows).toHaveLength(8)
+  })
+
+  it('does not auto-append an initially visible table marker before scroll intent', async () => {
+    const user = userEvent.setup()
+    const observerState: {
+      callback?: IntersectionObserverCallback
+      instance?: IntersectionObserver
+    } = {}
+    class TestIntersectionObserver implements IntersectionObserver {
+      readonly root = null
+      readonly rootMargin = '0px'
+      readonly scrollMargin = '0px'
+      readonly thresholds = [0.01]
+      constructor(callback: IntersectionObserverCallback) {
+        observerState.callback = callback
+        observerState.instance = this
+      }
+      disconnect() {}
+      observe() {}
+      takeRecords() { return [] }
+      unobserve() {}
+    }
+    vi.stubGlobal('IntersectionObserver', TestIntersectionObserver)
+    const applications = Array.from({ length: 20 }, (_, index) => ({
+      ...structuredClone(sampleApplications[0]),
+      id: `intent-table-${index}`,
+      status: 'Draft' as const,
+      school: {
+        ...sampleApplications[0].school,
+        name: `Intent table school ${index + 1}`,
+      },
+    }))
+
+    render(
+      <I18nContext.Provider value={i18nContext}>
+        <KanbanBoard
+          applications={applications}
+          onStatusChange={vi.fn()}
+          onSelect={vi.fn()}
+        />
+      </I18nContext.Provider>,
+    )
+    await user.click(screen.getByRole('button', { name: 'Table' }))
+    await waitFor(() => expect(observerState.callback).toBeTypeOf('function'))
+
+    if (!observerState.callback || !observerState.instance) {
+      throw new Error('Expected the table IntersectionObserver to be installed')
+    }
+    observerState.callback([
+      { isIntersecting: true } as IntersectionObserverEntry,
+    ], observerState.instance)
+    expect(document.querySelectorAll('[data-pipeline-row-id^="intent-table-"]')).toHaveLength(8)
+
+    fireEvent.scroll(window)
+    await waitFor(() => {
+      expect(document.querySelectorAll('[data-pipeline-row-id^="intent-table-"]')).toHaveLength(16)
+    })
   })
 
   it('prewarms both presentations and preserves their resident state across rapid handoffs', async () => {
@@ -265,7 +528,7 @@ describe('KanbanBoard mobile rendering', () => {
 
     const tableView = await screen.findByRole('table', { hidden: true })
     expect(tableView).not.toBeVisible()
-    expect(tableView.querySelectorAll('tbody tr')).toHaveLength(10)
+    expect(tableView.querySelectorAll('tbody tr')).toHaveLength(8)
     expect(tableView.querySelector('tbody tr.is-entering')).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Table' }))
@@ -319,11 +582,11 @@ describe('KanbanBoard mobile rendering', () => {
     expect(shell?.querySelector('thead')).toBeInTheDocument()
     expect(document.querySelector('.application-table-sticky-tools')).toBeInTheDocument()
     expect(document.querySelector('.project-footer')).toBeInTheDocument()
-    expect(shell?.querySelectorAll('tr[data-pipeline-row-id]')).toHaveLength(20)
+    expect(shell?.querySelectorAll('tr[data-pipeline-row-id]')).toHaveLength(12)
 
-    await user.click(screen.getByRole('button', { name: 'Show 5 more' }))
+    await user.click(screen.getByRole('button', { name: 'Show 12 more' }))
 
-    expect(shell?.querySelectorAll('tr[data-pipeline-row-id]')).toHaveLength(25)
+    expect(shell?.querySelectorAll('tr[data-pipeline-row-id]')).toHaveLength(24)
   })
 
   it('groups team applications by student and progressively discloses each student flow', async () => {

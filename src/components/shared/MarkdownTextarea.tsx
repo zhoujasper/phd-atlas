@@ -37,13 +37,18 @@ import { highlight, languages } from 'prismjs'
 import 'prismjs/components/prism-markup'
 import 'prismjs/components/prism-markdown'
 import getCaretCoordinates from 'textarea-caret'
+import { SAFE_RELOAD_FLUSH_EVENT } from '../../safeReload'
 import {
   $applyNodeReplacement,
+  $createRangeSelection,
   $createParagraphNode,
+  $getNodeByKey,
   $getRoot,
   $getSelection,
+  $isElementNode,
   $isRangeSelection,
   $isTextNode,
+  $setSelection,
   COMMAND_PRIORITY_HIGH,
   DecoratorNode,
   FORMAT_TEXT_COMMAND,
@@ -51,12 +56,14 @@ import {
   INSERT_LINE_BREAK_COMMAND,
   OUTDENT_CONTENT_COMMAND,
   PASTE_COMMAND,
+  SKIP_SCROLL_INTO_VIEW_TAG,
   type EditorConfig,
   type EditorState,
   type EditorThemeClasses,
   type LexicalEditor,
   type LexicalNode,
   type NodeKey,
+  type PointType,
   type SerializedLexicalNode,
   type TextFormatType,
 } from 'lexical'
@@ -78,9 +85,11 @@ import {
 } from 'lucide-react'
 import {
   forwardRef,
+  startTransition,
   useCallback,
   useEffect,
   useId,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -91,6 +100,7 @@ import {
   type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type Ref,
   type TextareaHTMLAttributes,
 } from 'react'
 import { createPortal } from 'react-dom'
@@ -114,15 +124,52 @@ import {
   type SourceCompletionKind,
 } from './sourceCompletions'
 
-type EditorMode = 'visual' | 'source'
+export type MarkdownTextareaMode = 'visual' | 'source'
+type EditorMode = MarkdownTextareaMode
 type FormatAction = 'bold' | 'italic' | 'underline' | 'strike' | 'bulletList' | 'numberedList' | 'quote' | 'code' | 'clear'
 type SourceFormat = Exclude<RichTextFormat, 'plain'>
+
+export type MarkdownTextareaSelectionPoint = Pick<PointType, 'key' | 'offset' | 'type'>
+
+export type MarkdownTextareaSelection =
+  | {
+      mode: 'source'
+      start: number
+      end: number
+    }
+  | {
+      mode: 'visual'
+      anchor: MarkdownTextareaSelectionPoint
+      focus: MarkdownTextareaSelectionPoint
+      format: number
+      style: string
+    }
+
+export type MarkdownTextareaReplaceResult = {
+  value: string
+  /** Exact inserted range when the editor can retain one; null means it cannot be safely replayed. */
+  selection: MarkdownTextareaSelection | null
+}
+
+export type MarkdownTextareaController = {
+  getMode: () => MarkdownTextareaMode
+  getValue: () => string
+  getSelection: () => MarkdownTextareaSelection | null
+  focus: (options?: { atEnd?: boolean }) => void
+  insertText: (text: string) => void
+  replaceRange: (
+    range: MarkdownTextareaSelection | null,
+    text: string,
+  ) => MarkdownTextareaReplaceResult | null
+}
 
 export type MarkdownTextareaProps = Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'onChange'> & {
   value: string
   onChange: (event: ChangeEvent<HTMLTextAreaElement>) => void
   previewClassName?: string
   defaultMode?: EditorMode
+  controllerRef?: Ref<MarkdownTextareaController>
+  preservePlainLineBreaks?: boolean
 }
 
 // Vite 8 can preserve react-simple-code-editor's CommonJS `exports.default`
@@ -149,12 +196,14 @@ type FormatMenuItem = {
   icon: LucideIcon
   labelKey: string
   shortcut?: string
+  shift?: boolean
 }
 
 type EditorSyncProps = {
   formatRef: React.MutableRefObject<SourceFormat>
   lastEmittedValueRef: React.MutableRefObject<string | null>
   mode: EditorMode
+  preservePlainLineBreaks: boolean
   recentVisualValuesRef: React.MutableRefObject<string[]>
   syncToken: number
   value: string
@@ -164,6 +213,7 @@ type EditorSyncProps = {
 
 const EXTERNAL_SYNC_TAG = 'phd-atlas-external-rich-text-sync'
 const MAX_LENGTH_RESTORE_TAG = 'phd-atlas-rich-text-length-restore'
+const CONTROLLER_EDIT_TAG = 'phd-atlas-rich-text-controller-edit'
 const SOURCE_COMPLETION_LIMIT_HEIGHT = 286
 
 if (languages.markdown && !Object.prototype.hasOwnProperty.call(languages.markdown, 'atlas-task')) {
@@ -288,9 +338,9 @@ const formatMenuItems: FormatMenuItem[] = [
   { action: 'bold', icon: Bold, labelKey: 'markdown.bold', shortcut: 'B' },
   { action: 'italic', icon: Italic, labelKey: 'markdown.italic', shortcut: 'I' },
   { action: 'underline', icon: Underline, labelKey: 'markdown.underline', shortcut: 'U' },
-  { action: 'strike', icon: Strikethrough, labelKey: 'markdown.strikethrough', shortcut: '⇧X' },
-  { action: 'bulletList', icon: ListIcon, labelKey: 'markdown.bulletList', shortcut: '⇧8' },
-  { action: 'numberedList', icon: ListOrdered, labelKey: 'markdown.numberedList', shortcut: '⇧7' },
+  { action: 'strike', icon: Strikethrough, labelKey: 'markdown.strikethrough', shortcut: 'X', shift: true },
+  { action: 'bulletList', icon: ListIcon, labelKey: 'markdown.bulletList', shortcut: '8', shift: true },
+  { action: 'numberedList', icon: ListOrdered, labelKey: 'markdown.numberedList', shortcut: '7', shift: true },
   { action: 'quote', icon: Quote, labelKey: 'markdown.quote' },
   { action: 'code', icon: Code2, labelKey: 'markdown.code' },
   { action: 'clear', icon: Eraser, labelKey: 'markdown.clearFormatting' },
@@ -301,8 +351,73 @@ function isMacPlatform() {
   return /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent)
 }
 
+function usesPrimaryShortcutModifier(event: Pick<KeyboardEvent, 'ctrlKey' | 'metaKey'>) {
+  return isMacPlatform()
+    ? event.metaKey && !event.ctrlKey
+    : event.ctrlKey && !event.metaKey
+}
+
+function formatMenuShortcut(item: FormatMenuItem, isMac: boolean) {
+  if (!item.shortcut) return ''
+  const modifier = isMac ? '⌘' : 'Ctrl+'
+  const shift = item.shift ? (isMac ? '⇧' : 'Shift+') : ''
+  return `${modifier}${shift}${item.shortcut}`
+}
+
+type IdleSchedulerWindow = Window & {
+  requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
+  cancelIdleCallback?: (handle: number) => void
+}
+
+type ScheduledIdleTask = {
+  kind: 'idle' | 'timeout'
+  handle: number
+}
+
+const SOURCE_HIGHLIGHT_TIMEOUT = 120
+const SOURCE_CHANGE_DEBOUNCE = 48
+const SOURCE_CHANGE_LARGE_DEBOUNCE = 220
+const SOURCE_FORMAT_CONTEXT_LIMIT = 4096
+
+const EXPLICITLY_OWNED_SOURCE_ARIA_ATTRIBUTES = new Set([
+  'aria-activedescendant',
+  'aria-autocomplete',
+  'aria-controls',
+  'aria-expanded',
+  'aria-label',
+  'aria-labelledby',
+  'aria-describedby',
+  'aria-invalid',
+  'aria-required',
+  'aria-hidden',
+])
+
+function getMirroredSourceAttributes(
+  textareaProps: Record<string, unknown>,
+): Array<[string, string]> {
+  const mirrored: Array<[string, string]> = []
+  Object.entries(textareaProps).forEach(([name, attributeValue]) => {
+    const lowerName = name.toLowerCase()
+    const attributeName = (name.startsWith('aria-') && !EXPLICITLY_OWNED_SOURCE_ARIA_ATTRIBUTES.has(name))
+      || name.startsWith('data-')
+      ? name
+      : lowerName === 'inputmode' || lowerName === 'enterkeyhint'
+        ? lowerName
+        : ['dir', 'lang', 'title', 'wrap'].includes(lowerName)
+          ? lowerName
+          : ''
+    if (!attributeName || attributeValue === undefined || attributeValue === null || attributeValue === false) return
+    mirrored.push([attributeName, attributeValue === true ? '' : String(attributeValue)])
+  })
+  return mirrored
+}
+
 function formatForValue(value: string): SourceFormat {
   return detectRichTextFormat(value) === 'html' ? 'html' : 'markdown'
+}
+
+function shouldPreservePlainLineBreaks(value: string, enabled: boolean) {
+  return enabled && detectRichTextFormat(value) !== 'html'
 }
 
 function sourceFormatForValue(value: string): SourceFormat {
@@ -311,6 +426,27 @@ function sourceFormatForValue(value: string): SourceFormat {
     || /(?:^|\n)\s*<$/.test(value)
     ? 'html'
     : 'markdown'
+}
+
+function sourceFormatForInput(value: string, currentFormat: SourceFormat, caret: number): SourceFormat {
+  const contextStart = Math.max(0, caret - SOURCE_FORMAT_CONTEXT_LIMIT)
+  const context = value.slice(contextStart, Math.min(value.length, caret + SOURCE_FORMAT_CONTEXT_LIMIT))
+  if (!context.includes('<')) {
+    // A long HTML document can have its nearest tag far above the caret. Keep
+    // the known format without rescanning the whole document on every input.
+    // A complete format reconciliation still happens on source exit/blur.
+    return currentFormat
+  }
+  return currentFormat === 'html' ? 'html' : sourceFormatForValue(value)
+}
+
+function sourceCompletionTrigger(value: string, caret: number) {
+  const contextStart = Math.max(0, caret - SOURCE_FORMAT_CONTEXT_LIMIT)
+  const context = value.slice(contextStart, caret)
+  return /<\/?[a-z][\w:-]*$/i.test(context)
+    || /<[a-z][\w:-]*(?:[^<>]*\s+[a-z:@][\w:.-]*)?$/i.test(context)
+    || /(?:^|\n)\s*(?:\/|#{1,3}|[-*+]|\d?\.?|>|!|\[|\[\^|`{1,3}|\|)$/.test(context)
+    || /(?:^|[^\s\n])(?:!?\[|\[\^|`{1,3})$/.test(context)
 }
 
 function appendImportedNodes(root: ReturnType<typeof $getRoot>, nodes: LexicalNode[]) {
@@ -333,7 +469,12 @@ function appendImportedNodes(root: ReturnType<typeof $getRoot>, nodes: LexicalNo
   flushInlineParagraph()
 }
 
-function $replaceEditorValue(editor: LexicalEditor, value: string, format: SourceFormat) {
+function $replaceEditorValue(
+  editor: LexicalEditor,
+  value: string,
+  format: SourceFormat,
+  preservePlainLineBreaks: boolean,
+) {
   const root = $getRoot()
   root.clear()
   if (!value.trim()) {
@@ -345,17 +486,91 @@ function $replaceEditorValue(editor: LexicalEditor, value: string, format: Sourc
     const dom = new DOMParser().parseFromString(sanitizeRichHtml(value), 'text/html')
     appendImportedNodes(root, $generateNodesFromDOM(editor, dom))
   } else {
-    $convertFromMarkdownString(value, EDITOR_TRANSFORMERS, root, false, true)
+    $convertFromMarkdownString(
+      value,
+      EDITOR_TRANSFORMERS,
+      root,
+      false,
+      !preservePlainLineBreaks,
+    )
   }
 
   if (root.getChildrenSize() === 0) root.append($createParagraphNode())
 }
 
-function serializeEditorState(editorState: EditorState, editor: LexicalEditor, format: SourceFormat) {
+function serializeEditorState(
+  editorState: EditorState,
+  editor: LexicalEditor,
+  format: SourceFormat,
+) {
   return editorState.read(() => {
     if (format === 'html') return sanitizeRichHtml($generateHtmlFromNodes(editor))
     return $convertToMarkdownString(EDITOR_TRANSFORMERS, undefined, false)
   }, { editor })
+}
+
+function cloneSelectionPoint(point: PointType): MarkdownTextareaSelectionPoint {
+  return { key: point.key, offset: point.offset, type: point.type }
+}
+
+function snapshotVisualSelection(
+  selection: ReturnType<typeof $createRangeSelection>,
+): Extract<MarkdownTextareaSelection, { mode: 'visual' }> {
+  return {
+    mode: 'visual',
+    anchor: cloneSelectionPoint(selection.anchor),
+    focus: cloneSelectionPoint(selection.focus),
+    format: selection.format,
+    style: selection.style,
+  }
+}
+
+function $isValidSelectionPoint(point: MarkdownTextareaSelectionPoint) {
+  if (!Number.isInteger(point.offset) || point.offset < 0) return false
+  const node = $getNodeByKey(point.key)
+  if (!node?.isAttached()) return false
+  if (point.type === 'text') {
+    return $isTextNode(node) && point.offset <= node.getTextContentSize()
+  }
+  return $isElementNode(node) && point.offset <= node.getChildrenSize()
+}
+
+function $createSelectionFromSnapshot(
+  snapshot: Extract<MarkdownTextareaSelection, { mode: 'visual' }>,
+) {
+  if (!$isValidSelectionPoint(snapshot.anchor) || !$isValidSelectionPoint(snapshot.focus)) return null
+  const selection = $createRangeSelection()
+  selection.anchor.set(snapshot.anchor.key, snapshot.anchor.offset, snapshot.anchor.type)
+  selection.focus.set(snapshot.focus.key, snapshot.focus.offset, snapshot.focus.type)
+  selection.format = snapshot.format
+  selection.style = snapshot.style
+  return selection
+}
+
+function $captureInsertedVisualSelection(
+  originalStart: MarkdownTextareaSelectionPoint,
+  text: string,
+) {
+  const current = $getSelection()
+  if (!$isRangeSelection(current) || !current.isCollapsed()) return null
+  const end = cloneSelectionPoint(current.focus)
+  const candidates: MarkdownTextareaSelectionPoint[] = []
+  if (end.type === 'text' && end.offset >= text.length) {
+    candidates.push({ ...end, offset: end.offset - text.length })
+  }
+  candidates.push(originalStart)
+
+  for (const start of candidates) {
+    const candidate = $createSelectionFromSnapshot({
+      mode: 'visual',
+      anchor: start,
+      focus: end,
+      format: current.format,
+      style: current.style,
+    })
+    if (candidate && candidate.getTextContent() === text) return snapshotVisualSelection(candidate)
+  }
+  return text ? null : snapshotVisualSelection(current)
 }
 
 function LexicalBridgePlugin({ onReady }: { onReady: (editor: LexicalEditor | null) => void }) {
@@ -401,6 +616,7 @@ function ExternalValuePlugin({
   formatRef,
   lastEmittedValueRef,
   mode,
+  preservePlainLineBreaks,
   recentVisualValuesRef,
   syncToken,
   value,
@@ -417,16 +633,32 @@ function ExternalValuePlugin({
     previousModeRef.current = mode
     previousTokenRef.current = syncToken
     if (mode !== 'visual') return
+    if (visualDirtyRef.current) return
     if (!enteringVisual && !forced) {
       if (lastEmittedValueRef.current === value || recentVisualValuesRef.current.includes(value)) return
     }
 
     const nextValue = enteringVisual || forced ? visualSyncValueRef.current : value
     const format = formatForValue(nextValue)
+    const preserveNewLines = shouldPreservePlainLineBreaks(nextValue, preservePlainLineBreaks)
     formatRef.current = format
     visualDirtyRef.current = false
-    editor.update(() => $replaceEditorValue(editor, nextValue, format), { tag: EXTERNAL_SYNC_TAG })
-  }, [editor, formatRef, lastEmittedValueRef, mode, recentVisualValuesRef, syncToken, value, visualDirtyRef, visualSyncValueRef])
+    editor.update(
+      () => $replaceEditorValue(editor, nextValue, format, preserveNewLines),
+      { tag: EXTERNAL_SYNC_TAG },
+    )
+  }, [
+    editor,
+    formatRef,
+    lastEmittedValueRef,
+    mode,
+    preservePlainLineBreaks,
+    recentVisualValuesRef,
+    syncToken,
+    value,
+    visualDirtyRef,
+    visualSyncValueRef,
+  ])
 
   return null
 }
@@ -435,39 +667,66 @@ function BufferedOnChangePlugin({
   emitValue,
   formatRef,
   lastEmittedValueRef,
+  pendingFlushRef,
   valueRef,
   visualDirtyRef,
 }: {
   emitValue: (value: string) => void
   formatRef: React.MutableRefObject<SourceFormat>
   lastEmittedValueRef: React.MutableRefObject<string | null>
+  pendingFlushRef: React.MutableRefObject<(() => void) | null>
   valueRef: React.MutableRefObject<string>
   visualDirtyRef: React.MutableRefObject<boolean>
 }) {
   const timeoutRef = useRef<number | null>(null)
   const pendingRef = useRef<{ editor: LexicalEditor; editorState: EditorState } | null>(null)
+  const emitValueRef = useRef(emitValue)
+  emitValueRef.current = emitValue
 
-  useEffect(() => () => {
-    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current)
-  }, [])
+  const flushPending = useCallback(() => {
+    if (timeoutRef.current !== null) {
+      window.clearTimeout(timeoutRef.current)
+      timeoutRef.current = null
+    }
+    const pending = pendingRef.current
+    pendingRef.current = null
+    if (!pending || !visualDirtyRef.current) return
+    const nextValue = serializeEditorState(
+      pending.editorState,
+      pending.editor,
+      formatRef.current,
+    )
+    visualDirtyRef.current = false
+    if (nextValue === valueRef.current || nextValue === lastEmittedValueRef.current) return
+    emitValueRef.current(nextValue)
+  }, [formatRef, lastEmittedValueRef, valueRef, visualDirtyRef])
+  pendingFlushRef.current = flushPending
+
+  useEffect(() => {
+    const flushBeforeExit = () => flushPending()
+    window.addEventListener('pagehide', flushBeforeExit)
+    window.addEventListener('beforeunload', flushBeforeExit)
+    return () => {
+      window.removeEventListener('pagehide', flushBeforeExit)
+      window.removeEventListener('beforeunload', flushBeforeExit)
+      flushPending()
+    }
+  }, [flushPending])
 
   const onEditorChange = useCallback((editorState: EditorState, editor: LexicalEditor, tags: Set<string>) => {
-    if (tags.has(EXTERNAL_SYNC_TAG) || tags.has(MAX_LENGTH_RESTORE_TAG)) return
+    if (
+      tags.has(EXTERNAL_SYNC_TAG)
+      || tags.has(MAX_LENGTH_RESTORE_TAG)
+      || tags.has(CONTROLLER_EDIT_TAG)
+    ) return
     visualDirtyRef.current = true
     pendingRef.current = { editor, editorState }
     if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current)
     const delay = valueRef.current.length > 12_000 ? 220 : 48
     timeoutRef.current = window.setTimeout(() => {
-      timeoutRef.current = null
-      const pending = pendingRef.current
-      pendingRef.current = null
-      if (!pending || !visualDirtyRef.current) return
-      const nextValue = serializeEditorState(pending.editorState, pending.editor, formatRef.current)
-      visualDirtyRef.current = false
-      if (nextValue === valueRef.current || nextValue === lastEmittedValueRef.current) return
-      emitValue(nextValue)
+      flushPending()
     }, delay)
-  }, [emitValue, formatRef, lastEmittedValueRef, valueRef, visualDirtyRef])
+  }, [flushPending, valueRef, visualDirtyRef])
 
   return <OnChangePlugin ignoreSelectionChange onChange={onEditorChange} />
 }
@@ -499,7 +758,13 @@ function MaxLengthPlugin({ maxLength }: { maxLength?: number }) {
   return null
 }
 
-function PasteFormattingPlugin({ onDetectedFormat }: { onDetectedFormat: (format: SourceFormat) => void }) {
+function PasteFormattingPlugin({
+  onDetectedFormat,
+  preservePlainLineBreaks,
+}: {
+  onDetectedFormat: (format: SourceFormat) => void
+  preservePlainLineBreaks: boolean
+}) {
   const [editor] = useLexicalComposerContext()
 
   useEffect(() => editor.registerCommand(
@@ -534,13 +799,18 @@ function PasteFormattingPlugin({ onDetectedFormat }: { onDetectedFormat: (format
         insertImportedNodes($generateNodesFromDOM(editor, dom))
         onDetectedFormat('html')
       } else {
-        insertImportedNodes($generateNodesFromMarkdownString(sourceText, EDITOR_TRANSFORMERS, false, true))
+        insertImportedNodes($generateNodesFromMarkdownString(
+          sourceText,
+          EDITOR_TRANSFORMERS,
+          false,
+          !shouldPreservePlainLineBreaks(sourceText, preservePlainLineBreaks),
+        ))
         onDetectedFormat('markdown')
       }
       return true
     },
     COMMAND_PRIORITY_HIGH,
-  ), [editor, onDetectedFormat])
+  ), [editor, onDetectedFormat, preservePlainLineBreaks])
 
   return null
 }
@@ -554,6 +824,72 @@ function sourceWrapper(action: FormatAction): [string, string] | null {
   return null
 }
 
+function toggleSourceWrapper(
+  value: string,
+  start: number,
+  end: number,
+  before: string,
+  after: string,
+) {
+  const selected = value.slice(start, end)
+  const beforeSelection = value.slice(Math.max(0, start - before.length), start)
+  const afterSelection = value.slice(end, end + after.length)
+
+  if (beforeSelection === before && afterSelection === after) {
+    return {
+      value: value.slice(0, start - before.length) + selected + value.slice(end + after.length),
+      start: start - before.length,
+      end: end - before.length,
+    }
+  }
+
+  if (selected.length >= before.length + after.length && selected.startsWith(before) && selected.endsWith(after)) {
+    const unwrapped = selected.slice(before.length, selected.length - after.length)
+    return {
+      value: value.slice(0, start) + unwrapped + value.slice(end),
+      start,
+      end: start + unwrapped.length,
+    }
+  }
+
+  return {
+    value: value.slice(0, start) + before + selected + after + value.slice(end),
+    start: start + before.length,
+    end: start + before.length + selected.length,
+  }
+}
+
+function toggleSourceLinePrefix(
+  value: string,
+  start: number,
+  end: number,
+  action: 'bulletList' | 'numberedList' | 'quote',
+) {
+  const lineStart = value.lastIndexOf('\n', Math.max(0, start - 1)) + 1
+  const nextLine = value.indexOf('\n', end)
+  const lineEnd = nextLine === -1 ? value.length : nextLine
+  const block = value.slice(lineStart, lineEnd)
+  const lines = block.split('\n')
+  const prefixPattern = action === 'bulletList'
+    ? /^\s*[-*+]\s+/
+    : action === 'numberedList'
+      ? /^\s*\d+\.\s+/
+      : /^\s*>\s?/
+  const removePrefix = lines.every((line) => prefixPattern.test(line))
+  const formatted = lines.map((line, index) => {
+    if (removePrefix) return line.replace(prefixPattern, '')
+    if (action === 'bulletList') return `- ${line.replace(/^\s*[-*+]\s+/, '')}`
+    if (action === 'numberedList') return `${index + 1}. ${line.replace(/^\s*\d+\.\s+/, '')}`
+    return `> ${line.replace(/^\s*>\s?/, '')}`
+  }).join('\n')
+
+  return {
+    value: value.slice(0, lineStart) + formatted + value.slice(lineEnd),
+    start: lineStart,
+    end: lineStart + formatted.length,
+  }
+}
+
 export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextareaProps>(function MarkdownTextarea(
   {
     value,
@@ -561,6 +897,8 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     className = '',
     previewClassName = '',
     defaultMode = 'visual',
+    controllerRef,
+    preservePlainLineBreaks = false,
     rows = 3,
     style,
     disabled = false,
@@ -591,7 +929,11 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
   const sourceRequired = textareaProps.required
   const initialValueRef = useRef(value)
   const initialFormatRef = useRef<SourceFormat>(formatForValue(value))
+  const initialPreservePlainLineBreaksRef = useRef(
+    shouldPreservePlainLineBreaks(value, preservePlainLineBreaks),
+  )
   const [mode, setMode] = useState<EditorMode>(defaultMode)
+  const [sourceDraftValue, setSourceDraftValue] = useState(value)
   const [syncToken, setSyncToken] = useState(0)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [displayedContextMenu, setDisplayedContextMenu] = useState<ContextMenuState | null>(null)
@@ -601,6 +943,7 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
   const [sourceCompletionMenu, setSourceCompletionMenu] = useState<SourceCompletionMenuState | null>(null)
   const sourceHostRef = useRef<HTMLDivElement | null>(null)
   const sourceRef = useRef<HTMLTextAreaElement | null>(null)
+  const lastSourceRef = useRef<HTMLTextAreaElement | null>(null)
   const sourceEditorRef = useRef<React.ElementRef<typeof Editor> | null>(null)
   const mirroredSourceAttributeNamesRef = useRef<string[]>([])
   const editorRef = useRef<LexicalEditor | null>(null)
@@ -609,13 +952,32 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
   const formatRef = useRef<SourceFormat>(initialFormatRef.current)
   const lastEmittedValueRef = useRef<string | null>(null)
   const recentVisualValuesRef = useRef<string[]>([])
+  const recentSourceValuesRef = useRef<string[]>([])
   const visualDirtyRef = useRef(false)
   const visualSyncValueRef = useRef(value)
   const formatterRequestRef = useRef(0)
   const lastFormattedSourceRef = useRef('')
+  const sourceDraftValueRef = useRef(value)
+  const pendingSourceChangeRef = useRef<string | null>(null)
+  const sourceChangeTimerRef = useRef<number | null>(null)
+  const latestOnChangeRef = useRef(onChange)
+  const sourceCompletionFrameRef = useRef<number | null>(null)
+  const pendingSourceCompletionRef = useRef<{ value: string; force: boolean } | null>(null)
+  const sourceHighlightCacheRef = useRef<{ value: string; highlighted: string } | null>(null)
+  const sourceHighlightTaskRef = useRef<ScheduledIdleTask | null>(null)
+  const pendingVisualFlushRef = useRef<(() => void) | null>(null)
+  const [, bumpSourceHighlight] = useState(0)
   const valueRef = useRef(value)
-  valueRef.current = value
-  const shortcutPrefix = isMacPlatform() ? '⌘' : 'Ctrl+'
+  valueRef.current = mode === 'source' ? sourceDraftValue : value
+  sourceDraftValueRef.current = sourceDraftValue
+  latestOnChangeRef.current = onChange
+  const isMac = isMacPlatform()
+  const mirroredSourceAttributes = getMirroredSourceAttributes(textareaProps as Record<string, unknown>)
+  const mirroredSourceAttributesRef = useRef(mirroredSourceAttributes)
+  mirroredSourceAttributesRef.current = mirroredSourceAttributes
+  const mirroredSourceAttributeSignature = mirroredSourceAttributes
+    .map(([name, attributeValue]) => `${name}=${attributeValue}`)
+    .join('\u0000')
   const sourceCompletionOpen = sourceCompletionMenu !== null
 
   const initialConfig = useMemo(() => ({
@@ -625,12 +987,18 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     nodes: [HeadingNode, QuoteNode, ListNode, ListItemNode, LinkNode, CodeNode, MarkdownHardBreakNode],
     onError: (error: Error) => { throw error },
     editorState: (editor: LexicalEditor) => {
-      $replaceEditorValue(editor, initialValueRef.current, initialFormatRef.current)
+      $replaceEditorValue(
+        editor,
+        initialValueRef.current,
+        initialFormatRef.current,
+        initialPreservePlainLineBreaksRef.current,
+      )
     },
   }), [defaultMode, disabled, editorId, readOnly])
 
   const setSourceRef = useCallback((node: HTMLTextAreaElement | null) => {
     sourceRef.current = node
+    if (node) lastSourceRef.current = node
     if (typeof forwardedRef === 'function') forwardedRef(node)
     else if (forwardedRef) forwardedRef.current = node
   }, [forwardedRef])
@@ -673,34 +1041,10 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     )
     source.tabIndex = mode === 'source' ? tabIndex ?? 0 : -1
 
-    const mirroredAttributeNames: string[] = []
-    const explicitlyOwnedAriaAttributes = new Set([
-      'aria-activedescendant',
-      'aria-autocomplete',
-      'aria-controls',
-      'aria-expanded',
-      'aria-label',
-      'aria-labelledby',
-      'aria-describedby',
-      'aria-invalid',
-      'aria-required',
-      'aria-hidden',
-    ])
-    Object.entries(textareaProps).forEach(([name, attributeValue]) => {
-      const lowerName = name.toLowerCase()
-      const attributeName = (name.startsWith('aria-') && !explicitlyOwnedAriaAttributes.has(name))
-        || name.startsWith('data-')
-        ? name
-        : lowerName === 'inputmode' || lowerName === 'enterkeyhint'
-          ? lowerName
-          : ['dir', 'lang', 'title', 'wrap'].includes(lowerName)
-            ? lowerName
-            : ''
-      if (!attributeName || attributeValue === undefined || attributeValue === null || attributeValue === false) return
-      source.setAttribute(attributeName, attributeValue === true ? '' : String(attributeValue))
-      mirroredAttributeNames.push(attributeName)
+    mirroredSourceAttributesRef.current.forEach(([name, attributeValue]) => {
+      source.setAttribute(name, attributeValue)
     })
-    mirroredSourceAttributeNamesRef.current = mirroredAttributeNames
+    mirroredSourceAttributeNamesRef.current = mirroredSourceAttributesRef.current.map(([name]) => name)
     return undefined
   }, [
     disabled,
@@ -714,12 +1058,12 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     sourceRequired,
     sourceCompletionMenu,
     sourceSuggestionListId,
+    mirroredSourceAttributeSignature,
     tabIndex,
-    textareaProps,
   ])
 
   const emitChange = useCallback((nextValue: string) => {
-    const source = sourceRef.current
+    const source = sourceRef.current ?? lastSourceRef.current
     if (!source) return
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
     if (setter) setter.call(source, nextValue)
@@ -733,6 +1077,94 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     recentVisualValuesRef.current = [...recentVisualValuesRef.current.slice(-23), nextValue]
     emitChange(nextValue)
   }, [emitChange])
+
+  const flushVisualValue = useCallback(() => {
+    const editor = editorRef.current
+    if (!editor || !visualDirtyRef.current) return valueRef.current
+    const nextValue = serializeEditorState(
+      editor.getEditorState(),
+      editor,
+      formatRef.current,
+    )
+    visualDirtyRef.current = false
+    if (nextValue !== valueRef.current) emitVisualChange(nextValue)
+    return nextValue
+  }, [emitVisualChange])
+
+  const flushSourceChange = useCallback((immediate = false) => {
+    if (sourceChangeTimerRef.current !== null) {
+      window.clearTimeout(sourceChangeTimerRef.current)
+      sourceChangeTimerRef.current = null
+    }
+    const nextValue = pendingSourceChangeRef.current
+    pendingSourceChangeRef.current = null
+    const source = sourceRef.current ?? lastSourceRef.current
+    if (nextValue === null || !source) return
+
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+    if (setter) setter.call(source, nextValue)
+    else source.value = nextValue
+    const notify = () => {
+      lastEmittedValueRef.current = nextValue
+      latestOnChangeRef.current({ target: source, currentTarget: source } as ChangeEvent<HTMLTextAreaElement>)
+    }
+    if (immediate) notify()
+    else startTransition(notify)
+  }, [])
+
+  useEffect(() => {
+    const flushResidentValue = () => {
+      pendingVisualFlushRef.current?.()
+      flushVisualValue()
+      flushSourceChange(true)
+    }
+    window.addEventListener(SAFE_RELOAD_FLUSH_EVENT, flushResidentValue)
+    return () => window.removeEventListener(SAFE_RELOAD_FLUSH_EVENT, flushResidentValue)
+  }, [flushSourceChange, flushVisualValue])
+
+  const queueSourceChange = useCallback((nextValue: string) => {
+    pendingSourceChangeRef.current = nextValue
+    if (sourceChangeTimerRef.current !== null) window.clearTimeout(sourceChangeTimerRef.current)
+    const delay = nextValue.length > 12_000 ? SOURCE_CHANGE_LARGE_DEBOUNCE : SOURCE_CHANGE_DEBOUNCE
+    sourceChangeTimerRef.current = window.setTimeout(() => {
+      sourceChangeTimerRef.current = null
+      flushSourceChange()
+    }, delay)
+  }, [flushSourceChange])
+
+  const previousExternalValueRef = useRef(value)
+  useEffect(() => {
+    if (previousExternalValueRef.current === value) return
+    previousExternalValueRef.current = value
+    const pending = pendingSourceChangeRef.current
+    if (pending !== null && pending === value) {
+      pendingSourceChangeRef.current = null
+      if (sourceChangeTimerRef.current !== null) {
+        window.clearTimeout(sourceChangeTimerRef.current)
+        sourceChangeTimerRef.current = null
+      }
+      return
+    }
+    // A controlled parent may publish an earlier debounced source value after
+    // the user has already typed more characters locally. Treat values from
+    // this editor as acknowledgements, not authoritative replacements; a
+    // genuinely external value still falls through to the sync path below.
+    if (recentSourceValuesRef.current.includes(value)) return
+    if (pending !== null) {
+      pendingSourceChangeRef.current = null
+      if (sourceChangeTimerRef.current !== null) {
+        window.clearTimeout(sourceChangeTimerRef.current)
+        sourceChangeTimerRef.current = null
+      }
+    }
+    sourceDraftValueRef.current = value
+    formatRef.current = sourceFormatForValue(value)
+    setSourceDraftValue((current) => current === value ? current : value)
+  }, [value])
+
+  useEffect(() => () => {
+    flushSourceChange(true)
+  }, [flushSourceChange])
 
   const updateSourceFormat = useCallback((format: SourceFormat) => {
     formatRef.current = format
@@ -801,7 +1233,7 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
       return
     }
     const caret = source.selectionStart ?? nextValue.length
-    const completionFormat = sourceFormatForValue(nextValue)
+    const completionFormat = formatRef.current
     const items = getSourceCompletions(nextValue, caret, completionFormat, force)
     if (items.length === 0) {
       setSourceCompletionMenu(null)
@@ -809,6 +1241,32 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     }
     positionSourceCompletionMenu(items, caret)
   }, [disabled, mode, positionSourceCompletionMenu, readOnly])
+
+  const scheduleSourceCompletions = useCallback((
+    nextValue = valueRef.current,
+    force = false,
+  ) => {
+    const pending = pendingSourceCompletionRef.current
+    pendingSourceCompletionRef.current = {
+      value: nextValue,
+      force: force || Boolean(pending?.force),
+    }
+    if (sourceCompletionFrameRef.current !== null) return
+    sourceCompletionFrameRef.current = window.requestAnimationFrame(() => {
+      sourceCompletionFrameRef.current = null
+      const next = pendingSourceCompletionRef.current
+      pendingSourceCompletionRef.current = null
+      if (next) refreshSourceCompletions(next.value, next.force)
+    })
+  }, [refreshSourceCompletions])
+
+  useEffect(() => () => {
+    if (sourceCompletionFrameRef.current !== null) {
+      window.cancelAnimationFrame(sourceCompletionFrameRef.current)
+      sourceCompletionFrameRef.current = null
+    }
+    pendingSourceCompletionRef.current = null
+  }, [])
 
   const recordSourceHistory = useCallback((
     currentValue: string,
@@ -855,6 +1313,7 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
   ) => {
     const source = sourceRef.current
     if (!source || disabled || readOnly) return false
+    flushSourceChange(true)
     const currentValue = valueRef.current
     if (from < 0 || to < from || to > currentValue.length) return false
     const nextValue = currentValue.slice(0, from) + insertText + currentValue.slice(to)
@@ -876,6 +1335,8 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     lastFormattedSourceRef.current = ''
     visualSyncValueRef.current = nextValue
     updateSourceFormat(sourceFormatForValue(nextValue))
+    sourceDraftValueRef.current = nextValue
+    setSourceDraftValue(nextValue)
     emitChange(nextValue)
     setSourceCompletionMenu(null)
     window.requestAnimationFrame(() => {
@@ -885,7 +1346,163 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
       activeSource.setSelectionRange(nextSelectionStart, nextSelectionEnd)
     })
     return true
-  }, [disabled, emitChange, maxLength, readOnly, recordSourceHistory, updateSourceFormat])
+  }, [disabled, emitChange, flushSourceChange, maxLength, readOnly, recordSourceHistory, updateSourceFormat])
+
+  const focusEditor = useCallback((options?: { atEnd?: boolean }) => {
+    if (mode === 'source') {
+      const source = sourceRef.current
+      if (!source || disabled) return
+      source.focus()
+      if (options?.atEnd) {
+        const end = source.value.length
+        source.setSelectionRange(end, end)
+      }
+      return
+    }
+
+    const editor = editorRef.current
+    if (!editor || disabled) return
+    if (!options?.atEnd) {
+      editor.focus()
+      return
+    }
+    editor.getRootElement()?.focus()
+    editor.update(() => $getRoot().selectEnd(), {
+      discrete: true,
+      tag: SKIP_SCROLL_INTO_VIEW_TAG,
+    })
+  }, [disabled, mode])
+
+  const getControllerValue = useCallback(() => {
+    if (mode === 'source') {
+      flushSourceChange(true)
+      return sourceDraftValueRef.current
+    }
+    pendingVisualFlushRef.current?.()
+    return flushVisualValue()
+  }, [flushSourceChange, flushVisualValue, mode])
+
+  const getControllerSelection = useCallback((): MarkdownTextareaSelection | null => {
+    if (mode === 'source') {
+      const source = sourceRef.current
+      if (!source) return null
+      return {
+        mode: 'source',
+        start: source.selectionStart ?? source.value.length,
+        end: source.selectionEnd ?? source.selectionStart ?? source.value.length,
+      }
+    }
+
+    const editor = editorRef.current
+    if (!editor || richTextNeedsFidelityPreview(valueRef.current, formatRef.current)) return null
+    return editor.getEditorState().read(() => {
+      const selection = $getSelection()
+      return $isRangeSelection(selection) ? snapshotVisualSelection(selection) : null
+    })
+  }, [mode])
+
+  const replaceControllerRange = useCallback((
+    range: MarkdownTextareaSelection | null,
+    text: string,
+  ): MarkdownTextareaReplaceResult | null => {
+    if (disabled || readOnly) return null
+
+    if (mode === 'source') {
+      const source = sourceRef.current
+      if (!source || (range && range.mode !== 'source')) return null
+      flushSourceChange(true)
+      const currentValue = sourceDraftValueRef.current
+      const from = range?.start ?? source.selectionStart ?? currentValue.length
+      const to = range?.end ?? source.selectionEnd ?? from
+      const nextValue = currentValue.slice(0, from) + text + currentValue.slice(to)
+      if (!applySourceEdit(from, to, text, text.length)) return null
+      return {
+        value: nextValue,
+        selection: { mode: 'source', start: from, end: from + text.length },
+      }
+    }
+
+    const editor = editorRef.current
+    if (
+      !editor
+      || (range && range.mode !== 'visual')
+      || richTextNeedsFidelityPreview(valueRef.current, formatRef.current)
+    ) return null
+
+    pendingVisualFlushRef.current?.()
+    flushVisualValue()
+    let applied = false
+    let insertedSelection: Extract<MarkdownTextareaSelection, { mode: 'visual' }> | null = null
+    editor.update(() => {
+      let selection = range ? $createSelectionFromSnapshot(range) : $getSelection()
+      if (range && !selection) return
+      if (!$isRangeSelection(selection)) {
+        $getRoot().selectEnd()
+        selection = $getSelection()
+      }
+      if (!$isRangeSelection(selection)) return
+      if (range) $setSelection(selection)
+      const originalStart = cloneSelectionPoint(selection.isBackward() ? selection.focus : selection.anchor)
+      selection.insertText(text)
+      insertedSelection = $captureInsertedVisualSelection(originalStart, text)
+      applied = true
+    }, { discrete: true, tag: CONTROLLER_EDIT_TAG })
+    if (!applied) return null
+
+    const editorState = editor.getEditorState()
+    if (insertedSelection) {
+      const validSelection = insertedSelection
+      const remainsExact = editorState.read(() => {
+        const selection = $createSelectionFromSnapshot(validSelection)
+        return selection?.getTextContent() === text
+      })
+      if (!remainsExact) insertedSelection = null
+    }
+    const nextValue = serializeEditorState(editorState, editor, formatRef.current)
+    visualDirtyRef.current = false
+    if (nextValue !== valueRef.current) emitVisualChange(nextValue)
+    editor.focus()
+    return { value: nextValue, selection: insertedSelection }
+  }, [applySourceEdit, disabled, emitVisualChange, flushSourceChange, flushVisualValue, mode, readOnly])
+
+  const insertControllerText = useCallback((text: string) => {
+    if (!text || disabled || readOnly) return
+    if (mode === 'source') {
+      const source = sourceRef.current
+      if (!source) return
+      const start = source.selectionStart ?? source.value.length
+      const end = source.selectionEnd ?? start
+      applySourceEdit(start, end, text, text.length)
+      return
+    }
+
+    const editor = editorRef.current
+    if (!editor || richTextNeedsFidelityPreview(valueRef.current, formatRef.current)) return
+    editor.update(() => {
+      let selection = $getSelection()
+      if (!$isRangeSelection(selection)) {
+        $getRoot().selectEnd()
+        selection = $getSelection()
+      }
+      if ($isRangeSelection(selection)) selection.insertText(text)
+    }, { onUpdate: () => editor.focus() })
+  }, [applySourceEdit, disabled, mode, readOnly])
+
+  useImperativeHandle(controllerRef, () => ({
+    getMode: () => mode,
+    getValue: getControllerValue,
+    getSelection: getControllerSelection,
+    focus: focusEditor,
+    insertText: insertControllerText,
+    replaceRange: replaceControllerRange,
+  }), [
+    focusEditor,
+    getControllerSelection,
+    getControllerValue,
+    insertControllerText,
+    mode,
+    replaceControllerRange,
+  ])
 
   const acceptSourceCompletion = useCallback((index = sourceCompletionMenu?.activeIndex ?? 0) => {
     const source = sourceRef.current
@@ -905,6 +1522,7 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
 
   const runSourceFormatter = useCallback(async (snapshot = valueRef.current, focusAfter = false) => {
     if (disabled || readOnly || !snapshot.trim() || lastFormattedSourceRef.current === snapshot) return
+    flushSourceChange(true)
     setSourceCompletionMenu(null)
     const request = formatterRequestRef.current + 1
     formatterRequestRef.current = request
@@ -923,7 +1541,12 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
       }
       lastFormattedSourceRef.current = formatted
       updateSourceFormat(detectedFormat)
-      if (formatted !== snapshot) emitChange(formatted)
+      if (formatted !== snapshot) {
+        sourceDraftValueRef.current = formatted
+        setSourceDraftValue(formatted)
+        visualSyncValueRef.current = formatted
+        emitChange(formatted)
+      }
       if (focusAfter) {
         window.requestAnimationFrame(() => {
           const activeSource = sourceRef.current
@@ -940,22 +1563,58 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     } finally {
       if (formatterRequestRef.current === request) setSourceFormatting(false)
     }
-  }, [disabled, emitChange, maxLength, readOnly, updateSourceFormat])
+  }, [disabled, emitChange, flushSourceChange, maxLength, readOnly, updateSourceFormat])
+
+  useEffect(() => {
+    if (mode !== 'source') return undefined
+    const highlightValue = sourceDraftValue
+    const idleWindow = window as IdleSchedulerWindow
+    const renderHighlight = () => {
+      sourceHighlightTaskRef.current = null
+      if (mode !== 'source' || sourceDraftValueRef.current !== highlightValue) return
+      const language = formatRef.current === 'html' ? 'markup' : 'markdown'
+      const grammar = languages[language]
+      const highlighted = grammar
+        ? highlight(highlightValue, grammar, language)
+        : escapeRichTextHtml(highlightValue)
+      sourceHighlightCacheRef.current = { value: highlightValue, highlighted }
+      bumpSourceHighlight((current) => current + 1)
+    }
+
+    if (typeof idleWindow.requestIdleCallback === 'function') {
+      sourceHighlightTaskRef.current = {
+        kind: 'idle',
+        handle: idleWindow.requestIdleCallback(renderHighlight, { timeout: SOURCE_HIGHLIGHT_TIMEOUT }),
+      }
+    } else {
+      sourceHighlightTaskRef.current = {
+        kind: 'timeout',
+        handle: window.setTimeout(renderHighlight, 0),
+      }
+    }
+
+    return () => {
+      const task = sourceHighlightTaskRef.current
+      if (!task) return
+      if (task.kind === 'idle') idleWindow.cancelIdleCallback?.(task.handle)
+      else window.clearTimeout(task.handle)
+      sourceHighlightTaskRef.current = null
+    }
+  }, [mode, sourceDraftValue])
 
   const highlightSource = useCallback((source: string) => {
-    const language = sourceFormatForValue(source) === 'html' ? 'markup' : 'markdown'
-    const grammar = languages[language]
-    return grammar ? highlight(source, grammar, language) : escapeRichTextHtml(source)
+    const cached = sourceHighlightCacheRef.current
+    if (cached?.value === source) return cached.highlighted
+    // Prism runs from the idle task above. During a burst, keep the overlay's
+    // geometry current with a cheap escaped copy instead of blocking the input
+    // event on a full-document tokenization pass.
+    return escapeRichTextHtml(source)
   }, [])
 
-  const flushVisualValue = useCallback(() => {
-    const editor = editorRef.current
-    if (!editor || !visualDirtyRef.current) return valueRef.current
-    const nextValue = serializeEditorState(editor.getEditorState(), editor, formatRef.current)
-    visualDirtyRef.current = false
-    if (nextValue !== valueRef.current) emitVisualChange(nextValue)
-    return nextValue
-  }, [emitVisualChange])
+  useLayoutEffect(() => () => {
+    pendingVisualFlushRef.current?.()
+    flushVisualValue()
+  }, [flushVisualValue])
 
   useEffect(() => {
     if (contextMenu) {
@@ -1038,8 +1697,13 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     if (nextMode === mode) return
     setContextMenu(null)
     setSourceCompletionMenu(null)
-    if (nextMode === 'source') flushVisualValue()
+    if (nextMode === 'source') {
+      flushVisualValue()
+      sourceDraftValueRef.current = valueRef.current
+      setSourceDraftValue(valueRef.current)
+    }
     else {
+      flushSourceChange(true)
       visualSyncValueRef.current = valueRef.current
       updateSourceFormat(formatForValue(valueRef.current))
       setSyncToken((current) => current + 1)
@@ -1054,9 +1718,10 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     })
   }
 
-  const applySourceFormatting = (action: FormatAction) => {
+  const applySourceFormatting = useCallback((action: FormatAction) => {
     const source = sourceRef.current
     if (!source || disabled || readOnly) return
+    flushSourceChange(true)
     const currentValue = valueRef.current
     const start = source.selectionStart ?? currentValue.length
     const end = source.selectionEnd ?? start
@@ -1068,22 +1733,15 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
 
     if (wrapper) {
       const [before, after] = wrapper
-      nextValue = currentValue.slice(0, start) + before + selected + after + currentValue.slice(end)
-      nextStart = start + before.length
-      nextEnd = nextStart + selected.length
+      const toggled = toggleSourceWrapper(currentValue, start, end, before, after)
+      nextValue = toggled.value
+      nextStart = toggled.start
+      nextEnd = toggled.end
     } else if (action === 'bulletList' || action === 'numberedList' || action === 'quote') {
-      const lineStart = currentValue.lastIndexOf('\n', Math.max(0, start - 1)) + 1
-      const nextLine = currentValue.indexOf('\n', end)
-      const lineEnd = nextLine === -1 ? currentValue.length : nextLine
-      const block = currentValue.slice(lineStart, lineEnd)
-      const formatted = block.split('\n').map((line, index) => {
-        if (action === 'bulletList') return `- ${line.replace(/^\s*[-*+]\s+/, '')}`
-        if (action === 'numberedList') return `${index + 1}. ${line.replace(/^\s*\d+\.\s+/, '')}`
-        return `> ${line.replace(/^\s*>\s?/, '')}`
-      }).join('\n')
-      nextValue = currentValue.slice(0, lineStart) + formatted + currentValue.slice(lineEnd)
-      nextStart = lineStart
-      nextEnd = lineStart + formatted.length
+      const toggled = toggleSourceLinePrefix(currentValue, start, end, action)
+      nextValue = toggled.value
+      nextStart = toggled.start
+      nextEnd = toggled.end
     } else if (action === 'clear') {
       const cleaned = selected
         .replace(/(\*\*|__|~~|\+\+|`{1,3})/g, '')
@@ -1092,12 +1750,30 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
       nextEnd = start + cleaned.length
     }
 
+    if (nextValue === currentValue) return
+    if (typeof maxLength === 'number' && nextValue.length > maxLength) return
+    recordSourceHistory(
+      currentValue,
+      nextValue,
+      start,
+      end,
+      nextStart,
+      nextEnd,
+    )
+    lastFormattedSourceRef.current = ''
+    visualSyncValueRef.current = nextValue
+    updateSourceFormat(sourceFormatForValue(nextValue))
+    sourceDraftValueRef.current = nextValue
+    setSourceDraftValue(nextValue)
     emitChange(nextValue)
+    scheduleSourceCompletions(nextValue)
     window.requestAnimationFrame(() => {
-      source.focus()
-      source.setSelectionRange(nextStart, nextEnd)
+      const activeSource = sourceRef.current
+      if (!activeSource) return
+      activeSource.focus()
+      activeSource.setSelectionRange(nextStart, nextEnd)
     })
-  }
+  }, [disabled, emitChange, flushSourceChange, maxLength, readOnly, recordSourceHistory, scheduleSourceCompletions, updateSourceFormat])
 
   const runVisualCommand = useCallback((action: FormatAction) => {
     const editor = editorRef.current
@@ -1126,35 +1802,36 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     editor.focus()
   }, [disabled, readOnly])
 
-  const applyFormatting = (action: FormatAction) => {
+  const applyFormatting = useCallback((action: FormatAction) => {
     setContextMenu(null)
     if (mode === 'source') applySourceFormatting(action)
     else runVisualCommand(action)
-  }
+  }, [applySourceFormatting, mode, runVisualCommand])
 
-  const handleShortcut = (event: ReactKeyboardEvent<HTMLElement | HTMLTextAreaElement>) => {
-    const modifier = event.metaKey || event.ctrlKey
+  const handleShortcut = useCallback((event: ReactKeyboardEvent<HTMLElement | HTMLTextAreaElement>) => {
+    const modifier = usesPrimaryShortcutModifier(event)
     if (!modifier || event.altKey) return false
     const key = event.key.toLowerCase()
+    const code = event.code
     let action: FormatAction | null = null
     if (!event.shiftKey && key === 'b') action = 'bold'
     else if (!event.shiftKey && key === 'i') action = 'italic'
     else if (!event.shiftKey && key === 'u') action = 'underline'
     else if (event.shiftKey && key === 'x') action = 'strike'
-    else if (event.shiftKey && key === '7') action = 'numberedList'
-    else if (event.shiftKey && key === '8') action = 'bulletList'
+    else if (event.shiftKey && (key === '7' || code === 'Digit7')) action = 'numberedList'
+    else if (event.shiftKey && (key === '8' || code === 'Digit8')) action = 'bulletList'
     if (!action) return false
     event.preventDefault()
     applyFormatting(action)
     return true
-  }
+  }, [applyFormatting])
 
   const handleSourceKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     onKeyDown?.(event)
     if (event.defaultPrevented) return
     if (event.nativeEvent.isComposing) return
     if (
-      (event.ctrlKey || event.metaKey)
+      usesPrimaryShortcutModifier(event)
       && !event.altKey
       && (event.key === ' ' || event.code === 'Space')
     ) {
@@ -1205,7 +1882,7 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     handleShortcut(event)
   }
 
-  const handleVisualKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+  const handleVisualKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     onKeyDown?.(event as unknown as ReactKeyboardEvent<HTMLTextAreaElement>)
     if (event.defaultPrevented) return
     if (event.key === 'Tab') {
@@ -1214,9 +1891,9 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
       return
     }
     handleShortcut(event)
-  }
+  }, [handleShortcut, onKeyDown])
 
-  const handleVisualContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+  const handleVisualContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     onContextMenu?.(event as unknown as ReactMouseEvent<HTMLTextAreaElement>)
     if (event.defaultPrevented || disabled) return
     event.preventDefault()
@@ -1226,20 +1903,61 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
       y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
     })
-  }
+  }, [disabled, onContextMenu])
+
+  const handleVisualInput = useCallback((event: React.FormEvent<HTMLDivElement>) => {
+    onInput?.(event as unknown as Parameters<NonNullable<typeof onInput>>[0])
+  }, [onInput])
+
+  const handleVisualClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    editorRef.current?.focus()
+  }, [])
+
+  const handleVisualFocus = useCallback((event: ReactFocusEvent<HTMLDivElement>) => {
+    onFocus?.(event as unknown as ReactFocusEvent<HTMLTextAreaElement>)
+  }, [onFocus])
+
+  const handleVisualBlur = useCallback((event: ReactFocusEvent<HTMLDivElement>) => {
+    flushVisualValue()
+    onBlur?.(event as unknown as ReactFocusEvent<HTMLTextAreaElement>)
+  }, [flushVisualValue, onBlur])
+
+  const handleVisualPaste = useCallback((event: ReactClipboardEvent<HTMLDivElement>) => {
+    onPaste?.(event as unknown as ReactClipboardEvent<HTMLTextAreaElement>)
+  }, [onPaste])
+
+  const handleLexicalReady = useCallback((editor: LexicalEditor | null) => {
+    editorRef.current = editor
+  }, [])
 
   const handleSourceChange = (nextValue: string) => {
     const source = sourceRef.current
     if (!source) return
-    const nextFormat = sourceFormatForValue(nextValue)
+    const nextFormat = sourceFormatForInput(
+      nextValue,
+      formatRef.current,
+      source.selectionStart ?? nextValue.length,
+    )
+    sourceDraftValueRef.current = nextValue
+    recentSourceValuesRef.current = [...recentSourceValuesRef.current.slice(-23), nextValue]
+    setSourceDraftValue(nextValue)
     updateSourceFormat(nextFormat)
     setSourceFormatError(false)
     lastFormattedSourceRef.current = ''
-    lastEmittedValueRef.current = mode === 'source' ? nextValue : null
     visualSyncValueRef.current = nextValue
     valueRef.current = nextValue
-    onChange({ target: source, currentTarget: source } as ChangeEvent<HTMLTextAreaElement>)
-    window.requestAnimationFrame(() => refreshSourceCompletions(nextValue))
+    queueSourceChange(nextValue)
+    const caret = source.selectionStart ?? nextValue.length
+    if (sourceCompletionMenu || sourceCompletionTrigger(nextValue, caret)) {
+      scheduleSourceCompletions(nextValue)
+    }
+    // Programmatic/test change events do not necessarily focus the native
+    // textarea first. Preserve the controlled-field contract for those paths;
+    // real typing stays on the local fast path while the source has focus.
+    if (typeof document === 'undefined' || document.activeElement !== source) {
+      flushSourceChange(true)
+    }
   }
 
   const handleSourceFocus = (event: ReactFocusEvent<HTMLTextAreaElement>) => {
@@ -1248,6 +1966,7 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
   }
 
   const handleSourceBlur = (event: ReactFocusEvent<HTMLTextAreaElement>) => {
+    flushSourceChange(true)
     onBlur?.(event)
     setSourceCompletionMenu(null)
     void runSourceFormatter(valueRef.current)
@@ -1259,13 +1978,14 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     '--markdown-editor-content-min-height': `${contentMinHeight}px`,
     '--markdown-editor-min-height': `${contentMinHeight}px`,
   } as CSSProperties
-  const sourceDisplayFormat = sourceFormatForValue(value)
+  const renderedValue = mode === 'source' ? sourceDraftValue : value
+  const sourceDisplayFormat = mode === 'source' ? formatRef.current : sourceFormatForValue(value)
   const formatLabel = sourceDisplayFormat === 'html' ? tx('markdown.html') : tx('markdown.markdown')
   const sourceLabel = mode === 'visual' ? tx('markdown.showSource') : tx('markdown.showRendered')
   const SourceIcon = mode === 'visual' ? Braces : Eye
   const sourceId = mode === 'source' ? id : id ? `${id}-source` : undefined
   const visualId = mode === 'visual' ? id : id ? `${id}-visual` : undefined
-  const needsFidelityPreview = richTextNeedsFidelityPreview(value, sourceDisplayFormat)
+  const needsFidelityPreview = mode === 'visual' && richTextNeedsFidelityPreview(renderedValue, sourceDisplayFormat)
   const editable = mode === 'visual' && !disabled && !readOnly && !needsFidelityPreview
   const sourceStatusMessage = sourceFormatting
     ? tx('markdown.formattingSource')
@@ -1277,6 +1997,107 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
     formatLabel,
     sourceFormatError ? tx('markdown.formatSourceFailed') : '',
   ].filter(Boolean).join(' · ')
+  const visualAriaDescribedBy = textareaProps['aria-describedby']
+  const visualSpellCheck = textareaProps.spellCheck
+
+  const visualEditorLayer = useMemo(() => (
+    <div
+      className={`markdown-lexical-layer ${needsFidelityPreview ? 'is-fidelity-hidden' : ''} ${previewClassName}`.trim()}
+      aria-hidden={mode !== 'visual' || needsFidelityPreview}
+    >
+      <LexicalComposer initialConfig={initialConfig}>
+        <RichTextPlugin
+          contentEditable={(
+            <ContentEditable
+              id={visualId}
+              aria-label={sourceAriaLabel}
+              aria-labelledby={sourceAriaLabelledBy}
+              aria-describedby={visualAriaDescribedBy}
+              aria-invalid={sourceAriaInvalid}
+              aria-required={sourceRequired}
+              aria-readonly={readOnly}
+              aria-disabled={disabled}
+              aria-placeholder={placeholder ?? ''}
+              placeholder={<span className="markdown-editor-placeholder">{placeholder ?? ''}</span>}
+              spellCheck={visualSpellCheck}
+              tabIndex={mode === 'visual' && !needsFidelityPreview ? tabIndex ?? 0 : -1}
+              onInput={handleVisualInput}
+              onClick={handleVisualClick}
+              onKeyDown={handleVisualKeyDown}
+              onFocus={handleVisualFocus}
+              onBlur={handleVisualBlur}
+              onPaste={handleVisualPaste}
+              onContextMenu={handleVisualContextMenu}
+            />
+          )}
+          placeholder={null}
+          ErrorBoundary={LexicalErrorBoundary}
+        />
+        <HistoryPlugin delay={420} />
+        <ListPlugin hasStrictIndent shouldPreserveNumbering />
+        <LinkPlugin validateUrl={(url) => Boolean(safeMarkdownHref(url))} attributes={{ target: '_blank', rel: 'noopener noreferrer' }} />
+        <MarkdownShortcutPlugin transformers={EDITOR_TRANSFORMERS} />
+        <MarkdownHardBreakPlugin formatRef={formatRef} />
+        <PasteFormattingPlugin
+          onDetectedFormat={updateSourceFormat}
+          preservePlainLineBreaks={preservePlainLineBreaks}
+        />
+        <MaxLengthPlugin maxLength={maxLength} />
+        <EditableStatePlugin editable={editable} />
+        <ExternalValuePlugin
+          value={value}
+          mode={mode}
+          preservePlainLineBreaks={preservePlainLineBreaks}
+          recentVisualValuesRef={recentVisualValuesRef}
+          syncToken={syncToken}
+          formatRef={formatRef}
+          lastEmittedValueRef={lastEmittedValueRef}
+          visualDirtyRef={visualDirtyRef}
+          visualSyncValueRef={visualSyncValueRef}
+        />
+        <BufferedOnChangePlugin
+          emitValue={emitVisualChange}
+          formatRef={formatRef}
+          lastEmittedValueRef={lastEmittedValueRef}
+          pendingFlushRef={pendingVisualFlushRef}
+          valueRef={valueRef}
+          visualDirtyRef={visualDirtyRef}
+        />
+        <LexicalBridgePlugin onReady={handleLexicalReady} />
+      </LexicalComposer>
+    </div>
+  ), [
+    disabled,
+    editable,
+    emitVisualChange,
+    handleLexicalReady,
+    handleVisualBlur,
+    handleVisualClick,
+    handleVisualContextMenu,
+    handleVisualFocus,
+    handleVisualInput,
+    handleVisualKeyDown,
+    handleVisualPaste,
+    initialConfig,
+    maxLength,
+    mode,
+    needsFidelityPreview,
+    placeholder,
+    preservePlainLineBreaks,
+    previewClassName,
+    readOnly,
+    sourceAriaInvalid,
+    sourceAriaLabel,
+    sourceAriaLabelledBy,
+    sourceRequired,
+    syncToken,
+    tabIndex,
+    visualAriaDescribedBy,
+    visualSpellCheck,
+    updateSourceFormat,
+    value,
+    visualId,
+  ])
 
   const contextMenuPortal = displayedContextMenu && typeof document !== 'undefined'
     ? createPortal(
@@ -1291,7 +2112,7 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
         <div className="markdown-context-menu-heading">{tx('markdown.formatting')}</div>
         {formatMenuItems.map((item) => {
           const Icon = item.icon
-          const shortcut = item.shortcut ? `${shortcutPrefix}${item.shortcut}` : ''
+          const shortcut = formatMenuShortcut(item, isMac)
           return (
             <button key={item.action} type="button" role="menuitem" onClick={() => applyFormatting(item.action)}>
               <Icon size={14} aria-hidden="true" />
@@ -1376,6 +2197,15 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
       className={`markdown-textarea ${mode}-mode ${disabled ? 'is-disabled' : ''} ${readOnly ? 'is-readonly' : ''} ${sourceFormatError ? 'has-source-format-error' : ''} ${className}`.trim()}
       data-format={sourceDisplayFormat}
       style={editorStyle}
+      onClick={(event) => {
+        // A Markdown editor is often placed inside a visual field label. A
+        // label's default activation must not turn a click on editor chrome
+        // or blank editor space into a click on the first toolbar button.
+        const target = event.target instanceof Element ? event.target : null
+        if (event.currentTarget.closest('label') && !target?.closest('button, a, input, textarea, select, [contenteditable="true"]')) {
+          event.preventDefault()
+        }
+      }}
     >
       <div className="markdown-mode-toolbar" role="toolbar" aria-label={tx('markdown.viewMode')}>
         {mode === 'source' ? (
@@ -1391,7 +2221,7 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
               onClick={() => { void runSourceFormatter(valueRef.current, true) }}
               aria-label={sourceFormatActionLabel}
               title={sourceFormatActionLabel}
-              disabled={disabled || readOnly || sourceFormatting || !value.trim()}
+              disabled={disabled || readOnly || sourceFormatting || !renderedValue.trim()}
             >
               {sourceFormatting
                 ? <LoaderCircle className="markdown-format-spinner" size={14} aria-hidden="true" />
@@ -1441,7 +2271,7 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
             textareaId={sourceId}
             textareaClassName="markdown-source-input"
             preClassName="markdown-source-highlight"
-            value={value}
+            value={sourceDraftValue}
             highlight={highlightSource}
             onValueChange={handleSourceChange}
             padding={{ top: 10, right: 116, bottom: 10, left: 12 }}
@@ -1459,12 +2289,23 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
             onKeyDown={(event) => {
               handleSourceKeyDown(event as unknown as ReactKeyboardEvent<HTMLTextAreaElement>)
             }}
-            onKeyUp={() => {
-              window.requestAnimationFrame(() => refreshSourceCompletions(valueRef.current))
+            onKeyUp={(event) => {
+              if (
+                event.key === 'ArrowDown'
+                || event.key === 'ArrowUp'
+                || event.key === 'ArrowLeft'
+                || event.key === 'ArrowRight'
+                || event.key === 'Home'
+                || event.key === 'End'
+                || event.key === 'PageUp'
+                || event.key === 'PageDown'
+                || event.key === 'Tab'
+                || event.shiftKey
+              ) {
+                scheduleSourceCompletions(valueRef.current)
+              }
             }}
-            onClick={() => {
-              window.requestAnimationFrame(() => refreshSourceCompletions(valueRef.current))
-            }}
+            onClick={() => scheduleSourceCompletions(valueRef.current)}
             onScroll={() => setSourceCompletionMenu(null)}
             onFocus={(event) => {
               handleSourceFocus(event as unknown as ReactFocusEvent<HTMLTextAreaElement>)
@@ -1475,78 +2316,13 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
           />
         </div>
 
-        <div
-          className={`markdown-lexical-layer ${needsFidelityPreview ? 'is-fidelity-hidden' : ''} ${previewClassName}`.trim()}
-          aria-hidden={mode !== 'visual' || needsFidelityPreview}
-        >
-          <LexicalComposer initialConfig={initialConfig}>
-            <RichTextPlugin
-              contentEditable={(
-                <ContentEditable
-                  id={visualId}
-                  aria-label={textareaProps['aria-label'] ?? placeholder}
-                  aria-labelledby={textareaProps['aria-labelledby']}
-                  aria-describedby={textareaProps['aria-describedby']}
-                  aria-invalid={textareaProps['aria-invalid']}
-                  aria-required={textareaProps.required}
-                  aria-readonly={readOnly}
-                  aria-disabled={disabled}
-                  aria-placeholder={placeholder ?? ''}
-                  placeholder={<span className="markdown-editor-placeholder">{placeholder ?? ''}</span>}
-                  spellCheck={textareaProps.spellCheck}
-                  tabIndex={mode === 'visual' && !needsFidelityPreview ? tabIndex ?? 0 : -1}
-                  onInput={(event) => onInput?.(event as unknown as Parameters<NonNullable<typeof onInput>>[0])}
-                  onClick={(event) => {
-                    event.preventDefault()
-                    editorRef.current?.focus()
-                  }}
-                  onKeyDown={handleVisualKeyDown}
-                  onFocus={(event) => onFocus?.(event as unknown as ReactFocusEvent<HTMLTextAreaElement>)}
-                  onBlur={(event) => {
-                    flushVisualValue()
-                    onBlur?.(event as unknown as ReactFocusEvent<HTMLTextAreaElement>)
-                  }}
-                  onPaste={(event) => onPaste?.(event as unknown as ReactClipboardEvent<HTMLTextAreaElement>)}
-                  onContextMenu={handleVisualContextMenu}
-                />
-              )}
-              placeholder={null}
-              ErrorBoundary={LexicalErrorBoundary}
-            />
-            <HistoryPlugin delay={420} />
-            <ListPlugin hasStrictIndent shouldPreserveNumbering />
-            <LinkPlugin validateUrl={(url) => Boolean(safeMarkdownHref(url))} attributes={{ target: '_blank', rel: 'noopener noreferrer' }} />
-            <MarkdownShortcutPlugin transformers={EDITOR_TRANSFORMERS} />
-            <MarkdownHardBreakPlugin formatRef={formatRef} />
-            <PasteFormattingPlugin onDetectedFormat={updateSourceFormat} />
-            <MaxLengthPlugin maxLength={maxLength} />
-            <EditableStatePlugin editable={editable} />
-            <ExternalValuePlugin
-              value={value}
-              mode={mode}
-              recentVisualValuesRef={recentVisualValuesRef}
-              syncToken={syncToken}
-              formatRef={formatRef}
-              lastEmittedValueRef={lastEmittedValueRef}
-              visualDirtyRef={visualDirtyRef}
-              visualSyncValueRef={visualSyncValueRef}
-            />
-            <BufferedOnChangePlugin
-              emitValue={emitVisualChange}
-              formatRef={formatRef}
-              lastEmittedValueRef={lastEmittedValueRef}
-              valueRef={valueRef}
-              visualDirtyRef={visualDirtyRef}
-            />
-            <LexicalBridgePlugin onReady={(editor) => { editorRef.current = editor }} />
-          </LexicalComposer>
-        </div>
+        {visualEditorLayer}
         {needsFidelityPreview ? (
           <div
             className={`markdown-fidelity-layer ${previewClassName}`.trim()}
             aria-hidden={mode !== 'visual'}
           >
-            <MarkdownContent value={value} format={sourceDisplayFormat} />
+            <MarkdownContent value={renderedValue} format={sourceDisplayFormat} />
           </div>
         ) : null}
       </div>

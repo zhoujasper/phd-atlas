@@ -7,6 +7,7 @@ import {
   findProgramById,
   getActivePrograms,
   getDiscoverCatalog,
+  listAllPis,
   listAllScoredPrograms,
   mergeDiscoverSourceIndexes,
   normalizeDiscoverSourceIndex,
@@ -117,6 +118,63 @@ describe('discover-catalog', () => {
     expect(ranked.every((p) => p.region === 'US' || p.matchScore >= 0)).toBe(true)
     expect(ranked.some((p) => p.id === 'prog_oxford_cs')).toBe(false)
     expect(ranked[0].matchScore).toBeGreaterThanOrEqual(ranked[ranked.length - 1].matchScore)
+  })
+
+  it('does not truncate ranked programs or advisors using legacy intake counts', () => {
+    const state = normalizeDiscoverState({
+      intake: { ...fixtureState().intake, nPrograms: 5, nPisPerProgram: 1 },
+      catalogSource: 'custom',
+      customPrograms: Array.from({ length: 7 }, (_, programIndex) => ({
+        id: `all-programs-${programIndex}`,
+        school: `Evidence University ${programIndex}`,
+        program: 'Computational Science PhD',
+        region: 'US',
+        website: `https://evidence-${programIndex}.edu/phd`,
+        sources: [`https://evidence-${programIndex}.edu/phd`],
+        provenance: 'ai',
+        verification: { status: 'verified', officialSourceCount: 1, advisorSourceCount: 3 },
+        pis: Array.from({ length: 3 }, (_, advisorIndex) => ({
+          name: `Researcher ${programIndex}-${advisorIndex}`,
+          url: `https://evidence-${programIndex}.edu/people/${advisorIndex}`,
+        })),
+      })),
+    })
+
+    const ranked = rankPrograms(state)
+    expect(ranked).toHaveLength(7)
+    expect(ranked.every((program) => program.pis.length === 3)).toBe(true)
+  })
+
+  it('ranks advisor rows with their verified profile overlap rather than the program score', () => {
+    const state = normalizeDiscoverState({
+      catalogSource: 'custom',
+      customPrograms: [{
+        id: 'profile-ranked',
+        school: 'Evidence University',
+        program: 'Computational Neuroscience PhD',
+        region: 'US',
+        website: 'https://evidence.edu/phd',
+        sources: ['https://evidence.edu/phd'],
+        provenance: 'ai',
+        verification: { status: 'verified', officialSourceCount: 1, advisorSourceCount: 1 },
+        pis: [{
+          name: 'Profile Matched Researcher',
+          url: 'https://evidence.edu/people/researcher',
+          profileMatch: {
+            score: 87,
+            confidence: 'high',
+            matchedInterests: ['neural dynamics'],
+            matchedMethods: ['graph learning'],
+            matchedResearchTerms: [],
+            evidenceUrl: 'https://evidence.edu/people/researcher',
+            checkedAt: '2026-08-09T00:00:00.000Z',
+            basis: 'applicant-profile+official-individual-profile',
+          },
+        }],
+      }],
+    })
+
+    expect(listAllPis(state)[0].matchScore).toBe(87)
   })
 
   it('shows only source-gated AI rows after an official-only research run', () => {
@@ -439,5 +497,18 @@ describe('discover-catalog', () => {
     expect(parsed.enrichments.not_a_real_id).toBeUndefined()
     expect(parsed.suggestedPrograms[0].school).toBe('AI Suggested U')
     expect(parsed.suggestedPrograms[0].stipendConfidence).toBe('unknown')
+  })
+
+  it('uses the final Discover object when a reasoning gateway emits another JSON object first', () => {
+    const parsed = parseAiResearchResponse([
+      'I will follow this schema:',
+      '{"type":"object","properties":{"summary":{"type":"string"}}}',
+      'Final answer:',
+      '{"summary":"Grounded result","enrichments":[],"suggestedPrograms":[{"school":"Evidence University","program":"Neuroscience PhD","website":"https://evidence.edu/phd"}]}',
+    ].join('\n'), [])
+
+    expect(parsed.summary).toBe('Grounded result')
+    expect(parsed.suggestedPrograms).toHaveLength(1)
+    expect(parsed.suggestedPrograms[0].school).toBe('Evidence University')
   })
 })

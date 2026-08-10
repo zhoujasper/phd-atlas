@@ -1,8 +1,11 @@
 import { startServiceWorkerUpdateChecks } from './serviceWorkerUpdateChecks'
+import { reloadPage } from './pageReload'
+import { dispatchSafeReloadBlocked, prepareForSafeReload } from './safeReload'
 
 let reloadingForServiceWorker = false
 let waitingRegistration: ServiceWorkerRegistration | null = null
 let updateActivationRequested = false
+let activatedUpdateAwaitingReload = false
 
 export const PWA_OFFLINE_SYNC_EVENT = 'phd-atlas:offline-sync-request'
 
@@ -43,7 +46,39 @@ function watchRegistration(registration: ServiceWorkerRegistration) {
   window.addEventListener('pagehide', handlePageHide)
 }
 
+async function reloadForActivatedServiceWorker() {
+  if (reloadingForServiceWorker) return
+  reloadingForServiceWorker = true
+
+  let allowed = false
+  try {
+    allowed = await prepareForSafeReload({ reason: 'application-update' })
+  } catch {
+    dispatchSafeReloadBlocked('application-update', 'prepare-failed')
+  }
+
+  if (!allowed) {
+    // The new controller is already active, so there will be no second
+    // controllerchange event. Keep an explicit retry state and re-announce the
+    // update after the resident draft has been saved or discarded.
+    activatedUpdateAwaitingReload = true
+    updateActivationRequested = false
+    reloadingForServiceWorker = false
+    window.dispatchEvent(new CustomEvent('phd-atlas:pwa-update-ready'))
+    return
+  }
+
+  activatedUpdateAwaitingReload = false
+  updateActivationRequested = false
+  reloadPage()
+}
+
 export function activatePwaUpdate() {
+  if (activatedUpdateAwaitingReload) {
+    updateActivationRequested = true
+    void reloadForActivatedServiceWorker()
+    return true
+  }
   const worker = waitingRegistration?.waiting
   if (!worker) return false
   updateActivationRequested = true
@@ -79,8 +114,8 @@ export function registerServiceWorker() {
 
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (!updateActivationRequested || reloadingForServiceWorker) return
-    reloadingForServiceWorker = true
-    window.location.reload()
+    activatedUpdateAwaitingReload = true
+    void reloadForActivatedServiceWorker()
   })
 
   navigator.serviceWorker.addEventListener('message', (event) => {

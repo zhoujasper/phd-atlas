@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 const currentFile = fileURLToPath(import.meta.url)
 const projectRoot = resolve(dirname(currentFile), '..')
-const apiHealthUrl = process.env.API_HEALTH_URL || 'http://127.0.0.1:4317/api/health'
+const apiHealthUrl = process.env.API_HEALTH_URL || 'http://127.0.0.1:4317/api/health/ready'
 export const defaultViteDevelopmentUrl = 'http://[::1]:5173/'
 const viteUrl = process.env.VITE_HEALTH_URL || defaultViteDevelopmentUrl
 const probeTimeoutMs = 2_000

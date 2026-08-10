@@ -1,3 +1,4 @@
+import '../../styles/school-logo.css'
 import clsx from 'clsx'
 import {
   Building2,

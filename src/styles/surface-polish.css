@@ -68,25 +68,56 @@
   gap: 8px;
 }
 
-/* Paired text actions form one visual control tier. Keep the primary action
-   from becoming taller or typographically louder than its cancel/secondary
-   peer, while allowing feature-specific and mobile rules to opt into a
-   different size through their normal, more-specific selectors. */
+/* Adjacent text actions form one visual control tier regardless of tone. Use
+   the shared standard height instead of letting primary/secondary/quiet base
+   variants bring different geometry into the same action row. Feature- and
+   mobile-specific minimums can still opt the complete row into another tier. */
 :where(
-  :has(> :where(button.primary-action, a.primary-action))
-  :has(> :where(
-    button.quiet-action,
-    a.quiet-action,
-    button.danger-action,
-    a.danger-action,
-    button.warning-action,
-    a.warning-action,
-    button.ghost-action,
-    a.ghost-action
-  ))
-) > :where(
+  :has(
+    > :where(
+      button.primary-action,
+      a.primary-action,
+      button.secondary-action,
+      a.secondary-action
+    ) ~ :where(
+      button.primary-action,
+      a.primary-action,
+      button.secondary-action,
+      a.secondary-action,
+      button.quiet-action,
+      a.quiet-action,
+      button.danger-action,
+      a.danger-action,
+      button.warning-action,
+      a.warning-action,
+      button.ghost-action,
+      a.ghost-action
+    ),
+    > :where(
+      button.primary-action,
+      a.primary-action,
+      button.secondary-action,
+      a.secondary-action,
+      button.quiet-action,
+      a.quiet-action,
+      button.danger-action,
+      a.danger-action,
+      button.warning-action,
+      a.warning-action,
+      button.ghost-action,
+      a.ghost-action
+    ) ~ :where(
+      button.primary-action,
+      a.primary-action,
+      button.secondary-action,
+      a.secondary-action
+    )
+  )
+) > :is(
   button.primary-action,
   a.primary-action,
+  button.secondary-action,
+  a.secondary-action,
   button.quiet-action,
   a.quiet-action,
   button.danger-action,
@@ -96,9 +127,8 @@
   button.ghost-action,
   a.ghost-action
 ) {
-  min-height: 32px;
-  height: 32px;
-  padding-inline: 12px;
+  min-height: var(--action-height);
+  padding-inline: var(--action-padding-inline);
   font-size: 12px;
   line-height: 1;
 }
@@ -228,9 +258,9 @@ html[lang^="ko"] .field-stack label > span,
 html[lang^="zh"] .textarea-field > span,
 html[lang^="ja"] .textarea-field > span,
 html[lang^="ko"] .textarea-field > span,
-html[lang^="zh"] .new-dialog label > span,
-html[lang^="ja"] .new-dialog label > span,
-html[lang^="ko"] .new-dialog label > span,
+html[lang^="zh"] .new-dialog :is(label, .wide) > span,
+html[lang^="ja"] .new-dialog :is(label, .wide) > span,
+html[lang^="ko"] .new-dialog :is(label, .wide) > span,
 html[lang^="zh"] .settings-lines > label > span,
 html[lang^="ja"] .settings-lines > label > span,
 html[lang^="ko"] .settings-lines > label > span,
@@ -443,14 +473,64 @@ html[lang^="th"] .ghost-action {
   border-radius: var(--radius-sm);
 }
 
-/* Text fields keep a calm focus treatment (border + soft ring) */
+/* Text fields wear the accent focus ring — one shared treatment everywhere, so
+   a tag box, a profile field, and a Markdown editor all light up the same way
+   instead of some getting a neutral grey halo. */
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible,
 [contenteditable="true"]:focus-visible {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 8%, transparent);
-  border-color: var(--border-strong);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  border-color: var(--accent);
   outline: none;
+}
+
+/* ── Live field validity ────────────────────────────────────────────────── */
+
+/* The counterpart to the focus ring: one shared treatment for a field whose
+   current value cannot be what the person meant. `:user-invalid` is the whole
+   point — it stays quiet until someone has actually typed in or left the field,
+   so an untouched required field is never scolded for being empty, and the
+   moment the value becomes valid the styling simply stops applying.
+   Everything here is transitioned rather than keyframed, which is what makes it
+   fade in as the value goes wrong and fade back out as it is corrected, in both
+   directions, interruptibly. Fields opt out with `data-validity-quiet`. */
+input,
+textarea,
+select {
+  transition:
+    border-color var(--duration) var(--ease-out),
+    box-shadow var(--duration) var(--ease-out),
+    background-color var(--duration) var(--ease-out);
+}
+
+:is(input, textarea, select):user-invalid:not([data-validity-quiet]) {
+  border-color: color-mix(in srgb, var(--danger) 52%, var(--border-strong));
+  background-color: color-mix(in srgb, var(--danger) 4%, var(--surface));
+}
+
+/* Focused, the ring reads as danger rather than accent, so the field does not
+   change meaning the moment the caret lands in it. */
+:is(input, textarea, select):user-invalid:not([data-validity-quiet]):focus-visible {
+  border-color: color-mix(in srgb, var(--danger) 72%, var(--border-strong));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 16%, transparent);
+  outline: none;
+}
+
+/* The label above it leans the same way, so the eye finds the field from the
+   column of labels without reading every box. */
+label:has(> * :is(input, textarea, select):user-invalid:not([data-validity-quiet])) > span,
+label:has(> :is(input, textarea, select):user-invalid:not([data-validity-quiet])) > span {
+  color: var(--danger-text);
+  transition: color var(--duration) var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  input,
+  textarea,
+  select {
+    transition: none;
+  }
 }
 
 /* Composite search controls own their focus surface. Do not draw a second
@@ -460,15 +540,23 @@ select:focus-visible,
 .team-search-field:focus-within,
 .team-member-search:focus-within,
 .team-teacher-picker-search:focus-within {
-  border-color: var(--border-strong);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 7%, transparent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
+/* Shells that already draw their own :focus-within frame must not stack a
+   second ring on the borderless field nested inside them. */
 .search-field input:focus-visible,
 .owner-picker-search input:focus-visible,
 .team-search-field input:focus-visible,
 .team-member-search input:focus-visible,
-.team-teacher-picker-search input:focus-visible {
+.team-teacher-picker-search input:focus-visible,
+.date-picker-time-field input:focus-visible,
+.checklist-add-bar input:focus-visible,
+.checklist-add-bar textarea:focus-visible,
+.scholarship-row-title-editor textarea:focus-visible,
+.markdown-textarea textarea:focus-visible,
+.markdown-textarea [contenteditable="true"]:focus-visible {
   border-color: transparent;
   box-shadow: none;
 }
@@ -541,7 +629,7 @@ select:focus-visible,
 /* Open selects keep a light field-style ring (they behave like inputs) */
 .custom-select-trigger.open {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.10);
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 /* Editing scholarship shell: calm elevation, not a permanent blue halo */

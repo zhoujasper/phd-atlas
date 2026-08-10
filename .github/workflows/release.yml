@@ -191,6 +191,111 @@ jobs:
           )
           echo "PACKAGE_PATH=$package_path" >> "$GITHUB_ENV"
 
+      - name: Build a differential update from the previous compatible Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "DELTA_PATH=" >> "$GITHUB_ENV"
+          echo "DELTA_BASE_VERSION=" >> "$GITHUB_ENV"
+          releases_json="$RUNNER_TEMP/phd-atlas-previous-releases.json"
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$releases_json"
+          selection_json="$RUNNER_TEMP/phd-atlas-delta-base.json"
+          RELEASES_JSON="$releases_json" CURRENT_VERSION="$PACKAGE_VERSION" \
+            node --input-type=module > "$selection_json" <<'NODE'
+          import fs from 'node:fs'
+          import { compareSemanticVersions } from './server/systemUpdate.js'
+
+          const pages = JSON.parse(fs.readFileSync(process.env.RELEASES_JSON, 'utf8'))
+          const current = process.env.CURRENT_VERSION
+          const stableTarget = !current.includes('-')
+          const targetPrereleaseChannel = stableTarget
+            ? ''
+            : current.slice(current.indexOf('-') + 1).split('.')[0]
+          const candidates = pages.flat().flatMap((release) => {
+            if (release.draft || !String(release.tag_name || '').startsWith('v')) return []
+            const version = String(release.tag_name).slice(1)
+            try {
+              if (compareSemanticVersions(version, current) >= 0) return []
+            } catch {
+              return []
+            }
+            if (stableTarget && release.prerelease) return []
+            if (!stableTarget) {
+              const candidateChannel = version.includes('-')
+                ? version.slice(version.indexOf('-') + 1).split('.')[0]
+                : ''
+              if (!release.prerelease || candidateChannel !== targetPrereleaseChannel) return []
+            }
+            const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            const packagePattern = new RegExp(`^phd-atlas-update-${escaped}-.+\\.tar\\.gz$`)
+            const packages = (release.assets || []).filter((asset) => packagePattern.test(asset.name))
+            if (packages.length !== 1) return []
+            const checksums = (release.assets || []).filter(
+              (asset) => asset.name === `${packages[0].name}.sha256`,
+            )
+            if (checksums.length !== 1) return []
+            return [{
+              version,
+              packageName: packages[0].name,
+              packageId: packages[0].id,
+              checksumName: checksums[0].name,
+              checksumId: checksums[0].id,
+            }]
+          }).sort((left, right) => compareSemanticVersions(right.version, left.version))
+          if (candidates[0]) process.stdout.write(JSON.stringify(candidates[0]))
+          NODE
+          if [ ! -s "$selection_json" ]; then
+            echo "No compatible previous Release package is available; publishing the complete package only."
+            exit 0
+          fi
+
+          base_version="$(jq -r '.version' "$selection_json")"
+          base_package_name="$(jq -r '.packageName' "$selection_json")"
+          base_package_id="$(jq -r '.packageId' "$selection_json")"
+          base_checksum_name="$(jq -r '.checksumName' "$selection_json")"
+          base_checksum_id="$(jq -r '.checksumId' "$selection_json")"
+          if ! [[ "$base_package_id" =~ ^[0-9]+$ && "$base_checksum_id" =~ ^[0-9]+$ ]]; then
+            echo "::error title=Invalid differential base::The previous Release asset IDs are invalid."
+            exit 1
+          fi
+          base_dir="$RUNNER_TEMP/phd-atlas-delta-base"
+          mkdir -p "$base_dir"
+          gh api --header 'Accept: application/octet-stream' \
+            "repos/${GITHUB_REPOSITORY}/releases/assets/${base_package_id}" \
+            > "$base_dir/$base_package_name"
+          gh api --header 'Accept: application/octet-stream' \
+            "repos/${GITHUB_REPOSITORY}/releases/assets/${base_checksum_id}" \
+            > "$base_dir/$base_checksum_name"
+          (
+            cd "$base_dir"
+            sha256sum --check "$base_checksum_name"
+          )
+
+          node tools/build-update-delta.mjs "$base_dir/$base_package_name" "$PACKAGE_PATH"
+          delta_path="storage/update-packages/phd-atlas-delta-${base_version}-to-${PACKAGE_VERSION}-release.tar.gz"
+          if [ ! -f "$delta_path" ] || [ ! -f "${delta_path}.sha256" ]; then
+            echo "::error title=Missing differential assets::The delta package or checksum was not produced."
+            exit 1
+          fi
+          first_delta="$RUNNER_TEMP/$(basename "$delta_path").first"
+          first_delta_checksum="${first_delta}.sha256"
+          cp "$delta_path" "$first_delta"
+          cp "${delta_path}.sha256" "$first_delta_checksum"
+          node tools/build-update-delta.mjs "$base_dir/$base_package_name" "$PACKAGE_PATH"
+          cmp --silent "$first_delta" "$delta_path"
+          cmp --silent "$first_delta_checksum" "${delta_path}.sha256"
+          node tools/verify-update-delta.mjs "$base_dir/$base_package_name" "$delta_path"
+          if [ "$(stat -c '%s' "$delta_path")" -ge "$(stat -c '%s' "$PACKAGE_PATH")" ]; then
+            echo "The differential package is not smaller than the complete package; omitting it."
+            rm -f "$delta_path" "${delta_path}.sha256"
+            exit 0
+          fi
+          echo "DELTA_PATH=$delta_path" >> "$GITHUB_ENV"
+          echo "DELTA_BASE_VERSION=$base_version" >> "$GITHUB_ENV"
+
       - name: Prepare an idempotent Draft Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -200,6 +305,18 @@ jobs:
           package_name="$(basename "$PACKAGE_PATH")"
           checksum_name="${package_name}.sha256"
           version_prefix="phd-atlas-update-${PACKAGE_VERSION}-"
+          delta_suffix="-to-${PACKAGE_VERSION}-release.tar.gz"
+          delta_checksum_suffix="${delta_suffix}.sha256"
+          delta_name=""
+          delta_checksum_name=""
+          asset_paths=("$PACKAGE_PATH" "${PACKAGE_PATH}.sha256")
+          asset_names=("$package_name" "$checksum_name")
+          if [[ -n "${DELTA_PATH:-}" ]]; then
+            delta_name="$(basename "$DELTA_PATH")"
+            delta_checksum_name="${delta_name}.sha256"
+            asset_paths+=("$DELTA_PATH" "${DELTA_PATH}.sha256")
+            asset_names+=("$delta_name" "$delta_checksum_name")
+          fi
           expected_prerelease=false
           channel_args=()
           if [[ "${PACKAGE_VERSION%%+*}" == *-* ]]; then
@@ -231,8 +348,7 @@ jobs:
 
           if ! load_release_by_tag; then
             gh release create "$GITHUB_REF_NAME" \
-              "$PACKAGE_PATH" \
-              "${PACKAGE_PATH}.sha256" \
+              "${asset_paths[@]}" \
               --draft \
               --verify-tag \
               --notes-file "$RELEASE_NOTES_PATH" \
@@ -282,16 +398,33 @@ jobs:
 
           unexpected_assets="$(jq -r \
             --arg prefix "$version_prefix" \
+            --arg delta_suffix "$delta_suffix" \
+            --arg delta_checksum_suffix "$delta_checksum_suffix" \
             --arg package "$package_name" \
             --arg checksum "$checksum_name" \
-            '.assets[].name | select(startswith($prefix) and . != $package and . != $checksum)' \
+            --arg delta "$delta_name" \
+            --arg delta_checksum "$delta_checksum_name" \
+            '.assets[].name | select(
+              (
+                startswith($prefix)
+                or (
+                  startswith("phd-atlas-delta-")
+                  and (endswith($delta_suffix) or endswith($delta_checksum_suffix))
+                )
+              )
+              and . != $package
+              and . != $checksum
+              and . != $delta
+              and . != $delta_checksum
+            )' \
             "$release_json")"
           if [[ -n "$unexpected_assets" ]]; then
             echo "::error title=Unexpected release assets::Refusing to remove or overwrite existing version assets: $unexpected_assets"
             exit 1
           fi
 
-          for asset_name in "$package_name" "$checksum_name"; do
+          for asset_index in "${!asset_names[@]}"; do
+            asset_name="${asset_names[$asset_index]}"
             asset_count="$(jq -r --arg name "$asset_name" '[.assets[] | select(.name == $name)] | length' "$release_json")"
             if [[ "$asset_count" -gt 1 ]]; then
               echo "::error title=Duplicate release asset::Release contains more than one '$asset_name'."
@@ -302,11 +435,10 @@ jobs:
                 echo "::error title=Published Release is incomplete::Refusing to mutate a public Release that is missing '$asset_name'."
                 exit 1
               fi
-              if [[ "$asset_name" == "$package_name" ]]; then
-                asset_path="$PACKAGE_PATH"
+              asset_path="${asset_paths[$asset_index]}"
+              if [[ "$asset_name" == *.tar.gz ]]; then
                 content_type="application/gzip"
               else
-                asset_path="${PACKAGE_PATH}.sha256"
                 content_type="text/plain"
               fi
               gh api \
@@ -341,19 +473,21 @@ jobs:
               --header 'Accept: application/octet-stream' \
               "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > "$output_path"
           }
-          download_release_asset "$package_name" "$remote_dir/$package_name"
-          download_release_asset "$checksum_name" "$remote_dir/$checksum_name"
-          if ! cmp --silent "$PACKAGE_PATH" "$remote_dir/$package_name"; then
-            echo "::error title=Immutable release asset mismatch::The existing update package differs from this tagged source."
-            exit 1
-          fi
-          if ! cmp --silent "${PACKAGE_PATH}.sha256" "$remote_dir/$checksum_name"; then
-            echo "::error title=Immutable checksum mismatch::The existing checksum differs from this tagged source."
-            exit 1
-          fi
+          for asset_index in "${!asset_names[@]}"; do
+            asset_name="${asset_names[$asset_index]}"
+            asset_path="${asset_paths[$asset_index]}"
+            download_release_asset "$asset_name" "$remote_dir/$asset_name"
+            if ! cmp --silent "$asset_path" "$remote_dir/$asset_name"; then
+              echo "::error title=Immutable release asset mismatch::Existing '$asset_name' differs from this tagged source."
+              exit 1
+            fi
+          done
           (
             cd "$remote_dir"
             sha256sum --check "$checksum_name"
+            if [[ -n "$delta_checksum_name" ]]; then
+              sha256sum --check "$delta_checksum_name"
+            fi
           )
 
       - name: Set up QEMU
@@ -543,8 +677,8 @@ jobs:
             "${REGISTRY}/${IMAGE_NAME}:${PACKAGE_VERSION}" \
             official
 
-      - name: Decide whether this version may move the beta channel
-        id: beta_channel
+      - name: Decide whether this version may move a release channel
+        id: release_channel
         shell: bash
         run: |
           set -euo pipefail
@@ -557,6 +691,7 @@ jobs:
           const current = process.env.PACKAGE_VERSION
           const prerelease = current.includes('-') ? current.slice(current.indexOf('-') + 1) : ''
           const isBeta = prerelease.split('.')[0] === 'beta'
+          const isStable = !prerelease
           const tags = execFileSync('git', ['tag', '--list', 'v*'], { encoding: 'utf8' })
             .split(/\r?\n/)
             .filter(Boolean)
@@ -568,41 +703,67 @@ jobs:
           const higherBeta = isBeta
             ? betaVersions.find((version) => compareSemanticVersions(version, current) > 0)
             : undefined
-          const promote = isBeta && !higherBeta
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `promote=${promote}\n`)
-          console.log(
-            promote
-              ? `${current} is the highest tagged beta and may move :beta.`
-              : higherBeta
-                ? `Skipping :beta because the higher ${higherBeta} tag already exists.`
-                : `${current} is not a beta-channel version.`,
-          )
+          const stableVersions = tags.filter((version) => !version.includes('-'))
+          const higherStable = isStable
+            ? stableVersions.find((version) => compareSemanticVersions(version, current) > 0)
+            : undefined
+          const promoteBeta = isBeta && !higherBeta
+          const promoteStable = isStable && !higherStable
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `promote_beta=${promoteBeta}\n`)
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `promote_stable=${promoteStable}\n`)
+          if (promoteBeta) {
+            console.log(`${current} is the highest tagged beta and may move :beta.`)
+          } else if (higherBeta) {
+            console.log(`Skipping :beta because the higher ${higherBeta} tag already exists.`)
+          }
+          if (promoteStable) {
+            console.log(`${current} is the highest tagged stable release and may move :stable and :latest.`)
+          } else if (higherStable) {
+            console.log(`Skipping stable channels because the higher ${higherStable} tag already exists.`)
+          }
+          if (!isBeta && !isStable) console.log(`${current} does not own a moving release channel.`)
           NODE
 
-      - name: Log in to promote the beta channel
-        if: steps.beta_channel.outputs.promote == 'true'
+      - name: Log in to promote release channels
+        if: steps.release_channel.outputs.promote_beta == 'true' || steps.release_channel.outputs.promote_stable == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Promote the validated digest to beta and latest
-        if: steps.beta_channel.outputs.promote == 'true'
+      - name: Promote the validated digest to beta
+        if: steps.release_channel.outputs.promote_beta == 'true'
         shell: bash
         run: |
           set -euo pipefail
           docker buildx imagetools create \
             --tag "${REGISTRY}/${IMAGE_NAME}:beta" \
-            --tag "${REGISTRY}/${IMAGE_NAME}:latest" \
             "${REGISTRY}/${IMAGE_NAME}@${RELEASE_IMAGE_DIGEST}"
-          docker logout "$REGISTRY"
           bash tools/wait-for-container-digest.sh \
             "${REGISTRY}/${IMAGE_NAME}:beta" \
+            "$RELEASE_IMAGE_DIGEST"
+
+      - name: Promote the validated digest to stable and latest
+        if: steps.release_channel.outputs.promote_stable == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${REGISTRY}/${IMAGE_NAME}:stable" \
+            --tag "${REGISTRY}/${IMAGE_NAME}:latest" \
+            "${REGISTRY}/${IMAGE_NAME}@${RELEASE_IMAGE_DIGEST}"
+          bash tools/wait-for-container-digest.sh \
+            "${REGISTRY}/${IMAGE_NAME}:stable" \
             "$RELEASE_IMAGE_DIGEST"
           bash tools/wait-for-container-digest.sh \
             "${REGISTRY}/${IMAGE_NAME}:latest" \
             "$RELEASE_IMAGE_DIGEST"
+
+      - name: Remove release-channel promotion credentials
+        if: steps.release_channel.outputs.promote_beta == 'true' || steps.release_channel.outputs.promote_stable == 'true'
+        shell: bash
+        run: docker logout "$REGISTRY"
 
       - name: Revalidate assets and publish the Release
         env:
@@ -613,6 +774,18 @@ jobs:
           package_name="$(basename "$PACKAGE_PATH")"
           checksum_name="${package_name}.sha256"
           version_prefix="phd-atlas-update-${PACKAGE_VERSION}-"
+          delta_suffix="-to-${PACKAGE_VERSION}-release.tar.gz"
+          delta_checksum_suffix="${delta_suffix}.sha256"
+          delta_name=""
+          delta_checksum_name=""
+          asset_paths=("$PACKAGE_PATH" "${PACKAGE_PATH}.sha256")
+          asset_names=("$package_name" "$checksum_name")
+          if [[ -n "${DELTA_PATH:-}" ]]; then
+            delta_name="$(basename "$DELTA_PATH")"
+            delta_checksum_name="${delta_name}.sha256"
+            asset_paths+=("$DELTA_PATH" "${DELTA_PATH}.sha256")
+            asset_names+=("$delta_name" "$delta_checksum_name")
+          fi
           expected_prerelease=false
           if [[ "${PACKAGE_VERSION%%+*}" == *-* ]]; then
             expected_prerelease=true
@@ -627,8 +800,12 @@ jobs:
           RELEASE_JSON="$release_json" \
           EXPECTED_PACKAGE_NAME="$package_name" \
           EXPECTED_CHECKSUM_NAME="$checksum_name" \
+          EXPECTED_DELTA_NAME="$delta_name" \
+          EXPECTED_DELTA_CHECKSUM_NAME="$delta_checksum_name" \
           EXPECTED_PRERELEASE="$expected_prerelease" \
           VERSION_PREFIX="$version_prefix" \
+          DELTA_SUFFIX="$delta_suffix" \
+          DELTA_CHECKSUM_SUFFIX="$delta_checksum_suffix" \
           node <<'NODE'
           const fs = require('node:fs')
           const payload = JSON.parse(fs.readFileSync(process.env.RELEASE_JSON, 'utf8'))
@@ -639,13 +816,27 @@ jobs:
             throw new Error('Release metadata does not match its canonical SemVer tag/channel.')
           }
           const names = (payload.assets || []).map((asset) => asset.name)
-          const versionNames = names.filter((name) => name.startsWith(process.env.VERSION_PREFIX))
-          const expected = [process.env.EXPECTED_PACKAGE_NAME, process.env.EXPECTED_CHECKSUM_NAME].sort()
+          const versionNames = names.filter((name) => (
+            name.startsWith(process.env.VERSION_PREFIX)
+            || (
+              name.startsWith('phd-atlas-delta-')
+              && (
+                name.endsWith(process.env.DELTA_SUFFIX)
+                || name.endsWith(process.env.DELTA_CHECKSUM_SUFFIX)
+              )
+            )
+          ))
+          const expected = [
+            process.env.EXPECTED_PACKAGE_NAME,
+            process.env.EXPECTED_CHECKSUM_NAME,
+            process.env.EXPECTED_DELTA_NAME,
+            process.env.EXPECTED_DELTA_CHECKSUM_NAME,
+          ].filter(Boolean).sort()
           if (
-            versionNames.length !== 2
+            versionNames.length !== expected.length
             || JSON.stringify([...versionNames].sort()) !== JSON.stringify(expected)
           ) {
-            throw new Error(`Release must contain exactly one immutable package/checksum pair. Found: ${names.join(', ')}`)
+            throw new Error(`Release update assets do not match the immutable full/delta set. Found: ${names.join(', ')}`)
           }
           NODE
 
@@ -668,13 +859,18 @@ jobs:
               --header 'Accept: application/octet-stream' \
               "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > "$output_path"
           }
-          download_release_asset "$package_name" "$remote_dir/$package_name"
-          download_release_asset "$checksum_name" "$remote_dir/$checksum_name"
-          cmp --silent "$PACKAGE_PATH" "$remote_dir/$package_name"
-          cmp --silent "${PACKAGE_PATH}.sha256" "$remote_dir/$checksum_name"
+          for asset_index in "${!asset_names[@]}"; do
+            asset_name="${asset_names[$asset_index]}"
+            asset_path="${asset_paths[$asset_index]}"
+            download_release_asset "$asset_name" "$remote_dir/$asset_name"
+            cmp --silent "$asset_path" "$remote_dir/$asset_name"
+          done
           (
             cd "$remote_dir"
             sha256sum --check "$checksum_name"
+            if [[ -n "$delta_checksum_name" ]]; then
+              sha256sum --check "$delta_checksum_name"
+            fi
           )
 
           published_json="$RUNNER_TEMP/phd-atlas-release-published.json"

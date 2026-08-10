@@ -1,5 +1,33 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeSharePermission, normalizeShareSections, shareSections } from './applications'
+import {
+  applications,
+  normalizeApplicationRecord,
+  normalizeSharePermission,
+  normalizeShareSections,
+  shareSections,
+} from './applications'
+
+describe('normalizeApplicationRecord', () => {
+  it('preserves the identity of current records so unrelated rows stay memo-stable', () => {
+    const current = normalizeApplicationRecord(structuredClone(applications[0]))
+
+    expect(normalizeApplicationRecord(current)).toBe(current)
+  })
+
+  it('repairs legacy optional fields without mutating the source record', () => {
+    const legacy = {
+      ...structuredClone(applications[0]),
+      result: undefined,
+      reviewComments: undefined,
+    } as unknown as typeof applications[number]
+
+    const normalized = normalizeApplicationRecord(legacy)
+
+    expect(normalized).not.toBe(legacy)
+    expect(normalized.result).toBe('')
+    expect(normalized.reviewComments).toEqual([])
+  })
+})
 
 describe('normalizeSharePermission', () => {
   it('keeps supported share permissions', () => {

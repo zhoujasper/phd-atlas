@@ -23,6 +23,7 @@
     "resetPassword",
     "admin",
     "tour",
-    "pdfExport"
+    "pdfExport",
+    "interview"
   ]
 }

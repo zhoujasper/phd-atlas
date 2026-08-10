@@ -1,3 +1,4 @@
+import '../../styles/dashboard-guidance.css'
 import {
   useCallback,
   useEffect,
@@ -60,6 +61,8 @@ import { CollapsiblePanel } from '../shared/CollapsiblePanel'
 import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/ExplorerContextMenu'
 import { AnchoredPopover } from '../shared/AnchoredPopover'
 import { GuidanceMessageDialog } from '../shared/GuidanceMessageDialog'
+import { InfoTooltip } from '../shared/InfoTooltip'
+import type { ResidentDraftScope } from '../shared/residentCommunicationDraftStorage'
 import { ProjectFooter } from '../shared/ProjectFooter'
 import { safeExternalHttpUrl, safeMailtoHref, safeTelHref } from '../../safeLinks'
 
@@ -177,9 +180,57 @@ type DashboardDeadlineItem = {
   applicationId: string
   schoolName: string
   program: string
-  label: string
+  label: DashboardDeadlineLabel
   date: string
   jump: DashboardJumpTarget
+}
+
+type DashboardDeadlineLabelKind =
+  | 'application'
+  | 'material'
+  | 'task'
+  | 'scholarship'
+  | 'scholarshipMaterial'
+  | 'scholarshipTask'
+
+type DashboardDeadlineLabel = {
+  kind: DashboardDeadlineLabelKind
+  name?: string
+}
+
+function formatDashboardDeadlineLabel(
+  label: DashboardDeadlineLabel,
+  tx: (path: string, fallback?: string) => string,
+  format: (template: string, values: Record<string, string | number>) => string,
+  lang: Parameters<typeof localizeStaticText>[1],
+) {
+  const localize = (value: string) => localizeStaticText(value, lang)
+  switch (label.kind) {
+    case 'application':
+      return tx('dashboard.deadlineKindApplication', 'Application deadline')
+    case 'material':
+      return format(tx('dashboard.deadlineKindMaterial', 'Checklist · {name}'), {
+        name: localize(label.name ?? ''),
+      })
+    case 'task':
+      return format(tx('dashboard.deadlineKindTask', 'Task · {name}'), {
+        name: localize(label.name ?? ''),
+      })
+    case 'scholarship':
+      return format(tx('dashboard.deadlineKindScholarship', 'Funding · {name}'), {
+        name: localize(label.name ?? ''),
+      })
+    case 'scholarshipMaterial':
+      return format(tx('dashboard.deadlineKindScholarshipMaterial', 'Funding material · {name}'), {
+        name: localize(label.name ?? ''),
+      })
+    case 'scholarshipTask':
+      return format(tx('dashboard.deadlineKindScholarshipTask', 'Funding task · {name}'), {
+        name: localize(label.name ?? ''),
+      })
+    default:
+      return ''
+  }
 }
 
 type DashboardChecklistScope = 'application' | 'scholarship'
@@ -337,6 +388,7 @@ export function Dashboard({
   onNew,
   onOpenDiscover,
   guidanceTeam,
+  guidanceDraftScope,
   onSendGuidanceMessage,
   ownerNames,
   ownerDirectory,
@@ -374,6 +426,8 @@ export function Dashboard({
   onOpenDiscover?: () => void
   /** Student-only, permission-scoped organization contacts shown on the personal dashboard. */
   guidanceTeam?: DashboardGuidanceTeam
+  /** Account and Team boundary for crash-safe guidance message drafts. */
+  guidanceDraftScope?: ResidentDraftScope
   /** Student-only direct message to an assigned teacher or organization owner. */
   onSendGuidanceMessage?: (memberId: string, title: string, body: string) => Promise<void>
   // applicationId -> owner display name, populated only when this Dashboard is showing the
@@ -397,7 +451,7 @@ export function Dashboard({
   const [openPanels, setOpenPanels] = useState<Record<DashboardPanelKey, boolean>>(dashboardPanelDefaults)
   const [expandedGuidanceMemberId, setExpandedGuidanceMemberId] = useState<string | null>(null)
   const [guidanceVisibleCount, setGuidanceVisibleCount] = useState(DASHBOARD_GUIDANCE_INITIAL_COUNT)
-  const [guidanceComposerMember, setGuidanceComposerMember] = useState<DashboardGuidanceMember | null>(null)
+  const [guidanceComposerMemberId, setGuidanceComposerMemberId] = useState<string | null>(null)
   const [contextMenu, setContextMenu] = useState<ExplorerContextMenuState | null>(null)
   const [deadlineDetailed, setDeadlineDetailed] = useState(loadDeadlineDetailMode)
   const [renderedDeadlineDetailed, setRenderedDeadlineDetailed] = useState(deadlineDetailed)
@@ -437,6 +491,9 @@ export function Dashboard({
   const hasMoreGuidanceMembers = Boolean(
     guidanceTeam && guidanceVisibleCount < guidanceTeam.members.length,
   )
+  const guidanceComposerMember = guidanceComposerMemberId
+    ? guidanceTeam?.members.find((member) => member.id === guidanceComposerMemberId) ?? null
+    : null
   const localize = (value: string) => localizeStaticText(value, lang)
   const versionLabel = (version: string) => version.startsWith('v') ? version : `v${version}`
   const professorDisplayName = (application: ApplicationRecord) =>
@@ -715,7 +772,6 @@ export function Dashboard({
   // Detailed mode: every in-app deadline (tasks, materials, scholarships…), not just the main DDL.
   const upcomingDetailed = useMemo(() => {
     if (!deadlinesReady) return [] as DashboardDeadlineItem[]
-    const localize = (value: string) => localizeStaticText(value, lang)
     const items: DashboardDeadlineItem[] = []
 
     for (const application of applications) {
@@ -729,7 +785,7 @@ export function Dashboard({
           applicationId: application.id,
           schoolName,
           program,
-          label: tx('dashboard.deadlineKindApplication', 'Application deadline'),
+          label: { kind: 'application' },
           date: application.deadline,
           jump: dossierJumpTarget,
         })
@@ -743,7 +799,7 @@ export function Dashboard({
           applicationId: application.id,
           schoolName,
           program,
-          label: format(tx('dashboard.deadlineKindMaterial', 'Checklist · {name}'), { name: localize(material.name) }),
+          label: { kind: 'material', name: material.name },
           date: material.reminderDate!,
           jump: checklistJumpTarget('material', material.id),
         })
@@ -757,7 +813,7 @@ export function Dashboard({
           applicationId: application.id,
           schoolName,
           program,
-          label: format(tx('dashboard.deadlineKindTask', 'Task · {name}'), { name: localize(task.title) }),
+          label: { kind: 'task', name: task.title },
           date: task.due,
           jump: checklistJumpTarget('task', task.id),
         })
@@ -770,7 +826,7 @@ export function Dashboard({
             applicationId: application.id,
             schoolName,
             program,
-            label: format(tx('dashboard.deadlineKindScholarship', 'Funding · {name}'), { name: localize(scholarship.name) }),
+            label: { kind: 'scholarship', name: scholarship.name },
             date: scholarship.endDate,
             jump: fundingJumpTarget(scholarship.id),
           })
@@ -782,9 +838,7 @@ export function Dashboard({
             applicationId: application.id,
             schoolName,
             program,
-            label: format(tx('dashboard.deadlineKindScholarshipMaterial', 'Funding material · {name}'), {
-              name: localize(material.name),
-            }),
+            label: { kind: 'scholarshipMaterial', name: material.name },
             date: material.due!,
             jump: fundingJumpTarget(scholarship.id),
           })
@@ -796,9 +850,7 @@ export function Dashboard({
             applicationId: application.id,
             schoolName,
             program,
-            label: format(tx('dashboard.deadlineKindScholarshipTask', 'Funding task · {name}'), {
-              name: localize(task.title),
-            }),
+            label: { kind: 'scholarshipTask', name: task.title },
             date: task.due,
             jump: fundingJumpTarget(scholarship.id),
           })
@@ -807,7 +859,7 @@ export function Dashboard({
     }
 
     return items.sort((a, b) => a.date.localeCompare(b.date) || a.schoolName.localeCompare(b.schoolName))
-  }, [applications, deadlinesReady, format, lang, tx])
+  }, [applications, deadlinesReady])
 
   const deadlineTotalCount = renderedDeadlineDetailed ? upcomingDetailed.length : upcomingSummary.length
   const visibleDetailedDeadlines = useMemo(
@@ -1804,7 +1856,9 @@ export function Dashboard({
                   >
                     <div className="stat-task-expired-clip">
                       <ul className="stat-task-expired-list">
-                        {expiredTaskItems.map((item) => renderTaskRow(item))}
+                        {showExpiredTasks
+                          ? expiredTaskItems.map((item) => renderTaskRow(item))
+                          : null}
                       </ul>
                     </div>
                   </li>
@@ -1954,7 +2008,7 @@ export function Dashboard({
                         <div className="deadline-info">
                           <strong>{item.schoolName}</strong>
                           <span>
-                            {item.label}
+                            {formatDashboardDeadlineLabel(item.label, tx, format, lang)}
                             {' · '}
                             {formatDate(item.date, lang)}
                           </span>
@@ -2113,7 +2167,7 @@ export function Dashboard({
                                   type="button"
                                   onClick={() => {
                                     close()
-                                    setGuidanceComposerMember(member)
+                                    setGuidanceComposerMemberId(member.id)
                                   }}
                                 >
                                   <MessageCircle size={14} aria-hidden="true" />
@@ -2226,10 +2280,16 @@ export function Dashboard({
     <>
       <section className="dashboard" aria-label={tx('dashboard.title')} data-tour="dashboard-overview">
       <header className="dashboard-header" data-tour="dashboard-header">
-        <div>
+        <div className="dashboard-heading-copy">
           <span className="eyebrow">{eyebrow ?? tx('dashboard.overview')}</span>
-          <h1>{title ?? tx('dashboard.title')}</h1>
-          <p>{subtitle ?? tx('dashboard.subtitle')}</p>
+          <div className="dashboard-heading-title">
+            <h1>{title ?? tx('dashboard.title')}</h1>
+            <InfoTooltip
+              className="dashboard-header-info"
+              content={subtitle ?? tx('dashboard.subtitle')}
+              label={subtitle ?? tx('dashboard.subtitle')}
+            />
+          </div>
         </div>
         <div className="dashboard-header-actions">
           {onOpenDiscover ? (
@@ -2605,9 +2665,12 @@ export function Dashboard({
       <ExplorerContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} />
       </section>
       <GuidanceMessageDialog
+        key={`guidance-message:${guidanceDraftScope?.userId ?? 'anonymous'}:${guidanceDraftScope?.workspaceId ?? 'workspace'}:${guidanceComposerMember?.id ?? 'closed'}`}
         open={Boolean(guidanceComposerMember)}
+        recipientId={guidanceComposerMember?.id ?? ''}
         recipientName={guidanceComposerMember?.name ?? ''}
-        onClose={() => setGuidanceComposerMember(null)}
+        draftScope={guidanceDraftScope}
+        onClose={() => setGuidanceComposerMemberId(null)}
         onSend={async (messageTitle, messageBody) => {
           if (!guidanceComposerMember || !onSendGuidanceMessage) return
           await onSendGuidanceMessage(guidanceComposerMember.id, messageTitle, messageBody)

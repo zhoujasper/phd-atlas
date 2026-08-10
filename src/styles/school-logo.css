@@ -139,14 +139,30 @@
   min-width: 0;
 }
 
+.dossier-header-copy > .eyebrow {
+  display: block;
+  font-size: 10px;
+  line-height: 1.25;
+}
+
 .dossier-header-copy h2,
 .dossier-header-copy p {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.dossier-header-copy h2 {
+.dossier-header .dossier-header-copy h2 {
+  margin: 2px 0 0;
+  padding-bottom: 2px;
+  font-size: 21px;
+  line-height: 1.2;
   white-space: nowrap;
+}
+
+.dossier-header .dossier-header-copy p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .dossier-header .anchored-popover-root {

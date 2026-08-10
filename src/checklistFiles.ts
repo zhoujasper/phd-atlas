@@ -76,8 +76,19 @@ function splitFileName(value: string) {
   }
 }
 
+export function getUploadFileExtension(fileName: string) {
+  return splitFileName(fileName).extension
+}
+
 export function sanitizeUploadName(value: string) {
   return value.trim().replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ')
+}
+
+function appendRecordedExtension(value: string, extension: string) {
+  const cleanValue = sanitizeUploadName(value)
+  if (!cleanValue || !extension || splitFileName(cleanValue).extension) return cleanValue
+  const stem = cleanValue.replace(/\.+$/, '')
+  return stem ? `${stem}${extension}` : extension
 }
 
 export function buildUploadFileName(
@@ -86,13 +97,16 @@ export function buildUploadFileName(
   index: number,
   total: number,
   fallbackName: string,
+  recordedExtension = getUploadFileExtension(file.name),
 ) {
   const cleanBase = sanitizeUploadName(baseName)
-  if (!cleanBase) return sanitizeUploadName(fallbackName) || file.name
+  if (!cleanBase) {
+    return appendRecordedExtension(sanitizeUploadName(fallbackName) || file.name, recordedExtension) || file.name
+  }
   const base = splitFileName(cleanBase)
   const original = splitFileName(file.name)
   const stem = base.stem || original.stem || 'upload'
-  const extension = base.extension || original.extension
+  const extension = base.extension || recordedExtension || original.extension
   const suffix = total > 1 ? ` ${index + 1}` : ''
   return `${stem}${suffix}${extension}`
 }

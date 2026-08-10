@@ -3,17 +3,33 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { AuthSession } from '../../api/phdApi'
+import { frontendBuildInfo } from '../../buildInfo'
 import { getDict, preloadLanguage, t, tpl } from '../../i18n'
+import { prepareForSafeReload } from '../../safeReload'
 import { I18nContext } from '../hooks/useI18n'
 import type { PwaInstallStatus } from '../hooks/usePwaInstall'
 import type { WebPushNotificationStatus } from '../hooks/useWebPushNotifications'
 import { SettingsScreen } from './SettingsScreen'
+
+describe('SettingsScreen frontend build identity', () => {
+  it('shows the build ID below its title without a copy action', async () => {
+    await renderSettings()
+
+    const build = screen.getByTestId('settings-frontend-build')
+    expect(build).toHaveAttribute('data-frontend-build-id', frontendBuildInfo.buildId)
+    expect(build).toHaveTextContent(frontendBuildInfo.version)
+    expect(build).toHaveTextContent(frontendBuildInfo.commit)
+    expect(build).toHaveTextContent(frontendBuildInfo.mode)
+    expect(within(build).queryByRole('button')).not.toBeInTheDocument()
+  })
+})
 
 const SETTINGS_SECTION_TEST_IDS = [
   'settings-appearance-section',
   'settings-ai-section',
   'settings-mail-section',
   'settings-security-section',
+  'settings-codex-section',
   'settings-usage-section',
   'settings-data-section',
 ]
@@ -99,6 +115,57 @@ async function renderSettings(
   const incomingSummary = screen.getByRole('button', { name: /Receiving settings/ })
   if (incomingSummary.getAttribute('aria-expanded') !== 'true') await user.click(incomingSummary)
   return { user, onUpdateSetting, onUpdateSettings, onTestIncomingMail, onFetchMailNow, onSyncMailHistory }
+}
+
+async function renderMailDraftSettings(
+  initialSession: AuthSession,
+  onUpdateSettings: NonNullable<Parameters<typeof SettingsScreen>[0]['onUpdateSettings']>,
+) {
+  await preloadLanguage('en', ['settings'])
+  const renderScreen = (activeSession: AuthSession) => (
+    <I18nContext.Provider
+      value={{
+        lang: 'en',
+        t: getDict('en'),
+        format: tpl,
+        tx: (path, fallback) => t('en', path, fallback),
+      }}
+    >
+      <SettingsScreen
+        session={activeSession}
+        onLanguage={vi.fn()}
+        onHighContrast={vi.fn()}
+        onDeleteAccount={vi.fn()}
+        onUpdateSetting={vi.fn()}
+        onUpdateSettings={onUpdateSettings}
+      />
+    </I18nContext.Provider>
+  )
+  const rendered = render(renderScreen(initialSession))
+  const user = userEvent.setup()
+  const openMailCard = async (name: RegExp) => {
+    const summary = screen.getByRole('button', { name })
+    if (summary.getAttribute('aria-expanded') !== 'true') await user.click(summary)
+  }
+
+  return {
+    user,
+    openMailCard,
+    rerenderSession: (activeSession: AuthSession) => rendered.rerender(renderScreen(activeSession)),
+  }
+}
+
+function sessionWithSettings(activeSession: AuthSession, patch: Partial<AuthSession['user']['settings']>): AuthSession {
+  return {
+    ...activeSession,
+    user: {
+      ...activeSession.user,
+      settings: {
+        ...activeSession.user.settings,
+        ...patch,
+      },
+    },
+  }
 }
 
 async function renderInstallSettings(language: 'en' | 'zh', installStatus: PwaInstallStatus) {
@@ -406,8 +473,8 @@ describe('SettingsScreen section navigation', () => {
     expect(within(appearance).getByRole('switch', { name: 'Dark mode' })).toBeInTheDocument()
     expect(within(appearance).queryByRole('button', { name: 'Notifications' })).not.toBeInTheDocument()
     expect(within(appearance).queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument()
-    expect(document.querySelector('.settings-mobile-notification-action')).toHaveAccessibleName('Notifications')
-    expect(document.querySelector('.settings-mobile-signout-action')).toHaveAccessibleName('Sign out')
+    expect(document.querySelector('.settings-mobile-notification-action')).toHaveAttribute('aria-label', 'Notifications')
+    expect(document.querySelector('.settings-mobile-signout-action')).toHaveAttribute('aria-label', 'Sign out')
     expect(document.querySelectorAll('.calendar-provider-grid > .calendar-provider-link')).toHaveLength(3)
   })
 
@@ -496,7 +563,7 @@ describe('SettingsScreen section navigation', () => {
       await userEvent.setup().click(securityButton)
 
       await waitFor(() => expect(document.getElementById('settings-security-section')).toBeInTheDocument())
-      await waitFor(() => expect(root?.scrollTop).toBe(1762))
+      await waitFor(() => expect(root?.scrollTop).toBe(1740))
       expect(securityButton).toHaveClass('active')
       expect(securityButton).toHaveAttribute('aria-current', 'location')
       expect(document.getElementById('settings-data-section')).not.toBeInTheDocument()
@@ -665,6 +732,7 @@ describe('SettingsScreen section navigation', () => {
       'settings-ai-section': 620,
       'settings-mail-section': 1000,
       'settings-security-section': 1480,
+      'settings-codex-section': 1710,
       'settings-usage-section': 1900,
       'settings-data-section': 2300,
     }
@@ -754,7 +822,7 @@ describe('SettingsScreen section navigation', () => {
       const dataButton = screen.getByRole('button', { name: 'Data management' })
       await user.click(dataButton)
 
-      await waitFor(() => expect(windowScrollTo).toHaveBeenCalledWith({ top: 2300, behavior: 'smooth' }))
+      await waitFor(() => expect(windowScrollTo).toHaveBeenCalledWith({ top: 2278, behavior: 'smooth' }))
       await waitFor(() => expect(navScrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'smooth' })))
       expect(dataButton).toHaveClass('active')
       expect(navScrollTo.mock.calls.some(([options]) => Number(options.left) > 0)).toBe(true)
@@ -808,6 +876,7 @@ describe('SettingsScreen profile preset restore', () => {
     expect(onUpdateSettings).toHaveBeenCalledWith(
       expect.objectContaining({ profilePresets: expect.any(Array) }),
       'Personal profile presets restored',
+      { throwOnError: true },
     )
     expect(restore).not.toHaveClass('is-open')
   })
@@ -868,7 +937,7 @@ describe('SettingsScreen mail sync controls', () => {
       incomingPort: 993,
       incomingUser: 'student@example.com',
       autoFetchMail: true,
-    }), 'Mail settings saved.')
+    }), 'Mail settings saved.', { throwOnError: true })
   })
 
   it('disables automatic and historical sync for POP3 because sent folders require IMAP', async () => {
@@ -899,12 +968,16 @@ describe('SettingsScreen mail sync controls', () => {
   })
 
   it('still lets an existing POP3 auto-fetch setting be turned off', async () => {
-    const { user, onUpdateSetting } = await renderSettings('pop3', true)
+    const { user, onUpdateSettings } = await renderSettings('pop3', true)
     const toggle = screen.getByRole('switch', { name: 'Automatically import professor correspondence' })
 
     expect(toggle).not.toBeDisabled()
     await user.click(toggle)
-    expect(onUpdateSetting).toHaveBeenCalledWith('autoFetchMail', false)
+    expect(onUpdateSettings).toHaveBeenCalledWith(
+      { autoFetchMail: false },
+      'Mail settings saved.',
+      { throwOnError: true },
+    )
   })
 
   it.each(['success', 'failure'] as const)('smoothly restores the connection test action after %s', async (outcome) => {
@@ -935,6 +1008,213 @@ describe('SettingsScreen mail sync controls', () => {
     expect(testButton).toHaveAccessibleName('Test connection')
     expect(testButton.querySelector('.mail-test-action-idle')).toHaveAttribute('data-present', 'true')
     expect(testButton.querySelector('.mail-test-action-pending')).toHaveAttribute('data-present', 'false')
+  })
+})
+
+describe('SettingsScreen mail draft continuity', () => {
+  it('keeps an outgoing draft while a clean incoming form adopts refreshed server values', async () => {
+    const initialSession = sessionWithSettings(session(), {
+      smtpHost: 'smtp.saved.example.com',
+      smtpPort: 587,
+      smtpUser: 'student@example.com',
+    })
+    const { user, openMailCard, rerenderSession } = await renderMailDraftSettings(
+      initialSession,
+      vi.fn().mockResolvedValue(undefined),
+    )
+    await openMailCard(/Sending settings/)
+    await openMailCard(/Receiving settings/)
+    const outgoingCard = screen.getByRole('region', { name: 'Sending settings' })
+    const incomingCard = screen.getByRole('region', { name: 'Receiving settings' })
+    const smtpHost = within(outgoingCard).getByLabelText('SMTP Server')
+    const smtpPass = within(outgoingCard).getByLabelText('Password / App Password')
+
+    await user.clear(smtpHost)
+    await user.type(smtpHost, 'smtp.local-draft.example.com')
+    await user.type(smtpPass, 'outgoing-draft-secret')
+
+    rerenderSession(sessionWithSettings(initialSession, {
+      incomingHost: 'imap.refreshed.example.com',
+    }))
+
+    expect(smtpHost).toHaveValue('smtp.local-draft.example.com')
+    expect(smtpPass).toHaveValue('outgoing-draft-secret')
+    expect(within(incomingCard).getByLabelText('Incoming server')).toHaveValue('imap.refreshed.example.com')
+  })
+
+  it('keeps an incoming draft while a clean outgoing form adopts refreshed server values', async () => {
+    const initialSession = sessionWithSettings(session(), {
+      smtpHost: 'smtp.saved.example.com',
+      smtpPort: 587,
+      smtpUser: 'student@example.com',
+    })
+    const { user, openMailCard, rerenderSession } = await renderMailDraftSettings(
+      initialSession,
+      vi.fn().mockResolvedValue(undefined),
+    )
+    await openMailCard(/Sending settings/)
+    await openMailCard(/Receiving settings/)
+    const outgoingCard = screen.getByRole('region', { name: 'Sending settings' })
+    const incomingCard = screen.getByRole('region', { name: 'Receiving settings' })
+    const incomingHost = within(incomingCard).getByLabelText('Incoming server')
+    const incomingPass = within(incomingCard).getByLabelText('Incoming password / app password')
+
+    await user.clear(incomingHost)
+    await user.type(incomingHost, 'imap.local-draft.example.com')
+    await user.type(incomingPass, 'incoming-draft-secret')
+
+    rerenderSession(sessionWithSettings(initialSession, {
+      smtpHost: 'smtp.refreshed.example.com',
+    }))
+
+    expect(incomingHost).toHaveValue('imap.local-draft.example.com')
+    expect(incomingPass).toHaveValue('incoming-draft-secret')
+    expect(within(outgoingCard).getByLabelText('SMTP Server')).toHaveValue('smtp.refreshed.example.com')
+  })
+
+  it.each([
+    {
+      name: 'outgoing',
+      cardName: /Sending settings/,
+      regionName: 'Sending settings',
+      hostLabel: 'SMTP Server',
+      passLabel: 'Password / App Password',
+      saveLabel: 'Save sending settings',
+      draftHost: 'smtp.retry.example.com',
+      draftPass: 'outgoing-retry-secret',
+      patchKey: 'smtpHost',
+    },
+    {
+      name: 'incoming',
+      cardName: /Receiving settings/,
+      regionName: 'Receiving settings',
+      hostLabel: 'Incoming server',
+      passLabel: 'Incoming password / app password',
+      saveLabel: 'Save receiving settings',
+      draftHost: 'imap.retry.example.com',
+      draftPass: 'incoming-retry-secret',
+      patchKey: 'incomingHost',
+    },
+  ])('keeps the complete $name draft after a rejected save', async ({
+    cardName,
+    regionName,
+    hostLabel,
+    passLabel,
+    saveLabel,
+    draftHost,
+    draftPass,
+    patchKey,
+  }) => {
+    const onUpdateSettings = vi.fn().mockRejectedValue(new Error('Save failed'))
+    const { user, openMailCard } = await renderMailDraftSettings(session(), onUpdateSettings)
+    await openMailCard(cardName)
+    const card = screen.getByRole('region', { name: regionName })
+    const host = within(card).getByLabelText(hostLabel)
+    const password = within(card).getByLabelText(passLabel)
+
+    await user.clear(host)
+    await user.type(host, draftHost)
+    await user.type(password, draftPass)
+    await expect(prepareForSafeReload({ reason: 'identity-change' })).resolves.toBe(false)
+    await user.click(within(card).getByRole('button', { name: saveLabel }))
+
+    await waitFor(() => expect(onUpdateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ [patchKey]: draftHost }),
+      'Mail settings saved.',
+      { throwOnError: true },
+    ))
+    expect(host).toHaveValue(draftHost)
+    expect(password).toHaveValue(draftPass)
+    await expect(prepareForSafeReload({ reason: 'lazy-module' })).resolves.toBe(false)
+  })
+
+  it('keeps the incoming password draft when enabling automatic import is rejected', async () => {
+    const onUpdateSettings = vi.fn().mockRejectedValue(new Error('Save failed'))
+    const { user, openMailCard } = await renderMailDraftSettings(session(), onUpdateSettings)
+    await openMailCard(/Receiving settings/)
+    const incomingCard = screen.getByRole('region', { name: 'Receiving settings' })
+    const incomingPass = within(incomingCard).getByLabelText('Incoming password / app password')
+
+    await user.type(incomingPass, 'auto-fetch-retry-secret')
+    await user.click(screen.getByRole('switch', { name: 'Automatically import professor correspondence' }))
+
+    await waitFor(() => expect(onUpdateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        incomingPass: 'auto-fetch-retry-secret',
+        autoFetchMail: true,
+      }),
+      'Mail settings saved.',
+      { throwOnError: true },
+    ))
+    expect(incomingPass).toHaveValue('auto-fetch-retry-secret')
+  })
+
+  it('does not acknowledge an outgoing save over edits made while that save is in flight', async () => {
+    let resolveSave: (() => void) | undefined
+    const onUpdateSettings = vi.fn().mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSave = resolve
+    }))
+    const initialSession = sessionWithSettings(session(), {
+      smtpHost: 'smtp.saved.example.com',
+      smtpPort: 587,
+      smtpUser: 'student@example.com',
+    })
+    const { user, openMailCard, rerenderSession } = await renderMailDraftSettings(initialSession, onUpdateSettings)
+    await openMailCard(/Sending settings/)
+    const outgoingCard = screen.getByRole('region', { name: 'Sending settings' })
+    const smtpHost = within(outgoingCard).getByLabelText('SMTP Server')
+    const smtpPass = within(outgoingCard).getByLabelText('Password / App Password')
+
+    await user.clear(smtpHost)
+    await user.type(smtpHost, 'smtp.submitted.example.com')
+    await user.type(smtpPass, 'submitted-secret')
+    await user.click(within(outgoingCard).getByRole('button', { name: 'Save sending settings' }))
+    await waitFor(() => expect(onUpdateSettings).toHaveBeenCalledTimes(1))
+
+    await user.clear(smtpHost)
+    await user.type(smtpHost, 'smtp.newer-draft.example.com')
+    await user.clear(smtpPass)
+    await user.type(smtpPass, 'newer-secret')
+    rerenderSession(sessionWithSettings(initialSession, {
+      smtpHost: 'smtp.submitted.example.com',
+      smtpPassSet: true,
+    }))
+    await act(async () => resolveSave?.())
+
+    expect(smtpHost).toHaveValue('smtp.newer-draft.example.com')
+    expect(smtpPass).toHaveValue('newer-secret')
+  })
+
+  it('clears a successfully acknowledged incoming draft only when its submitted snapshot is still current', async () => {
+    let resolveSave: (() => void) | undefined
+    const onUpdateSettings = vi.fn().mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSave = resolve
+    }))
+    const initialSession = session()
+    const { user, openMailCard, rerenderSession } = await renderMailDraftSettings(initialSession, onUpdateSettings)
+    await openMailCard(/Receiving settings/)
+    const incomingCard = screen.getByRole('region', { name: 'Receiving settings' })
+    const incomingHost = within(incomingCard).getByLabelText('Incoming server')
+    const incomingPass = within(incomingCard).getByLabelText('Incoming password / app password')
+
+    await user.clear(incomingHost)
+    await user.type(incomingHost, 'imap.submitted.example.com')
+    await user.type(incomingPass, 'submitted-secret')
+    await user.click(within(incomingCard).getByRole('button', { name: 'Save receiving settings' }))
+    await waitFor(() => expect(onUpdateSettings).toHaveBeenCalledTimes(1))
+
+    const acknowledgedSession = sessionWithSettings(initialSession, {
+      incomingHost: 'imap.submitted.example.com',
+      incomingPassSet: true,
+    })
+    rerenderSession(acknowledgedSession)
+    await act(async () => resolveSave?.())
+
+    await waitFor(() => expect(incomingPass).toHaveValue(''))
+    rerenderSession(sessionWithSettings(acknowledgedSession, {
+      incomingHost: 'imap.server-refresh.example.com',
+    }))
+    expect(incomingHost).toHaveValue('imap.server-refresh.example.com')
   })
 })
 
@@ -1170,7 +1450,7 @@ describe('SettingsScreen install experience', () => {
     await user.click(toggle)
 
     expect(screen.getByText(/离线数据仅保存在当前设备/)).toBeInTheDocument()
-    expect(screen.getByText(/文件上传、邮件、AI、团队、分享、账户与备份操作仍需联网/)).toBeInTheDocument()
+    expect(screen.getByText(/文件上传、邮件、AI、分享、账户与备份操作仍需联网/)).toBeInTheDocument()
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     await waitFor(() => expect(panel).toHaveClass('open'))
   })
@@ -1181,7 +1461,7 @@ describe('SettingsScreen device notifications', () => {
     const { user, onEnableWebPush } = await renderPushSettings('ready')
 
     expect(screen.getByText('Professor email')).toBeInTheDocument()
-    expect(screen.getByText('Team messages')).toBeInTheDocument()
+    expect(screen.getByText('Application updates')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Turn on notifications' }))
 
     expect(onEnableWebPush).toHaveBeenCalledTimes(1)

@@ -11,6 +11,7 @@ import {
   Users,
 } from 'lucide-react'
 import { useRef, useState } from 'react'
+import { PUBLIC_EDITION } from '../../edition'
 import { useI18n, useI18nValue } from '../hooks/useI18n'
 import { useMarketingReveal } from '../hooks/useMarketingMotion'
 import { useTheme } from '../hooks/useTheme'
@@ -28,7 +29,7 @@ export function MarketingFeatureTour() {
     'discover',
     'profile',
     'settings',
-    'team',
+    ...(!PUBLIC_EDITION ? ['team' as const] : []),
   ])
   const { theme } = useTheme()
   const [activeScene, setActiveScene] = useState<MarketingScreenshotSurface>('workspace')
@@ -81,7 +82,7 @@ export function MarketingFeatureTour() {
         tx('profile.aiProfileEyebrow'),
       ],
     },
-    {
+    ...(!PUBLIC_EDITION ? [{
       title: tx('nav.team'),
       body: tx('authMarketingTeamBody'),
       Icon: Users,
@@ -92,7 +93,7 @@ export function MarketingFeatureTour() {
         tx('team.tabResources'),
         tx('team.tabAudit'),
       ],
-    },
+    }] : []),
     {
       title: tx('authMarketingContinuityTitle'),
       body: tx('authMarketingContinuityBody'),

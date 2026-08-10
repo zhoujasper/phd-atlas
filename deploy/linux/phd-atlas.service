@@ -2,6 +2,12 @@
 Description=PhD Atlas
 After=network-online.target
 Wants=network-online.target
+# Durable-storage transients retry inside the live worker. Six process exits in
+# five minutes therefore indicate a crash/configuration loop, not a condition
+# that systemd should hammer indefinitely. Operators may override both values
+# in a reviewed drop-in for a differently supervised host.
+StartLimitIntervalSec=300
+StartLimitBurst=6
 
 [Service]
 Type=simple
@@ -9,20 +15,50 @@ User=phd-atlas
 Group=phd-atlas
 WorkingDirectory=/opt/phd-atlas
 EnvironmentFile=/etc/phd-atlas/phd-atlas.env
-ExecStart=/usr/bin/node tools/start-server.mjs
-Restart=on-failure
+# EnvironmentFile= values override Environment= even if Environment= appears
+# later. Put these non-downgradable production invariants on ExecStart so a
+# stale environment file cannot disable HTTPS/proxy/IP safety or expand the
+# application pressure budget past the cgroup ceiling. This unit is for the
+# same-host Nginx template; remote proxies need an explicit trusted subnet.
+#
+# UV_THREADPOOL_SIZE is deliberately absent. start-server.mjs sizes it from the
+# host CPU count and only does so when the variable is unset, so pinning it
+# here would freeze every host at the formula's floor instead of scaling.
+ExecStart=/usr/bin/env NODE_ENV=production TRUST_PROXY=loopback RUNTIME_MEMORY_BUDGET_BYTES=1073741824 /usr/bin/node tools/start-server.mjs
+# A zero exit is not proof that an unattended API should remain offline (for
+# example, a worker can terminate during an update handoff). Keep the service
+# recoverable; graceful operator stops are still honoured by systemd.
+Restart=always
 RestartSec=5
-TimeoutStopSec=35
+# start-server.mjs clamps cooperative drain to 20 seconds, then keeps one
+# referenced durability hold through a 40-second primary final-storage retry
+# window, then continues low-frequency retries. systemd's 75-second ceiling is
+# intentionally outside the primary budget; a
+# forced SIGKILL is the last-resort data-risk boundary, never ordinary control.
+TimeoutStopSec=75
 KillSignal=SIGTERM
 # The short-lived detached update helper must survive the main process exit.
 # start-server.mjs waits on its durable lock before the supervisor relaunches.
 KillMode=process
+# Keep the OS cgroup outside the application's 1 GiB pressure guard. A 512 MiB
+# budget put the hard stop at 448 MiB, below the ~503 MiB peak that realtime
+# workspace hydration legitimately reaches, so the guard fired on healthy work.
+# These are safe defaults, not fixed requirements; systemctl edit may override
+# them together after measuring the host and keeping MemoryMax above the app
+# budget. See DEPLOYMENT.md for sizing against expected concurrent users.
+MemoryHigh=1536M
+MemoryMax=2G
+TasksMax=256
+CPUQuota=200%
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 # Admin update packages atomically replace the managed runtime and node_modules;
-# application data remains under storage/.
+# application data defaults to /opt/phd-atlas/storage, so the project-root
+# allowance covers both. If PHD_ATLAS_STORAGE_ROOT points elsewhere, add that
+# exact absolute path with ReadWritePaths= in a reviewed drop-in. Alternatively,
+# use StateDirectory=phd-atlas together with PHD_ATLAS_STORAGE_ROOT=/var/lib/phd-atlas.
 ReadWritePaths=/opt/phd-atlas
 
 [Install]

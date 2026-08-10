@@ -11,6 +11,7 @@ import {
   Settings,
   Trash2,
   UploadCloud,
+  UsersRound,
 } from 'lucide-react'
 import {
   Fragment,
@@ -26,15 +27,18 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import clsx from 'clsx'
-import type {
-  AuthSession,
-  ProfileAsset,
-  ProfileAssetInput,
-  ProfilePreset,
-  ProfilePresetColor,
-  ProfilePresetIcon as ProfilePresetIconName,
-  UserSettingsPatch,
+import {
+  phdApi,
+  type AuthSession,
+  type ProfileAsset,
+  type ProfileAssetInput,
+  type ProfileRecommender,
+  type ProfilePreset,
+  type ProfilePresetColor,
+  type ProfilePresetIcon as ProfilePresetIconName,
+  type UserSettingsPatch,
 } from '../../api/phdApi'
+import type { ApplicationRecord } from '../../data/applications'
 import { contentLanguagesFromSettings } from '../../contentLanguages'
 import { localeForLanguage, localizeStaticText } from '../../i18n'
 import {
@@ -49,6 +53,7 @@ import {
   profilePresetPresentation,
   profilePresetText,
 } from '../../profilePresets'
+import type { ProfileRecommenderUse } from '../../profileRecommenders'
 import { useContentLanguagePacks, useI18n } from '../hooks/useI18n'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { ExplorerContextMenu, type ExplorerContextMenuState } from '../shared/ExplorerContextMenu'
@@ -62,6 +67,7 @@ import {
 import { LibraryViewSwitch, type LibraryViewMode } from '../shared/LibraryViewSwitch'
 import { LazyOverlayBoundary } from '../shared/LazyOverlayBoundary'
 import { ProjectFooter } from '../shared/ProjectFooter'
+import { ProfileRecommendersView } from '../shared/ProfileRecommendersView'
 import {
   consumeStackedCardWheelDelta,
   normalizeStackedCardWheelDelta,
@@ -127,6 +133,8 @@ const PROFILE_STACK_VERSION_CLOSE_STAGGER = 32
 const PROFILE_STACK_MAX_STAGGERED_VERSIONS = 12
 const PROFILE_STACK_SETTLE_BUFFER = 32
 const PROFILE_STACK_MAX_QUEUED_TURNS = 1
+const PROFILE_ASSET_INITIAL_RENDER_COUNT = 24
+const PROFILE_ASSET_BATCH_SIZE = 24
 
 const profileStackDepthStyle = (
   depth: number,
@@ -142,18 +150,15 @@ const profileStackDepthStyle = (
     ['--snippet-deck-opacity' as string]: hidden ? '0' : `var(--snippet-stack-depth-${visibleDepth}-opacity)`,
     ['--snippet-deck-z' as string]: String(hidden ? 0 : Math.max(1, versionCount - depth + 1)),
     ['--snippet-deck-target-transform' as string]: `var(--snippet-stack-depth-${visibleTargetDepth}-transform)`,
-    ['--snippet-deck-target-opacity' as string]: targetHidden ? '0' : `var(--snippet-stack-depth-${visibleTargetDepth}-opacity)`,
+    ['--snippet-deck-target-opacity' as string]: targetHidden
+      ? '0'
+      : `var(--snippet-stack-depth-${visibleTargetDepth}-opacity)`,
     ['--snippet-deck-target-z' as string]: String(targetHidden ? 0 : Math.max(1, versionCount - targetDepth + 1)),
   }
 }
 
-const profileStackTargetDepth = (
-  depth: number,
-  versionCount: number,
-  direction: FamilyCardTurn['direction'],
-) => direction === 'forward'
-  ? (depth === 0 ? versionCount - 1 : depth - 1)
-  : (depth === versionCount - 1 ? 0 : depth + 1)
+const profileStackTargetDepth = (depth: number, versionCount: number, direction: FamilyCardTurn['direction']) =>
+  direction === 'forward' ? (depth === 0 ? versionCount - 1 : depth - 1) : depth === versionCount - 1 ? 0 : depth + 1
 
 const interpolateProfileStackTransform = (from: string, to: string, progress: number) => {
   if (typeof DOMMatrix === 'undefined' || !from || !to) return progress < 0.5 ? from : to
@@ -174,9 +179,11 @@ const interpolateProfileStackTransform = (from: string, to: string, progress: nu
 
 export function ProfileScreen({
   assets,
+  applications = [],
   session,
   onCreateSnippet,
   onUpdateAsset,
+  onExportAsset,
   onDeleteAsset,
   removingAssetIds,
   onUploadFiles,
@@ -187,44 +194,77 @@ export function ProfileScreen({
   onCreateShare,
   onRevokeShare,
   onUpdateSettings,
+  onUpdateProfileRecommenders,
+  onOpenRecommenderApplication,
   onCopy,
   deferProgressiveReveal = false,
   presetsOverride,
   mode = 'personal',
+  attachmentsEnabled,
 }: {
   assets: ProfileAsset[]
+  applications?: readonly ApplicationRecord[]
   session: AuthSession
-  onCreateSnippet: (input: ProfileAssetInput, files: File[]) => void
-  onUpdateAsset: (id: string, input: Partial<ProfileAssetInput>) => void
+  onCreateSnippet: (input: ProfileAssetInput, files: File[]) => void | Promise<void>
+  onUpdateAsset: (id: string, input: Partial<ProfileAssetInput>) => void | Promise<void>
+  onExportAsset?: (assetId: string, format: 'pdf' | 'word') => void | Promise<void>
   onDeleteAsset: (asset: ProfileAsset) => void
   /** Asset ids retained briefly while their confirmed delete animation runs. */
   removingAssetIds?: ReadonlySet<string>
   onUploadFiles: (assetId: string, files: File[]) => void | Promise<void>
-  onRenameFile: (assetId: string, fileId: string, fileName: string) => void
-  onDeleteFile: (assetId: string, fileId: string) => void
+  onRenameFile: (assetId: string, fileId: string, fileName: string) => void | Promise<void>
+  onDeleteFile: (assetId: string, fileId: string) => void | Promise<void>
   onDownloadFile: (fileId: string, fileName: string) => void
   onLoadFile: (fileId: string) => Promise<Blob>
-  onCreateShare: (assetId: string, expiry: ShareExpiry, note: string) => void
-  onRevokeShare: (assetId: string, shareId: string) => void
-  onUpdateSettings: (patch: UserSettingsPatch, message?: string) => void
+  onCreateShare: (assetId: string, expiry: ShareExpiry, note: string) => void | Promise<void>
+  onRevokeShare: (assetId: string, shareId: string) => void | Promise<void>
+  onUpdateSettings: (
+    patch: UserSettingsPatch,
+    message?: string,
+    options?: { throwOnError?: boolean },
+  ) => void | Promise<void>
+  /** Atomic recommender directory persistence; unlike generic settings writes it also cascades linked applications. */
+  onUpdateProfileRecommenders?: (
+    nextProfiles: ProfileRecommender[],
+    baseProfiles: ProfileRecommender[],
+  ) => void | Promise<void>
+  onOpenRecommenderApplication?: (use: ProfileRecommenderUse) => void
   onCopy?: (value: string, label: string) => void
   /** Hold large asset and preset grids until the enclosing screen handoff ends. */
   deferProgressiveReveal?: boolean
   /** Organization-student mode keeps the personal layout but uses only organization-provided templates. */
   presetsOverride?: ProfilePreset[]
   mode?: 'personal' | 'organization-student'
+  /** Team's local student parity view has no attachment API; hide that control instead of dropping files. */
+  attachmentsEnabled?: boolean
 }) {
   const { tx, lang, format } = useI18n()
   const contentLanguages = useMemo(
-    () => contentLanguagesFromSettings({
-      contentLanguagePrimary: session.user.settings.contentLanguagePrimary,
-      contentLanguageSecondary: session.user.settings.contentLanguageSecondary,
-    }),
+    () =>
+      contentLanguagesFromSettings({
+        contentLanguagePrimary: session.user.settings.contentLanguagePrimary,
+        contentLanguageSecondary: session.user.settings.contentLanguageSecondary,
+      }),
     [session.user.settings.contentLanguagePrimary, session.user.settings.contentLanguageSecondary],
   )
   useContentLanguagePacks(contentLanguages)
   const [query, setQuery] = useState('')
+  const [profileDomain, setProfileDomain] = useState<'materials' | 'recommenders'>('materials')
+  /**
+   * The pane's entrance belongs to a tab switch. On the screen's first paint the
+   * pane is already carried by the screen-level entrance cascade, and playing
+   * both made it fade in twice — the second time a beat after the page looked
+   * finished, which reads as a flicker.
+   */
+  const [domainSwitched, setDomainSwitched] = useState(false)
+  const selectProfileDomain = useCallback((domain: 'materials' | 'recommenders') => {
+    setProfileDomain((current) => {
+      if (current !== domain) setDomainSwitched(true)
+      return domain
+    })
+  }, [])
   const [libraryView, setLibraryView] = useState<LibraryViewMode>('cards')
+  const [profileAssetRenderCount, setProfileAssetRenderCount] = useState(PROFILE_ASSET_INITIAL_RENDER_COUNT)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [openShareOnEdit, setOpenShareOnEdit] = useState(false)
@@ -250,14 +290,17 @@ export function ProfileScreen({
   const [familyTurns, setFamilyTurns] = useState<Map<string, FamilyCardTurn>>(() => new Map())
   const familyStackRefs = useRef(new Map<string, HTMLElement>())
   const familyFrontRefs = useRef(new Map<string, HTMLDivElement>())
-  const familyWheelStateRef = useRef(new Map<string, StackedCardWheelState & {
-    releaseTimer?: number
-  }>())
-  const handleFamilyWheelRef = useRef<(
-    event: WheelEvent,
-    familyId: string,
-    versions: ProfileAsset[],
-  ) => void>(() => undefined)
+  const familyWheelStateRef = useRef(
+    new Map<
+      string,
+      StackedCardWheelState & {
+        releaseTimer?: number
+      }
+    >(),
+  )
+  const handleFamilyWheelRef = useRef<(event: WheelEvent, familyId: string, versions: ProfileAsset[]) => void>(
+    () => undefined,
+  )
   const familySwipeStateRef = useRef(new Map<string, FamilySwipeState>())
   const familyBrowseLocksRef = useRef(new Set<string>())
   const familyTurnQueuesRef = useRef(new Map<string, QueuedFamilyCardTurn[]>())
@@ -278,18 +321,26 @@ export function ProfileScreen({
   const [phraseSettingsOpen, setPhraseSettingsOpen] = useState(false)
   const [contextMenu, setContextMenu] = useState<ExplorerContextMenuState | null>(null)
 
-  const editingAsset = editingId ? assets.find((asset) => asset.id === editingId) ?? null : null
+  const editingAsset = editingId ? (assets.find((asset) => asset.id === editingId) ?? null) : null
 
   const displayAssets = useMemo(
-    () => deferProgressiveReveal ? [] : assets.map((asset) => ({
-        raw: asset,
-        display: {
-          // Library chrome always follows appearance language.
-          name: localizeStaticText(asset.name, lang),
-          kind: profileKindLabel(asset.kind, lang, { zh: asset.customLabelZh, en: asset.customLabelEn }, contentLanguages),
-          description: localizeStaticText(asset.description, lang),
-        },
-      })),
+    () =>
+      deferProgressiveReveal
+        ? []
+        : assets.map((asset) => ({
+            raw: asset,
+            display: {
+              // Library chrome always follows appearance language.
+              name: localizeStaticText(asset.name, lang),
+              kind: profileKindLabel(
+                asset.kind,
+                lang,
+                { zh: asset.customLabelZh, en: asset.customLabelEn },
+                contentLanguages,
+              ),
+              description: localizeStaticText(asset.description, lang),
+            },
+          })),
     [assets, contentLanguages, deferProgressiveReveal, lang],
   )
 
@@ -302,7 +353,7 @@ export function ProfileScreen({
   const personalPresetsRef = useRef(personalPresets)
   personalPresetsRef.current = personalPresets
   const editingPreset = editingPresetId
-    ? personalPresets.find((preset) => preset.id === editingPresetId) ?? null
+    ? (personalPresets.find((preset) => preset.id === editingPresetId) ?? null)
     : null
 
   const filtered = useMemo(() => {
@@ -323,62 +374,85 @@ export function ProfileScreen({
 
   const filteredAssets = useMemo(() => filtered.map((item) => item.raw), [filtered])
   const families = useMemo(() => groupProfileAssetsIntoFamilies(filteredAssets), [filteredAssets])
+  const renderedFiltered = useMemo(
+    () => filtered.slice(0, profileAssetRenderCount),
+    [filtered, profileAssetRenderCount],
+  )
+  const renderedFamilies = useMemo(
+    () => families.slice(0, profileAssetRenderCount),
+    [families, profileAssetRenderCount],
+  )
+  const profileAssetsHaveMore = libraryView === 'cards'
+    ? families.length > profileAssetRenderCount
+    : filtered.length > profileAssetRenderCount
+
+  useEffect(() => {
+    setProfileAssetRenderCount(PROFILE_ASSET_INITIAL_RENDER_COUNT)
+  }, [libraryView, query])
+
   const libraryMotionItems = useMemo<LibraryInsertionMotionItem[]>(
-    () => libraryView === 'cards'
-      ? [
-          ...families.map((family) => ({
-            key: `family:${family.familyId}`,
-            assetIds: family.versions.map((version) => version.id),
+    () =>
+      libraryView === 'cards'
+        ? [
+            ...families.map((family) => ({
+              key: `family:${family.familyId}`,
+              assetIds: family.versions.map((version) => version.id),
+            })),
+            { key: 'action:add', assetIds: [] },
+          ]
+        : filtered.map(({ raw }) => ({
+            key: `asset:${raw.id}`,
+            assetIds: [raw.id],
           })),
-          { key: 'action:add', assetIds: [] },
-        ]
-      : filtered.map(({ raw }) => ({
-          key: `asset:${raw.id}`,
-          assetIds: [raw.id],
-        })),
     [families, filtered, libraryView],
   )
-  const revealAddedAssets = useCallback((addedAssetIds: string[]) => {
-    const addedIds = new Set(addedAssetIds)
-    const nextActiveByFamily = new Map<string, string>()
-    assets.forEach((asset) => {
-      if (addedIds.has(asset.id)) nextActiveByFamily.set(profileAssetFamilyId(asset), asset.id)
-    })
-    if (nextActiveByFamily.size === 0) return
-
-    setActiveFamilyVersionIds((current) => {
-      let changed = false
-      const next = new Map(current)
-      nextActiveByFamily.forEach((assetId, familyId) => {
-        if (next.get(familyId) === assetId) return
-        next.set(familyId, assetId)
-        changed = true
+  const revealAddedAssets = useCallback(
+    (addedAssetIds: string[]) => {
+      const addedIds = new Set(addedAssetIds)
+      const nextActiveByFamily = new Map<string, string>()
+      assets.forEach((asset) => {
+        if (addedIds.has(asset.id)) nextActiveByFamily.set(profileAssetFamilyId(asset), asset.id)
       })
-      if (changed) activeFamilyVersionIdsRef.current = next
-      return changed ? next : current
-    })
-  }, [assets])
+      if (nextActiveByFamily.size === 0) return
 
-  useEffect(() => () => {
-    familyTurnTimersRef.current.forEach((timer) => window.clearTimeout(timer))
-    familyTurnTimersRef.current.clear()
-    familyTurnSettlersRef.current.clear()
-    familyWheelStateRef.current.forEach(({ releaseTimer }) => {
-      if (releaseTimer !== undefined) window.clearTimeout(releaseTimer)
-    })
-    familyWheelStateRef.current.clear()
-    familySwipeStateRef.current.forEach(({ frame }) => {
-      if (frame !== undefined) window.cancelAnimationFrame(frame)
-    })
-    familySwipeStateRef.current.clear()
-    familyBrowseLocksRef.current.clear()
-    familyTurnQueuesRef.current.clear()
-    familyQueuedTurnFramesRef.current.forEach((frame) => window.cancelAnimationFrame(frame))
-    familyQueuedTurnFramesRef.current.clear()
-    swipeClickSuppressionsRef.current.clear()
-    familyLayoutAnimationsRef.current.forEach((animation) => animation.cancel())
-    familyLayoutAnimationsRef.current = []
-  }, [])
+      setActiveFamilyVersionIds((current) => {
+        let changed = false
+        const next = new Map(current)
+        nextActiveByFamily.forEach((assetId, familyId) => {
+          if (next.get(familyId) === assetId) return
+          next.set(familyId, assetId)
+          changed = true
+        })
+        if (changed) activeFamilyVersionIdsRef.current = next
+        return changed ? next : current
+      })
+    },
+    [assets],
+  )
+
+  useEffect(
+    () => () => {
+      familyTurnTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+      familyTurnTimersRef.current.clear()
+      familyTurnSettlersRef.current.clear()
+      familyWheelStateRef.current.forEach(({ releaseTimer }) => {
+        if (releaseTimer !== undefined) window.clearTimeout(releaseTimer)
+      })
+      familyWheelStateRef.current.clear()
+      familySwipeStateRef.current.forEach(({ frame }) => {
+        if (frame !== undefined) window.cancelAnimationFrame(frame)
+      })
+      familySwipeStateRef.current.clear()
+      familyBrowseLocksRef.current.clear()
+      familyTurnQueuesRef.current.clear()
+      familyQueuedTurnFramesRef.current.forEach((frame) => window.cancelAnimationFrame(frame))
+      familyQueuedTurnFramesRef.current.clear()
+      swipeClickSuppressionsRef.current.clear()
+      familyLayoutAnimationsRef.current.forEach((animation) => animation.cancel())
+      familyLayoutAnimationsRef.current = []
+    },
+    [],
+  )
 
   useLayoutEffect(() => {
     const versionLookup = new Map(families.map((family) => [family.familyId, family.versions]))
@@ -396,9 +470,10 @@ export function ProfileScreen({
     return () => listeners.forEach(({ stack, onWheel }) => stack.removeEventListener('wheel', onWheel))
   }, [expandedFamilies, families])
 
-  const prefersReducedMotion = () => typeof window !== 'undefined'
-    && typeof window.matchMedia === 'function'
-    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const prefersReducedMotion = () =>
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
   const cycleFamilyVersion = (
     familyId: string,
@@ -422,7 +497,10 @@ export function ProfileScreen({
     }
 
     const activeId = activeFamilyVersionIdsRef.current.get(familyId)
-    const activeIndex = Math.max(0, versions.findIndex((version) => version.id === activeId))
+    const activeIndex = Math.max(
+      0,
+      versions.findIndex((version) => version.id === activeId),
+    )
     const nextIndex = (activeIndex + direction + versions.length) % versions.length
     const nextVersion = versions[nextIndex]
     if (!nextVersion) return false
@@ -489,34 +567,26 @@ export function ProfileScreen({
     if (prefersReducedMotion()) {
       settleTurn()
     } else {
-      familyTurnTimersRef.current.set(familyId, window.setTimeout(
-        settleTurn,
-        durationMs + PROFILE_STACK_SETTLE_BUFFER,
-      ))
+      familyTurnTimersRef.current.set(familyId, window.setTimeout(settleTurn, durationMs + PROFILE_STACK_SETTLE_BUFFER))
     }
 
     return true
   }
 
-  const handleFamilyWheel = (
-    event: WheelEvent,
-    familyId: string,
-    versions: ProfileAsset[],
-  ) => {
+  const handleFamilyWheel = (event: WheelEvent, familyId: string, versions: ProfileAsset[]) => {
     if (event.ctrlKey || event.metaKey || versions.length < 2 || event.deltaY === 0) return
 
     event.preventDefault()
-    const wheelState = familyWheelStateRef.current.get(familyId) ?? { delta: 0 }
+    const wheelState = familyWheelStateRef.current.get(familyId) ?? {
+      delta: 0,
+    }
     const eventAt = event.timeStamp > 0 ? event.timeStamp : performance.now()
     if (wheelState.releaseTimer !== undefined) window.clearTimeout(wheelState.releaseTimer)
     wheelState.releaseTimer = window.setTimeout(() => {
       familyWheelStateRef.current.set(familyId, { delta: 0 })
     }, STACKED_CARD_WHEEL_IDLE_MS)
 
-    const pageSize = Math.max(
-      event.currentTarget instanceof HTMLElement ? event.currentTarget.clientHeight : 0,
-      278,
-    )
+    const pageSize = Math.max(event.currentTarget instanceof HTMLElement ? event.currentTarget.clientHeight : 0, 278)
     const direction = consumeStackedCardWheelDelta(
       wheelState,
       normalizeStackedCardWheelDelta(event.deltaY, event.deltaMode, pageSize),
@@ -559,14 +629,13 @@ export function ProfileScreen({
     }
   }
 
-  const handleFamilyPointerDown = (
-    event: ReactPointerEvent<HTMLDivElement>,
-    familyId: string,
-  ) => {
+  const handleFamilyPointerDown = (event: ReactPointerEvent<HTMLDivElement>, familyId: string) => {
     if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return
     if (event.target instanceof Element && event.target.closest('.snippet-stack-toggle, .snippet-card-actions')) return
 
-    const deckElements = [...(event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('.snippet-stack-deck-card') ?? [])]
+    const deckElements = [
+      ...(event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('.snippet-stack-deck-card') ?? []),
+    ]
     const versionCount = deckElements.length
     const deck = deckElements.map<FamilySwipeDeckCard>((card) => {
       const depth = Number(card.dataset.stackDepth ?? 0)
@@ -576,10 +645,12 @@ export function ProfileScreen({
       const poseAt = (targetDepth: number) => {
         const visibleDepth = Math.min(targetDepth, 3)
         return {
-          transform: computed.getPropertyValue(`--snippet-stack-depth-${visibleDepth}-transform`).trim() || baseTransform,
-          opacity: targetDepth > 3
-            ? 0
-            : Number(computed.getPropertyValue(`--snippet-stack-depth-${visibleDepth}-opacity`).trim()) || 0,
+          transform:
+            computed.getPropertyValue(`--snippet-stack-depth-${visibleDepth}-transform`).trim() || baseTransform,
+          opacity:
+            targetDepth > 3
+              ? 0
+              : Number(computed.getPropertyValue(`--snippet-stack-depth-${visibleDepth}-opacity`).trim()) || 0,
         }
       }
       const forward = poseAt(profileStackTargetDepth(depth, versionCount, 'forward'))
@@ -634,10 +705,7 @@ export function ProfileScreen({
     })
   }
 
-  const handleFamilyPointerMove = (
-    event: ReactPointerEvent<HTMLDivElement>,
-    familyId: string,
-  ) => {
+  const handleFamilyPointerMove = (event: ReactPointerEvent<HTMLDivElement>, familyId: string) => {
     const swipeState = familySwipeStateRef.current.get(familyId)
     if (!swipeState || swipeState.pointerId !== event.pointerId) return
 
@@ -676,7 +744,8 @@ export function ProfileScreen({
         const latestSwipeState = familySwipeStateRef.current.get(familyId)
         if (!latestSwipeState || latestSwipeState.pointerId !== event.pointerId) return
         latestSwipeState.frame = undefined
-        const previewDirection: FamilyCardTurn['direction'] = latestSwipeState.pendingDeltaX < 0 ? 'forward' : 'backward'
+        const previewDirection: FamilyCardTurn['direction'] =
+          latestSwipeState.pendingDeltaX < 0 ? 'forward' : 'backward'
         applyFamilySwipeVisual(front, latestSwipeState.pendingDeltaX, previewDirection, latestSwipeState)
       })
     }
@@ -694,7 +763,10 @@ export function ProfileScreen({
 
     if (!swipeState.horizontal) return
     event.preventDefault()
-    if (typeof event.currentTarget.releasePointerCapture === 'function' && event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+    if (
+      typeof event.currentTarget.releasePointerCapture === 'function' &&
+      event.currentTarget.hasPointerCapture?.(event.pointerId)
+    ) {
       try {
         event.currentTarget.releasePointerCapture(event.pointerId)
       } catch {
@@ -739,16 +811,15 @@ export function ProfileScreen({
       const deltaY = before.top - after.top
       if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return
 
-      animations.push(element.animate(
-        [
-          { transform: `translate3d(${deltaX}px, ${deltaY}px, 0)` },
-          { transform: 'translate3d(0, 0, 0)' },
-        ],
-        {
-          duration: PROFILE_STACK_LAYOUT_DURATION,
-          easing: 'cubic-bezier(0.16, 0.72, 0.24, 1)',
-        },
-      ))
+      animations.push(
+        element.animate(
+          [{ transform: `translate3d(${deltaX}px, ${deltaY}px, 0)` }, { transform: 'translate3d(0, 0, 0)' }],
+          {
+            duration: PROFILE_STACK_LAYOUT_DURATION,
+            easing: 'cubic-bezier(0.16, 0.72, 0.24, 1)',
+          },
+        ),
+      )
     })
     familyLayoutAnimationsRef.current = animations
   }, [expandedFamilies])
@@ -760,9 +831,7 @@ export function ProfileScreen({
       const targets = [...grid.children].filter((child): child is HTMLElement => child instanceof HTMLElement)
       const followingSection = grid.closest('.profile-snippet-section')?.nextElementSibling
       if (followingSection instanceof HTMLElement) targets.push(followingSection)
-      pendingFamilyLayoutFlipRef.current = new Map(
-        targets.map((element) => [element, element.getBoundingClientRect()]),
-      )
+      pendingFamilyLayoutFlipRef.current = new Map(targets.map((element) => [element, element.getBoundingClientRect()]))
       familyLayoutAnimationsRef.current.forEach((animation) => animation.cancel())
       familyLayoutAnimationsRef.current = []
     }
@@ -823,49 +892,80 @@ export function ProfileScreen({
           updatedAt: now,
         }
     const next = editingPreset
-      ? personalPresets.map((item) => item.id === preset.id ? preset : item)
+      ? personalPresets.map((item) => (item.id === preset.id ? preset : item))
       : [...personalPresets, preset]
-    if (isCreate) setEnteredPresetId(preset.id)
-    onUpdateSettings({ profilePresets: next }, tx('profile.presetSaved'))
+    const saved = onUpdateSettings(
+      { profilePresets: next },
+      tx('profile.presetSaved'),
+      { throwOnError: true },
+    )
+    if (isCreate) {
+      // Only paint the one-shot insertion feedback after the server has
+      // acknowledged the complete settings payload. A rejected write must not
+      // leave a phantom “saved” state behind.
+      if (saved && typeof saved.then === 'function') {
+        return saved.then(() => {
+          setEnteredPresetId(preset.id)
+        })
+      }
+      setEnteredPresetId(preset.id)
+    }
+    return saved
   }
 
   useEffect(() => {
     if (!enteredPresetId) return
     const frame = window.requestAnimationFrame(() => {
       const node = document.querySelector<HTMLElement>(`[data-preset-id="${enteredPresetId}"]`)
-      node?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+      node?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+        inline: 'nearest',
+      })
     })
     return () => window.cancelAnimationFrame(frame)
   }, [enteredPresetId])
 
-  const finalizeDeletePreset = useCallback((presetId: string) => {
-    // Guard against animationend + timeout both firing.
-    if (exitingPresetIdRef.current !== presetId) return
-    exitingPresetIdRef.current = null
-    setExitingPresetId(null)
-    if (enteredPresetId === presetId) setEnteredPresetId(null)
+  const finalizeDeletePreset = useCallback(
+    (presetId: string) => {
+      // Guard against animationend + timeout both firing.
+      if (exitingPresetIdRef.current !== presetId) return
+      exitingPresetIdRef.current = null
+      setExitingPresetId(null)
+      if (enteredPresetId === presetId) setEnteredPresetId(null)
 
-    const current = personalPresetsRef.current
-    const preset = current.find((item) => item.id === presetId)
-    if (!preset || preset.builtIn) return
-    onUpdateSettings(
-      { profilePresets: current.filter((item) => item.id !== presetId) },
-      tx('profile.presetDeleted'),
-    )
-  }, [enteredPresetId, onUpdateSettings, tx])
+      const current = personalPresetsRef.current
+      const preset = current.find((item) => item.id === presetId)
+      if (!preset || preset.builtIn) return
+      void Promise.resolve(
+        onUpdateSettings(
+          { profilePresets: current.filter((item) => item.id !== presetId) },
+          tx('profile.presetDeleted'),
+          { throwOnError: true },
+        ),
+      ).catch(() => undefined)
+    },
+    [enteredPresetId, onUpdateSettings, tx],
+  )
 
   const requestDeletePreset = (preset: ProfilePreset) => {
     if (preset.builtIn || exitingPresetIdRef.current) return
     setPendingDeletePreset(null)
     // Prefer reduced-motion users skip the staged exit and remove immediately.
-    const reduceMotion = typeof window !== 'undefined'
-      && typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const reduceMotion =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
     if (reduceMotion) {
-      onUpdateSettings(
-        { profilePresets: personalPresetsRef.current.filter((item) => item.id !== preset.id) },
-        tx('profile.presetDeleted'),
-      )
+      void Promise.resolve(
+        onUpdateSettings(
+          {
+            profilePresets: personalPresetsRef.current.filter((item) => item.id !== preset.id),
+          },
+          tx('profile.presetDeleted'),
+          { throwOnError: true },
+        ),
+      ).catch(() => undefined)
       return
     }
     exitingPresetIdRef.current = preset.id
@@ -946,615 +1046,889 @@ export function ProfileScreen({
       <div className="profile-hero">
         <header>
           <div className="profile-heading-row">
-            <div>
+            <div className="profile-heading-copy">
               <span className="eyebrow">{tx('profile.eyebrow')}</span>
-              <h2>{tx('profile.title')}</h2>
+              <div className="profile-heading-title-row">
+                <h2>{tx('profile.title')}</h2>
+                <InfoTooltip
+                  className="profile-header-info"
+                  content={tx('profile.subtitle')}
+                  label={tx('profile.subtitle')}
+                />
+              </div>
             </div>
-            <InfoTooltip
-              className="profile-mobile-info"
-              content={tx('profile.subtitle')}
-              label={tx('profile.subtitle')}
-            />
           </div>
-          <p className="profile-hero-subtitle muted">{tx('profile.subtitle')}</p>
         </header>
 
         {!organizationStudentMode ? (
           <AiProfilePanel
+            key={`ai-profile:${session.user.id}`}
             value={session.user.settings.aiProfile}
             onUpdate={onUpdateSettings}
+            draftUserId={session.user.id}
           />
         ) : null}
       </div>
 
-      <div className="profile-toolbar">
-        <label className="search-field">
-          <Search size={15} aria-hidden="true" />
-          <span className="sr-only">{tx('profile.searchAssets')}</span>
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={tx('profile.searchAssets')}
+      {!organizationStudentMode ? (
+        <div className="profile-domain-switch" role="tablist" aria-label={tx('profile.workspaceLabel')}>
+          <span
+            className={clsx('profile-domain-switch-indicator', profileDomain === 'recommenders' && 'is-recommenders')}
+            aria-hidden="true"
           />
-        </label>
-        <button type="button" className="primary-action" onClick={() => openCreate()}>
-          <Plus size={14} aria-hidden="true" /> {tx('profile.addSnippet')}
-        </button>
-      </div>
-
-      {deferProgressiveReveal ? (
-        <div className="profile-content-deferred" aria-hidden="true">
-          <span />
-          <span />
-          <span />
+          <button
+            type="button"
+            role="tab"
+            aria-selected={profileDomain === 'materials'}
+            className={clsx(profileDomain === 'materials' && 'is-active')}
+            onClick={() => selectProfileDomain('materials')}
+          >
+            <FileText size={14} aria-hidden="true" />
+            {tx('profile.materialsTab')}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={profileDomain === 'recommenders'}
+            className={clsx(profileDomain === 'recommenders' && 'is-active')}
+            onClick={() => selectProfileDomain('recommenders')}
+          >
+            <UsersRound size={14} aria-hidden="true" />
+            {tx('profile.recommendersTab')}
+          </button>
         </div>
-      ) : (
-        <>
-      <section className="profile-snippet-section" aria-labelledby="profile-snippet-title">
-        <div className="profile-section-head">
-          <div>
-            <span className="eyebrow">{tx('profile.libraryEyebrow')}</span>
-            <div className="profile-section-title-row">
-              <h3 id="profile-snippet-title">{tx('profile.libraryTitle')}</h3>
-              <InfoTooltip
-                className="profile-mobile-info"
-                content={tx('profile.libraryGroupHint')}
-                label={tx('profile.libraryGroupHint')}
+      ) : null}
+
+      {organizationStudentMode || profileDomain === 'materials' ? (
+        <div key="materials" className={clsx('profile-domain-pane is-materials', domainSwitched && 'is-switched')}>
+          <div className="profile-toolbar">
+            <label className="search-field">
+              <Search size={15} aria-hidden="true" />
+              <span className="sr-only">{tx('profile.searchAssets')}</span>
+              <input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={tx('profile.searchAssets')}
               />
-            </div>
-            <p className="profile-section-sub muted">
-              {tx('profile.libraryGroupHint')}
-            </p>
-          </div>
-          <div className="profile-section-head-actions">
-            <LibraryViewSwitch
-              value={libraryView}
-              onChange={setLibraryView}
-              label={tx('profile.viewModeLabel')}
-              cardLabel={tx('profile.cardView')}
-              listLabel={tx('profile.listView')}
-              transitionScope="profile"
-              controlsId="profile-library-view"
-            />
-            {!organizationStudentMode ? (
-              <button
-                type="button"
-                className="icon-action"
-                title={tx('profile.snippetPhraseSettingsTitle')}
-                onClick={openPhraseSettings}
-              >
-                <Settings size={14} aria-hidden="true" />
-              </button>
-            ) : null}
-            <span className="profile-count-badge">{filtered.length}</span>
-          </div>
-        </div>
-
-        <LibraryInsertionMotionBoundary
-          assetIds={assets.map((asset) => asset.id)}
-          items={libraryMotionItems}
-          onAssetsAdded={revealAddedAssets}
-        >
-        {filtered.length === 0 ? (
-          <div className="empty-list">
-            <FileText size={24} aria-hidden="true" style={{ opacity: 0.3 }} />
-            <span>{tx('profile.noSnippets')}</span>
-            <p className="muted">{tx('profile.noSnippetsHint')}</p>
+            </label>
             <button type="button" className="primary-action" onClick={() => openCreate()}>
               <Plus size={14} aria-hidden="true" /> {tx('profile.addSnippet')}
             </button>
           </div>
-        ) : libraryView === 'cards' ? (
-          <div id="profile-library-view" key="profile-library-cards" className="profile-library-view is-cards">
-          <div className="snippet-grid snippet-stack-grid">
-            {families.map((family, familyIndex) => {
-              const open = expandedFamilies.has(family.familyId)
-              const multi = family.versionCount > 1
-              const turn = familyTurns.get(family.familyId)
-              const activeVersion = family.versions.find((version) => (
-                version.id === activeFamilyVersionIds.get(family.familyId)
-              )) ?? family.primary
-              const familyIsRemoving = family.versionCount === 1 && Boolean(removingAssetIds?.has(activeVersion.id))
-              const activeVersionIndex = Math.max(0, family.versions.findIndex((version) => version.id === activeVersion.id))
-              const expandedVersions = multi
-                ? [
-                    ...family.versions.slice(activeVersionIndex + 1),
-                    ...family.versions.slice(0, activeVersionIndex),
-                  ]
-                : []
-              const expandedVisibleCardCount = Math.min(family.versionCount, 4)
-              const expandedStackWidth = (
-                expandedVisibleCardCount * PROFILE_STACK_CARD_WIDTH
-                + Math.max(0, expandedVisibleCardCount - 1) * PROFILE_STACK_GAP
-              )
-              const turnDirection = turn?.direction ?? 'forward'
-              const primaryDisplay = {
-                name: localizeStaticText(activeVersion.name, lang),
-                kind: profileKindLabel(family.kind, lang, {
-                  zh: activeVersion.customLabelZh,
-                  en: activeVersion.customLabelEn,
-                }, contentLanguages),
-                description: localizeStaticText(activeVersion.description, lang),
-              }
-              const appearance = profilePresetPresentation(family.kind)
 
-              return (
-                <Fragment key={family.familyId}>
-                <article
-                  ref={(node) => {
-                    if (node) familyStackRefs.current.set(family.familyId, node)
-                    else familyStackRefs.current.delete(family.familyId)
-                  }}
-                  data-library-motion-key={`family:${family.familyId}`}
-                  className={clsx(
-                    'snippet-stack',
-                    multi && 'has-stack',
-                    family.versionCount > 4 && 'has-overflow-stack',
-                    open && 'is-expanded',
-                    familyIsRemoving && 'is-removing',
-                    turn && 'is-turning',
-                    turn && `is-turning-${turn.direction}`,
-                    turn?.fromGesture && 'is-gesture-turn',
-                  )}
-                  style={{
-                    animationDelay: `${Math.min(familyIndex, 10) * 35}ms`,
-                    ['--snippet-stack-expanded-width' as string]: `${expandedStackWidth}px`,
-                    ['--snippet-stack-turn-duration' as string]: `${turn?.durationMs ?? PROFILE_STACK_TURN_DURATION}ms`,
-                  }}
-                  onAnimationEnd={(event) => {
-                    if (
-                      event.target instanceof HTMLElement
-                      && event.target.classList.contains('is-deck-outgoing')
-                    ) {
-                      familyTurnSettlersRef.current.get(family.familyId)?.()
-                    }
-                  }}
+          {deferProgressiveReveal ? (
+            <div className="profile-content-deferred" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+          ) : (
+            <>
+              <section className="profile-snippet-section" aria-labelledby="profile-snippet-title">
+                <div className="profile-section-head">
+                  <div>
+                    <span className="eyebrow">{tx('profile.libraryEyebrow')}</span>
+                    <div className="profile-section-title-row">
+                      <h3 id="profile-snippet-title">{tx('profile.libraryTitle')}</h3>
+                      <InfoTooltip
+                        className="profile-mobile-info"
+                        content={tx('profile.libraryGroupHint')}
+                        label={tx('profile.libraryGroupHint')}
+                      />
+                    </div>
+                    <p className="profile-section-sub muted">{tx('profile.libraryGroupHint')}</p>
+                  </div>
+                  <div className="profile-section-head-actions">
+                    <LibraryViewSwitch
+                      value={libraryView}
+                      onChange={setLibraryView}
+                      label={tx('profile.viewModeLabel')}
+                      cardLabel={tx('profile.cardView')}
+                      listLabel={tx('profile.listView')}
+                      transitionScope="profile"
+                      controlsId="profile-library-view"
+                    />
+                    {!organizationStudentMode ? (
+                      <button
+                        type="button"
+                        className="icon-action"
+                        title={tx('profile.snippetPhraseSettingsTitle')}
+                        onClick={openPhraseSettings}
+                      >
+                        <Settings size={14} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                    <span className="profile-count-badge">{filtered.length}</span>
+                  </div>
+                </div>
+
+                <LibraryInsertionMotionBoundary
+                  assetIds={assets.map((asset) => asset.id)}
+                  items={libraryMotionItems}
+                  onAssetsAdded={revealAddedAssets}
                 >
-                  {/* Real, keyed cards stay mounted at every deck depth. Their animation
+                  {filtered.length === 0 ? (
+                    <div className="empty-list">
+                      <FileText size={24} aria-hidden="true" style={{ opacity: 0.3 }} />
+                      <span>{tx('profile.noSnippets')}</span>
+                      <p className="muted">{tx('profile.noSnippetsHint')}</p>
+                      <button type="button" className="primary-action" onClick={() => openCreate()}>
+                        <Plus size={14} aria-hidden="true" /> {tx('profile.addSnippet')}
+                      </button>
+                    </div>
+                  ) : libraryView === 'cards' ? (
+                    <div
+                      id="profile-library-view"
+                      key="profile-library-cards"
+                      className="profile-library-view is-cards"
+                    >
+                      <div className="snippet-grid snippet-stack-grid">
+                        {renderedFamilies.map((family, familyIndex) => {
+                          const open = expandedFamilies.has(family.familyId)
+                          const multi = family.versionCount > 1
+                          const turn = familyTurns.get(family.familyId)
+                          const activeVersion =
+                            family.versions.find(
+                              (version) => version.id === activeFamilyVersionIds.get(family.familyId),
+                            ) ?? family.primary
+                          const familyIsRemoving =
+                            family.versionCount === 1 && Boolean(removingAssetIds?.has(activeVersion.id))
+                          const activeVersionIndex = Math.max(
+                            0,
+                            family.versions.findIndex((version) => version.id === activeVersion.id),
+                          )
+                          const expandedVersions = multi
+                            ? [
+                                ...family.versions.slice(activeVersionIndex + 1),
+                                ...family.versions.slice(0, activeVersionIndex),
+                              ]
+                            : []
+                          const expandedVisibleCardCount = Math.min(family.versionCount, 4)
+                          const expandedStackWidth =
+                            expandedVisibleCardCount * PROFILE_STACK_CARD_WIDTH +
+                            Math.max(0, expandedVisibleCardCount - 1) * PROFILE_STACK_GAP
+                          const turnDirection = turn?.direction ?? 'forward'
+                          const primaryDisplay = {
+                            name: localizeStaticText(activeVersion.name, lang),
+                            kind: profileKindLabel(
+                              family.kind,
+                              lang,
+                              {
+                                zh: activeVersion.customLabelZh,
+                                en: activeVersion.customLabelEn,
+                              },
+                              contentLanguages,
+                            ),
+                            description: localizeStaticText(activeVersion.description, lang),
+                          }
+                          const appearance = profilePresetPresentation(family.kind)
+
+                          return (
+                            <Fragment key={family.familyId}>
+                              <article
+                                ref={(node) => {
+                                  if (node) familyStackRefs.current.set(family.familyId, node)
+                                  else familyStackRefs.current.delete(family.familyId)
+                                }}
+                                data-library-motion-key={`family:${family.familyId}`}
+                                className={clsx(
+                                  'snippet-stack',
+                                  multi && 'has-stack',
+                                  family.versionCount > 4 && 'has-overflow-stack',
+                                  open && 'is-expanded',
+                                  familyIsRemoving && 'is-removing',
+                                  turn && 'is-turning',
+                                  turn && `is-turning-${turn.direction}`,
+                                  turn?.fromGesture && 'is-gesture-turn',
+                                )}
+                                style={{
+                                  animationDelay: `${Math.min(familyIndex, 10) * 35}ms`,
+                                  ['--snippet-stack-expanded-width' as string]: `${expandedStackWidth}px`,
+                                  ['--snippet-stack-turn-duration' as string]: `${turn?.durationMs ?? PROFILE_STACK_TURN_DURATION}ms`,
+                                }}
+                                onAnimationEnd={(event) => {
+                                  if (
+                                    event.target instanceof HTMLElement &&
+                                    event.target.classList.contains('is-deck-outgoing')
+                                  ) {
+                                    familyTurnSettlersRef.current.get(family.familyId)?.()
+                                  }
+                                }}
+                              >
+                                {/* Real, keyed cards stay mounted at every deck depth. Their animation
                       endpoint exactly matches the next resting depth, so React never has
                       to replace the final frame with a visually different placeholder. */}
-                  {(multi ? family.versions : [activeVersion]).map((version, versionIndex) => {
-                    const isActive = version.id === activeVersion.id
-                    const depth = (versionIndex - activeVersionIndex + family.versionCount) % family.versionCount
-                    const targetDepth = turn
-                      ? profileStackTargetDepth(depth, family.versionCount, turnDirection)
-                      : depth
-                    const display = {
-                      name: localizeStaticText(version.name, lang),
-                      kind: profileKindLabel(family.kind, lang, {
-                        zh: version.customLabelZh,
-                        en: version.customLabelEn,
-                      }, contentLanguages),
-                      description: localizeStaticText(version.description, lang),
-                    }
-                    const versionUpdatedDate = version.updatedAt ? new Date(version.updatedAt) : null
-                    const versionUpdatedAt = versionUpdatedDate && !Number.isNaN(versionUpdatedDate.getTime())
-                      ? new Intl.DateTimeFormat(localeForLanguage(lang), { month: 'short', day: 'numeric' }).format(versionUpdatedDate)
-                      : ''
-                    return (
-                      <div
-                        key={version.id}
-                        ref={(node) => {
-                          if (node && isActive) {
-                            familyFrontRefs.current.set(family.familyId, node)
-                          } else if (!node && familyFrontRefs.current.get(family.familyId)?.dataset.assetId === version.id) {
-                            familyFrontRefs.current.delete(family.familyId)
-                          }
-                        }}
-                        className={clsx(
-                          'snippet-card',
-                          'snippet-stack-card-layout',
-                          isActive && 'snippet-stack-front',
-                          multi && 'snippet-stack-deck-card',
-                          multi && depth > 3 && (!turn || targetDepth > 3) && 'is-deck-dormant',
-                          turn && (depth <= 3 || targetDepth <= 3) && 'is-deck-active-turn',
-                          turn && depth === 0 && 'is-deck-outgoing',
-                          turn && depth !== 0 && targetDepth === 0 && 'is-deck-incoming',
-                          turn && depth !== 0 && targetDepth !== 0 && 'is-deck-shifting',
-                        )}
-                        data-asset-id={version.id}
-                        data-stack-depth={depth}
-                        style={multi ? profileStackDepthStyle(depth, targetDepth, family.versionCount) : undefined}
-                        aria-hidden={!isActive || Boolean(turn)}
-                        inert={!isActive || Boolean(turn)}
-                        onContextMenu={isActive ? (event) => openSnippetContextMenu(event, version, display) : undefined}
-                        onPointerDown={isActive ? (event) => {
-                          if (multi && !open && !turn) handleFamilyPointerDown(event, family.familyId)
-                        } : undefined}
-                        onPointerMove={isActive ? (event) => {
-                          if (multi && !open && !turn) handleFamilyPointerMove(event, family.familyId)
-                        } : undefined}
-                        onPointerUp={isActive ? (event) => {
-                          if (multi && !open && !turn) handleFamilyPointerEnd(event, family.familyId, family.versions)
-                        } : undefined}
-                        onPointerCancel={isActive ? (event) => handleFamilyPointerCancel(event, family.familyId) : undefined}
-                      >
-                        <button
-                          type="button"
-                          className="snippet-card-main"
-                          tabIndex={isActive ? undefined : -1}
-                          onClick={isActive ? (event) => {
-                            if (turn) {
-                              event.preventDefault()
-                              return
-                            }
-                            const suppressUntil = swipeClickSuppressionsRef.current.get(family.familyId) ?? 0
-                            if (suppressUntil > Date.now()) {
-                              event.preventDefault()
-                              return
-                            }
-                            swipeClickSuppressionsRef.current.delete(family.familyId)
-                            openEdit(version)
-                          } : undefined}
-                          aria-label={`${tx(open ? 'profile.editSnippet' : 'profile.openSnippet')}: ${display.name}`}
-                          title={isActive && multi && !open ? tx('profile.scrollStackHint') : undefined}
-                        >
-                          <ProfilePresetIcon
-                            icon={version.icon ?? appearance.icon}
-                            color={version.color ?? appearance.color}
-                            className="snippet-card-preset-icon"
-                          />
-                          <div className="snippet-card-info">
-                            <div className="snippet-card-title-row">
-                              <strong>{display.kind}</strong>
-                              <span className="snippet-family-count" aria-hidden={open || undefined}>
-                                {format(
-                                  tx(family.versionCount === 1 ? 'profile.groupItemCountOne' : 'profile.groupItemCount'),
-                                  { count: family.versionCount },
-                                )}
-                              </span>
-                            </div>
-                            <p className="snippet-card-description">{display.name}</p>
-                            <div className="snippet-card-detail-list">
-                              {(version.attachments?.length ?? 0) > 0 ? (
-                                <span><Paperclip size={11} aria-hidden="true" /> {version.attachments?.length}</span>
-                              ) : version.uploadReserved ? (
-                                <span><UploadCloud size={11} aria-hidden="true" /> {tx('profile.uploadReserved')}</span>
-                              ) : null}
-                              {versionUpdatedAt ? <span>{format(tx('profile.updatedAt'), { date: versionUpdatedAt })}</span> : null}
-                            </div>
-                          </div>
-                        </button>
-                        <div className="snippet-card-foot">
-                          <div className="snippet-card-meta" />
-                          <div className="snippet-card-actions">
-                            <button type="button" tabIndex={isActive ? undefined : -1} className="icon-action" title={tx('profile.editSnippet')} onClick={() => openEdit(version)}>
-                              <Pencil size={13} aria-hidden="true" />
-                            </button>
-                            {!organizationStudentMode ? (
-                              <button type="button" tabIndex={isActive ? undefined : -1} className="icon-action" title={tx('profile.shareUpload')} onClick={() => openEdit(version, { share: true })}>
-                                <ExternalLink size={13} aria-hidden="true" />
-                              </button>
-                            ) : null}
-                            <button type="button" tabIndex={isActive ? undefined : -1} className="icon-action" title={tx('profile.deleteSnippet')} onClick={() => onDeleteAsset(version)}>
-                              <Trash2 size={13} aria-hidden="true" />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })}
+                                {(multi ? family.versions : [activeVersion]).map((version, versionIndex) => {
+                                  const isActive = version.id === activeVersion.id
+                                  const depth =
+                                    (versionIndex - activeVersionIndex + family.versionCount) % family.versionCount
+                                  const targetDepth = turn
+                                    ? profileStackTargetDepth(depth, family.versionCount, turnDirection)
+                                    : depth
+                                  const display = {
+                                    name: localizeStaticText(version.name, lang),
+                                    kind: profileKindLabel(
+                                      family.kind,
+                                      lang,
+                                      {
+                                        zh: version.customLabelZh,
+                                        en: version.customLabelEn,
+                                      },
+                                      contentLanguages,
+                                    ),
+                                    description: localizeStaticText(version.description, lang),
+                                  }
+                                  const versionUpdatedDate = version.updatedAt ? new Date(version.updatedAt) : null
+                                  const versionUpdatedAt =
+                                    versionUpdatedDate && !Number.isNaN(versionUpdatedDate.getTime())
+                                      ? new Intl.DateTimeFormat(localeForLanguage(lang), {
+                                          month: 'short',
+                                          day: 'numeric',
+                                        }).format(versionUpdatedDate)
+                                      : ''
+                                  return (
+                                    <div
+                                      key={version.id}
+                                      ref={(node) => {
+                                        if (node && isActive) {
+                                          familyFrontRefs.current.set(family.familyId, node)
+                                        } else if (
+                                          !node &&
+                                          familyFrontRefs.current.get(family.familyId)?.dataset.assetId === version.id
+                                        ) {
+                                          familyFrontRefs.current.delete(family.familyId)
+                                        }
+                                      }}
+                                      className={clsx(
+                                        'snippet-card',
+                                        'snippet-stack-card-layout',
+                                        isActive && 'snippet-stack-front',
+                                        multi && 'snippet-stack-deck-card',
+                                        multi && depth > 3 && (!turn || targetDepth > 3) && 'is-deck-dormant',
+                                        turn && (depth <= 3 || targetDepth <= 3) && 'is-deck-active-turn',
+                                        turn && depth === 0 && 'is-deck-outgoing',
+                                        turn && depth !== 0 && targetDepth === 0 && 'is-deck-incoming',
+                                        turn && depth !== 0 && targetDepth !== 0 && 'is-deck-shifting',
+                                      )}
+                                      data-asset-id={version.id}
+                                      data-stack-depth={depth}
+                                      style={
+                                        multi
+                                          ? profileStackDepthStyle(depth, targetDepth, family.versionCount)
+                                          : undefined
+                                      }
+                                      aria-hidden={!isActive || Boolean(turn)}
+                                      inert={!isActive || Boolean(turn)}
+                                      onContextMenu={
+                                        isActive
+                                          ? (event) => openSnippetContextMenu(event, version, display)
+                                          : undefined
+                                      }
+                                      onPointerDown={
+                                        isActive
+                                          ? (event) => {
+                                              if (multi && !open && !turn)
+                                                handleFamilyPointerDown(event, family.familyId)
+                                            }
+                                          : undefined
+                                      }
+                                      onPointerMove={
+                                        isActive
+                                          ? (event) => {
+                                              if (multi && !open && !turn)
+                                                handleFamilyPointerMove(event, family.familyId)
+                                            }
+                                          : undefined
+                                      }
+                                      onPointerUp={
+                                        isActive
+                                          ? (event) => {
+                                              if (multi && !open && !turn)
+                                                handleFamilyPointerEnd(event, family.familyId, family.versions)
+                                            }
+                                          : undefined
+                                      }
+                                      onPointerCancel={
+                                        isActive
+                                          ? (event) => handleFamilyPointerCancel(event, family.familyId)
+                                          : undefined
+                                      }
+                                    >
+                                      <button
+                                        type="button"
+                                        className="snippet-card-main"
+                                        tabIndex={isActive ? undefined : -1}
+                                        onClick={
+                                          isActive
+                                            ? (event) => {
+                                                if (turn) {
+                                                  event.preventDefault()
+                                                  return
+                                                }
+                                                const suppressUntil =
+                                                  swipeClickSuppressionsRef.current.get(family.familyId) ?? 0
+                                                if (suppressUntil > Date.now()) {
+                                                  event.preventDefault()
+                                                  return
+                                                }
+                                                swipeClickSuppressionsRef.current.delete(family.familyId)
+                                                openEdit(version)
+                                              }
+                                            : undefined
+                                        }
+                                        aria-label={`${tx(open ? 'profile.editSnippet' : 'profile.openSnippet')}: ${display.name}`}
+                                        title={isActive && multi && !open ? tx('profile.scrollStackHint') : undefined}
+                                      >
+                                        <ProfilePresetIcon
+                                          icon={version.icon ?? appearance.icon}
+                                          color={version.color ?? appearance.color}
+                                          className="snippet-card-preset-icon"
+                                        />
+                                        <div className="snippet-card-info">
+                                          <div className="snippet-card-title-row">
+                                            <strong>{display.kind}</strong>
+                                            <span className="snippet-family-count" aria-hidden={open || undefined}>
+                                              {format(
+                                                tx(
+                                                  family.versionCount === 1
+                                                    ? 'profile.groupItemCountOne'
+                                                    : 'profile.groupItemCount',
+                                                ),
+                                                { count: family.versionCount },
+                                              )}
+                                            </span>
+                                          </div>
+                                          <p className="snippet-card-description">{display.name}</p>
+                                          <div className="snippet-card-detail-list">
+                                            {(version.attachments?.length ?? 0) > 0 ? (
+                                              <span>
+                                                <Paperclip size={11} aria-hidden="true" /> {version.attachments?.length}
+                                              </span>
+                                            ) : version.uploadReserved ? (
+                                              <span>
+                                                <UploadCloud size={11} aria-hidden="true" />{' '}
+                                                {tx('profile.uploadReserved')}
+                                              </span>
+                                            ) : null}
+                                            {versionUpdatedAt ? (
+                                              <span>{format(tx('profile.updatedAt'), { date: versionUpdatedAt })}</span>
+                                            ) : null}
+                                          </div>
+                                        </div>
+                                      </button>
+                                      <div className="snippet-card-foot">
+                                        <div className="snippet-card-meta" />
+                                        <div className="snippet-card-actions">
+                                          <button
+                                            type="button"
+                                            tabIndex={isActive ? undefined : -1}
+                                            className="icon-action"
+                                            title={tx('profile.editSnippet')}
+                                            onClick={() => openEdit(version)}
+                                          >
+                                            <Pencil size={13} aria-hidden="true" />
+                                          </button>
+                                          {!organizationStudentMode ? (
+                                            <button
+                                              type="button"
+                                              tabIndex={isActive ? undefined : -1}
+                                              className="icon-action"
+                                              title={tx('profile.shareUpload')}
+                                              onClick={() =>
+                                                openEdit(version, {
+                                                  share: true,
+                                                })
+                                              }
+                                            >
+                                              <ExternalLink size={13} aria-hidden="true" />
+                                            </button>
+                                          ) : null}
+                                          <button
+                                            type="button"
+                                            tabIndex={isActive ? undefined : -1}
+                                            className="icon-action"
+                                            title={tx('profile.deleteSnippet')}
+                                            onClick={() => onDeleteAsset(version)}
+                                          >
+                                            <Trash2 size={13} aria-hidden="true" />
+                                          </button>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )
+                                })}
 
-                  {multi ? (
-                    <button
-                      type="button"
-                      className={clsx('snippet-stack-toggle', open && 'open')}
-                      aria-label={`${tx(open ? 'profile.collapseGroup' : 'profile.expandGroup')}: ${primaryDisplay.kind}`}
-                      aria-expanded={open}
-                      title={tx(open ? 'profile.collapseGroup' : 'profile.expandGroup')}
-                      onClick={() => toggleFamily(family.familyId)}
-                    >
-                      <ChevronDown size={16} aria-hidden="true" />
-                    </button>
-                  ) : null}
-                </article>
+                                {multi ? (
+                                  <button
+                                    type="button"
+                                    className={clsx('snippet-stack-toggle', open && 'open')}
+                                    aria-label={`${tx(open ? 'profile.collapseGroup' : 'profile.expandGroup')}: ${primaryDisplay.kind}`}
+                                    aria-expanded={open}
+                                    title={tx(open ? 'profile.collapseGroup' : 'profile.expandGroup')}
+                                    onClick={() => toggleFamily(family.familyId)}
+                                  >
+                                    <ChevronDown size={16} aria-hidden="true" />
+                                  </button>
+                                ) : null}
+                              </article>
 
-                  {/* Expanded versions are siblings of the anchor stack. This keeps the
+                              {/* Expanded versions are siblings of the anchor stack. This keeps the
                       library's visual reading order continuous: the next version takes
                       the next free cell instead of forcing a full-width nested row. */}
-                  {multi ? (
-                  <div
-                    className={clsx('snippet-stack-expand', 'snippet-stack-flow', open && 'open')}
-                    aria-hidden={!open}
-                    inert={!open}
-                    style={{
-                      ['--snippet-stack-close-visibility-delay' as string]: `${
+                              {multi ? (
+                                <div
+                                  className={clsx('snippet-stack-expand', 'snippet-stack-flow', open && 'open')}
+                                  aria-hidden={!open}
+                                  inert={!open}
+                                  style={{
+                                    ['--snippet-stack-close-visibility-delay' as string]: `${
                         PROFILE_STACK_VERSION_CLOSE_DURATION
                         + Math.min(expandedVersions.length, PROFILE_STACK_MAX_STAGGERED_VERSIONS) * PROFILE_STACK_VERSION_CLOSE_STAGGER
                         + 40
                       }ms`,
-                    }}
-                  >
-                      <div className="snippet-stack-expand-inner">
-                        <div className="snippet-stack-versions">
-                          {expandedVersions.map((version, versionIndex) => {
-                            const mobileGridIndex = versionIndex + 1
-                            const mobileColumn = mobileGridIndex % 2
-                            const mobileRow = Math.floor(mobileGridIndex / 2)
-                            const display = {
-                              name: localizeStaticText(version.name, lang),
-                              kind: profileKindLabel(version.kind, lang, {
-                                zh: version.customLabelZh,
-                                en: version.customLabelEn,
-                              }, contentLanguages),
-                              description: localizeStaticText(version.description, lang),
-                            }
-                            const versionUpdatedDate = version.updatedAt ? new Date(version.updatedAt) : null
-                            const versionUpdatedAt = versionUpdatedDate && !Number.isNaN(versionUpdatedDate.getTime())
-                              ? new Intl.DateTimeFormat(localeForLanguage(lang), { month: 'short', day: 'numeric' }).format(versionUpdatedDate)
-                              : ''
-                            const versionAppearance = profilePresetPresentation(version.kind)
-                            return (
-                              <div
-                                key={version.id}
-                                className={clsx(
-                                  'snippet-stack-version',
-                                  'snippet-stack-flow-version',
-                                  'snippet-stack-card-layout',
-                                  removingAssetIds?.has(version.id) && 'is-removing',
-                                )}
-                                style={{
-                                  ['--snippet-version-index' as string]: String(Math.min(versionIndex + 1, PROFILE_STACK_MAX_STAGGERED_VERSIONS)),
-                                  ['--snippet-version-close-index' as string]: String(Math.min(expandedVersions.length - versionIndex, PROFILE_STACK_MAX_STAGGERED_VERSIONS)),
-                                  ['--snippet-version-origin-x' as string]: `${PROFILE_STACK_COLLAPSED_OFFSET - (versionIndex + 1) * (PROFILE_STACK_CARD_WIDTH + PROFILE_STACK_GAP)}px`,
-                                  ['--snippet-version-mobile-origin-x' as string]: mobileColumn === 0 ? '0px' : 'calc(-100% - 12px)',
-                                  ['--snippet-version-mobile-origin-y' as string]: `${PROFILE_STACK_COLLAPSED_OFFSET - mobileRow * (PROFILE_STACK_MOBILE_CARD_HEIGHT + PROFILE_STACK_MOBILE_GAP)}px`,
-                                }}
-                                onContextMenu={(event) => openSnippetContextMenu(event, version, display)}
-                              >
-                                <button
-                                  type="button"
-                                  className="snippet-card-main"
-                                  aria-label={`${tx('profile.editSnippet')}: ${display.name}`}
-                                  onClick={() => openEdit(version)}
+                                  }}
                                 >
-                                  <ProfilePresetIcon
-                                    icon={version.icon ?? versionAppearance.icon}
-                                    color={version.color ?? versionAppearance.color}
-                                    className="snippet-card-preset-icon"
-                                  />
-                                  <div className="snippet-card-info">
-                                    <div className="snippet-card-title-row">
-                                      <strong>{display.kind}</strong>
+                                  <div className="snippet-stack-expand-inner">
+                                    <div className="snippet-stack-versions">
+                                      {expandedVersions.map((version, versionIndex) => {
+                                        const mobileGridIndex = versionIndex + 1
+                                        const mobileColumn = mobileGridIndex % 2
+                                        const mobileRow = Math.floor(mobileGridIndex / 2)
+                                        const display = {
+                                          name: localizeStaticText(version.name, lang),
+                                          kind: profileKindLabel(
+                                            version.kind,
+                                            lang,
+                                            {
+                                              zh: version.customLabelZh,
+                                              en: version.customLabelEn,
+                                            },
+                                            contentLanguages,
+                                          ),
+                                          description: localizeStaticText(version.description, lang),
+                                        }
+                                        const versionUpdatedDate = version.updatedAt
+                                          ? new Date(version.updatedAt)
+                                          : null
+                                        const versionUpdatedAt =
+                                          versionUpdatedDate && !Number.isNaN(versionUpdatedDate.getTime())
+                                            ? new Intl.DateTimeFormat(localeForLanguage(lang), {
+                                                month: 'short',
+                                                day: 'numeric',
+                                              }).format(versionUpdatedDate)
+                                            : ''
+                                        const versionAppearance = profilePresetPresentation(version.kind)
+                                        return (
+                                          <div
+                                            key={version.id}
+                                            className={clsx(
+                                              'snippet-stack-version',
+                                              'snippet-stack-flow-version',
+                                              'snippet-stack-card-layout',
+                                              removingAssetIds?.has(version.id) && 'is-removing',
+                                            )}
+                                            style={{
+                                              ['--snippet-version-index' as string]: String(
+                                                Math.min(versionIndex + 1, PROFILE_STACK_MAX_STAGGERED_VERSIONS),
+                                              ),
+                                              ['--snippet-version-close-index' as string]: String(
+                                                Math.min(
+                                                  expandedVersions.length - versionIndex,
+                                                  PROFILE_STACK_MAX_STAGGERED_VERSIONS,
+                                                ),
+                                              ),
+                                              ['--snippet-version-origin-x' as string]: `${PROFILE_STACK_COLLAPSED_OFFSET - (versionIndex + 1) * (PROFILE_STACK_CARD_WIDTH + PROFILE_STACK_GAP)}px`,
+                                              ['--snippet-version-mobile-origin-x' as string]:
+                                                mobileColumn === 0 ? '0px' : 'calc(-100% - 12px)',
+                                              ['--snippet-version-mobile-origin-y' as string]: `${PROFILE_STACK_COLLAPSED_OFFSET - mobileRow * (PROFILE_STACK_MOBILE_CARD_HEIGHT + PROFILE_STACK_MOBILE_GAP)}px`,
+                                            }}
+                                            onContextMenu={(event) => openSnippetContextMenu(event, version, display)}
+                                          >
+                                            <button
+                                              type="button"
+                                              className="snippet-card-main"
+                                              aria-label={`${tx('profile.editSnippet')}: ${display.name}`}
+                                              onClick={() => openEdit(version)}
+                                            >
+                                              <ProfilePresetIcon
+                                                icon={version.icon ?? versionAppearance.icon}
+                                                color={version.color ?? versionAppearance.color}
+                                                className="snippet-card-preset-icon"
+                                              />
+                                              <div className="snippet-card-info">
+                                                <div className="snippet-card-title-row">
+                                                  <strong>{display.kind}</strong>
+                                                </div>
+                                                <p className="snippet-card-description">{display.name}</p>
+                                                <div className="snippet-card-detail-list">
+                                                  {(version.attachments?.length ?? 0) > 0 ? (
+                                                    <span>
+                                                      <Paperclip size={11} aria-hidden="true" />
+                                                      {version.attachments.length}
+                                                    </span>
+                                                  ) : version.uploadReserved ? (
+                                                    <span>
+                                                      <UploadCloud size={11} aria-hidden="true" />
+                                                      {tx('profile.uploadReserved')}
+                                                    </span>
+                                                  ) : null}
+                                                  {versionUpdatedAt ? (
+                                                    <span>
+                                                      {format(tx('profile.updatedAt'), {
+                                                        date: versionUpdatedAt,
+                                                      })}
+                                                    </span>
+                                                  ) : null}
+                                                </div>
+                                              </div>
+                                            </button>
+                                            <div className="snippet-card-foot">
+                                              <div className="snippet-card-meta" />
+                                              <div className="snippet-card-actions snippet-version-actions">
+                                                <button
+                                                  type="button"
+                                                  className="icon-action"
+                                                  title={tx('profile.editSnippet')}
+                                                  onClick={() => openEdit(version)}
+                                                >
+                                                  <Pencil size={13} aria-hidden="true" />
+                                                </button>
+                                                {!organizationStudentMode ? (
+                                                  <button
+                                                    type="button"
+                                                    className="icon-action"
+                                                    title={tx('profile.shareUpload')}
+                                                    onClick={() =>
+                                                      openEdit(version, {
+                                                        share: true,
+                                                      })
+                                                    }
+                                                  >
+                                                    <ExternalLink size={13} aria-hidden="true" />
+                                                  </button>
+                                                ) : null}
+                                                {(version.attachments?.length ?? 0) > 0 ? (
+                                                  <button
+                                                    type="button"
+                                                    className="icon-action"
+                                                    title={tx('profile.downloadFirstAttachment')}
+                                                    onClick={() => {
+                                                      const attachment = version.attachments?.[0]
+                                                      if (attachment)
+                                                        onDownloadFile(attachment.fileId, attachment.fileName)
+                                                    }}
+                                                  >
+                                                    <Download size={13} aria-hidden="true" />
+                                                  </button>
+                                                ) : null}
+                                                <button
+                                                  type="button"
+                                                  className="icon-action"
+                                                  title={tx('profile.deleteSnippet')}
+                                                  onClick={() => onDeleteAsset(version)}
+                                                >
+                                                  <Trash2 size={13} aria-hidden="true" />
+                                                </button>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        )
+                                      })}
                                     </div>
-                                    <p className="snippet-card-description">{display.name}</p>
-                                    <div className="snippet-card-detail-list">
-                                    {(version.attachments?.length ?? 0) > 0 ? (
+                                  </div>
+                                </div>
+                              ) : null}
+                            </Fragment>
+                          )
+                        })}
+                        <button
+                          type="button"
+                          className="snippet-card snippet-card-add"
+                          data-library-motion-key="action:add"
+                          onClick={() => openCreate()}
+                        >
+                          <Plus size={20} aria-hidden="true" />
+                          <span>{tx('profile.addSnippet')}</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div id="profile-library-view" key="profile-library-list" className="profile-library-view is-list">
+                      <div className="profile-snippet-list" role="list">
+                        {renderedFiltered.map(({ raw: asset, display }, assetIndex) => {
+                          const appearance = profilePresetPresentation(asset.kind)
+                          const updatedDate = asset.updatedAt ? new Date(asset.updatedAt) : null
+                          const updatedAt =
+                            updatedDate && !Number.isNaN(updatedDate.getTime())
+                              ? new Intl.DateTimeFormat(localeForLanguage(lang), {
+                                  month: 'short',
+                                  day: 'numeric',
+                                }).format(updatedDate)
+                              : ''
+                          const attachmentCount = asset.attachments?.length ?? 0
+                          return (
+                            <article
+                              key={asset.id}
+                              data-library-motion-key={`asset:${asset.id}`}
+                              className={clsx(
+                                'profile-snippet-list-row',
+                                removingAssetIds?.has(asset.id) && 'is-removing',
+                              )}
+                              role="listitem"
+                              style={{
+                                ['--profile-list-index' as string]: String(Math.min(assetIndex, 10)),
+                              }}
+                              onContextMenu={(event) => openSnippetContextMenu(event, asset, display)}
+                            >
+                              <button
+                                type="button"
+                                className="profile-snippet-list-main"
+                                onClick={() => openEdit(asset)}
+                                aria-label={`${tx('profile.openSnippet')}: ${display.name}`}
+                              >
+                                <ProfilePresetIcon
+                                  icon={asset.icon ?? appearance.icon}
+                                  color={asset.color ?? appearance.color}
+                                  className="profile-snippet-list-icon"
+                                />
+                                <span className="profile-snippet-list-copy">
+                                  <span className="profile-snippet-list-title">
+                                    <strong>{display.name}</strong>
+                                    <b>{display.kind}</b>
+                                  </span>
+                                  {display.description ? <em>{display.description.replace(/\s+/g, ' ')}</em> : null}
+                                  <small>
+                                    {attachmentCount > 0 ? (
                                       <span>
                                         <Paperclip size={11} aria-hidden="true" />
-                                        {version.attachments.length}
+                                        {format(
+                                          tx(
+                                            attachmentCount === 1
+                                              ? 'profile.attachmentCount'
+                                              : 'profile.attachmentCountPlural',
+                                          ),
+                                          { count: attachmentCount },
+                                        )}
                                       </span>
-                                    ) : version.uploadReserved ? (
+                                    ) : asset.uploadReserved ? (
                                       <span>
                                         <UploadCloud size={11} aria-hidden="true" />
                                         {tx('profile.uploadReserved')}
                                       </span>
+                                    ) : (
+                                      <span>
+                                        <Paperclip size={11} aria-hidden="true" />
+                                        {tx('profile.noAttachments')}
+                                      </span>
+                                    )}
+                                    {updatedAt ? (
+                                      <span>
+                                        {format(tx('profile.updatedAt'), {
+                                          date: updatedAt,
+                                        })}
+                                      </span>
                                     ) : null}
-                                    {versionUpdatedAt ? <span>{format(tx('profile.updatedAt'), { date: versionUpdatedAt })}</span> : null}
-                                    </div>
-                                  </div>
+                                  </small>
+                                </span>
+                              </button>
+                              <div className="profile-snippet-list-actions">
+                                <button
+                                  type="button"
+                                  className="icon-action"
+                                  title={tx('profile.editSnippet')}
+                                  onClick={() => openEdit(asset)}
+                                >
+                                  <Pencil size={13} aria-hidden="true" />
                                 </button>
-                                <div className="snippet-card-foot">
-                                  <div className="snippet-card-meta" />
-                                  <div className="snippet-card-actions snippet-version-actions">
-                                    <button type="button" className="icon-action" title={tx('profile.editSnippet')} onClick={() => openEdit(version)}>
-                                      <Pencil size={13} aria-hidden="true" />
-                                    </button>
-                                    {!organizationStudentMode ? (
-                                      <button type="button" className="icon-action" title={tx('profile.shareUpload')} onClick={() => openEdit(version, { share: true })}>
-                                        <ExternalLink size={13} aria-hidden="true" />
-                                      </button>
-                                    ) : null}
-                                    {(version.attachments?.length ?? 0) > 0 ? (
-                                      <button
-                                        type="button"
-                                        className="icon-action"
-                                        title={tx('profile.downloadFirstAttachment')}
-                                        onClick={() => {
-                                          const attachment = version.attachments?.[0]
-                                          if (attachment) onDownloadFile(attachment.fileId, attachment.fileName)
-                                        }}
-                                      >
-                                        <Download size={13} aria-hidden="true" />
-                                      </button>
-                                    ) : null}
-                                    <button type="button" className="icon-action" title={tx('profile.deleteSnippet')} onClick={() => onDeleteAsset(version)}>
-                                      <Trash2 size={13} aria-hidden="true" />
-                                    </button>
-                                  </div>
-                                </div>
+                                {!organizationStudentMode ? (
+                                  <button
+                                    type="button"
+                                    className="icon-action"
+                                    title={tx('profile.shareUpload')}
+                                    onClick={() => openEdit(asset, { share: true })}
+                                  >
+                                    <ExternalLink size={13} aria-hidden="true" />
+                                  </button>
+                                ) : null}
+                                {attachmentCount > 0 ? (
+                                  <button
+                                    type="button"
+                                    className="icon-action"
+                                    title={tx('profile.downloadFirstAttachment')}
+                                    onClick={() => {
+                                      const attachment = asset.attachments?.[0]
+                                      if (attachment) onDownloadFile(attachment.fileId, attachment.fileName)
+                                    }}
+                                  >
+                                    <Download size={13} aria-hidden="true" />
+                                  </button>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  className="icon-action"
+                                  title={tx('profile.deleteSnippet')}
+                                  onClick={() => onDeleteAsset(asset)}
+                                >
+                                  <Trash2 size={13} aria-hidden="true" />
+                                </button>
                               </div>
-                            )
-                          })}
-                        </div>
+                            </article>
+                          )
+                        })}
                       </div>
                     </div>
-                  ) : null}
-                </Fragment>
-              )
-            })}
-            <button
-              type="button"
-              className="snippet-card snippet-card-add"
-              data-library-motion-key="action:add"
-              onClick={() => openCreate()}
-            >
-              <Plus size={20} aria-hidden="true" />
-              <span>{tx('profile.addSnippet')}</span>
-            </button>
-          </div>
-          </div>
-        ) : (
-          <div id="profile-library-view" key="profile-library-list" className="profile-library-view is-list">
-            <div className="profile-snippet-list" role="list">
-              {filtered.map(({ raw: asset, display }, assetIndex) => {
-                const appearance = profilePresetPresentation(asset.kind)
-                const updatedDate = asset.updatedAt ? new Date(asset.updatedAt) : null
-                const updatedAt = updatedDate && !Number.isNaN(updatedDate.getTime())
-                  ? new Intl.DateTimeFormat(localeForLanguage(lang), { month: 'short', day: 'numeric' }).format(updatedDate)
-                  : ''
-                const attachmentCount = asset.attachments?.length ?? 0
-                return (
-                  <article
-                    key={asset.id}
-                    data-library-motion-key={`asset:${asset.id}`}
-                    className={clsx(
-                      'profile-snippet-list-row',
-                      removingAssetIds?.has(asset.id) && 'is-removing',
-                    )}
-                    role="listitem"
-                    style={{ ['--profile-list-index' as string]: String(Math.min(assetIndex, 10)) }}
-                    onContextMenu={(event) => openSnippetContextMenu(event, asset, display)}
-                  >
+                  )}
+                </LibraryInsertionMotionBoundary>
+                {profileAssetsHaveMore ? (
+                  <div className="profile-library-load-more">
                     <button
                       type="button"
-                      className="profile-snippet-list-main"
-                      onClick={() => openEdit(asset)}
-                      aria-label={`${tx('profile.openSnippet')}: ${display.name}`}
+                      className="quiet-action compact-action"
+                      onClick={() =>
+                        setProfileAssetRenderCount((current) => current + PROFILE_ASSET_BATCH_SIZE)
+                      }
                     >
-                      <ProfilePresetIcon
-                        icon={asset.icon ?? appearance.icon}
-                        color={asset.color ?? appearance.color}
-                        className="profile-snippet-list-icon"
-                      />
-                      <span className="profile-snippet-list-copy">
-                        <span className="profile-snippet-list-title">
-                          <strong>{display.name}</strong>
-                          <b>{display.kind}</b>
-                        </span>
-                        {display.description ? <em>{display.description.replace(/\s+/g, ' ')}</em> : null}
-                        <small>
-                          {attachmentCount > 0 ? (
-                            <span>
-                              <Paperclip size={11} aria-hidden="true" />
-                              {format(tx(attachmentCount === 1 ? 'profile.attachmentCount' : 'profile.attachmentCountPlural'), { count: attachmentCount })}
-                            </span>
-                          ) : asset.uploadReserved ? (
-                            <span><UploadCloud size={11} aria-hidden="true" />{tx('profile.uploadReserved')}</span>
-                          ) : (
-                            <span><Paperclip size={11} aria-hidden="true" />{tx('profile.noAttachments')}</span>
-                          )}
-                          {updatedAt ? <span>{format(tx('profile.updatedAt'), { date: updatedAt })}</span> : null}
-                        </small>
-                      </span>
-                    </button>
-                    <div className="profile-snippet-list-actions">
-                      <button type="button" className="icon-action" title={tx('profile.editSnippet')} onClick={() => openEdit(asset)}>
-                        <Pencil size={13} aria-hidden="true" />
-                      </button>
-                      {!organizationStudentMode ? (
-                        <button type="button" className="icon-action" title={tx('profile.shareUpload')} onClick={() => openEdit(asset, { share: true })}>
-                          <ExternalLink size={13} aria-hidden="true" />
-                        </button>
-                      ) : null}
-                      {attachmentCount > 0 ? (
-                        <button
-                          type="button"
-                          className="icon-action"
-                          title={tx('profile.downloadFirstAttachment')}
-                          onClick={() => {
-                            const attachment = asset.attachments?.[0]
-                            if (attachment) onDownloadFile(attachment.fileId, attachment.fileName)
-                          }}
-                        >
-                          <Download size={13} aria-hidden="true" />
-                        </button>
-                      ) : null}
-                      <button type="button" className="icon-action" title={tx('profile.deleteSnippet')} onClick={() => onDeleteAsset(asset)}>
-                        <Trash2 size={13} aria-hidden="true" />
-                      </button>
-                    </div>
-                  </article>
-                )
-              })}
-            </div>
-          </div>
-        )}
-        </LibraryInsertionMotionBoundary>
-      </section>
-
-      <section className="profile-preset-section" aria-labelledby="profile-preset-title">
-        <div className="profile-section-head">
-          <div>
-            <span className="eyebrow">{tx('profile.presetsEyebrow')}</span>
-            <h3 id="profile-preset-title">{tx('profile.presetsTitle')}</h3>
-          </div>
-          <span className="profile-count-badge">{personalPresets.length}</span>
-        </div>
-        <div className="profile-preset-grid">
-          {personalPresets.map((preset) => {
-            // Card title/description: appearance (UI) language.
-            const display = profilePresetText(preset, lang, contentLanguages)
-            // Insert-phrase dual labels: live from first/second content languages (all packs).
-            const insertLabels = profilePresetInsertLabels(preset, contentLanguages)
-            const isEntering = enteredPresetId === preset.id
-            const isExiting = exitingPresetId === preset.id
-            return (
-              <article
-                key={preset.id}
-                data-preset-id={preset.id}
-                className={`profile-preset-card preset-manageable${isEntering ? ' profile-preset-card-enter' : ''}${isExiting ? ' is-removing' : ''}`}
-                onAnimationEnd={(event) => {
-                  if (event.target !== event.currentTarget) return
-                  if (event.animationName === 'profile-preset-card-enter') {
-                    if (enteredPresetId === preset.id) setEnteredPresetId(null)
-                    return
-                  }
-                  if (event.animationName === 'atlas-destroy' && exitingPresetId === preset.id) {
-                    finalizeDeletePreset(preset.id)
-                  }
-                }}
-              >
-                <button
-                  type="button"
-                  className="profile-preset-card-main"
-                  onClick={() => openCreate({
-                    kind: preset.kind,
-                    // Card name stays UI language; dual custom labels are insert languages.
-                    name: display.name,
-                    content: display.content,
-                    customLabelEn: insertLabels.primary || undefined,
-                    customLabelZh: insertLabels.secondary || undefined,
-                    icon: preset.icon,
-                    color: preset.color,
-                    fromPreset: true,
-                  })}
-                >
-                  <div className="profile-preset-card-top">
-                    <ProfilePresetIcon icon={preset.icon} color={preset.color} />
-                    {!preset.builtIn ? (
-                      <span className="profile-preset-custom-badge">{tx('profile.customPresetBadge')}</span>
-                    ) : null}
-                  </div>
-                  <strong>{display.name}</strong>
-                  <em>{display.description}</em>
-                  <span className="profile-preset-action"><Plus size={12} aria-hidden="true" /> {tx('profile.usePreset')}</span>
-                </button>
-                {!organizationStudentMode && !preset.builtIn ? (
-                  <div className="profile-preset-card-actions">
-                    <button type="button" className="icon-action" title={tx('profile.editPreset')} onClick={() => openPresetEditor(preset)}>
-                      <Pencil size={13} aria-hidden="true" />
-                    </button>
-                    <button type="button" className="icon-action" title={tx('profile.deletePreset')} onClick={() => setPendingDeletePreset(preset)}>
-                      <Trash2 size={13} aria-hidden="true" />
+                      <Plus size={13} aria-hidden="true" />
+                      {format(tx('profile.libraryShowMore'), {
+                        count: Math.min(PROFILE_ASSET_BATCH_SIZE, filtered.length - profileAssetRenderCount),
+                      })}
                     </button>
                   </div>
                 ) : null}
-              </article>
-            )
-          })}
-          {!organizationStudentMode ? (
-            <button type="button" className="profile-preset-card profile-preset-add-card" onClick={() => openPresetEditor()}>
-              <span className="profile-preset-icon"><Plus size={16} aria-hidden="true" /></span>
-              <strong>{tx('profile.addPreset')}</strong>
-              <em>{tx('profile.addPresetHint')}</em>
-              <span className="profile-preset-action">{tx('profile.customType')}</span>
-            </button>
-          ) : null}
+              </section>
+
+              <section className="profile-preset-section" aria-labelledby="profile-preset-title">
+                <div className="profile-section-head">
+                  <div>
+                    <span className="eyebrow">{tx('profile.presetsEyebrow')}</span>
+                    <h3 id="profile-preset-title">{tx('profile.presetsTitle')}</h3>
+                  </div>
+                  <span className="profile-count-badge">{personalPresets.length}</span>
+                </div>
+                <div className="profile-preset-grid">
+                  {personalPresets.map((preset) => {
+                    // Card title/description: appearance (UI) language.
+                    const display = profilePresetText(preset, lang, contentLanguages)
+                    // Insert-phrase dual labels: live from first/second content languages (all packs).
+                    const insertLabels = profilePresetInsertLabels(preset, contentLanguages)
+                    const isEntering = enteredPresetId === preset.id
+                    const isExiting = exitingPresetId === preset.id
+                    return (
+                      <article
+                        key={preset.id}
+                        data-preset-id={preset.id}
+                        className={`profile-preset-card preset-manageable${isEntering ? ' profile-preset-card-enter' : ''}${isExiting ? ' is-removing' : ''}`}
+                        onAnimationEnd={(event) => {
+                          if (event.target !== event.currentTarget) return
+                          if (event.animationName === 'profile-preset-card-enter') {
+                            if (enteredPresetId === preset.id) setEnteredPresetId(null)
+                            return
+                          }
+                          if (event.animationName === 'atlas-destroy' && exitingPresetId === preset.id) {
+                            finalizeDeletePreset(preset.id)
+                          }
+                        }}
+                      >
+                        <button
+                          type="button"
+                          className="profile-preset-card-main"
+                          onClick={() =>
+                            openCreate({
+                              kind: preset.kind,
+                              // Card name stays UI language; dual custom labels are insert languages.
+                              name: display.name,
+                              content: display.content,
+                              customLabelEn: insertLabels.primary || undefined,
+                              customLabelZh: insertLabels.secondary || undefined,
+                              icon: preset.icon,
+                              color: preset.color,
+                              fromPreset: true,
+                            })
+                          }
+                        >
+                          <div className="profile-preset-card-top">
+                            <ProfilePresetIcon icon={preset.icon} color={preset.color} />
+                            {!preset.builtIn ? (
+                              <span className="profile-preset-custom-badge">{tx('profile.customPresetBadge')}</span>
+                            ) : null}
+                          </div>
+                          <strong>{display.name}</strong>
+                          <em>{display.description}</em>
+                          <span className="profile-preset-action">
+                            <Plus size={12} aria-hidden="true" /> {tx('profile.usePreset')}
+                          </span>
+                        </button>
+                        {!organizationStudentMode && !preset.builtIn ? (
+                          <div className="profile-preset-card-actions">
+                            <button
+                              type="button"
+                              className="icon-action"
+                              title={tx('profile.editPreset')}
+                              onClick={() => openPresetEditor(preset)}
+                            >
+                              <Pencil size={13} aria-hidden="true" />
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-action"
+                              title={tx('profile.deletePreset')}
+                              onClick={() => setPendingDeletePreset(preset)}
+                            >
+                              <Trash2 size={13} aria-hidden="true" />
+                            </button>
+                          </div>
+                        ) : null}
+                      </article>
+                    )
+                  })}
+                  {!organizationStudentMode ? (
+                    <button
+                      type="button"
+                      className="profile-preset-card profile-preset-add-card"
+                      onClick={() => openPresetEditor()}
+                    >
+                      <span className="profile-preset-icon">
+                        <Plus size={16} aria-hidden="true" />
+                      </span>
+                      <strong>{tx('profile.addPreset')}</strong>
+                      <em>{tx('profile.addPresetHint')}</em>
+                      <span className="profile-preset-action">{tx('profile.customType')}</span>
+                    </button>
+                  ) : null}
+                </div>
+              </section>
+            </>
+          )}
         </div>
-      </section>
-        </>
+      ) : (
+        <div key="recommenders" className={clsx('profile-domain-pane is-recommenders', domainSwitched && 'is-switched')}>
+          <ProfileRecommendersView
+            profiles={session.user.settings.profileRecommenders ?? []}
+            applications={applications}
+            profileTotal={
+              session.user.settings.profileRecommendersTotal
+                ?? session.user.settings.profileRecommenders?.length
+                ?? 0
+            }
+            profileNextCursor={session.user.settings.profileRecommendersNextCursor ?? null}
+            onLoadProfilePage={async (cursor) =>
+              phdApi.listProfileRecommenders(session.token, { cursor, limit: 50 })
+            }
+            onChange={(nextProfiles) => {
+              const baseProfiles = session.user.settings.profileRecommenders ?? []
+              if (onUpdateProfileRecommenders) {
+                return onUpdateProfileRecommenders(nextProfiles, baseProfiles)
+              }
+              return onUpdateSettings(
+                { profileRecommenders: nextProfiles },
+                tx('profile.recommenders.saved'),
+                { throwOnError: true },
+              )
+            }}
+            onOpenApplication={onOpenRecommenderApplication}
+          />
+        </div>
       )}
 
       <ProjectFooter />
@@ -1577,6 +1951,7 @@ export function ProfileScreen({
             initialVersionNumber={snippetSeed?.versionNumber}
             initialIsPrimary={snippetSeed?.isPrimary}
             fromPreset={Boolean(snippetSeed?.fromPreset)}
+            attachmentsEnabled={attachmentsEnabled ?? mode === 'personal'}
             profilePresets={personalPresets}
             initialShowShare={openShareOnEdit}
             contentLanguages={contentLanguages}
@@ -1593,6 +1968,7 @@ export function ProfileScreen({
             }}
             onCreate={onCreateSnippet}
             onUpdate={onUpdateAsset}
+            onExport={onExportAsset}
             onUploadFiles={onUploadFiles}
             onRenameFile={onRenameFile}
             onDeleteFile={onDeleteFile}
@@ -1620,17 +1996,25 @@ export function ProfileScreen({
       <ConfirmDialog
         open={Boolean(pendingDeletePreset)}
         title={tx('profile.deletePreset')}
-        message={pendingDeletePreset ? format(tx('profile.deletePresetConfirm'), { name: profilePresetText(pendingDeletePreset, lang, contentLanguages).name }) : ''}
+        message={
+          pendingDeletePreset
+            ? format(tx('profile.deletePresetConfirm'), {
+                name: profilePresetText(pendingDeletePreset, lang, contentLanguages).name,
+              })
+            : ''
+        }
         confirmLabel={tx('profile.deletePreset')}
         variant="danger"
         onCancel={() => setPendingDeletePreset(null)}
-        onConfirm={() => pendingDeletePreset && requestDeletePreset(pendingDeletePreset)}
+        onConfirm={() => pendingDeletePreset ? requestDeletePreset(pendingDeletePreset) : undefined}
       />
 
       {phraseSettingsOpen ? (
         <LazyOverlayBoundary namespaces={['core', 'shared', 'profile']}>
           <SnippetPhraseSettingsDialog
+            key={`snippet-phrase-settings:${session.user.id}`}
             open
+            draftUserId={session.user.id}
             contentLanguages={contentLanguages}
             settings={{
               leadZh: session.user.settings.snippetPhraseLeadZh ?? '',
@@ -1639,7 +2023,7 @@ export function ProfileScreen({
               tailEn: session.user.settings.snippetPhraseTailEn ?? '',
             }}
             onClose={() => setPhraseSettingsOpen(false)}
-            onSave={(patch) => onUpdateSettings(patch)}
+            onSave={(patch) => onUpdateSettings(patch, undefined, { throwOnError: true })}
           />
         </LazyOverlayBoundary>
       ) : null}

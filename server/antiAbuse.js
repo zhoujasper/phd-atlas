@@ -1,8 +1,10 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import net from 'node:net'
 import { withAbortDeadline } from './abortDeadline.js'
+import { cancelResponseBody, readBoundedResponseJson } from './boundedResponse.js'
 
 const DEFAULT_ALIAS_DOMAINS = new Set(['gmail.com', 'googlemail.com'])
+const TURNSTILE_RESPONSE_MAX_BYTES = 64 * 1024
 
 function envList(value) {
   return new Set(
@@ -157,8 +159,8 @@ export async function issueSecurityChallenge(options) {
   return token
 }
 
-export async function claimSecurityChallengeAnswer(options) {
-  return options.claim({
+export function securityChallengeClaimInput(options) {
+  return {
     kind: options.kind,
     tokenHash: tokenDigest(options.token),
     subjectHash: abuseDigest(options.secret, 'subject', options.kind, options.subject ?? ''),
@@ -171,7 +173,11 @@ export async function claimSecurityChallengeAnswer(options) {
       options.answer,
     ),
     nowMs: options.nowMs ?? Date.now(),
-  })
+  }
+}
+
+export async function claimSecurityChallengeAnswer(options) {
+  return options.claim(securityChallengeClaimInput(options))
 }
 
 export function turnstileConfiguration(env = process.env) {
@@ -205,8 +211,15 @@ export async function verifyTurnstileToken(options) {
           signal,
         },
       )
-      if (!response.ok) return { ok: false, reason: 'provider-error' }
-      const result = await response.json()
+      if (!response.ok) {
+        await cancelResponseBody(response)
+        return { ok: false, reason: 'provider-error' }
+      }
+      const result = await readBoundedResponseJson(response, {
+        maxBytes: TURNSTILE_RESPONSE_MAX_BYTES,
+        signal,
+        bodyKind: 'Turnstile response',
+      })
       if (!result?.success) return { ok: false, reason: 'rejected', errorCodes: result?.['error-codes'] ?? [] }
       if (options.expectedAction && result.action !== options.expectedAction) {
         return { ok: false, reason: 'action-mismatch' }

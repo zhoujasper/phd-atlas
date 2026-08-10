@@ -27,6 +27,14 @@ describe('checklist file helpers', () => {
     expect(buildUploadFileName({ name: 'raw.pdf' } as File, '', 0, 1, 'Final: CV.pdf')).toBe('Final- CV.pdf')
   })
 
+  it('restores the recorded source extension when a renamed file omits it', () => {
+    const source = { name: 'original.pdf' } as File
+
+    expect(buildUploadFileName(source, '', 0, 1, 'Final CV')).toBe('Final CV.pdf')
+    expect(buildUploadFileName(source, '', 0, 1, 'Final CV.')).toBe('Final CV.pdf')
+    expect(buildUploadFileName(source, '', 0, 1, 'Final CV.pdf')).toBe('Final CV.pdf')
+  })
+
   it('renames a File only when the final name changed', () => {
     const file = new File(['hello'], 'cv.pdf', { type: 'application/pdf', lastModified: 123 })
 

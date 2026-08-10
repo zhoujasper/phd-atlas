@@ -22,8 +22,8 @@ export function auditClone(value) {
   return JSON.parse(JSON.stringify(value ?? null))
 }
 
-export function summarizeApplicationChanges(before, after, prefix = '', changes = []) {
-  if (changes.length >= 80) return changes
+export function summarizeApplicationChanges(before, after, prefix = '', changes = [], limit = 80) {
+  if (changes.length >= limit) return changes
   if (Object.is(before, after)) return changes
   if (
     before === null ||
@@ -41,8 +41,8 @@ export function summarizeApplicationChanges(before, after, prefix = '', changes 
   for (const key of keys) {
     if (!prefix && auditIgnoredApplicationFields.has(key)) continue
     const pathName = prefix ? `${prefix}.${key}` : key
-    summarizeApplicationChanges(before[key], after[key], pathName, changes)
-    if (changes.length >= 80) break
+    summarizeApplicationChanges(before[key], after[key], pathName, changes, limit)
+    if (changes.length >= limit) break
   }
   return changes
 }
@@ -88,9 +88,29 @@ function valuesEqual(left, right) {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null)
 }
 
-export function buildApplicationAutoMerge(baseApplication, submittedApplication, currentApplication) {
-  const submittedFields = summarizeApplicationChanges(baseApplication, submittedApplication)
-  const currentFields = new Set(summarizeApplicationChanges(baseApplication, currentApplication))
+export function buildApplicationAutoMerge(
+  baseApplication,
+  submittedApplication,
+  currentApplication,
+  { submittedFields: explicitSubmittedFields } = {},
+) {
+  // The 80-field cap is useful for human-sized audit summaries, but a merge is
+  // a correctness boundary: silently omitting field 81 would reintroduce a
+  // partial lost update on large applications.
+  const submittedFields = explicitSubmittedFields ?? summarizeApplicationChanges(
+      baseApplication,
+      submittedApplication,
+      '',
+      [],
+      Number.POSITIVE_INFINITY,
+    )
+  const currentFields = new Set(summarizeApplicationChanges(
+    baseApplication,
+    currentApplication,
+    '',
+    [],
+    Number.POSITIVE_INFINITY,
+  ))
   const cleanFields = []
   const sameFields = []
   const conflicts = []
@@ -164,4 +184,55 @@ export function resolveApplicationAutoMerge(
     teacherPriorityFields,
     retainedFields,
   }
+}
+
+/**
+ * Merge a stale personal-application submission without silently choosing a
+ * winner for fields that both the client and server changed from the same
+ * base. Disjoint changes are safe to apply; same-field divergence must be
+ * surfaced to the caller as a retryable conflict.
+ */
+export function resolveApplicationConcurrentWrite(
+  baseApplication,
+  submittedApplication,
+  currentApplication,
+  { submittedFields, appliedApplication = submittedApplication } = {},
+) {
+  const merge = buildApplicationAutoMerge(
+    baseApplication,
+    submittedApplication,
+    currentApplication,
+    { submittedFields },
+  )
+  if (merge.conflicts.length > 0) {
+    return {
+      ...merge,
+      application: null,
+      appliedFields: [],
+    }
+  }
+
+  const application = auditClone(currentApplication)
+  for (const field of merge.cleanFields) {
+    setValueAtPath(application, field, valueAtPath(appliedApplication, field))
+  }
+  return {
+    ...merge,
+    application,
+    appliedFields: [...merge.cleanFields],
+  }
+}
+
+/**
+ * `updatedAt` is the compatibility precondition for clients that cannot send
+ * a complete `clientBaseApplication`. Make it strictly advance even when two
+ * writes land in the same millisecond or the wall clock moves backwards.
+ */
+export function nextApplicationVersionStamp(currentUpdatedAt, nowMs = Date.now()) {
+  const currentMs = Date.parse(String(currentUpdatedAt ?? ''))
+  const safeNowMs = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now()
+  const nextMs = Number.isFinite(currentMs)
+    ? Math.max(safeNowMs, currentMs + 1)
+    : safeNowMs
+  return new Date(nextMs).toISOString()
 }
