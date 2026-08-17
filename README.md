@@ -7,20 +7,13 @@
 
 [![CI](https://github.com/zhoujasper/phd-atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/zhoujasper/phd-atlas/actions/workflows/ci.yml)
 [![Status: Stable](https://img.shields.io/badge/status-stable-16a34a.svg)](TODO.md)
-[![License: PhD Atlas Community 1.0](https://img.shields.io/badge/license-PhD_Atlas_Community_1.0-7c3aed.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js 24 LTS](https://img.shields.io/badge/Node.js-24%20LTS-339933.svg)](https://nodejs.org/)
 
 > [!IMPORTANT]
-> **Read the license before using this software.** The source is available free
-> of charge to individuals and non-profit entities for personal, academic,
-> research, educational, charitable, and other non-commercial purposes. **Any
-> use by or on behalf of a for-profit company, commercial organization, or
-> other profit-seeking entity requires prior written authorization from the
-> copyright holder** — including internal use, paid or hosted services, SaaS,
-> consulting, resale, and work performed by a contractor for a commercial
-> organization. Public source code does not mean unrestricted commercial use.
-> See the [PhD Atlas Community License v1.0](LICENSE) and contact the copyright
-> holder through the official repository before any commercial use.
+> This project is distributed under the [MIT License](LICENSE). You may use,
+> copy, modify, merge, publish, distribute, sublicense, and sell copies of the
+> software, subject to the copyright and permission notice in the license.
 
 > [!NOTE]
 > `v0.1.0` is the first stable public release. Back up the complete workspace
@@ -472,21 +465,4 @@ containers before a tag is published.
 
 ## License
 
-PhD Atlas is distributed under the
-[PhD Atlas Community License v1.0](LICENSE). It is a source-available license
-with a commercial-use restriction, not the MIT License and not an
-OSI-approved open-source license.
-
-- Individuals and non-profit entities may use, study, modify, and distribute
-  the software for personal, academic, research, educational, charitable, and
-  other non-commercial purposes, subject to the license terms.
-- Any use by or for a for-profit company, commercial organization, or other
-  profit-seeking entity requires prior written authorization from the
-  copyright holder, even when the software is used only internally.
-- Commercial products, hosted or paid services, SaaS, consulting, resale, and
-  contractor use on behalf of a for-profit organization are not authorized
-  without that prior written permission.
-
-For commercial licensing or authorization, contact the copyright holder
-through the official PhD Atlas repository or another published contact channel
-before using the software.
+PhD Atlas is distributed under the [MIT License](LICENSE).

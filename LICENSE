@@ -1,82 +1,21 @@
-PhD Atlas Community License v1.0
+MIT License
 
 Copyright (c) 2026 zhoujasper and contributors
-All rights reserved except as expressly granted below.
 
-Permission is hereby granted, free of charge, to any individual or non-profit
-entity obtaining a copy of this software and associated documentation files
-(the "Software"), to use, copy, modify, merge, publish, and distribute the
-Software for personal, academic, research, educational, or other non-commercial
-purposes, subject to the following conditions:
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-1. NON-COMMERCIAL USE
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-   The Software may be used without charge for personal use, academic research,
-   education, teaching, and use by non-profit organizations, provided that such
-   use is not primarily intended for commercial advantage or monetary
-   compensation.
-
-2. COMMERCIAL AND FOR-PROFIT USE
-
-   Any use of the Software by or on behalf of a for-profit company, commercial
-   organization, or other profit-seeking entity requires prior written
-   authorization from the copyright holder.
-
-   This requirement applies regardless of whether the Software is used
-   externally or only for internal purposes, and includes, without limitation:
-
-   - use in the operations of a for-profit organization;
-   - incorporation into, modification for, or distribution with a commercial
-     product or service;
-   - use to provide a paid, subscription, hosted, SaaS, consulting, or other
-     revenue-generating service;
-   - redistribution, sublicensing, or resale for commercial purposes; and
-   - use by a contractor, consultant, or other party on behalf of a for-profit
-     organization.
-
-   Commercial authorization may be subject to separate terms, conditions, or
-   fees agreed in writing with the copyright holder.
-
-3. ATTRIBUTION
-
-   The above copyright notice, this license notice, and the name
-   "PhD Atlas Community License v1.0" shall be included in all copies or
-   substantial portions of the Software distributed under this license.
-
-4. CONTRIBUTIONS
-
-   Unless otherwise agreed in writing, contributions submitted to this project
-   are provided under the terms of this license. Nothing in this license grants
-   a contributor the right to relicense the project as a whole.
-
-5. NO TRADEMARK LICENSE
-
-   This license does not grant permission to use the names, logos, trademarks,
-   or branding of PhD Atlas or its copyright holders except as reasonably
-   necessary for attribution.
-
-6. TERMINATION
-
-   Any rights granted under this license terminate automatically if you breach
-   its terms. Upon termination, you must cease the unauthorized use and
-   distribution of the Software. The copyright holder may reinstate permission
-   in writing.
-
-7. DISCLAIMER OF WARRANTY
-
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-   SOFTWARE.
-
-8. COMMERCIAL LICENSING
-
-   For commercial use, licensing, or authorization, please contact the
-   copyright holder through the official PhD Atlas repository or another
-   published contact channel of the copyright holder.
-
-This is a source-available license with a commercial-use restriction. It is not
-the MIT License and is not represented as an OSI-approved open-source license.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

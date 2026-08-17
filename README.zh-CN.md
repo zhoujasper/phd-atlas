@@ -6,17 +6,12 @@
 
 [![CI](https://github.com/zhoujasper/phd-atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/zhoujasper/phd-atlas/actions/workflows/ci.yml)
 [![状态：稳定版](https://img.shields.io/badge/status-stable-16a34a.svg)](TODO.zh-CN.md)
-[![许可证：PhD Atlas Community 1.0](https://img.shields.io/badge/license-PhD_Atlas_Community_1.0-7c3aed.svg)](LICENSE)
+[![许可证：MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js 24 LTS](https://img.shields.io/badge/Node.js-24%20LTS-339933.svg)](https://nodejs.org/)
 
 > [!IMPORTANT]
-> **使用前请务必阅读许可证。** 本项目源码仅向个人，以及公益组织、慈善机构、
-> 非营利机构等主体免费开放，用于个人、学术、科研、教育、公益及其他非商业目的。
-> **任何营利机构、商业组织、企业或其他以盈利为目的的主体，无论直接使用还是由
-> 他人代为使用，都必须事先取得版权所有者的书面授权。** 这包括企业内部使用、
-> 付费服务、托管服务、SaaS、咨询、转售，以及承包商代表营利机构开展的工作。
-> 源码公开不等于可以不受限制地商用。任何商业使用前，请先阅读
-> [PhD Atlas Community License v1.0](LICENSE)，并通过官方仓库联系版权所有者。
+> 本项目采用 [MIT License](LICENSE) 发布。你可以使用、复制、修改、合并、发布、
+> 分发、再许可和销售本软件副本，但必须保留许可证中的版权声明和许可声明。
 
 > [!NOTE]
 > `v0.1.0` 是第一个公开稳定版。已有 Beta 安装升级前必须完整备份工作空间。
@@ -399,15 +394,4 @@ npm run verify:tree
 
 ## 许可证
 
-[PhD Atlas Community License v1.0](LICENSE) 是带商业使用限制的源码可见许可证，
-不是 MIT License，也不是 OSI 认可的开源许可证。
-
-- 个人，以及公益组织、慈善机构和非营利机构，可以在遵守许可证的前提下，为个人、
-  学术、科研、教育、公益及其他非商业目的使用、研究、修改和分发本软件。
-- 任何营利机构、商业组织、企业或其他以盈利为目的的主体，在使用本软件前都必须
-  取得版权所有者的书面授权；即使只在企业内部使用，也不例外。
-- 未经事先书面授权，不得把本软件用于商业产品、付费或托管服务、SaaS、咨询、
-  转售，也不得由承包商代表营利机构使用。
-
-如需商业使用、商业许可或其他授权，请在使用前通过 PhD Atlas 官方仓库或版权所有者
-公开的其他联系渠道与版权所有者联系。
+PhD Atlas 采用 [MIT License](LICENSE) 发布。

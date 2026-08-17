@@ -8,6 +8,13 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-17
+
+### Changed
+
+- Restored the MIT License for the source and public distribution. The prior
+  PhD Atlas Community License v1.0 is no longer the current license.
+
 ## [0.1.0] - 2026-08-10
 
 This is the first stable public release. The entries below describe the work

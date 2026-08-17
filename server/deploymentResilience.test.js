@@ -513,8 +513,10 @@ describe('deployment resilience configuration', () => {
     )).not.toContain('client_max_body_size')
     expect(installation).not.toContain('client_max_body_size 550m')
     expect(installationZh).not.toContain('client_max_body_size 550m')
-    expect(installation).toContain('only the\nnine audited multipart endpoints')
-    expect(installationZh).toContain('审计过的 9 个\nmultipart 端点')
+    const installationLf = installation.replace(/\r\n?/gu, '\n')
+    const installationZhLf = installationZh.replace(/\r\n?/gu, '\n')
+    expect(installationLf).toContain('only the\nnine audited multipart endpoints')
+    expect(installationZhLf).toContain('审计过的 9 个\nmultipart 端点')
   })
 
   it('serves precompressed immutable assets directly or through a locked proxy cache', async () => {

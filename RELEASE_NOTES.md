@@ -5,6 +5,19 @@ section per version using the exact heading `## v<package.json version>`.
 Automation extracts only the matching section, so older notes remain immutable
 history while the next version can be prepared in the same file.
 
+## v0.1.1
+
+**MIT License restored.**
+
+- The source and public distribution now use the standard MIT License again.
+- Package metadata and the public English and Chinese README license sections
+  are aligned with the license file.
+
+### 中文摘要
+
+- **恢复使用 MIT License。** 源码、公开分发、package 元数据以及公开版中英文
+  README 已统一恢复为 MIT License。
+
 ## v0.1.0
 
 **First stable public release / 首个公开稳定版。** Back up the complete
