@@ -18,7 +18,7 @@ export {
   LEGACY_BACKUP_FREQUENCIES,
   isBackupFrequency,
   normalizeBackupFrequency,
-} from '../shared/backupFrequency.js'
+} from './shared/backupFrequency.js'
 
 export const DEFAULT_MAX_BACKUPS_PER_APP = 5
 export const DEFAULT_PRO_MAX_BACKUPS_PER_APP = 20
@@ -43,6 +43,14 @@ export const SUPPORTED_EXPORT_LANGUAGES = Object.freeze(new Set([
 export const REQUIRED_RUNTIME_FILES = Object.freeze(new Set([
   'dist/index.html',
   'server/index.js',
+  'server/shared/aiConcurrency.js',
+  'server/shared/aiKeyRouting.js',
+  'server/shared/applicationAuthorityFields.js',
+  'server/shared/applicationCanonical.js',
+  'server/shared/applicationPersistenceProtocol.js',
+  'server/shared/backupFrequency.js',
+  'server/shared/realtimeScopes.js',
+  'server/shared/teamLimits.js',
   'tools/start-server.mjs',
   'tools/apply-update.mjs',
   'tools/container-entrypoint.mjs',

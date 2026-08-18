@@ -192,6 +192,9 @@ export function assertReleaseWorkflowExecutionContract(contents, label = 'releas
   if (!scripts.includes('PHD_ATLAS_SMOKE_DB_ENGINE=mssql')) {
     throw new Error(`${label} release job is missing the Microsoft SQL Server gate.`)
   }
+  if (!scripts.includes('npm run verify:beta8-update -- "$package_path"')) {
+    throw new Error(`${label} release job must replay the published package through the historical beta.8 updater.`)
+  }
   const installCount = scripts.match(/(?:^|\n)\s*npm ci\s*(?:\n|$)/g)?.length ?? 0
   if (installCount !== 1) {
     throw new Error(`${label} release job must install dependencies exactly once; found ${installCount}.`)
@@ -339,7 +342,7 @@ async function validateContracts(root) {
     'COPY tools/start-server.mjs tools/apply-update.mjs tools/container-entrypoint.mjs tools/stamp-service-worker.mjs tools/verify-build-entry-budget.mjs ./tools/',
     'npm --ignore-scripts run build',
     'npm prune --omit=dev',
-    'COPY --from=build --chown=node:node /app/shared ./shared',
+    'COPY --from=build --chown=node:node /app/server ./server',
   ]) {
     if (!dockerfile.includes(required)) {
       throw new Error(`Dockerfile release contract is missing '${required}'.`)
@@ -347,6 +350,9 @@ async function validateContracts(root) {
   }
   if (dockerfile.includes('COPY tools ./tools')) {
     throw new Error('Dockerfile must not invalidate production layers for release-only tool changes.')
+  }
+  if (dockerfile.includes('COPY --from=build --chown=node:node /app/shared ./shared')) {
+    throw new Error('Docker runtime must use the legacy-update-compatible server/shared module boundary.')
   }
 
   return metadata
@@ -452,6 +458,15 @@ async function verifyDeterministicUpdatePackage(publicRoot, version, sourceDateE
     throw new Error(`Update-package checksum mismatch: expected ${expectedHash}, received ${actualHash}.`)
   }
   await run('node', ['tools/verify-update-package.mjs', packagePath], { cwd: publicRoot, env })
+  return packagePath
+}
+
+async function verifyBeta8UpdateCompatibility(sourceRoot, packagePath) {
+  const verifier = path.join(sourceRoot, 'tools', 'verify-beta8-update-compatibility.mjs')
+  if (!existsSync(verifier)) {
+    throw new Error(`Beta.8 update compatibility verifier is missing: ${verifier}`)
+  }
+  await run(process.execPath, [verifier, packagePath], { cwd: sourceRoot })
 }
 
 async function validateCompose(publicRoot) {
@@ -517,7 +532,8 @@ async function runPublic(sourceRoot, { includeReleaseArtifacts = false, includeD
       if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
         throw new Error('Could not derive a deterministic SOURCE_DATE_EPOCH from HEAD.')
       }
-      await verifyDeterministicUpdatePackage(publicRoot, metadata.version, timestamp)
+      const packagePath = await verifyDeterministicUpdatePackage(publicRoot, metadata.version, timestamp)
+      await verifyBeta8UpdateCompatibility(sourceRoot, packagePath)
     }
     if (includeDocker) await verifyDockerImages(publicRoot, metadata.version)
     return metadata
@@ -532,7 +548,8 @@ async function runCurrentPublicRelease(root) {
   if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
     throw new Error('Could not derive a deterministic SOURCE_DATE_EPOCH from HEAD.')
   }
-  await verifyDeterministicUpdatePackage(root, metadata.version, timestamp)
+  const packagePath = await verifyDeterministicUpdatePackage(root, metadata.version, timestamp)
+  await verifyBeta8UpdateCompatibility(root, packagePath)
   await verifyDockerImages(root, metadata.version)
 }
 

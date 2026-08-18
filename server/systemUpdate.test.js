@@ -30,6 +30,7 @@ import {
   validateUpdatePackage,
   writeUpdateLock,
 } from './systemUpdate.js'
+import { REQUIRED_RUNTIME_FILES } from './sharedConstants.js'
 
 const scratchRoots = new Set()
 
@@ -82,6 +83,9 @@ function runtimeFiles(version) {
     ['dist/assets/asset-a.js', 'export const lowerCaseAsset = true\n'],
     ['server/index.js', `export const runtimeVersion = '${version}'\n`],
     ['server/systemUpdate.js', `export const runtimeVersion = '${version}'\n`],
+    ...[...REQUIRED_RUNTIME_FILES]
+      .filter((relativePath) => relativePath.startsWith('server/shared/'))
+      .map((relativePath) => [relativePath, 'export const runtimeSharedContract = true\n']),
     ['tools/start-server.mjs', `export const runtimeVersion = '${version}'\n`],
     ['tools/apply-update.mjs', `export const runtimeVersion = '${version}'\n`],
     ['tools/container-entrypoint.mjs', `export const runtimeVersion = '${version}'\n`],

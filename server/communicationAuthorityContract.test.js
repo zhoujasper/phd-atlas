@@ -27,10 +27,10 @@ describe('communication server-authority contract', () => {
     // Two copies in the same directory is what produced the drift. The sets are
     // declared once and imported; a second `new Set([...])` anywhere else is
     // the beginning of the next round of this bug.
-    const owners = ['shared/applicationAuthorityFields.js']
+    const owners = ['server/shared/applicationAuthorityFields.js']
     const consumers = [
-      'shared/applicationCanonical.js',
-      'shared/applicationPersistenceProtocol.js',
+      'server/shared/applicationCanonical.js',
+      'server/shared/applicationPersistenceProtocol.js',
       'server/applicationDelta.js',
       'server/applicationMutationAck.js',
       'server/offlineReplay.js',

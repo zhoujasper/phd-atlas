@@ -2,7 +2,7 @@ import {
   APPLICATION_SERVER_AUTHORITY_FIELDS,
   COMMUNICATION_SERVER_AUTHORITY_FIELDS,
   VAULT_REFERENCE_FIELDS,
-} from '../shared/applicationAuthorityFields.js'
+} from './shared/applicationAuthorityFields.js'
 
 function restoreAuthorityFields(incoming, current, fields) {
   const restored = { ...incoming }

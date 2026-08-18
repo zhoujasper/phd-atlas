@@ -145,6 +145,14 @@ describe('release preflight contracts', () => {
       ),
       workflowPath,
     )).toThrow(/install dependencies exactly once/)
+    expect(() => assertReleaseWorkflowExecutionContract(
+      replaceRequired(
+        workflow,
+        '          npm run verify:beta8-update -- "$package_path"\n',
+        '',
+      ),
+      workflowPath,
+    )).toThrow(/historical beta\.8 updater/)
   })
 
   it('blocks manual version-tag pushes before immutable tags can be created early', () => {

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 
-import { AI_KEY_MAX_CONCURRENCY, normalizeAiKeyMaxConcurrency } from '../shared/aiConcurrency.js'
-import { normalizeAiKeyRequestMode } from '../shared/aiKeyRouting.js'
+import { AI_KEY_MAX_CONCURRENCY, normalizeAiKeyMaxConcurrency } from './shared/aiConcurrency.js'
+import { normalizeAiKeyRequestMode } from './shared/aiKeyRouting.js'
 
 import { AbortDeadlineError, withAbortDeadline } from './abortDeadline.js'
 import { OutboundNetworkPolicyError } from './outboundNetworkPolicy.js'

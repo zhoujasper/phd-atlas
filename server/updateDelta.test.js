@@ -8,6 +8,7 @@ import { createGunzip, createGzip } from 'node:zlib'
 import tar from 'tar-fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import { manifestDigest, validateUpdatePackage } from './systemUpdate.js'
+import { REQUIRED_RUNTIME_FILES } from './sharedConstants.js'
 import {
   createUpdateDeltaPackage,
   materializeUpdateDelta,
@@ -61,6 +62,9 @@ function runtimeFiles(version, options = {}) {
     ['dist/assets/vendor.bin', commonAsset],
     ['server/index.js', `export const runtimeVersion = '${version}'\n`],
     ['server/systemUpdate.js', 'export const updateRuntime = true\n'],
+    ...[...REQUIRED_RUNTIME_FILES]
+      .filter((relativePath) => relativePath.startsWith('server/shared/'))
+      .map((relativePath) => [relativePath, 'export const runtimeSharedContract = true\n']),
     ['tools/start-server.mjs', 'export const startServer = true\n'],
     ['tools/apply-update.mjs', 'export const applyUpdate = true\n'],
     ['tools/container-entrypoint.mjs', 'export const supervise = true\n'],

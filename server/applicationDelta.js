@@ -1,4 +1,4 @@
-import { isApplicationServerAuthorityPath } from '../shared/applicationAuthorityFields.js'
+import { isApplicationServerAuthorityPath } from './shared/applicationAuthorityFields.js'
 
 const MAX_APPLICATION_DELTA_OPERATIONS = 2_048
 const MAX_APPLICATION_DELTA_DEPTH = 64

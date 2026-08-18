@@ -1,7 +1,7 @@
 import {
   REALTIME_SCOPES,
   scopesForMutation,
-} from '../shared/realtimeScopes.js'
+} from './shared/realtimeScopes.js'
 
 export { REALTIME_SCOPES, scopesForMutation }
 

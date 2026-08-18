@@ -84,7 +84,8 @@ describe('deployment resilience configuration', () => {
       /PHD_ATLAS_PROJECT_ROOT=\/app[\s\S]*?PHD_ATLAS_STORAGE_ROOT=\/app\/storage/u,
     )
     expect(dockerfile).toContain('COPY shared ./shared')
-    expect(dockerfile).toContain('COPY --from=build --chown=node:node /app/shared ./shared')
+    expect(dockerfile).not.toContain('COPY --from=build --chown=node:node /app/shared ./shared')
+    expect(dockerfile).toContain('COPY --from=build --chown=node:node /app/server ./server')
     expect(dockerfile).toContain('tools/verify-build-entry-budget.mjs ./tools/')
     expect(dockerfile).toContain('npm --ignore-scripts run build')
     expect(dockerfile).not.toMatch(/RUN npm run build/u)

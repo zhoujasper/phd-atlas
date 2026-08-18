@@ -1,4 +1,4 @@
-import { normalizeOptionalMemberLimit } from '../shared/teamLimits.js'
+import { normalizeOptionalMemberLimit } from './shared/teamLimits.js'
 
 const PERMISSION_OVERRIDES_VERSION = 1
 

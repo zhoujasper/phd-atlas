@@ -21,9 +21,12 @@ import { normalizeStudentPermissions } from './teamPermissions.js'
  *     editor and a named constant on the server. Equal today; an authorization
  *     bound that can silently stop being equal.
  *
- * These now have one implementation each, in `shared/`. This asserts the
- * property that matters rather than the wiring: the same input reaches the same
- * answer wherever it is asked.
+ * These now have one server-local implementation each, with the root `shared/`
+ * modules re-exporting them for the browser build. Keeping the canonical files
+ * under `server/` also makes every update package self-contained for legacy
+ * clients whose archive format only permits `dist/`, `server/`, and `tools/`.
+ * This asserts the property that matters rather than the wiring: the same input
+ * reaches the same answer wherever it is asked.
  */
 describe('rules that both sides of the wire must agree on', () => {
   it('normalizes every backup cadence identically wherever it is applied', () => {

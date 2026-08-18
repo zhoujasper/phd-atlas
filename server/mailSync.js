@@ -7,7 +7,7 @@ import {
   normalizeMailAddressList,
 } from './mailFetch.js'
 import { reconcileMailClassificationFingerprints } from './mailClassificationContext.js'
-import { COMMUNICATION_SERVER_AUTHORITY_FIELDS } from '../shared/applicationAuthorityFields.js'
+import { COMMUNICATION_SERVER_AUTHORITY_FIELDS } from './shared/applicationAuthorityFields.js'
 
 export { reconcileMailClassificationFingerprints } from './mailClassificationContext.js'
 

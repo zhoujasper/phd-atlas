@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { Buffer } from 'node:buffer'
-import { AI_KEY_MAX_CONCURRENCY } from '../shared/aiConcurrency.js'
-import { AI_KEY_MAX_WEIGHT, AI_KEY_MIN_WEIGHT, AI_KEY_REQUEST_MODES } from '../shared/aiKeyRouting.js'
+import { AI_KEY_MAX_CONCURRENCY } from './shared/aiConcurrency.js'
+import { AI_KEY_MAX_WEIGHT, AI_KEY_MIN_WEIGHT, AI_KEY_REQUEST_MODES } from './shared/aiKeyRouting.js'
 
 const BUILT_IN_APPLICATION_STATUSES = new Map([
   ['draft', 'Draft'],

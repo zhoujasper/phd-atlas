@@ -5,6 +5,42 @@ section per version using the exact heading `## v<package.json version>`.
 Automation extracts only the matching section, so older notes remain immutable
 history while the next version can be prepared in the same file.
 
+## v0.1.2
+
+**Beta.8 direct-upgrade repair.**
+
+> **Upgrade path:** `0.1.0-beta.8` installations can upgrade directly to this
+> version from Admin. A previous failed attempt to install v0.1.0 or v0.1.1
+> should already have restored Beta.8 and does not require an intermediate
+> version. Back up the workspace before any production update.
+>
+> **升级路径：** `0.1.0-beta.8` 可以直接从管理后台升级到本版本。此前安装
+> v0.1.0 或 v0.1.1 失败时，系统应已自动恢复 Beta.8，无需先安装中间版本。
+> 正式环境升级前仍请先备份完整工作空间。
+
+- Fixed `ERR_MODULE_NOT_FOUND: /app/shared/aiConcurrency.js` during runtime
+  preflight. All eight server-side shared contracts now ship under the
+  legacy-compatible `server/` runtime root, so the Beta.8 updater can validate,
+  install, replay, and roll them back as one complete unit.
+- The published update-package verifier now performs an offline production
+  dependency install and the same real runtime import preflight used by an
+  installation. Missing transitive modules therefore stop the release before
+  any asset reaches GitHub.
+- The fresh container runtime and in-app update runtime now share the same
+  self-contained server module boundary. Existing rollback and first-boot
+  confirmation protections remain enabled.
+
+### 中文摘要
+
+- 修复运行时预检中的
+  `ERR_MODULE_NOT_FOUND: /app/shared/aiConcurrency.js`。服务端所需的 8 个共享
+  契约现在全部位于 Beta.8 旧升级器原生支持的 `server/` 运行时根中，可作为一个
+  完整单元被校验、安装、重放和回滚。
+- 正式更新包在发布前会离线安装生产依赖，并执行与真实安装相同的运行时导入预检；
+  缺少任何传递模块都会在上传 GitHub 前阻断发布。
+- 全新容器与管理后台原地升级现在使用同一套自包含服务端模块边界；原有失败回滚与
+  首次启动确认保护均保持启用。
+
 ## v0.1.1
 
 **MIT License restored.**

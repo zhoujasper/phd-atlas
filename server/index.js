@@ -678,7 +678,7 @@ import {
 import {
   APPLICATION_AUTHORED_PROJECTION_VERSION,
   applicationCreateAcknowledgementCandidate,
-} from '../shared/applicationPersistenceProtocol.js'
+} from './shared/applicationPersistenceProtocol.js'
 import { commitApplicationTrashRetention } from './retentionMaintenance.js'
 
 const __filename = fileURLToPath(import.meta.url)

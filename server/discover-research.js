@@ -1,6 +1,6 @@
 import { AiProviderError, completeChat, supportsNativeOpenAiWebSearch } from './aiProviders.js'
-import { AI_KEY_MAX_CONCURRENCY, normalizeAiKeyMaxConcurrency } from '../shared/aiConcurrency.js'
-import { aiKeyIsEnabled, normalizeAiKeyWeight } from '../shared/aiKeyRouting.js'
+import { AI_KEY_MAX_CONCURRENCY, normalizeAiKeyMaxConcurrency } from './shared/aiConcurrency.js'
+import { aiKeyIsEnabled, normalizeAiKeyWeight } from './shared/aiKeyRouting.js'
 import {
   normalizeDiscoverState,
   parseAiResearchResponse,

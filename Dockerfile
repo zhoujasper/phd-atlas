@@ -87,7 +87,6 @@ RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
 COPY --from=build --chown=node:node /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/server ./server
-COPY --from=build --chown=node:node /app/shared ./shared
 COPY --from=build --chown=node:node /app/tools/start-server.mjs /app/tools/apply-update.mjs /app/tools/container-entrypoint.mjs ./tools/
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build /app/bootstrap/container-entrypoint.mjs /usr/local/lib/phd-atlas-bootstrap/container-entrypoint.mjs

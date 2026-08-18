@@ -1,13 +1,13 @@
 import { Buffer } from 'node:buffer'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
-import { canonicalJsonChunks } from '../shared/applicationCanonical.js'
+import { canonicalJsonChunks } from './shared/applicationCanonical.js'
 import {
   APPLICATION_SERVER_AUTHORITY_FIELDS,
   COMMUNICATION_SERVER_AUTHORITY_FIELDS,
   SCHOOL_SERVER_AUTHORITY_FIELDS,
   VAULT_REFERENCE_FIELDS,
-} from '../shared/applicationAuthorityFields.js'
+} from './shared/applicationAuthorityFields.js'
 import {
   APPLICATION_AUTHORED_PROJECTION_VERSION,
   APPLICATION_AUTHORITY_PROJECTION_VERSION,
@@ -15,7 +15,7 @@ import {
   APPLICATION_MUTATION_MAX_PATCH_OPERATIONS,
   canonicalApplicationAuthorityReceiptChunks,
   canonicalApplicationUserEditableChunks,
-} from '../shared/applicationPersistenceProtocol.js'
+} from './shared/applicationPersistenceProtocol.js'
 
 export const APPLICATION_MUTATION_ACK_PROTOCOL = 'phd-atlas-application-mutation-ack-v2'
 export const MAX_APPLICATION_MUTATION_ACK_BYTES = 512 * 1024

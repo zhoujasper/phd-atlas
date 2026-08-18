@@ -8,6 +8,22 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-18
+
+### Fixed
+
+- Repaired direct in-app upgrades from `0.1.0-beta.8` and other legacy update
+  clients. The server's eight cross-boundary runtime modules now live inside
+  the legacy-compatible `server/` archive root, so the installed server never
+  imports a file that the old updater cannot validate, copy, replay, or restore.
+- Strengthened the release gate to run the real Node runtime import preflight
+  after an offline production dependency installation. A reproducible archive
+  with a missing transitive server module can no longer be published merely
+  because its manifest and dependency checks pass.
+- Made all server-side shared modules explicit required runtime files and added
+  a contract that prevents future production imports from escaping the update
+  package boundary. Failed upgrades continue to restore the previous runtime.
+
 ## [0.1.1] - 2026-08-17
 
 ### Changed
@@ -859,6 +875,8 @@ the selected external database when applicable.
   light/dark themes, and twelve language packs.
 - Published the first GitHub Release update archive and SHA-256 sidecar.
 
+[0.1.2]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.2
+[0.1.1]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.1
 [0.1.0]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0
 [0.1.0-beta.8]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.8
 [0.1.0-beta.7]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.7

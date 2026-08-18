@@ -3,7 +3,7 @@ export const MAX_APPLICATION_MUTATION_ACK_BYTES: 524288
 export const MAX_APPLICATION_MUTATION_PATCH_OPERATIONS: 2048
 
 export type ApplicationMutationAuthorityPurpose =
-  keyof typeof import('../shared/applicationPersistenceProtocol.js').APPLICATION_MUTATION_AUTHORITY_PATHS
+  keyof typeof import('./shared/applicationPersistenceProtocol.js').APPLICATION_MUTATION_AUTHORITY_PATHS
 
 export type ApplicationMutationAckErrorCode =
   | 'APPLICATION_MUTATION_ACK_INVALID'

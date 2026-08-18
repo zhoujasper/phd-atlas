@@ -8,6 +8,18 @@ PhD Atlas 公开版的所有重要变化都记录在此文件中。格式遵循
 
 ## [未发布]
 
+## [0.1.2] - 2026-08-18
+
+### 修复
+
+- 修复从 `0.1.0-beta.8` 及其他旧升级客户端直接在管理后台升级失败的问题。服务端
+  使用的 8 个跨前后端运行时模块现已收进旧升级格式本来就支持的 `server/` 根目录，
+  新服务端不会再导入旧升级器无法校验、复制、重放或回滚的包外文件。
+- 发布门禁现在会先离线安装完整生产依赖，再执行真实的 Node 运行时导入预检。
+  即使一个缺少传递依赖的归档可复现、manifest 与依赖校验都通过，也不能再被发布。
+- 所有服务端共享模块都成为明确的必需运行时文件，并新增合同阻止未来的生产导入
+  再次越过更新包边界；升级失败时恢复上一运行时的保护保持不变。
+
 ## [0.1.1] - 2026-08-17
 
 ### 变更
@@ -622,6 +634,8 @@ PhD Atlas 公开版的所有重要变化都记录在此文件中。格式遵循
   无障碍偏好、亮暗主题与 12 种语言。
 - 发布首个 GitHub Release 更新包及 SHA-256 校验文件。
 
+[0.1.2]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.2
+[0.1.1]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.1
 [0.1.0]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0
 [0.1.0-beta.8]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.8
 [0.1.0-beta.7]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.7

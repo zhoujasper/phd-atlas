@@ -14,14 +14,14 @@ import { createGunzip, createGzip } from 'node:zlib'
 import {
   AI_KEY_MAX_CONCURRENCY,
   normalizeAiKeyMaxConcurrency,
-} from '../shared/aiConcurrency.js'
+} from './shared/aiConcurrency.js'
 import {
   AI_KEY_MAX_WEIGHT,
   AI_KEY_MIN_WEIGHT,
   aiKeyIsEnabled,
   normalizeAiKeyRequestMode,
   normalizeAiKeyWeight,
-} from '../shared/aiKeyRouting.js'
+} from './shared/aiKeyRouting.js'
 import {
   decryptPayload,
   decryptSecret,
@@ -158,7 +158,7 @@ import {
   APPLICATION_MUTATION_AUTHORITY_PATHS,
   canonicalApplicationAuthorityReceiptChunks,
   canonicalApplicationUserEditableChunks,
-} from '../shared/applicationPersistenceProtocol.js'
+} from './shared/applicationPersistenceProtocol.js'
 import {
   accountAuthProjection,
   accountAuthProjectionFromRow,

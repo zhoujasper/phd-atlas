@@ -12,6 +12,7 @@ import {
   readActiveUpdatePackage,
   UPDATE_RESULT_NAME,
   UPDATE_RUNTIME_INVALID_NAME,
+  preflightRuntime,
   validateUpdatePackage,
 } from '../server/systemUpdate.js'
 
@@ -94,6 +95,7 @@ async function createPackageWithUnmanifestedRuntimeFile(sourcePackage) {
 try {
   const validation = await validateUpdatePackage(packagePath, path.join(tempRoot, 'validation'))
   verifyOfflineProductionInstall(validation.extractRoot)
+  await preflightRuntime(validation.extractRoot)
   for (const required of ['express', 'better-sqlite3', 'tar-fs']) {
     await fs.access(path.join(validation.extractRoot, 'node_modules', required))
   }

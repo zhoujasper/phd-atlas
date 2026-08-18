@@ -1,4 +1,4 @@
-import { AI_KEY_MAX_CONCURRENCY } from '../shared/aiConcurrency.js'
+import { AI_KEY_MAX_CONCURRENCY } from './shared/aiConcurrency.js'
 
 function positiveInteger(value, fallback, maximum = Number.MAX_SAFE_INTEGER) {
   const parsed = Number(value)

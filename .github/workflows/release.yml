@@ -185,6 +185,7 @@ jobs:
           cmp --silent "$first_package" "$package_path"
           cmp --silent "$first_checksum" "${package_path}.sha256"
           node tools/verify-update-package.mjs "$package_path"
+          npm run verify:beta8-update -- "$package_path"
           (
             cd "$(dirname "$package_path")"
             sha256sum --check "$(basename "$package_path").sha256"

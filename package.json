@@ -2,7 +2,7 @@
   "name": "phd-atlas",
   "private": true,
   "license": "MIT",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "npm run dev:full",
@@ -34,6 +34,7 @@
     "verify:release": "node tools/release-preflight.mjs release",
     "verify:push": "node tools/release-preflight.mjs push",
     "verify:published-update": "node tools/verify-published-update.mjs",
+    "verify:beta8-update": "node tools/verify-beta8-update-compatibility.mjs",
     "hooks:install": "node tools/install-git-hooks.mjs",
     "verify:discover-adapters": "node tools/verify-discover-school-adapters.mjs",
     "verify:discover-adapters:live": "node tools/verify-discover-school-adapters.mjs --live",
