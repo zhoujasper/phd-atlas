@@ -2,8 +2,12 @@
   "name": "phd-atlas",
   "private": true,
   "license": "MIT",
+  "author": {
+    "name": "Jasper Zhou"
+  },
   "version": "0.1.2",
   "type": "module",
+  "main": "desktop/main.cjs",
   "scripts": {
     "dev": "npm run dev:full",
     "dev:web": "vite",
@@ -25,6 +29,8 @@
     "test:e2e": "playwright test",
     "preview": "vite preview",
     "start": "node tools/start-server.mjs",
+    "desktop:dev": "npm run build && electron .",
+    "desktop:mac": "npm run build && electron-builder --mac",
     "build:update-package": "node tools/build-update-package.mjs",
     "build:update-delta": "node tools/build-update-delta.mjs",
     "release:notes:check": "node tools/extract-release-notes.mjs --check",
@@ -49,6 +55,46 @@
     "qa:endurance:short": "node tools/qa-endurance.mjs --duration-ms=30000 --connections-duration-ms=30000 --rss-samples=6 --read-interval-ms=2000",
     "qa:large-database": "vitest run server/largeDatabaseQualification.test.js --pool=forks --maxWorkers=1 --no-file-parallelism",
     "qa:workspace-memory": "vitest run server/realtimeHydrationMemory.test.js --pool=forks --maxWorkers=1 --no-file-parallelism --testNamePattern ."
+  },
+  "build": {
+    "appId": "com.phdatlas.app",
+    "productName": "PhD Atlas",
+    "copyright": "Copyright © 2026 Jasper Zhou",
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist-desktop-local"
+    },
+    "asar": false,
+    "files": [
+      "desktop/**/*",
+      "dist/**/*",
+      "server/**/*",
+      "shared/**/*",
+      "public/**/*",
+      "tools/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "asarUnpack": [
+      "desktop/**/*",
+      "dist/**/*",
+      "server/**/*",
+      "shared/**/*",
+      "public/**/*",
+      "tools/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "/usr/local/bin/node",
+        "to": "node"
+      }
+    ],
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.productivity"
+    }
   },
   "dependencies": {
     "@simplewebauthn/server": "^13.3.2",
@@ -109,6 +155,8 @@
     "clsx": "^2.1.1",
     "concurrently": "^10.0.4",
     "docx-preview": "^0.3.6",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
     "esbuild": "0.28.1",
     "jsdom": "^29.1.1",
     "lexical": "^0.47.0",

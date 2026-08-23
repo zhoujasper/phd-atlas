@@ -443,12 +443,12 @@ export function createBoundedGracefulShutdown({
 }
 
 export async function runServerWorker() {
-  const envFile = resolve(process.cwd(), '.env')
+  const projectRoot = resolve(process.env.PHD_ATLAS_PROJECT_ROOT ?? process.cwd())
+  const envFile = resolve(projectRoot, '.env')
   if (existsSync(envFile)) {
     process.loadEnvFile(envFile)
   }
 
-  const projectRoot = process.cwd()
   const storageRoot = process.env.PHD_ATLAS_STORAGE_ROOT
     ? resolve(process.env.PHD_ATLAS_STORAGE_ROOT)
     : resolve(projectRoot, 'storage')
