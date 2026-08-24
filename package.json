@@ -137,5 +137,8 @@
     "vitest": "^4.1.9",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yaml": "^2.9.0"
+  },
+  "overrides": {
+    "deepmerge-ts": "8.0.0"
   }
 }
