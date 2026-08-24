@@ -182,6 +182,7 @@ import type { ShareExpiry } from './components/shared/shareOptions'
 import type { NewApplicationStudentOption, NewApplicationTeamMode } from './components/shared/NewApplicationDialog'
 import type { CommandPaletteAction } from './components/shared/CommandPalette'
 import { FormValidationPrompt } from './components/shared/FormValidationPrompt'
+import { LaunchScreen } from './components/shared/LaunchScreen'
 import { flashInvalidField } from './components/shared/invalidFieldFlash'
 import { GlobalOverflowReveal } from './components/shared/GlobalOverflowReveal'
 import { LazyOverlayBoundary } from './components/shared/LazyOverlayBoundary'
@@ -208,6 +209,13 @@ import {
 } from './i18n'
 import { contentLanguagesFromSettings } from './contentLanguages'
 import { PUBLIC_EDITION } from './edition'
+import {
+  desktopShareEnabled,
+  loadDesktopRuntime,
+  readDesktopRuntime,
+  setDesktopRuntime as rememberDesktopRuntime,
+  type DesktopRuntime,
+} from './desktopRuntime'
 import { CONTENT_LANGUAGE_NAMESPACES } from './components/hooks/useI18n'
 import { normalizeErrorMessage } from './errorMessages'
 import { downloadBlob } from './downloadBlob'
@@ -372,6 +380,7 @@ function createPreloadedScreen<TComponent extends ComponentType<any>>(
 }
 
 const loadAuthScreen = createRecoverableModuleLoader(() => import('./components/screens/AuthScreen').then((module) => ({ default: module.AuthScreen })))
+const loadDesktopUnlockScreen = createRecoverableModuleLoader(() => import('./components/screens/DesktopUnlockScreen').then((module) => ({ default: module.DesktopUnlockScreen })))
 const dashboardScreen = createPreloadedScreen(() => import('./components/screens/Dashboard').then((module) => ({ default: module.Dashboard })))
 const applicationPaneScreen = createPreloadedScreen(() => import('./components/screens/ApplicationPane').then((module) => ({ default: module.ApplicationPane })))
 const dossierViewScreen = createPreloadedScreen(() => import('./components/screens/DossierView').then((module) => ({ default: module.DossierView })))
@@ -402,6 +411,7 @@ const loadOnboardingTour = createRecoverableModuleLoader(() => import('./compone
 const loadCommandPalette = createRecoverableModuleLoader(() => import('./components/shared/CommandPalette'))
 
 const AuthScreen = lazy(loadAuthScreen)
+const DesktopUnlockScreen = lazy(loadDesktopUnlockScreen)
 const Dashboard = withLatestCallbackProps(dashboardScreen.Component)
 const ApplicationPane = withLatestCallbackProps(applicationPaneScreen.Component)
 const DossierView = withLatestCallbackProps(dossierViewScreen.Component)
@@ -471,6 +481,10 @@ const validScreens: Screen[] = PUBLIC_EDITION
 const validTabs: DetailTab[] = ['dossier', 'materials', 'mail', 'funding', 'timeline', 'admissions', 'review']
 const validTeamSections: TeamSection[] = ['overview', 'applications', 'members', 'resources', 'discover', 'interview', 'audit', 'settings']
 const shortcutTabs: DetailTab[] = ['dossier', 'materials', 'mail', 'funding', 'timeline', 'admissions', 'review']
+
+function isDesktopShell() {
+  return typeof window !== 'undefined' && Boolean(window.phdAtlasDesktop?.enabled)
+}
 
 function readStartupSession(): AuthSession | null {
   const stored = safeParseJson<AuthSession>(localStorage.getItem(SESSION_KEY))
@@ -1736,7 +1750,14 @@ export default function App() {
   const isOnline = connectivity.mode !== 'offline' && connectivity.mode !== 'server-unreachable'
 
   // Session
-  const [session, setSession] = useState<AuthSession | null>(readStartupSession)
+  const desktopShell = isDesktopShell()
+  const [session, setSession] = useState<AuthSession | null>(() => (
+    desktopShell ? null : readStartupSession()
+  ))
+  const [desktopGate, setDesktopGate] = useState<'checking' | 'unlock' | 'open'>(
+    desktopShell ? 'checking' : 'open',
+  )
+  const [desktopUnlockError, setDesktopUnlockError] = useState<string | null>(null)
   const [initialOfflineMetadata] = useState(() => {
     if (!session) return null
     const snapshot = loadOfflineSnapshot(session)
@@ -2135,6 +2156,60 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const pendingGoShortcutRef = useRef<number | null>(null)
+  const [desktopRuntime, setDesktopRuntimeState] = useState<DesktopRuntime>(() => readDesktopRuntime())
+  const establishDesktopWorkspaceRef = useRef<(
+    nextSession: AuthSession,
+    runtime?: DesktopRuntime | null,
+  ) => Promise<boolean>>(async () => false)
+  const desktopBootStartedRef = useRef(false)
+
+  useEffect(() => {
+    if (!isDesktopShell()) {
+      void loadDesktopRuntime().then((runtime) => {
+        rememberDesktopRuntime(runtime)
+        setDesktopRuntimeState(runtime)
+      })
+      return
+    }
+    if (desktopBootStartedRef.current) return
+    desktopBootStartedRef.current = true
+    let cancelled = false
+    void (async () => {
+      try {
+        const runtime = await loadDesktopRuntime()
+        if (cancelled) return
+        rememberDesktopRuntime(runtime)
+        setDesktopRuntimeState(runtime)
+        if (runtime.unlockRequired && !runtime.unlocked) {
+          setDesktopGate('unlock')
+          return
+        }
+        const stored = readStartupSession()
+        if (stored) {
+          const entered = await establishDesktopWorkspaceRef.current(stored, runtime)
+          if (cancelled || entered) return
+        }
+        const payload = await phdApi.createDesktopSession()
+        if (cancelled) return
+        if (payload.runtime) {
+          rememberDesktopRuntime(payload.runtime)
+          setDesktopRuntimeState(payload.runtime)
+        }
+        await establishDesktopWorkspaceRef.current(payload, payload.runtime)
+      } catch (error) {
+        if (cancelled) return
+        if (error instanceof ApiError && error.code === 'DESKTOP_UNLOCK_REQUIRED') {
+          setDesktopGate('unlock')
+          return
+        }
+        setDesktopUnlockError(normalizeError(error, languageRef.current))
+        setDesktopGate('unlock')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return undefined
@@ -2971,8 +3046,10 @@ export default function App() {
     !isTeamMode ||
     canEditTeamApplication(teamViewerRole, visibleTeamSummary?.membership, visibleTeamSummary?.team.permissionDefaults)
   const canShareInCurrentTeam =
-    !isTeamMode ||
-    canCreateTeamShare(teamViewerRole, visibleTeamSummary?.membership, visibleTeamSummary?.team.permissionDefaults)
+    desktopShareEnabled(desktopRuntime) && (
+      !isTeamMode ||
+      canCreateTeamShare(teamViewerRole, visibleTeamSummary?.membership, visibleTeamSummary?.team.permissionDefaults)
+    )
   const teamDiscoverScope = useMemo(() => {
     const targetUserId = teamViewerRole === 'member' ? session?.user.id : teamDiscoverTargetUserId
     const teamId = activeTeamId || visibleTeamSummary?.team.id
@@ -5728,6 +5805,41 @@ export default function App() {
     })
   }
 
+  async function establishDesktopWorkspace(nextSession: AuthSession, runtime?: DesktopRuntime | null) {
+    const handoffGeneration = authenticationHandoffGenerationRef.current + 1
+    authenticationHandoffGenerationRef.current = handoffGeneration
+    setBusy(true)
+    try {
+      if (runtime) {
+        rememberDesktopRuntime(runtime)
+        setDesktopRuntimeState(runtime)
+      }
+      if (!persistSession(nextSession, handoffGeneration)) return false
+      const outcome = await bootstrapEstablishedSession(nextSession, sessionIdentityEpochRef.current, () => undefined)
+      if (outcome.status !== 'loaded') return false
+      if (!authenticationHandoffStillOwnsSession(handoffGeneration, nextSession, sessionIdentityEpochRef.current)) {
+        return false
+      }
+      setDesktopUnlockError(null)
+      setDesktopGate('open')
+      return true
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'DESKTOP_UNLOCK_REQUIRED') {
+        setDesktopGate('unlock')
+        return false
+      }
+      if (handleAuthoritativeWorkspaceBootstrapError(error, nextSession, sessionIdentityEpochRef.current)) {
+        return false
+      }
+      setDesktopUnlockError(normalizeError(error, languageRef.current))
+      setDesktopGate('unlock')
+      return false
+    } finally {
+      if (appMountedRef.current) setBusy(false)
+    }
+  }
+  establishDesktopWorkspaceRef.current = establishDesktopWorkspace
+
   async function refreshSessionMetadata(activeSession = session, options: { signal?: AbortSignal } = {}) {
     if (!activeSession || cancelledRef.current) return
     const requestToken = activeSession.token
@@ -6461,6 +6573,28 @@ export default function App() {
     clearSessionState()
   }
 
+  async function handleDesktopUnlock(password: string) {
+    const handoffGeneration = authenticationHandoffGenerationRef.current + 1
+    authenticationHandoffGenerationRef.current = handoffGeneration
+    setBusy(true)
+    setDesktopUnlockError(null)
+    try {
+      const payload = await phdApi.unlockDesktop(password)
+      if (authenticationHandoffGenerationRef.current !== handoffGeneration) return
+      if (payload.runtime) {
+        rememberDesktopRuntime(payload.runtime)
+        setDesktopRuntimeState(payload.runtime)
+      }
+      await establishDesktopWorkspace(payload, payload.runtime)
+    } catch (error) {
+      if (authenticationHandoffGenerationRef.current !== handoffGeneration) return
+      setDesktopUnlockError(normalizeError(error, languageRef.current))
+      setDesktopGate('unlock')
+    } finally {
+      if (appMountedRef.current && authenticationHandoffGenerationRef.current === handoffGeneration) setBusy(false)
+    }
+  }
+
   async function handleLogin(email: string, password: string) {
     const handoffGeneration = authenticationHandoffGenerationRef.current + 1
     authenticationHandoffGenerationRef.current = handoffGeneration
@@ -6677,6 +6811,7 @@ export default function App() {
 
   if (!session) {
     const showOfflineUnavailable = connectivity.mode === 'offline' && !connectivity.browserOnline
+    const showDesktopUnlock = desktopShell && desktopGate !== 'open'
     return (
       <ThemeContext.Provider value={themeProvider}>
         <I18nContext.Provider value={i18nValue}>
@@ -6689,6 +6824,18 @@ export default function App() {
           />
           {showOfflineUnavailable ? (
             <OfflineUnavailableScreen onRetry={() => probeServerConnectivity({ force: true })} tx={i18nValue.tx} />
+          ) : showDesktopUnlock ? (
+            desktopGate === 'unlock' ? (
+              <Suspense fallback={<LaunchScreen message="PhD Atlas" />}>
+                <DesktopUnlockScreen
+                  busy={busy}
+                  error={desktopUnlockError}
+                  onUnlock={handleDesktopUnlock}
+                />
+              </Suspense>
+            ) : (
+              <LaunchScreen message="PhD Atlas" />
+            )
           ) : (
             <>
               <AuthScreen
@@ -9848,7 +9995,7 @@ export default function App() {
         theme={themeProvider.theme}
         onToggleTheme={themeProvider.toggleTheme}
         onOpenNotifications={openNotificationCenter}
-        onLogout={() => runWithNavigationGuard(logout)}
+        onLogout={desktopRuntime.enabled ? undefined : () => runWithNavigationGuard(logout)}
         onAccentColor={(color) => {
           const accent = normalizeThemeAccent(color)
           applyThemePreset(accent, { animate: true })
@@ -9917,6 +10064,37 @@ export default function App() {
         onFetchMailNow={(patch) => syncMailbox('incremental', patch)}
         onSyncMailHistory={(patch) => syncMailbox('history', patch)}
         exportApplicationCount={applications.length}
+        desktopRuntime={desktopRuntime}
+        onDesktopUnlockPassword={async (input) => {
+          const runtime = await phdApi.setDesktopUnlockPassword(activeSession.token, input)
+          rememberDesktopRuntime(runtime)
+          setDesktopRuntimeState(runtime)
+        }}
+        onCompleteExport={async () => {
+          const snapshot = await phdApi.exportCompleteWorkspace(activeSession.token)
+          const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' })
+          downloadBlob(blob, `phd-atlas-complete-${new Date().toISOString().slice(0, 10)}.json`)
+        }}
+        onDesktopConnect={async (origin, email, password) => {
+          const result = await phdApi.connectDesktopRemote(activeSession.token, origin, email, password)
+          rememberDesktopRuntime(result.runtime)
+          setDesktopRuntimeState(result.runtime)
+          await refreshSessionMetadata(activeSession)
+        }}
+        onDesktopDisconnect={async () => {
+          const runtime = await phdApi.disconnectDesktopRemote(activeSession.token)
+          rememberDesktopRuntime(runtime)
+          setDesktopRuntimeState(runtime)
+          await refreshSessionMetadata(activeSession)
+        }}
+        onCompleteImport={async (file) => {
+          const text = await file.text()
+          const snapshot = JSON.parse(text) as Record<string, unknown>
+          await phdApi.importCompleteWorkspace(activeSession.token, snapshot)
+          await refreshApplicationsAndSessionMetadata(activeSession)
+          const nextAssets = await phdApi.listProfileAssets(activeSession.token)
+          setProfileAssets(nextAssets)
+        }}
         onExport={(format) => {
           if (applications.length === 0) {
             notify(i18nValue.tx('settings.noApplicationsToExport'), 'info')
@@ -11384,7 +11562,7 @@ export default function App() {
                 }}
                 onOpenNotifications={openNotificationCenter}
                 onToggleTheme={themeProvider.toggleTheme}
-                onLogout={() => runWithNavigationGuard(logout)}
+                onLogout={desktopRuntime.enabled ? undefined : () => runWithNavigationGuard(logout)}
               />
 
               {screen === 'workspace' ? (

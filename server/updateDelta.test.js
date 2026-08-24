@@ -57,14 +57,17 @@ function packageLock(version) {
 }
 
 function runtimeFiles(version, options = {}) {
+  const runtimeSharedFiles = options.legacyRuntime
+    ? []
+    : [...REQUIRED_RUNTIME_FILES]
+        .filter((relativePath) => relativePath.startsWith('server/shared/'))
+        .map((relativePath) => [relativePath, 'export const runtimeSharedContract = true\n'])
   const files = new Map([
     ['dist/index.html', `<title>PhD Atlas ${version}</title>\n`],
     ['dist/assets/vendor.bin', commonAsset],
     ['server/index.js', `export const runtimeVersion = '${version}'\n`],
     ['server/systemUpdate.js', 'export const updateRuntime = true\n'],
-    ...[...REQUIRED_RUNTIME_FILES]
-      .filter((relativePath) => relativePath.startsWith('server/shared/'))
-      .map((relativePath) => [relativePath, 'export const runtimeSharedContract = true\n']),
+    ...runtimeSharedFiles,
     ['tools/start-server.mjs', 'export const startServer = true\n'],
     ['tools/apply-update.mjs', 'export const applyUpdate = true\n'],
     ['tools/container-entrypoint.mjs', 'export const supervise = true\n'],
@@ -74,6 +77,7 @@ function runtimeFiles(version, options = {}) {
   if (options.obsolete) files.set('server/obsolete.js', 'export const obsolete = true\n')
   if (options.added) files.set('server/added.js', 'export const added = true\n')
   if (options.variant) files.set('server/systemUpdate.js', `export const variant = '${options.variant}'\n`)
+  if (options.omitHistoricalSupervisor) files.delete('tools/container-entrypoint.mjs')
   return files
 }
 
@@ -174,6 +178,68 @@ describe('differential system updates', () => {
     } finally {
       await fs.rm(validated.extractRoot, { recursive: true, force: true })
     }
+  })
+
+  it('accepts an integrity-valid legacy Release only as a delta base', async () => {
+    const root = await scratch('update-delta-legacy-base')
+    const base = await createFullPackage(root, '0.1.1', { legacyRuntime: true })
+    const target = await createFullPackage(root, '0.1.3', { added: true })
+    const deltaPath = path.join(root, 'legacy-base-delta.tar.gz')
+
+    await expect(validateUpdatePackage(base.packagePath, path.join(root, 'strict-base-validation')))
+      .rejects.toMatchObject({ code: 'INVALID_UPDATE_PACKAGE' })
+
+    const built = await createUpdateDeltaPackage({
+      basePackagePath: base.packagePath,
+      targetPackagePath: target.packagePath,
+      outputPath: deltaPath,
+      workRoot: path.join(root, 'build-work'),
+    })
+    expect(built).toMatchObject({ fromVersion: '0.1.1', toVersion: '0.1.3' })
+
+    const materializedPath = path.join(root, 'materialized-update.tar.gz')
+    await materializeUpdateDelta({
+      deltaPackagePath: deltaPath,
+      basePackagePath: base.packagePath,
+      outputPackagePath: materializedPath,
+      workRoot: path.join(root, 'materialize-work'),
+      expectedFromVersion: '0.1.1',
+      expectedToVersion: '0.1.3',
+    })
+
+    const validated = await validateUpdatePackage(materializedPath, path.join(root, 'target-validation'))
+    try {
+      for (const required of REQUIRED_RUNTIME_FILES) {
+        expect(validated.manifest.files).toContainEqual(expect.objectContaining({ path: required }))
+      }
+    } finally {
+      await fs.rm(validated.extractRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps historical delta bases fail-closed and never accepts a legacy target', async () => {
+    const root = await scratch('update-delta-legacy-boundaries')
+    const incompleteBase = await createFullPackage(root, '0.1.1', {
+      legacyRuntime: true,
+      omitHistoricalSupervisor: true,
+    })
+    const currentBase = await createFullPackage(root, '0.1.2')
+    const currentTarget = await createFullPackage(root, '0.1.3')
+    const legacyTarget = await createFullPackage(root, '0.1.3', { legacyRuntime: true })
+
+    await expect(createUpdateDeltaPackage({
+      basePackagePath: incompleteBase.packagePath,
+      targetPackagePath: currentTarget.packagePath,
+      outputPath: path.join(root, 'incomplete-base-delta.tar.gz'),
+      workRoot: path.join(root, 'incomplete-base-work'),
+    })).rejects.toMatchObject({ code: 'INVALID_UPDATE_PACKAGE' })
+
+    await expect(createUpdateDeltaPackage({
+      basePackagePath: currentBase.packagePath,
+      targetPackagePath: legacyTarget.packagePath,
+      outputPath: path.join(root, 'legacy-target-delta.tar.gz'),
+      workRoot: path.join(root, 'legacy-target-work'),
+    })).rejects.toMatchObject({ code: 'INVALID_UPDATE_PACKAGE' })
   })
 
   it('rejects a mismatched base fingerprint and a modified delta payload', async () => {

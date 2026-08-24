@@ -21,6 +21,7 @@ const publicRepository = 'https://github.com/zhoujasper/phd-atlas.git'
 const publicPackageUrl = 'https://raw.githubusercontent.com/zhoujasper/phd-atlas/main/package.json'
 const zeroSha = '0'.repeat(40)
 const maxCommandOutputTail = 64_000
+export const COMPOSE_VALIDATION_IMAGE = 'docker:29.7.2-cli@sha256:000bb62ff495f986c9f5578eb67cc2cb98b91138eda81d7762d5371eb8a497fe'
 const report = {
   startedAt: new Date().toISOString(),
   mode: '',
@@ -116,6 +117,32 @@ export function releaseTreeScriptArguments(script) {
     return ['run', script, '--', '--maxWorkers=1', '--no-file-parallelism']
   }
   return ['run', script]
+}
+
+export const RELEASE_TEST_SHARD_COUNT = 4
+
+export function releaseTreeScriptInvocations(script) {
+  const args = releaseTreeScriptArguments(script)
+  if (script !== 'test') return [args]
+  return Array.from({ length: RELEASE_TEST_SHARD_COUNT }, (_, index) => [
+    ...args,
+    `--shard=${index + 1}/${RELEASE_TEST_SHARD_COUNT}`,
+  ])
+}
+
+export function composeValidationCreateArguments(containerName) {
+  return [
+    'create',
+    '--name', containerName,
+    COMPOSE_VALIDATION_IMAGE,
+    'compose',
+    '--project-name', 'phd-atlas',
+    '--project-directory', '/',
+    '-f', '/compose.yaml',
+    '--env-file', '/.env',
+    'config',
+    '--quiet',
+  ]
 }
 
 export function parseWorkflowDocument(contents, label) {
@@ -223,6 +250,101 @@ export function assertReleaseWorkflowStateContract(contents, label = 'release.ym
   }
 }
 
+export function assertDesktopReleaseWorkflowContract(contents, label = 'desktop-release.yml') {
+  const workflow = parseWorkflowDocument(contents, label)
+  const trigger = workflow.on?.workflow_run
+  const triggerWorkflows = Array.isArray(trigger?.workflows) ? trigger.workflows : []
+  const triggerTypes = Array.isArray(trigger?.types) ? trigger.types : []
+  if (
+    !triggerWorkflows.includes('Release update package and container')
+    || !triggerTypes.includes('completed')
+  ) {
+    throw new Error(`${label} must run only after the canonical public Release workflow completes.`)
+  }
+  if (workflow.permissions?.contents !== 'read') {
+    throw new Error(`${label} must default to read-only repository contents.`)
+  }
+
+  const requiredGuard = "github.event.workflow_run.conclusion == 'success'"
+  const buildContracts = [
+    ['build-windows', 'windows-latest', 'npm run desktop:build:win', '--platform windows'],
+    ['build-macos', 'macos-latest', 'npm run desktop:build:mac', '--platform macos'],
+  ]
+  for (const [jobName, runner, buildCommand, platformArgument] of buildContracts) {
+    const job = workflow.jobs?.[jobName]
+    if (!job) throw new Error(`${label} is missing ${jobName}.`)
+    if (job['runs-on'] !== runner) {
+      throw new Error(`${label} ${jobName} must use the native ${runner} runner.`)
+    }
+    if (!String(job.if ?? '').includes(requiredGuard)) {
+      throw new Error(`${label} ${jobName} must be gated by a successful canonical Release run.`)
+    }
+    const checkout = job.steps?.find((step) => step?.uses === 'actions/checkout@v4')
+    if (checkout?.with?.ref !== '${{ github.event.workflow_run.head_sha }}') {
+      throw new Error(`${label} ${jobName} must build the exact released commit SHA.`)
+    }
+    const scripts = workflowStepScripts(job)
+    for (const required of ['npm ci', buildCommand, platformArgument]) {
+      if (!scripts.includes(required)) {
+        throw new Error(`${label} ${jobName} is missing '${required}'.`)
+      }
+    }
+    if (!job.steps?.some((step) => step?.uses === 'actions/upload-artifact@v4')) {
+      throw new Error(`${label} ${jobName} must upload its native candidates before Release attachment.`)
+    }
+  }
+
+  const attachJob = workflow.jobs?.['attach-release-assets']
+  if (!attachJob) throw new Error(`${label} is missing attach-release-assets.`)
+  if (!String(attachJob.if ?? '').includes(requiredGuard)) {
+    throw new Error(`${label} attach-release-assets must be gated by a successful canonical Release run.`)
+  }
+  if (attachJob.permissions?.contents !== 'write') {
+    throw new Error(`${label} must grant write access only to the final Release attachment job.`)
+  }
+  const needs = Array.isArray(attachJob.needs) ? [...attachJob.needs].sort() : []
+  if (JSON.stringify(needs) !== JSON.stringify(['build-macos', 'build-windows'])) {
+    throw new Error(`${label} must wait for both native desktop builds before attaching assets.`)
+  }
+  const checkout = attachJob.steps?.find((step) => step?.uses === 'actions/checkout@v4')
+  if (checkout?.with?.ref !== '${{ github.event.workflow_run.head_sha }}') {
+    throw new Error(`${label} attachment must verify the exact released commit SHA.`)
+  }
+  if (!attachJob.steps?.some((step) => step?.uses === 'actions/download-artifact@v4')) {
+    throw new Error(`${label} attachment must download both native candidate sets.`)
+  }
+  const attachScripts = workflowStepScripts(attachJob)
+  for (const required of [
+    'sha256sum --check',
+    'git rev-list -n 1 "$tag"',
+    'releases/tags/${DESKTOP_TAG}',
+    'releases/assets/${asset_id}',
+    'cmp --silent "$asset_path" "$remote_path"',
+  ]) {
+    if (!attachScripts.includes(required)) {
+      throw new Error(`${label} attachment is missing the immutable asset contract '${required}'.`)
+    }
+  }
+  if (attachScripts.includes('--clobber')) {
+    throw new Error(`${label} must never overwrite an existing desktop Release asset.`)
+  }
+}
+
+export function assertGitHookInstallationContract(indexEntry, installerContents) {
+  if (!String(indexEntry).startsWith('100755 ')) {
+    throw new Error('The tracked pre-push hook must have executable mode 100755.')
+  }
+  for (const required of [
+    "path.join(projectRoot, '.githooks', 'pre-push')",
+    'chmod(prePushHook, 0o755)',
+    "core.hooksPath', '.githooks'",
+  ]) {
+    if (!installerContents.includes(required)) {
+      throw new Error(`Git hook installer contract is missing '${required}'.`)
+    }
+  }
+}
+
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, 'utf8'))
 }
@@ -292,23 +414,37 @@ async function validateContracts(root) {
   }
 
   const sourceTemplates = path.join(root, '.public')
+  if (existsSync(sourceTemplates)) {
+    const hookIndexEntry = await gitOutput(
+      ['ls-files', '--stage', '--', '.githooks/pre-push'],
+      root,
+    )
+    const hookInstaller = await readFile(path.join(root, 'tools', 'install-git-hooks.mjs'), 'utf8')
+    assertGitHookInstallationContract(hookIndexEntry, hookInstaller)
+  }
   const workflowPaths = existsSync(sourceTemplates)
     ? [
         path.join(root, '.github', 'workflows', 'sync-public.yml'),
         path.join(sourceTemplates, 'ci.yml'),
         path.join(sourceTemplates, 'publish-container.yml'),
         path.join(sourceTemplates, 'release.yml'),
+        path.join(sourceTemplates, 'desktop-release.yml'),
       ]
     : [
         path.join(root, '.github', 'workflows', 'ci.yml'),
         path.join(root, '.github', 'workflows', 'publish-container.yml'),
         path.join(root, '.github', 'workflows', 'release.yml'),
+        path.join(root, '.github', 'workflows', 'desktop-release.yml'),
       ]
 
   for (const workflowPath of workflowPaths) {
     const contents = await readFile(workflowPath, 'utf8')
-    assertWorkflowValidationContract(contents, path.relative(root, workflowPath))
     const workflowName = path.basename(workflowPath)
+    if (workflowName === 'desktop-release.yml') {
+      assertDesktopReleaseWorkflowContract(contents, path.relative(root, workflowPath))
+      continue
+    }
+    assertWorkflowValidationContract(contents, path.relative(root, workflowPath))
     if (workflowName === 'publish-container.yml') {
       assertPublicContainerWorkflowContract(contents, path.relative(root, workflowPath))
     }
@@ -405,7 +541,9 @@ async function runTree(root) {
     'check:codex-skill-bundles',
     'verify:discover-adapters',
   ]) {
-    await run('npm', releaseTreeScriptArguments(script), { cwd: root })
+    for (const args of releaseTreeScriptInvocations(script)) {
+      await run('npm', args, { cwd: root })
+    }
   }
   await assertSourceTreeUnchanged(root, initialFingerprint)
   return metadata
@@ -472,10 +610,29 @@ async function verifyBeta8UpdateCompatibility(sourceRoot, packagePath) {
 async function validateCompose(publicRoot) {
   const envPath = path.join(publicRoot, '.env')
   const hadEnv = existsSync(envPath)
+  const containerName = `phd-atlas-compose-config-${Date.now()}-${process.pid}`
+  let containerCreated = false
   if (!hadEnv) await copyFile(path.join(publicRoot, '.env.example'), envPath)
   try {
-    await run('docker', ['compose', 'config', '--quiet'], { cwd: publicRoot })
+    await run('docker', composeValidationCreateArguments(containerName), {
+      cwd: publicRoot,
+      capture: true,
+    })
+    containerCreated = true
+    await run('docker', [
+      'cp',
+      path.join(publicRoot, 'compose.yaml'),
+      `${containerName}:/compose.yaml`,
+    ], { cwd: publicRoot })
+    await run('docker', ['cp', envPath, `${containerName}:/.env`], { cwd: publicRoot })
+    await run('docker', ['start', '--attach', containerName], { cwd: publicRoot })
   } finally {
+    if (containerCreated) {
+      await run('docker', ['rm', '--force', containerName], {
+        cwd: publicRoot,
+        capture: true,
+      }).catch(() => {})
+    }
     if (!hadEnv) await rm(envPath, { force: true })
   }
 }

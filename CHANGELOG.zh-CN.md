@@ -8,6 +8,41 @@ PhD Atlas 公开版的所有重要变化都记录在此文件中。格式遵循
 
 ## [未发布]
 
+## [0.1.3] - 2026-08-24
+
+### 新增
+
+- 新增 Windows 安装版/便携版与 macOS DMG/ZIP 桌面交付。每个包都从已通过的同一
+  Release 提交在对应原生 runner 构建，生成独立 SHA-256 后再以可重跑方式附加。
+- 新增个人桌面运行模式：本地申请与存储无配额限制，可设置本地启动密码、完整导入
+  导出工作空间，并可按需连接远端网页账号以使用远端存储和分享链接。
+- Discover 项目即使缺少单独核实的导师邮箱，也可带明确证据警告导入 Applications；
+  系统不再要求虚构联系人，也不会直接阻断有效项目。
+
+### 修复
+
+- 当前目标更新包继续执行完整运行时文件门；只有经过完整性校验的历史 Release 包在
+  作为差分基包时，才按其原始启动合同验证。因此发布流程可以生成
+  v0.1.1 到 v0.1.3 的可选差分包，同时不会放松对 v0.1.3 目标包或重建包的校验。
+- 发布仅有源码标签的 v0.1.2 候选之后的完整版本；Beta.8 直升修复、解包后的真实
+  运行时预检、历史更新器回放与失败回滚证据全部保留。
+- 保持跨运行时文件代际的首启灾难恢复：当前候选失败后可以恢复精确匹配的早期
+  format-v1 上一活动包，普通活动包重放则继续执行当前严格文件面。
+- 发布验证改为 4 个相互隔离且依次运行的 Vitest 分片；每个分片仍必须通过，同时避免
+  单个 worker 在私有源码与公开导出全套测试期间无限累积状态。
+- 本地 Compose 发布校验不再依赖宿主 CLI 插件或可绑定挂载的临时目录。门禁通过
+  `docker cp` 把精确的 Compose 与环境文件交给固定镜像摘要的官方 Docker CLI 容器，
+  校验通过后才允许构建任一架构镜像。
+- 持久化更新 helper 的 SQLite guard schema，并增加 250 ms 有界调度交接窗口，避免
+  刚关闭的父进程句柄让两个独立 helper 同时失败，同时保持恰好一个胜出者的语义。
+- SQLite 句柄替换现在由加密切换、数据库维护、关机、强制外部同步和 workspace 热备份
+  共用同一个独占 source gate，闭合 drain 前后两侧的竞态。远端暂时失败时保留权威旧
+  句柄及原样待重试 payload，过期 tenant store 也不能反向覆盖当前加密策略。
+- MCP CLI 在判断主模块前会规范化真实路径，Claude Desktop 包可从 macOS 路径别名
+  正常启动；弹层的延迟初始聚焦也不再打断收件人邮箱输入。
+- 修复邮件编辑器清空后再次打开相同正文的已保存草稿时正文为空的问题，并避免新增
+  推荐人行的延迟聚焦把快速输入拆到姓名和邮箱两个字段。
+
 ## [0.1.2] - 2026-08-18
 
 ### 修复
@@ -634,7 +669,8 @@ PhD Atlas 公开版的所有重要变化都记录在此文件中。格式遵循
   无障碍偏好、亮暗主题与 12 种语言。
 - 发布首个 GitHub Release 更新包及 SHA-256 校验文件。
 
-[0.1.2]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.2
+[0.1.3]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.3
+[0.1.2]: https://github.com/zhoujasper/phd-atlas/tree/v0.1.2
 [0.1.1]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.1
 [0.1.0]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0
 [0.1.0-beta.8]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.8

@@ -5985,6 +5985,67 @@ export const phdApi = {
     return blobRequest(`/api/exports?${params.toString()}`, token)
   },
 
+  desktopRuntime: (token?: string) =>
+    request<import('../desktopRuntime').DesktopRuntime>('/api/desktop/runtime', token ?? '', { method: 'GET' }),
+
+  createDesktopSession: () => {
+    resetClientSessionState()
+    return request<AuthSession & { runtime?: import('../desktopRuntime').DesktopRuntime }>(
+      '/api/desktop/session',
+      undefined,
+      { method: 'POST', body: JSON.stringify({}) },
+    )
+  },
+
+  unlockDesktop: (password: string) => {
+    resetClientSessionState()
+    return request<AuthSession & { runtime?: import('../desktopRuntime').DesktopRuntime }>(
+      '/api/desktop/unlock',
+      undefined,
+      { method: 'POST', body: JSON.stringify({ password }) },
+    )
+  },
+
+  setDesktopUnlockPassword: (
+    token: string,
+    input: {
+      enabled: boolean
+      password?: string
+      confirmPassword?: string
+      currentPassword?: string
+    },
+  ) =>
+    request<import('../desktopRuntime').DesktopRuntime>('/api/desktop/unlock-password', token, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  exportCompleteWorkspace: (token: string) =>
+    request<Record<string, unknown>>('/api/workspace/complete-export', token),
+
+  importCompleteWorkspace: (token: string, snapshot: Record<string, unknown>) =>
+    request<{ applicationsImported: number, assetsImported: number, filesImported: number }>(
+      '/api/desktop/import',
+      token,
+      { method: 'POST', body: JSON.stringify({ snapshot }) },
+    ),
+
+  connectDesktopRemote: (token: string, origin: string, email: string, password: string) =>
+    request<{
+      runtime: import('../desktopRuntime').DesktopRuntime
+      pushed: number
+      remoteApplicationCount: number
+    }>('/api/desktop/connect', token, {
+      method: 'POST',
+      body: JSON.stringify({ origin, email, password }),
+    }),
+
+  disconnectDesktopRemote: (token: string) =>
+    request<import('../desktopRuntime').DesktopRuntime>('/api/desktop/disconnect', token, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
   downloadFile: (token: string, fileId: string) =>
     blobRequest(`/api/files/${encodeURIComponent(fileId)}/download`, token),
 

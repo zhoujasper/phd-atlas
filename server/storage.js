@@ -297,10 +297,26 @@ function releaseWriteLane(owner) {
  * every user, application, and profile asset — so it must take the global
  * lane rather than the narrow settings lane its fingerprint would suggest.
  */
+function databaseShouldRunInMemory(settings = activeEncryptionPolicy) {
+  const encryptionAtRest = Boolean(settings?.encryptionAtRest)
+  const sqliteEncryption = Boolean(settings?.sqliteEncryption && encryptionAtRest)
+  return Boolean(
+    (sqliteEncryption && !isExternalDatabaseConfiguration(activeDatabaseConfiguration))
+    || (encryptionAtRest && isExternalDatabaseConfiguration(activeDatabaseConfiguration)),
+  )
+}
+
 function tenantKeysForWriteStore(store) {
   const baseline = store?.[storeBaselineSymbol]
   if (!baseline) return []
   const writePlan = createStoreWritePlan(store)
+  // Global settings can change the authoritative SQLite representation. Keep
+  // all settings writes exclusive, and also globalize any later write that
+  // must finish a previously failed disk/memory handoff.
+  if (
+    writePlan.settingsChanged
+    || databaseShouldRunInMemory() !== databaseRunsInMemory
+  ) return []
   const tenantKeys = new Set(writePlan.tenantKeys)
   // Audit rows are append-only INSERT OR IGNORE mutations inside the same
   // SQLite transaction as the authored entity write. Giving every audited
@@ -568,6 +584,8 @@ let externalSyncNextRetryAt = null
 let externalSyncLastSuccessAt = null
 let externalSyncLastError = null
 let externalSyncStatus = 'disabled'
+let databaseHandleReplacementGate = null
+const databaseHandleReplacementContext = new AsyncLocalStorage()
 let databaseMaintenanceActive = false
 let databaseMaintenanceGeneration = 0
 const databaseMaintenanceContext = new AsyncLocalStorage()
@@ -728,6 +746,7 @@ let durableStorageAcknowledgementFailpoint = null
 let storageShutdownDurabilityFailpoint = null
 let databaseConfigurationSealFailpoint = null
 let storageInitializationFailpoint = null
+let databaseHandleReplacementFailpoint = null
 const codexAuthorizationLastUsedCounters = {
   queued: 0,
   coalesced: 0,
@@ -3491,6 +3510,17 @@ async function drainLocalDatabaseSnapshots() {
 }
 
 async function synchronizeExternalDatabase(_options = {}) {
+  const replacementGate = databaseHandleReplacementGate
+  if (
+    replacementGate
+    && databaseHandleReplacementContext.getStore() !== replacementGate
+  ) {
+    if (databaseHandleReplacementFailpoint) {
+      await databaseHandleReplacementFailpoint({ stage: 'external-sync-waiting' })
+    }
+    await replacementGate.promise
+    return synchronizeExternalDatabase(_options)
+  }
   if (
     !isExternalDatabaseConfiguration(activeDatabaseConfiguration)
     || suppressExternalSync
@@ -3707,16 +3737,60 @@ async function drainExternalDatabaseSyncForMaintenance({
   }
 }
 
+async function drainDatabaseActivityBeforeHandleReplacement() {
+  // External synchronization owns a tracked better-sqlite3 backup of the
+  // current handle. Flush the exact final revision first, then wait for every
+  // remaining local snapshot before replacing that handle. Closing it while a
+  // backup is between Immediate callbacks rejects the durable write with
+  // DATABASE_HANDLE_SUPERSEDED and can leave the external target stale.
+  if (databaseHandleReplacementFailpoint) {
+    await databaseHandleReplacementFailpoint({ stage: 'before-drain' })
+  }
+  if (isExternalDatabaseConfiguration(activeDatabaseConfiguration)) {
+    await drainExternalDatabaseSyncForMaintenance()
+  }
+  await drainLocalDatabaseSnapshots()
+  if (databaseHandleReplacementFailpoint) {
+    await databaseHandleReplacementFailpoint({ stage: 'after-drain' })
+  }
+}
+
+async function withDatabaseHandleReplacement(fn) {
+  const inheritedGate = databaseHandleReplacementContext.getStore()
+  if (inheritedGate && inheritedGate === databaseHandleReplacementGate) return fn()
+  while (databaseHandleReplacementGate) {
+    const pendingGate = databaseHandleReplacementGate
+    if (databaseHandleReplacementFailpoint) {
+      await databaseHandleReplacementFailpoint({ stage: 'database-source-gate-waiting' })
+    }
+    await pendingGate.promise
+  }
+  let releaseGate
+  const gate = {
+    promise: new Promise((resolve) => { releaseGate = resolve }),
+  }
+  databaseHandleReplacementGate = gate
+  try {
+    return await databaseHandleReplacementContext.run(gate, fn)
+  } finally {
+    if (databaseHandleReplacementGate === gate) databaseHandleReplacementGate = null
+    releaseGate()
+  }
+}
+
 async function withDatabaseMaintenance(fn, options = {}) {
   return withWriteLock(async () => {
     databaseMaintenanceActive = true
     databaseMaintenanceGeneration += 1
     const generation = databaseMaintenanceGeneration
     try {
-      return await databaseMaintenanceContext.run({ generation }, async () => {
-        await drainExternalDatabaseSyncForMaintenance(options)
-        return fn()
-      })
+      return await databaseMaintenanceContext.run(
+        { generation },
+        () => withDatabaseHandleReplacement(async () => {
+          await drainExternalDatabaseSyncForMaintenance(options)
+          return fn()
+        }),
+      )
     } finally {
       databaseMaintenanceActive = false
     }
@@ -4097,45 +4171,56 @@ async function createWorkspaceArchiveBackup(actorId, options = {}) {
     const uploadsStaging = path.join(stagingDir, 'uploads')
     await fs.mkdir(uploadsStaging, { recursive: true })
 
-    const sourceConfiguration = activeDatabaseConfiguration
+    let sourceConfiguration = null
+    let sourceDatabaseRevision = null
     let databaseSqlFile = null
     let workspaceBackupFormat = 'sqlite-uploads-v1'
-    if (isExternalDatabaseConfiguration(sourceConfiguration)) {
-      // Flush the compatibility cache, then read back from the selected server.
-      // The resulting archive is therefore a backup of the configured database,
-      // rather than a local-cache-only snapshot.
-      await synchronizeExternalDatabase({ force: true })
-      externalState = await readExternalDatabaseStateWithMemoryAdmission(sourceConfiguration)
-      if (!externalState?.payload?.length) {
-        throw backupFileError(502, 'DATABASE_BACKUP_FAILED', 'The configured database did not return a workspace snapshot.')
-      }
-      await decodeExternalStatePayloadToFile(externalState.payload, sqliteTarget)
-      if (externalState.payload.length <= EXTERNAL_SQL_DUMP_IN_MEMORY_LIMIT_BYTES) {
-        databaseSqlFile = `database-${sourceConfiguration.type}.sql`
-        await fs.writeFile(
-          path.join(stagingDir, databaseSqlFile),
-          createExternalDatabaseSqlDump(sourceConfiguration, externalState),
-          { encoding: 'utf8', mode: 0o600 },
-        )
-        workspaceBackupFormat = `${sourceConfiguration.type}-state-sql-uploads-v1`
+    await withDatabaseHandleReplacement(async () => {
+      sourceConfiguration = { ...activeDatabaseConfiguration }
+      if (isExternalDatabaseConfiguration(sourceConfiguration)) {
+        // Flush the compatibility cache, then read back from the selected server.
+        // The resulting archive is therefore a backup of the configured database,
+        // rather than a local-cache-only snapshot.
+        await synchronizeExternalDatabase({ force: true })
+        externalState = await readExternalDatabaseStateWithMemoryAdmission(sourceConfiguration)
+        if (!externalState?.payload?.length) {
+          throw backupFileError(502, 'DATABASE_BACKUP_FAILED', 'The configured database did not return a workspace snapshot.')
+        }
+        await decodeExternalStatePayloadToFile(externalState.payload, sqliteTarget)
+        sourceDatabaseRevision = externalState.revision
+        if (externalState.payload.length <= EXTERNAL_SQL_DUMP_IN_MEMORY_LIMIT_BYTES) {
+          databaseSqlFile = `database-${sourceConfiguration.type}.sql`
+          await fs.writeFile(
+            path.join(stagingDir, databaseSqlFile),
+            createExternalDatabaseSqlDump(sourceConfiguration, externalState),
+            { encoding: 'utf8', mode: 0o600 },
+          )
+          workspaceBackupFormat = `${sourceConfiguration.type}-state-sql-uploads-v1`
+        } else {
+          // The SQLite compatibility image is the canonical, portable restore
+          // source. Avoid constructing a second base64/hex SQL string (up to 2x
+          // the BLOB) for large external workspaces.
+          workspaceBackupFormat = `${sourceConfiguration.type}-state-uploads-v2`
+        }
       } else {
-        // The SQLite compatibility image is the canonical, portable restore
-        // source. Avoid constructing a second base64/hex SQL string (up to 2x
-        // the BLOB) for large external workspaces.
-        workspaceBackupFormat = `${sourceConfiguration.type}-state-uploads-v2`
+        const database = getDb()
+        // better-sqlite3's hot backup streams pages to disk. It does not need a
+        // reservation proportional to the complete workspace snapshot, but the
+        // SQLite/page-cache and gzip pipeline still need one small bounded I/O
+        // allowance. External adapters already own their single payload-sized
+        // lease through readExternalDatabaseStateWithMemoryAdmission().
+        releaseLocalIoMemory = acquireStoreHydrationMemory?.(
+          WORKSPACE_BACKUP_LOCAL_IO_RESERVATION_BYTES,
+        ) ?? null
+        await database.backup(sqliteTarget)
+        const snapshot = new Database(sqliteTarget, { readonly: true, fileMustExist: true })
+        try {
+          sourceDatabaseRevision = readDurableWorkspaceRevision(snapshot)
+        } finally {
+          snapshot.close()
+        }
       }
-    } else {
-      const database = getDb()
-      // better-sqlite3's hot backup streams pages to disk. It does not need a
-      // reservation proportional to the complete workspace snapshot, but the
-      // SQLite/page-cache and gzip pipeline still need one small bounded I/O
-      // allowance. External adapters already own their single payload-sized
-      // lease through readExternalDatabaseStateWithMemoryAdmission().
-      releaseLocalIoMemory = acquireStoreHydrationMemory?.(
-        WORKSPACE_BACKUP_LOCAL_IO_RESERVATION_BYTES,
-      ) ?? null
-      await database.backup(sqliteTarget)
-    }
+    })
 
     let uploadCount = 0
     try {
@@ -4153,12 +4238,12 @@ async function createWorkspaceArchiveBackup(actorId, options = {}) {
       databaseAdapter: sourceConfiguration.type,
       databaseFile: 'phd-atlas.sqlite',
       databaseSqlFile,
-      databaseRevision: externalState?.revision ?? readDurableWorkspaceRevision(getDb()),
+      databaseRevision: sourceDatabaseRevision,
       uploadsDir: 'uploads',
       uploadCount,
       databasePath: isExternalDatabaseConfiguration(sourceConfiguration)
         ? sourceConfiguration.database
-        : databasePath,
+        : sourceConfiguration.sqlitePath,
       uploadRoot,
     }
     await fs.writeFile(path.join(stagingDir, 'manifest.json'), JSON.stringify(metadata, null, 2), 'utf8')
@@ -5031,6 +5116,16 @@ export function configureStorageInitializationFailpointForTests(failpoint) {
   storageInitializationFailpoint = failpoint
 }
 
+export function configureDatabaseHandleReplacementFailpointForTests(failpoint) {
+  if (failpoint !== null && typeof failpoint !== 'function') {
+    throw new TypeError('Database handle replacement failpoint must be a function or null.')
+  }
+  if (failpoint && process.env.NODE_ENV !== 'test') {
+    throw new Error('Database handle replacement failpoints are available only in tests.')
+  }
+  databaseHandleReplacementFailpoint = failpoint
+}
+
 async function acknowledgeSecurityStorageMutation(mutated = true) {
   if (mutated) securityDurableMutationGeneration += 1
   if (securityDurableAckPromise) {
@@ -5073,63 +5168,66 @@ export async function flushDurableStorage() {
 
 async function reconcileSqliteEncryptionMode() {
   await ensureEncryptedSqliteProcessLease()
-  const shouldUseMemory = Boolean(
-    (activeEncryptionPolicy?.sqliteEncryption && !isExternalDatabaseConfiguration(activeDatabaseConfiguration))
-    || (activeEncryptionPolicy?.encryptionAtRest && isExternalDatabaseConfiguration(activeDatabaseConfiguration)),
-  )
+  const shouldUseMemory = databaseShouldRunInMemory()
   if (shouldUseMemory === databaseRunsInMemory) {
     if (shouldUseMemory) await maybeSealDatabase()
     return
   }
 
-  if (shouldUseMemory) {
-    const database = getDb()
-    applySnapshotStoragePageLimit(database, configuredSnapshotStorageMode())
-    assertDatabaseSnapshotCapacity(database, configuredSnapshotStorageMode())
-    try { database.pragma('wal_checkpoint(TRUNCATE)') } catch { /* ignore */ }
-    const releaseMemory = acquireStoreSnapshotMemory(database)
-    try {
-      const image = database.serialize()
-      if (!isExternalDatabaseConfiguration(activeDatabaseConfiguration)) {
-        await sealSqliteBuffer(
-          image,
-          sealedDatabasePath,
-          deriveSqliteKey(),
-          activeEncryptionPolicy.encryptionAlgorithm,
-        )
+  return withDatabaseHandleReplacement(async () => {
+    const targetUsesMemory = databaseShouldRunInMemory()
+    if (targetUsesMemory === databaseRunsInMemory) return
+    await drainDatabaseActivityBeforeHandleReplacement()
+
+    if (targetUsesMemory) {
+      const database = getDb()
+      applySnapshotStoragePageLimit(database, configuredSnapshotStorageMode())
+      assertDatabaseSnapshotCapacity(database, configuredSnapshotStorageMode())
+      try { database.pragma('wal_checkpoint(TRUNCATE)') } catch { /* ignore */ }
+      const releaseMemory = acquireStoreSnapshotMemory(database)
+      try {
+        const image = database.serialize()
+        if (!isExternalDatabaseConfiguration(activeDatabaseConfiguration)) {
+          await sealSqliteBuffer(
+            image,
+            sealedDatabasePath,
+            deriveSqliteKey(),
+            activeEncryptionPolicy.encryptionAlgorithm,
+          )
+        }
+        clearPendingDatabaseImage()
+        pendingDatabaseImage = sqliteImageForMemory(image)
+        closeOpenDatabase()
+        databaseRunsInMemory = true
+        getDb()
+        await removePlainSqliteArtifacts()
+      } finally {
+        releaseMemory?.()
       }
-      clearPendingDatabaseImage()
-      pendingDatabaseImage = sqliteImageForMemory(image)
+      return
+    }
+
+    await drainSqliteSealBeforeStorageTransition()
+    const snapshotDatabase = db
+    const releaseMemory = snapshotDatabase ? acquireStoreSnapshotMemory(snapshotDatabase) : null
+    const pendingImage = snapshotDatabase
+      ? { image: null, releaseMemory: null }
+      : clearPendingDatabaseImage({ release: false })
+    try {
+      const image = snapshotDatabase?.serialize() ?? pendingImage.image
+      if (!image) throw new Error('Cannot disable SQLite encryption without a valid database image.')
+      await writeSnapshotFile(databasePath, image)
       closeOpenDatabase()
-      databaseRunsInMemory = true
+      databaseRunsInMemory = false
       getDb()
-      await removePlainSqliteArtifacts()
+      if (!isExternalDatabaseConfiguration(activeDatabaseConfiguration)) {
+        await fs.rm(sealedDatabasePath, { force: true })
+      }
     } finally {
       releaseMemory?.()
+      pendingImage.releaseMemory?.()
     }
-    return
-  }
-
-  await drainSqliteSealBeforeStorageTransition()
-  const snapshotDatabase = db
-  const releaseMemory = snapshotDatabase ? acquireStoreSnapshotMemory(snapshotDatabase) : null
-  const pendingImage = snapshotDatabase
-    ? { image: null, releaseMemory: null }
-    : clearPendingDatabaseImage({ release: false })
-  try {
-    const image = snapshotDatabase?.serialize() ?? pendingImage.image
-    if (!image) throw new Error('Cannot disable SQLite encryption without a valid database image.')
-    await writeSnapshotFile(databasePath, image)
-    closeOpenDatabase()
-    databaseRunsInMemory = false
-    getDb()
-    if (!isExternalDatabaseConfiguration(activeDatabaseConfiguration)) {
-      await fs.rm(sealedDatabasePath, { force: true })
-    }
-  } finally {
-    releaseMemory?.()
-    pendingImage.releaseMemory?.()
-  }
+  })
 }
 
 function scheduleSealDatabase() {
@@ -11681,13 +11779,12 @@ async function performStorageShutdown() {
     await attempt('final Codex telemetry flush', () => flushCodexTelemetryPersistence())
   }
 
-  // A better-sqlite3 backup advances across asynchronous Immediate callbacks.
-  // Do not close its source handle merely because the request that scheduled
-  // the snapshot has already yielded into shutdown.
-  await drainLocalDatabaseSnapshots()
-
   try {
-    await withWriteLock(async () => {
+    await withWriteLock(() => withDatabaseHandleReplacement(async () => {
+      // A better-sqlite3 backup advances across asynchronous Immediate
+      // callbacks. Own the source gate before draining so a new workspace
+      // backup cannot start between this barrier and closeOpenDatabase().
+      await drainLocalDatabaseSnapshots()
       if (workspaceQuotaHeartbeatTimer) {
         clearInterval(workspaceQuotaHeartbeatTimer)
         workspaceQuotaHeartbeatTimer = null
@@ -11789,7 +11886,7 @@ async function performStorageShutdown() {
       if (!databaseLeaseReleaseSucceeded || !serviceLeaseReleaseSucceeded) {
         storageShutdownDurabilityFailed = true
       }
-    })
+    }))
   } catch (error) {
     storageShutdownDurabilityFailed = true
     errors.push({ label: 'final storage close', error })
@@ -17068,11 +17165,11 @@ async function writeStoreUnlocked(store, {
   } else {
     invalidateSharedStoreCache()
   }
-  applyEncryptionPolicyFromSettings(store.settings)
-  const shouldUseMemory = Boolean(
-    (activeEncryptionPolicy?.sqliteEncryption && !isExternalDatabaseConfiguration(activeDatabaseConfiguration))
-    || (activeEncryptionPolicy?.encryptionAtRest && isExternalDatabaseConfiguration(activeDatabaseConfiguration)),
-  )
+  // A tenant-scoped write may have been created before a queued global
+  // settings transition. Its stale projection must not roll the process-wide
+  // encryption policy back when the write plan does not own system settings.
+  if (writePlan.settingsChanged) applyEncryptionPolicyFromSettings(store.settings)
+  const shouldUseMemory = databaseShouldRunInMemory()
   // Mail batches release their parser/source reservation before the explicit
   // lock-free flush. Mode transitions are still immediate; a stable encrypted
   // mode defers only the expensive seal/snapshot itself.

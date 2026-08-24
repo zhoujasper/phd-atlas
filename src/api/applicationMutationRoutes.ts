@@ -297,7 +297,7 @@ export async function importDiscoverProgramAcknowledged(
     applicationAcknowledgement: ApplicationMutationAcknowledgement
     programId: string
     piId: string | null
-    warnings?: Array<'missingOfficialSource' | 'missingDeadline'>
+    warnings?: Array<'missingOfficialSource' | 'missingDeadline' | 'missingAdvisor'>
   }>('/api/discover/import', token, {
     method: 'POST',
     body: JSON.stringify(body),

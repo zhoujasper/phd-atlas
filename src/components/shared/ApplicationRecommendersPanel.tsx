@@ -231,10 +231,21 @@ export function ApplicationRecommendersPanel({
     // This avoids a portal appearing over the first frames of a new row while
     // the timer remains reliable in a backgrounded tab.
     focusTimerRef.current = window.setTimeout(() => {
-      const row = Array.from(panelRef.current?.querySelectorAll<HTMLElement>('[data-recommender-id]') ?? [])
-        .find((candidate) => candidate.dataset.recommenderId === recommenderId)
-      row?.querySelector<HTMLInputElement>('.recommender-combobox-name-input')?.focus({ preventScroll: true })
       focusTimerRef.current = null
+      const panel = panelRef.current
+      const row = Array.from(panel?.querySelectorAll<HTMLElement>('[data-recommender-id]') ?? [])
+        .find((candidate) => candidate.dataset.recommenderId === recommenderId)
+      const activeElement = document.activeElement
+      // The expansion delay must never override a faster pointer/keyboard
+      // choice. Keep the intentional Add-button → name handoff, but yield if
+      // the user already reached this row or moved focus outside the panel.
+      if (row?.contains(activeElement)) return
+      if (
+        activeElement instanceof HTMLElement
+        && activeElement !== document.body
+        && !panel?.contains(activeElement)
+      ) return
+      row?.querySelector<HTMLInputElement>('.recommender-combobox-name-input')?.focus({ preventScroll: true })
     }, getMotionDelay(220))
   }, [recommenders])
 

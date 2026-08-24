@@ -25,6 +25,23 @@ const ALLOWED_UNMANIFESTED_FILES = new Set([
   UPDATE_MANIFEST_NAME,
   'UPDATE_PACKAGE_README.txt',
 ])
+// Frozen minimum for update-package format v1 releases that predate later
+// runtime-boundary additions. This set is used only when an integrity-bound
+// historical package acts as a delta base or a known previous-active rollback
+// source; new targets and ordinary active replay always use the current
+// REQUIRED_RUNTIME_FILES contract.
+const HISTORICAL_UPDATE_REQUIRED_RUNTIME_FILES_V1 = new Set([
+  'dist/index.html',
+  'server/index.js',
+  'tools/start-server.mjs',
+  'tools/apply-update.mjs',
+  'tools/container-entrypoint.mjs',
+  'package.json',
+  'package-lock.json',
+])
+// Rollback snapshots are raw runtime trees rather than update packages. Keep
+// this requirement semantically independent from the frozen package schema so
+// future snapshot changes cannot silently alter historical package validation.
 const ROLLBACK_REQUIRED_RUNTIME_FILES = new Set([
   'dist/index.html',
   'server/index.js',
@@ -284,7 +301,11 @@ export function manifestDigest(files) {
   return hash.digest('hex')
 }
 
-export async function validateUpdatePackage(packagePath, workRoot) {
+async function validateUpdatePackageWithRequiredRuntimeFiles(
+  packagePath,
+  workRoot,
+  requiredRuntimeFiles,
+) {
   const extractRoot = path.join(workRoot, `validated-${randomUUID()}`)
   try {
     await extractTarGzip(packagePath, extractRoot)
@@ -317,7 +338,7 @@ export async function validateUpdatePackage(packagePath, workRoot) {
         throw Object.assign(new Error(`Update package integrity check failed: ${relativePath}`), { code: 'UPDATE_INTEGRITY_FAILED' })
       }
     }
-    for (const required of REQUIRED_RUNTIME_FILES) {
+    for (const required of requiredRuntimeFiles) {
       if (!seen.has(required)) {
         throw Object.assign(new Error(`Update package is missing ${required}.`), { code: 'INVALID_UPDATE_PACKAGE' })
       }
@@ -346,6 +367,35 @@ export async function validateUpdatePackage(packagePath, workRoot) {
     await fs.rm(extractRoot, { recursive: true, force: true })
     throw error
   }
+}
+
+export async function validateUpdatePackage(packagePath, workRoot) {
+  return validateUpdatePackageWithRequiredRuntimeFiles(
+    packagePath,
+    workRoot,
+    REQUIRED_RUNTIME_FILES,
+  )
+}
+
+async function validateHistoricalUpdatePackage(packagePath, workRoot) {
+  return validateUpdatePackageWithRequiredRuntimeFiles(
+    packagePath,
+    workRoot,
+    HISTORICAL_UPDATE_REQUIRED_RUNTIME_FILES_V1,
+  )
+}
+
+/**
+ * Validate a previously published package as an integrity-bound delta base.
+ *
+ * Historical packages can predate runtime files introduced by the target
+ * release. They still must contain the original launch/rollback surface and
+ * pass every manifest, path, size, digest, and version check. The signed delta
+ * then binds this exact base fingerprint, while the reconstructed target is
+ * validated again with the current full runtime requirements.
+ */
+export async function validateUpdateDeltaBasePackage(packagePath, workRoot) {
+  return validateHistoricalUpdatePackage(packagePath, workRoot)
 }
 
 async function copyPathIfPresent(source, destination) {
@@ -493,7 +543,7 @@ async function restorePreviousActivePackageBackup(storageRoot, rollbackRoot, pre
     })
   }
 
-  const backupValidation = await validateStoredActiveUpdatePackage(storageRoot, {
+  const backupValidation = await validateStoredHistoricalActiveUpdatePackage(storageRoot, {
     ...previousActive,
     packagePath: backupPath,
   })
@@ -650,9 +700,13 @@ async function runtimeMatchesManifestFiles(projectRoot, files) {
   }
 }
 
-async function validateStoredActiveUpdatePackage(storageRoot, activeUpdate) {
+async function validateStoredActiveUpdatePackageWithValidator(
+  storageRoot,
+  activeUpdate,
+  packageValidator,
+) {
   const validationRoot = path.join(storageRoot, 'active-update-validation')
-  const validated = await validateUpdatePackage(activeUpdate.packagePath, validationRoot)
+  const validated = await packageValidator(activeUpdate.packagePath, validationRoot)
   const expectedFiles = JSON.stringify(activeUpdate.files)
   const actualFiles = JSON.stringify(normalizedManifestFiles(validated.manifest.files))
   if (
@@ -668,12 +722,28 @@ async function validateStoredActiveUpdatePackage(storageRoot, activeUpdate) {
   return validated
 }
 
-async function replaceRuntimeFromActiveUpdate({
+async function validateStoredActiveUpdatePackage(storageRoot, activeUpdate) {
+  return validateStoredActiveUpdatePackageWithValidator(
+    storageRoot,
+    activeUpdate,
+    validateUpdatePackage,
+  )
+}
+
+async function validateStoredHistoricalActiveUpdatePackage(storageRoot, activeUpdate) {
+  return validateStoredActiveUpdatePackageWithValidator(
+    storageRoot,
+    activeUpdate,
+    validateHistoricalUpdatePackage,
+  )
+}
+
+async function replaceRuntimeFromPreviousActiveUpdate({
   projectRoot,
   storageRoot,
   activeUpdate,
 }) {
-  const validated = await validateStoredActiveUpdatePackage(storageRoot, activeUpdate)
+  const validated = await validateStoredHistoricalActiveUpdatePackage(storageRoot, activeUpdate)
   try {
     await replaceRuntimeTree(validated.extractRoot, projectRoot)
   } finally {
@@ -681,13 +751,13 @@ async function replaceRuntimeFromActiveUpdate({
   }
 }
 
-async function restoreRuntimeFromActiveUpdate({
+async function restoreRuntimeFromPreviousActiveUpdate({
   projectRoot,
   storageRoot,
   activeUpdate,
   installDependencies,
 }) {
-  await replaceRuntimeFromActiveUpdate({
+  await replaceRuntimeFromPreviousActiveUpdate({
     projectRoot,
     storageRoot,
     activeUpdate,
@@ -1121,7 +1191,7 @@ async function rollbackPendingUpdateBoot({
   }
 
   if (previousActive) {
-    await restoreRuntimeFromActiveUpdate({
+    await restoreRuntimeFromPreviousActiveUpdate({
       projectRoot,
       storageRoot,
       activeUpdate: previousActive,
@@ -1317,21 +1387,10 @@ export async function replayActiveUpdateIfNeeded({
     return { replayed: false, version: activeUpdate.version, runtimeVerified: true }
   }
 
-  const validationRoot = path.join(storageRoot, 'active-update-validation')
-  const validated = await validateUpdatePackage(activeUpdate.packagePath, validationRoot)
-  try {
-    const expectedFiles = JSON.stringify(activeUpdate.files)
-    const actualFiles = JSON.stringify(normalizedManifestFiles(validated.manifest.files))
-    if (
-      validated.manifest.version !== activeUpdate.version
-      || validated.manifest.contentSha256 !== activeUpdate.contentSha256
-      || actualFiles !== expectedFiles
-    ) {
-      throw Object.assign(new Error('The active update pointer does not match its package manifest.'), { code: 'ACTIVE_UPDATE_INVALID' })
-    }
-  } finally {
-    await fs.rm(validated.extractRoot, { recursive: true, force: true })
-  }
+  const validated = await validateStoredActiveUpdatePackage(storageRoot, activeUpdate)
+  // Ordinary active replay intentionally retains the strict current schema;
+  // historical tolerance is limited to exact previous-active recovery.
+  await fs.rm(validated.extractRoot, { recursive: true, force: true })
 
   const result = await applyUpdatePackage({
     packagePath: activeUpdate.packagePath,
@@ -1501,7 +1560,7 @@ export async function applyUpdatePackage({
     try {
       if (previousActive) {
         const resolvedPreviousActive = await validateActiveUpdateMetadata(storageRoot, previousActive)
-        await replaceRuntimeFromActiveUpdate({
+        await replaceRuntimeFromPreviousActiveUpdate({
           projectRoot,
           storageRoot,
           activeUpdate: resolvedPreviousActive,
@@ -1576,9 +1635,23 @@ export async function applyUpdatePackage({
 
 async function acquireUpdateHelperClaimDatabase(storageRoot) {
   await fs.mkdir(storageRoot, { recursive: true })
-  const database = new Database(updateHelperClaimPath(storageRoot))
+  const database = new Database(updateHelperClaimPath(storageRoot), { timeout: 250 })
   try {
-    database.pragma('busy_timeout = 0')
+    // Allow the scheduling process's just-closed handle a bounded handoff
+    // window. A live helper keeps the transaction beyond this timeout, so a
+    // competing helper still fails closed instead of taking over the claim.
+    database.pragma('busy_timeout = 250')
+    database.pragma('journal_mode = DELETE')
+    database.pragma('synchronous = FULL')
+    // Persist a real schema before helpers race for the exclusive claim. A
+    // rolled-back first transaction leaves a zero-byte SQLite file. Two fresh
+    // processes can then both enter SQLite's database initialization path and
+    // both fail its lock upgrade, leaving an unclaimed update with no winner.
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS update_helper_claim_guard (
+        id INTEGER PRIMARY KEY CHECK (id = 1)
+      );
+    `)
     database.exec('BEGIN EXCLUSIVE')
     return database
   } catch (error) {

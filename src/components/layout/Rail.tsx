@@ -65,7 +65,7 @@ export function Rail({
   onModeChange: (mode: InterfaceMode) => void
   onOpenNotifications?: () => void
   onToggleTheme: () => void
-  onLogout: () => void
+  onLogout?: () => void
 }) {
   const { tx, format } = useI18n()
   const safeUnreadNotificationCount = unreadNotificationCount ?? 0
@@ -313,16 +313,18 @@ export function Rail({
           <ThemeIcon size={18} aria-hidden="true" />
           <span>{themeLabel}</span>
         </button>
-        <button
-          type="button"
-          className="rail-btn rail-logout"
-          aria-label={tx('signOut')}
-          title={tx('signOut')}
-          onClick={onLogout}
-        >
-          <LogOut size={19} aria-hidden="true" />
-          <span>{tx('navShort.signOut', tx('signOut'))}</span>
-        </button>
+        {onLogout ? (
+          <button
+            type="button"
+            className="rail-btn rail-logout"
+            aria-label={tx('signOut')}
+            title={tx('signOut')}
+            onClick={onLogout}
+          >
+            <LogOut size={19} aria-hidden="true" />
+            <span>{tx('navShort.signOut', tx('signOut'))}</span>
+          </button>
+        ) : null}
       </div>
     </aside>
   )

@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 
-import { constants as fsConstants, openAsBlob, promises as fs } from "node:fs";
+import {
+  constants as fsConstants,
+  openAsBlob,
+  promises as fs,
+  realpathSync,
+} from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { isIP } from "node:net";
@@ -7466,7 +7471,8 @@ async function main() {
 
 const isMain =
   process.argv[1] &&
-  pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+  pathToFileURL(realpathSync(path.resolve(process.argv[1]))).href ===
+    import.meta.url;
 
 if (isMain) {
   main().catch((error) => {

@@ -5,6 +5,109 @@ section per version using the exact heading `## v<package.json version>`.
 Automation extracts only the matching section, so older notes remain immutable
 history while the next version can be prepared in the same file.
 
+## v0.1.3
+
+**Beta.8 direct-upgrade repair with legacy-delta compatibility.**
+
+> **Upgrade path:** `0.1.0-beta.8` installations can upgrade directly to this
+> version from Admin. The `v0.1.2` source tag did not produce a GitHub Release
+> and was never offered to installations; `v0.1.3` is the complete published
+> successor. Back up the workspace before any production update.
+>
+> **升级路径：** `0.1.0-beta.8` 可以直接从管理后台升级到本版本。`v0.1.2`
+> 源码标签未生成 GitHub Release，也从未被安装端发现；`v0.1.3` 是完整发布的
+> 后继版本。正式环境升级前仍请先备份完整工作空间。
+
+- Carries the complete Beta.8 runtime-boundary repair: all eight server-side
+  shared contracts ship inside the legacy-compatible `server/` archive root,
+  eliminating `ERR_MODULE_NOT_FOUND: /app/shared/aiConcurrency.js`.
+- Historical Release packages are now validated against their original launch
+  surface only when used as an integrity-bound differential base. Target and
+  reconstructed packages still have to contain every current runtime file and
+  pass the real offline Node import preflight.
+- If a current candidate fails before confirming its first boot, an exact
+  previous-active package from the original format-v1 schema can still be
+  integrity-checked and restored. Ordinary active replay remains subject to
+  the current strict runtime-file contract.
+- Both local publication and the public tag workflow replay the finished
+  archive through the historical Beta.8 updater, including direct apply,
+  first-boot confirmation, active replay, failed-candidate rollback, and
+  persistent-storage preservation.
+- Release qualification runs the complete Vitest inventory as four isolated,
+  serial shards. Every shard must pass, preventing a long-lived worker crash
+  from leaving the final test file unaccounted for.
+- Docker Compose configuration is validated by a digest-pinned official CLI
+  container. The gate copies the Compose and environment files into that
+  isolated container, so it remains strict even when a Colima host lacks the
+  Compose plugin or cannot bind-mount its private temporary directory.
+- Detached update helpers now cross the scheduler-to-helper SQLite handoff
+  through a bounded 250 ms window backed by a persistent guard schema. Exactly
+  one helper retains the exclusive claim; every loser still fails closed and
+  cannot clear the winner's update lock.
+- SQLite source replacement now uses one exclusive gate across encryption-mode
+  handoffs, database maintenance, shutdown, forced external sync, and workspace
+  hot backups. This closes both sides of the drain/close race; transient remote
+  failures retain the old handle and byte-identical pending payload for retry.
+- Adds native desktop delivery for Windows and macOS. The Windows setup and
+  portable executables plus the macOS DMG and ZIP are built on their native
+  runners from this exact released commit, paired with SHA-256 files, and
+  attached without ever overwriting an existing Release asset.
+- The desktop app provides a local personal workspace with unlimited local
+  application/storage quotas, an optional opening password, complete workspace
+  export/import, and an explicit connection path to an existing web account
+  when remote storage or share links are needed. The current installers are
+  unsigned and may require explicit SmartScreen or Gatekeeper approval.
+- Discover can import a programme even when no individually verified advisor
+  email is available. Missing advisor or official-source evidence is surfaced
+  as an import warning instead of forcing users to create fabricated contact
+  data or blocking an otherwise valid application.
+- Claude Desktop MCP bundles now start correctly when macOS presents their
+  extracted path through an alias such as `/tmp` versus `/private/tmp`.
+  Recipient settings also preserve focus while a user types a new auto-capture
+  email, even if the popover's delayed initial-focus frame has not run yet.
+- Reopening a saved email draft now restores a body that exactly matches text
+  used before the composer was cleared. Delayed focus for a newly added
+  recommender also yields when the user has already moved into the email or
+  another field, preventing characters from being split across inputs.
+
+### 中文摘要
+
+- 完整继承 Beta.8 运行时边界修复：8 个服务端共享契约全部随旧升级器支持的
+  `server/` 根目录发布，消除
+  `ERR_MODULE_NOT_FOUND: /app/shared/aiConcurrency.js`。
+- 历史 Release 包只有在作为受内容指纹绑定的差分基包时，才按其原始启动文件面
+  校验；目标包与重建包仍必须包含当前全部运行时文件，并通过真实离线 Node 导入
+  预检。
+- 当前候选若在首次启动确认前失败，系统仍可完整校验并恢复采用早期 format-v1
+  文件面的上一活动包；普通活动包重放继续执行当前严格运行时文件合同。
+- 本地发布门与公开标签工作流都会用历史 Beta.8 更新器回放最终归档，覆盖直接安装、
+  首启确认、活动包重放、坏候选回滚和持久数据保留。
+- 发布验证把完整 Vitest 清单拆成 4 个相互隔离、依次执行的分片；4 个分片必须全部
+  通过，避免长寿命 worker 异常退出后遗漏最后一个测试文件。
+- Docker Compose 配置由固定镜像摘要的官方 CLI 容器校验；门禁会把 Compose 与环境
+  文件复制进隔离容器，因此即使 Colima 宿主机未安装 Compose 插件，或其虚拟机无法
+  挂载宿主私有临时目录，校验仍保持严格执行。
+- 独立更新 helper 现在通过带持久 guard schema 的 250 ms 有界 SQLite 交接窗口承接
+  调度进程关闭；始终只有一个 helper 持有独占 claim，失败者仍会关闭退出且无法删除
+  胜出者的更新锁。
+- SQLite 源句柄替换现在由加密切换、数据库维护、关机、强制外部同步和 workspace
+  热备份共用独占 gate，闭合 drain/close 两侧的竞态；外部写入暂时失败时保留旧句柄
+  和字节完全一致的待重试 payload。
+- 新增 Windows 与 macOS 原生桌面交付。Windows 安装版、便携版以及 macOS DMG、
+  ZIP 均从本次 Release 的同一提交在原生 runner 构建，每个文件配套 SHA-256；
+  发布流程绝不会覆盖已经存在的同名 Release 资产。
+- 桌面版提供本地个人工作空间、本地无限申请/存储配额、可选启动密码和完整工作空间
+  导入导出；只有需要远端存储或分享链接时才连接已有网页账号。当前安装包尚未签名，
+  可能需要用户明确通过 SmartScreen 或 Gatekeeper 确认。
+- Discover 在缺少已核实导师邮箱时仍可导入项目；缺少导师或正式来源证据会作为导入
+  警告展示，不再要求虚构联系人，也不会阻断一个本来有效的申请记录。
+- Claude Desktop MCP 包现在能在 macOS 将解包路径显示为 `/tmp`、实际规范路径为
+  `/private/tmp` 等别名场景下正常启动；收件人设置弹层也不会在用户输入新增自动收件
+  邮箱时被延迟自动聚焦抢走焦点。
+- 再次打开已保存邮件草稿时，即使正文与编辑器清空前的本地文本完全相同，也会正确
+  恢复；新增推荐人行的延迟聚焦也会让位于用户已经进入的邮箱等字段，避免字符被拆分
+  到不同输入框。
+
 ## v0.1.2
 
 **Beta.8 direct-upgrade repair.**

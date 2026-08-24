@@ -112,7 +112,7 @@
     "hiddenCount": "{count} masqué",
     "watchedBadge": "Regarder",
     "importedToast": "Importé dans les applications",
-    "partialImportToast": "Les informations disponibles ont été ajoutées. Des sources officielles ou la date limite actuelle manquent encore ; vérifiez-les dans la candidature.",
+    "partialImportToast": "Les informations disponibles ont été ajoutées. Le contact du directeur de thèse, les sources officielles ou la date limite actuelle peuvent encore manquer ; vérifiez-les dans la candidature.",
     "savedToast": "Découvrez les préférences enregistrées",
     "submittedToast": "Préférences Discover envoyées",
     "researchToast": "Agents de recherche terminés",

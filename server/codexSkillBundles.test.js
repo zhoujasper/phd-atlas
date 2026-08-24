@@ -482,7 +482,12 @@ describe('Codex Skill bundle builder', () => {
     expect(extractedFiles.has('manifest.json')).toBe(true)
     expect(extractedFiles.has('skills/phd-atlas/scripts/phd-atlas-cli.mjs')).toBe(true)
 
-    runPublishedMcpSmoke(extractionRoot, configRoot, 'claude')
+    let launchedRoot = extractionRoot
+    if (process.platform !== 'win32') {
+      launchedRoot = path.join(root, 'linked-extraction')
+      await symlink(extractionRoot, launchedRoot, 'dir')
+    }
+    runPublishedMcpSmoke(launchedRoot, configRoot, 'claude')
   })
 
   it('rejects traversal, credential state, private keys, and symlinked content', async () => {

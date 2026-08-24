@@ -209,6 +209,12 @@ PUT /api/interview-prep/workspace
 POST /api/interview-prep/ai/questions
 POST /api/interview-prep/ai/mock-turn
 POST /api/interview-prep/ai/feedback
+GET /api/desktop/export
+POST /api/desktop/import
+POST /api/desktop/connect
+POST /api/desktop/disconnect
+POST /api/desktop/unlock-password
+GET /api/workspace/complete-export
 `.trim().split('\n'))
 
 function routeSegments(value) {

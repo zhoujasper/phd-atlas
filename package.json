@@ -2,7 +2,9 @@
   "name": "phd-atlas",
   "private": true,
   "license": "MIT",
-  "version": "0.1.2",
+  "version": "0.1.3",
+  "description": "PhD Atlas desktop application",
+  "author": "PhD Atlas",
   "type": "module",
   "scripts": {
     "dev": "npm run dev:full",
@@ -48,7 +50,15 @@
     "qa:endurance:qualification": "node tools/qa-endurance.mjs --qualification",
     "qa:endurance:short": "node tools/qa-endurance.mjs --duration-ms=30000 --connections-duration-ms=30000 --rss-samples=6 --read-interval-ms=2000",
     "qa:large-database": "vitest run server/largeDatabaseQualification.test.js --pool=forks --maxWorkers=1 --no-file-parallelism",
-    "qa:workspace-memory": "vitest run server/realtimeHydrationMemory.test.js --pool=forks --maxWorkers=1 --no-file-parallelism --testNamePattern ."
+    "qa:workspace-memory": "vitest run server/realtimeHydrationMemory.test.js --pool=forks --maxWorkers=1 --no-file-parallelism --testNamePattern .",
+    "desktop:integrity": "node desktop/prepare-integrity.mjs",
+    "desktop:runtime-node": "node desktop/prepare-runtime-node.mjs",
+    "desktop:dev": "node desktop/launch-runtime.mjs",
+    "desktop:build": "vite build && node tools/stamp-service-worker.mjs && node desktop/prepare-runtime-node.mjs && node desktop/prepare-integrity.mjs && electron-builder --config desktop/electron-builder.yml --publish never",
+    "desktop:build:win": "vite build && node tools/stamp-service-worker.mjs && node desktop/prepare-runtime-node.mjs && node desktop/prepare-integrity.mjs && electron-builder --config desktop/electron-builder.yml --win --publish never",
+    "desktop:build:win-setup": "node desktop/prepare-runtime-node.mjs && node desktop/prepare-integrity.mjs && node desktop/stage-windows-installer.mjs",
+    "desktop:build:mac": "vite build && node tools/stamp-service-worker.mjs && node desktop/prepare-runtime-node.mjs && node desktop/prepare-integrity.mjs && electron-builder --config desktop/electron-builder.yml --mac --publish never",
+    "desktop:release-artifacts": "node desktop/prepare-release-artifacts.mjs"
   },
   "dependencies": {
     "@simplewebauthn/server": "^13.3.2",
@@ -109,6 +119,8 @@
     "clsx": "^2.1.1",
     "concurrently": "^10.0.4",
     "docx-preview": "^0.3.6",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
     "esbuild": "0.28.1",
     "jsdom": "^29.1.1",
     "lexical": "^0.47.0",

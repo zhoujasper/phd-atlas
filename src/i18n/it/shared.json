@@ -145,11 +145,8 @@
     "SETTINGS_ACKNOWLEDGEMENT_INVALID": "Il server ha restituito una conferma di salvataggio delle impostazioni non valida. Le modifiche restano disponibili; riprova.",
     "NETWORK_ERROR": "Connessione di rete non riuscita. Controlla la connessione e riprova.",
     "REQUEST_FAILED": "Richiesta non riuscita. Per favore riprova.",
-
     "DISCOVER_RESEARCH_SOURCE_REQUIRED": "Aggiungi un link ufficiale a università, programma, laboratorio, relatore o finanziamento prima di eseguire l'arricchimento.",
-
     "AI_RESEARCH_SAFE_QUEUE_REQUIRED": "La ricerca IA in tempo reale deve passare dalla coda con verifica delle fonti. Avviala da Scopri e riprova.",
-
     "BOOTSTRAP_SECRET_REGENERATION_REQUIRES_RESTART": "Le chiavi di primo avvio non possono essere rigenerate durante la configurazione. Impostale e riavvia il server.",
     "REQUEST_TOO_LARGE": "La richiesta è troppo grande. Riduci il file caricato o la richiesta e riprova.",
     "RESPONSE_TOO_LARGE": "Il risultato è troppo grande per essere caricato in sicurezza. Riduci l’area di lavoro o la richiesta e riprova.",
@@ -185,9 +182,7 @@
     "MAIL_NOT_CONFIGURED": "Le impostazioni della posta sono incomplete. Controlla le impostazioni dell'host, della porta e della casella di posta.",
     "MAIL_CONNECTION_FAILED": "Impossibile connettersi al server di posta. Controlla le impostazioni della posta in arrivo.",
     "MAIL_FETCH_ERROR": "Sincronizzazione della posta non riuscita. Controlla le impostazioni della posta in arrivo e riprova.",
-
     "MAIL_CLASSIFICATION_FAILED": "Il servizio IA non è riuscito a classificare queste email. Non è stato modificato nulla: controlla la chiave IA nelle Impostazioni e riprova.",
-
     "MAIL_CLASSIFICATION_PROVIDER_BUSY": "Il servizio IA è occupato in questo momento. Non è stato modificato nulla; riprova la classificazione tra poco.",
     "INVALID_CAPTCHA": "Il codice di verifica non è corretto.",
     "INVALID_EMAIL_CODE": "Il codice di verifica e-mail non è corretto o è scaduto.",
@@ -306,7 +301,19 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "Scegli sia un team sia uno studente assegnato per la ricerca del team.",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "Il relatore selezionato non dispone di un indirizzo e-mail verificato.",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "Prima di aggiungere questo programma alle candidature sono necessari un profilo e un’e-mail reali del relatore.",
-    "MAIL_ATTACHMENT_TOO_LARGE": "Un allegato è troppo grande per essere incluso nell’e-mail."
+    "MAIL_ATTACHMENT_TOO_LARGE": "Un allegato è troppo grande per essere incluso nell’e-mail.",
+    "DESKTOP_ADMIN_UNAVAILABLE": "L’app desktop non include una console di amministrazione.",
+    "DESKTOP_CONNECT_FAILED": "Impossibile collegarsi al sistema web. Controlla URL, email e password.",
+    "DESKTOP_IMPORT_INVALID": "Questo file non è un archivio completo dello spazio di lavoro PhD Atlas.",
+    "DESKTOP_IMPORT_LOCAL_ONLY": "Importa gli archivi completi mentre questa app usa l’archiviazione locale.",
+    "DESKTOP_SHARE_REQUIRES_REMOTE": "I link di condivisione sono disponibili solo dopo aver collegato questa app al sistema web pubblicato.",
+    "DESKTOP_SHARE_NOT_SYNCED": "Questa candidatura non è ancora sull’account web collegato. Ricollegati per sincronizzarla prima di creare un link.",
+    "DESKTOP_UNLOCK_REQUIRED": "Questa app desktop è bloccata. Inserisci la password di avvio.",
+    "DESKTOP_UNLOCK_INVALID": "La password di avvio non è corretta.",
+    "DESKTOP_UNLOCK_PASSWORD_REQUIRED": "Inserisci la password di avvio.",
+    "DESKTOP_UNLOCK_MISMATCH": "Le due password non coincidono.",
+    "DESKTOP_UNLOCK_TOO_SHORT": "Usa almeno 4 caratteri per la password di avvio.",
+    "DESKTOP_SESSION_UNAVAILABLE": "Impossibile aprire lo spazio di lavoro desktop."
   },
   "apiErrorFields": {
     "professor.name": "nome del relatore",

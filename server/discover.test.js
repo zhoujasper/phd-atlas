@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildImportPayload,
+  collectDiscoverImportWarnings,
   computeDiscoverStats,
   defaultDiscoverState,
   discoverMatchNotificationCandidates,
@@ -17,6 +18,7 @@ import {
   rankPrograms,
   runDiscoverResearch,
   scoreProgram,
+  selectDiscoverImportAdvisor,
 } from './discover-catalog.js'
 import { attachRequirements, normalizeRequirements } from './discover-requirements.js'
 import { CreateApplicationSchema } from './validation.js'
@@ -379,6 +381,49 @@ describe('discover-catalog', () => {
       deadline: payload.deadline,
       notes: payload.notes,
     }).success).toBe(true)
+  })
+
+  it('imports without inventing an advisor email when the profile is incomplete', () => {
+    const sourceProgram = findProgramById('prog_cmu_ml')
+    const program = {
+      ...sourceProgram,
+      pis: [{
+        ...sourceProgram.pis[0],
+        email: '',
+        url: '',
+      }],
+    }
+    const pi = selectDiscoverImportAdvisor(program)
+    const payload = buildImportPayload(program, pi)
+
+    expect(payload.professor).toBe(sourceProgram.pis[0].name)
+    expect(payload.professorEmail).toBe('')
+    expect(collectDiscoverImportWarnings(program, pi, payload)).toContain('missingAdvisor')
+    expect(CreateApplicationSchema.safeParse({
+      professor: payload.professor,
+      professorChinese: payload.professorChinese,
+      professorEmail: payload.professorEmail,
+      professorHomepage: payload.professorHomepage,
+      university: payload.university,
+      country: payload.country,
+      website: payload.website,
+      program: payload.program,
+      deadline: payload.deadline,
+      notes: payload.notes,
+    }).success).toBe(true)
+  })
+
+  it('strips placeholder example emails instead of treating them as verified contact', () => {
+    const program = findProgramById('prog_mit_eecs')
+    const pi = program.pis[0]
+    const payload = buildImportPayload(program, pi)
+
+    expect(pi.email).toMatch(/example\./i)
+    expect(payload.professor).toBe(pi.name)
+    expect(payload.professorEmail).toBe('')
+    expect(collectDiscoverImportWarnings(program, pi, payload)).toEqual(
+      expect.arrayContaining(['missingAdvisor']),
+    )
   })
 
   it('runs research and emits match notification candidates for new tops', () => {

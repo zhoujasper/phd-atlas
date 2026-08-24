@@ -2333,6 +2333,123 @@ html[lang^="ko"] .settings-screen .mail-incoming-fields label > span {
   border-radius: var(--radius-xl);
 }
 
+.settings-screen .settings-desktop-storage,
+.settings-screen .settings-desktop-unlock {
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.settings-screen .settings-desktop-unlock {
+  grid-column: 1 / -1;
+}
+
+.settings-screen .settings-desktop-unlock-switch {
+  margin-top: 12px;
+}
+
+.settings-screen .settings-desktop-unlock-hint {
+  margin: 4px 0 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settings-screen .settings-desktop-unlock-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.settings-screen .settings-desktop-unlock-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.desktop-unlock-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.desktop-unlock-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 12px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.desktop-unlock-warning svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--warning);
+}
+
+.settings-screen .settings-desktop-mode {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 12px;
+}
+
+.settings-screen .settings-desktop-mode > div {
+  display: grid;
+  gap: 2px;
+}
+
+.settings-screen .settings-desktop-mode dt {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settings-screen .settings-desktop-mode dd {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.settings-screen .settings-desktop-connect {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-screen .settings-desktop-connect label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.settings-screen .settings-desktop-actions,
+.settings-screen .settings-desktop-transfer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.settings-screen .settings-desktop-import {
+  cursor: pointer;
+}
+
+.settings-screen .settings-desktop-transfer-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 10px 0 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .settings-screen .settings-export-head {
   gap: 14px;
 }

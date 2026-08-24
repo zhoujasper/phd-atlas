@@ -112,7 +112,7 @@
     "hiddenCount": "{count} 숨김",
     "watchedBadge": "보고 있다",
     "importedToast": "애플리케이션으로 가져옴",
-    "partialImportToast": "확인 가능한 정보를 추가했습니다. 공식 출처 또는 현재 지원 마감일이 아직 없으므로 지원서에서 확인해 주세요.",
+    "partialImportToast": "확인 가능한 정보를 추가했습니다. 지도교수 연락처, 공식 출처 또는 현재 지원 마감일이 없을 수 있으니 지원서에서 확인해 주세요.",
     "savedToast": "환경설정이 저장되었습니다.",
     "submittedToast": "Discover 환경설정을 제출했습니다",
     "researchToast": "연구 요원 완료",

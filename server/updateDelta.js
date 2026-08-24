@@ -13,6 +13,7 @@ import {
   normalizedArchivePath,
   sha256File,
   UPDATE_MANIFEST_NAME,
+  validateUpdateDeltaBasePackage,
   validateUpdatePackage,
 } from './systemUpdate.js'
 import { REQUIRED_RUNTIME_FILES } from './sharedConstants.js'
@@ -291,7 +292,10 @@ export async function createUpdateDeltaPackage({
   let baseValidation
   let targetValidation
   try {
-    baseValidation = await validateUpdatePackage(basePackagePath, path.join(operationRoot, 'base-validation'))
+    baseValidation = await validateUpdateDeltaBasePackage(
+      basePackagePath,
+      path.join(operationRoot, 'base-validation'),
+    )
     targetValidation = await validateUpdatePackage(targetPackagePath, path.join(operationRoot, 'target-validation'))
     if (compareSemanticVersions(targetValidation.manifest.version, baseValidation.manifest.version) <= 0) {
       throw deltaError('The target update package must be newer than the base package.')
@@ -379,7 +383,10 @@ export async function materializeUpdateDelta({
   const operationRoot = path.join(workRoot, `materialize-delta-${randomUUID()}`)
   let baseValidation
   try {
-    baseValidation = await validateUpdatePackage(basePackagePath, path.join(operationRoot, 'base-validation'))
+    baseValidation = await validateUpdateDeltaBasePackage(
+      basePackagePath,
+      path.join(operationRoot, 'base-validation'),
+    )
     const deltaRoot = path.join(operationRoot, 'delta')
     await extractTarGzip(deltaPackagePath, deltaRoot)
     const delta = await validateDeltaAgainstBase(deltaRoot, baseValidation.manifest)

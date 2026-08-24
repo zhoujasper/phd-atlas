@@ -531,6 +531,21 @@ import {
 } from './mailClassificationService.js'
 import { installInterviewPrepApiRoutes } from './interviewPrepApi.js'
 import {
+  applyDesktopAccountSettings,
+  createDesktopLocalOwnerRecord,
+  createDesktopLockState,
+  findDesktopLocalOwner,
+  isDesktopProcess,
+  readDesktopRuntimeState,
+} from './desktopRuntime.js'
+import {
+  attachDesktopRuntime,
+  desktopShareAllowed,
+  installDesktopApiRoutes,
+  installDesktopPublicRoutes,
+  installDesktopUnlockGate,
+} from './desktopRoutes.js'
+import {
   registeredAuthenticatedMutationRoute,
   resolveAuthenticatedHydrationPolicy,
 } from './hydrationPolicy.js'
@@ -579,10 +594,12 @@ import { PUBLIC_DISTRIBUTION, PUBLIC_EDITION } from './edition.js'
 import {
   applyDiscoverSourceIndexRetention,
   buildImportPayload,
+  collectDiscoverImportWarnings,
   computeDiscoverStats,
   discoverMatchNotificationCandidates,
   findPiById,
   findProgramById,
+  selectDiscoverImportAdvisor,
   getDiscoverCatalog,
   getUserDiscoverState,
   listAllPis,
@@ -3849,6 +3866,9 @@ async function hydrateUser(request, response, next) {
   }
   request.store = store
   request.user = user
+  if (request.app?.locals?.desktopEnabled) {
+    await attachDesktopRuntime(request, request.app.locals.desktopStorageRoot)
+  }
   const hydrationContext = focusedHydrationSelector?.skipWorkspaceAuthorizationContext === true
     ? { memberships: [], visibleApplicationKeys: new Set() }
     : focusedHydrationSelector?.skipTeamApplicationVisibilityContext === true
@@ -3912,6 +3932,10 @@ function releaseHydratedRequestSnapshot(request) {
 }
 
 function adminRequired(request, response, next) {
+  if (request.app?.locals?.desktopEnabled) {
+    fail(response, 404, 'DESKTOP_ADMIN_UNAVAILABLE', 'The desktop app does not include an administrator console.')
+    return
+  }
   if (
     request.auth?.kind !== 'session'
     || request.sessionScope !== 'admin'
@@ -9634,6 +9658,10 @@ export async function requestSystemUpdateGracefulShutdown(requestGracefulShutdow
 export function createApp(options = {}) {
   const app = express()
   const testHooks = options.testHooks ?? {}
+  app.locals.desktopEnabled = options.desktopEnabled ?? isDesktopProcess()
+  app.locals.desktopStorageRoot = options.desktopStorageRoot ?? storageRoot
+  app.locals.desktopFetch = options.desktopFetch ?? testHooks.desktopFetch
+  app.locals.desktopLock = createDesktopLockState()
   const requestGracefulShutdown = typeof options.requestGracefulShutdown === 'function'
     ? options.requestGracefulShutdown
     : null
@@ -11868,6 +11896,65 @@ export function createApp(options = {}) {
   // Separate probes let an orchestrator distinguish a live Node process from
   // an instance that is actually safe to receive application traffic. The
   // legacy /api/health endpoint remains HTTP 200 for browser diagnostics.
+  async function ensureDesktopLocalOwner() {
+    const cached = await readStore({ cache: true })
+    const existing = findDesktopLocalOwner(cached.users)
+    if (existing) return existing
+    let created = null
+    await withWriteLock(async () => {
+      const store = await readStore()
+      const current = findDesktopLocalOwner(store.users)
+      if (current) {
+        created = current
+        return
+      }
+      created = createDesktopLocalOwnerRecord({
+        id: createId('user'),
+        createdAt: nowStamp(),
+        passwordHash: await hashAccountPasswordRuntime(randomBytes(32).toString('base64url')),
+      })
+      store.users.push(created)
+      await lockedWriteStore(store)
+    })
+    return created
+  }
+
+  async function issueDesktopLocalSession() {
+    const owner = await ensureDesktopLocalOwner()
+    const [systemSettings, counters] = await Promise.all([
+      readFocusedPublicSystemSettings(),
+      readFocusedAccountUsage(owner.id, {
+        includePersonalTrash: isProUser(owner),
+      }),
+    ])
+    if (!systemSettings || !counters) {
+      throw Object.assign(new Error('The desktop workspace could not be opened.'), {
+        status: 503,
+        code: 'DESKTOP_SESSION_UNAVAILABLE',
+      })
+    }
+    const state = await readDesktopRuntimeState(app.locals.desktopStorageRoot)
+    const sessionUser = {
+      ...owner,
+      settings: applyDesktopAccountSettings({ ...owner.settings }, state),
+    }
+    return {
+      token: signToken(sessionUser, 'app', systemSettings),
+      user: publicUser(sessionUser),
+      settings: systemSettings,
+      usage: focusedAccountUsagePayload(sessionUser, counters),
+    }
+  }
+
+  installDesktopPublicRoutes(app, {
+    asyncHandler,
+    ok,
+    fail,
+    storageRoot: app.locals.desktopStorageRoot,
+    issueLocalSession: issueDesktopLocalSession,
+    verifyUnlockPassword: verifyAccountPasswordRawRuntime,
+  })
+
   app.get('/api/health/live', (_request, response) => {
     ok(response, { status: 'ok', live: true, time: nowStamp() })
   })
@@ -11892,7 +11979,22 @@ export function createApp(options = {}) {
       )
       return
     }
-    ok(response, { status: 'ok', ready: true, time: nowStamp() })
+    ok(response, {
+      status: 'ok',
+      ready: true,
+      time: nowStamp(),
+      ...(app.locals.desktopEnabled
+        ? {
+            desktop: {
+              enabled: true,
+              adminEnabled: false,
+              teamEnabled: false,
+              unlimited: true,
+              shareEnabled: false,
+            },
+          }
+        : {}),
+    })
   })
 
   app.get('/api/health', asyncHandler(async (_request, response) => {
@@ -12703,8 +12805,8 @@ export function createApp(options = {}) {
         receiveAt: input.email,
         receiveEmails: [{ address: input.email, isPrimary: true, notify: true, verified: true }],
         planQuotaVersion: PLAN_QUOTA_VERSION,
-        membershipPlan: 'free',
-        autoBackup: false,
+        membershipPlan: app.locals.desktopEnabled ? 'pro' : 'free',
+        autoBackup: Boolean(app.locals.desktopEnabled),
         backupFrequency: DEFAULT_BACKUP_FREQUENCY,
         maxBackupsPerApp: DEFAULT_MAX_BACKUPS_PER_APP,
         smtpHost: '',
@@ -12718,12 +12820,12 @@ export function createApp(options = {}) {
         incomingUser: input.email,
         incomingPass: '',
         incomingTls: true,
-        storageQuotaMb: DEFAULT_FREE_STORAGE_QUOTA_MB,
-        applicationQuota: DEFAULT_APPLICATION_QUOTA,
-        applicationCreateQuota: DEFAULT_APPLICATION_QUOTA,
+        storageQuotaMb: app.locals.desktopEnabled ? -1 : DEFAULT_FREE_STORAGE_QUOTA_MB,
+        applicationQuota: app.locals.desktopEnabled ? -1 : DEFAULT_APPLICATION_QUOTA,
+        applicationCreateQuota: app.locals.desktopEnabled ? -1 : DEFAULT_APPLICATION_QUOTA,
         applicationCreatedCount: 0,
-        shareQuota: DEFAULT_FREE_SHARE_ACTIVE_QUOTA,
-        shareCreateQuota: DEFAULT_FREE_SHARE_CREATE_QUOTA,
+        shareQuota: app.locals.desktopEnabled ? -1 : DEFAULT_FREE_SHARE_ACTIVE_QUOTA,
+        shareCreateQuota: app.locals.desktopEnabled ? -1 : DEFAULT_FREE_SHARE_CREATE_QUOTA,
         shareCreatedCount: 0,
         trashRetentionDays: DEFAULT_TRASH_RETENTION_DAYS,
         sessionDurationMinutes: DEFAULT_USER_SESSION_MINUTES,
@@ -13960,6 +14062,11 @@ export function createApp(options = {}) {
     next,
     { lookupCodexAuthorization },
   )))
+  installDesktopUnlockGate(app, {
+    asyncHandler,
+    fail,
+    storageRoot: app.locals.desktopStorageRoot,
+  })
   app.use('/api', authenticatedUserRateLimit)
   app.use('/api', (request, response, next) => {
     if (request.auth?.kind !== 'codex') {
@@ -14746,6 +14853,32 @@ export function createApp(options = {}) {
     })
   }))
 
+  app.use('/api/admin', (request, response, next) => {
+    if (!app.locals.desktopEnabled) {
+      next()
+      return
+    }
+    fail(response, 404, 'DESKTOP_ADMIN_UNAVAILABLE', 'The desktop app does not include an administrator console.')
+  })
+
+  app.locals.desktopApi = installDesktopApiRoutes(app, {
+    asyncHandler,
+    ok,
+    fail,
+    storageRoot: app.locals.desktopStorageRoot,
+    secret: jwtSecret,
+    lockedWriteStore,
+    normalizeApplication,
+    createId,
+    nowStamp,
+    vault: uploadVault,
+    getInterviewPrepWorkspaceRecord,
+    saveInterviewPrepWorkspaceRecord,
+    fetchImpl: app.locals.desktopFetch,
+    hashUnlockPassword: hashAccountPasswordRuntime,
+    verifyUnlockPassword: verifyAccountPasswordRawRuntime,
+  })
+
   const interviewPrepController = installInterviewPrepApiRoutes(app, {
     asyncHandler,
     ok,
@@ -15377,26 +15510,20 @@ export function createApp(options = {}) {
       fail(response, 404, 'DISCOVER_PROGRAM_NOT_FOUND', 'Program not found in the Discover catalog.')
       return
     }
-    const pi = input.piId
+    const requestedPi = input.piId
       ? findPiById(input.programId, input.piId, state)
-      : (program.pis || []).find((candidate) => candidate.email?.includes('@') && candidate.url?.startsWith('https://')) || null
-    if (input.piId && !pi) {
+      : null
+    if (input.piId && !requestedPi) {
       fail(response, 404, 'DISCOVER_PI_NOT_FOUND', 'Advisor not found for this program.')
       return
     }
-    if (!pi || !pi.name || !pi.url?.startsWith('https://') || !pi.email?.includes('@') || /example\.|phd-atlas\.local$/i.test(pi.email)) {
-      fail(response, 409, 'DISCOVER_ADVISOR_NOT_VERIFIED', 'A real advisor profile and email are required before this program can be added to applications.')
-      return
-    }
+    const pi = selectDiscoverImportAdvisor(program, requestedPi)
     const payload = buildImportPayload(program, pi, {
       includeNotes: input.includeNotes !== false,
       programNote: state.programNotes?.[program.id] || '',
       piNote: pi ? state.piNotes?.[pi.id] || '' : '',
     })
-    const warnings = [
-      ...(!program.sources?.length || !program.website?.startsWith('https://') ? ['missingOfficialSource'] : []),
-      ...(!payload.deadline ? ['missingDeadline'] : []),
-    ]
+    const warnings = collectDiscoverImportWarnings(program, pi, payload)
 
     const activeQuota = userApplicationQuota(request.user)
     const createQuota = userApplicationCreateQuota(request.user)
@@ -15412,10 +15539,6 @@ export function createApp(options = {}) {
     }
 
     let professorEmail = payload.professorEmail
-    if (!professorEmail || !professorEmail.includes('@')) {
-      fail(response, 409, 'DISCOVER_ADVISOR_EMAIL_REQUIRED', 'The selected advisor does not have a verified email address.')
-      return
-    }
 
     let application = buildApplication(
       {
@@ -18859,6 +18982,42 @@ export function createApp(options = {}) {
   }))
 
   app.post('/api/applications/:id/share', asyncHandler(async (request, response) => {
+    if (request.app?.locals?.desktopEnabled) {
+      if (!desktopShareAllowed(request.app, request)) {
+        fail(
+          response,
+          403,
+          'DESKTOP_SHARE_REQUIRES_REMOTE',
+          'Share links are available only after this desktop app is connected to your deployed web system.',
+        )
+        return
+      }
+      const application = findApplicationOr404(request, response)
+      if (!application) return
+      if (!requireApplicationShareAccess(request, response, application)) return
+      try {
+        const forwarded = await request.app.locals.desktopApi?.forwardShareCreate(request, request.body)
+        if (!forwarded?.url) {
+          fail(
+            response,
+            409,
+            'DESKTOP_SHARE_NOT_SYNCED',
+            'This application is not yet on the connected web account. Reconnect to sync it before creating a share link.',
+          )
+          return
+        }
+        ok(response, forwarded, 201)
+        return
+      } catch (error) {
+        fail(
+          response,
+          error.status || 409,
+          error.code || 'DESKTOP_CONNECT_FAILED',
+          error.message || 'The connected web system could not create the share link.',
+        )
+        return
+      }
+    }
     const application = findApplicationOr404(request, response)
     if (!application) {
       return
@@ -27374,6 +27533,10 @@ function reviewCommentCount(application) {
       // Belt-and-suspenders: never SPA-fallback API URLs even if routing order drifts.
       if (request.path.startsWith('/api')) {
         fail(response, 404, 'NOT_FOUND', `API route not found: ${request.method} ${request.originalUrl}`)
+        return
+      }
+      if (app.locals.desktopEnabled && request.path.startsWith('/admin')) {
+        fail(response, 404, 'DESKTOP_ADMIN_UNAVAILABLE', 'The desktop app does not include an administrator console.')
         return
       }
       response.setHeader('Cache-Control', 'no-cache')

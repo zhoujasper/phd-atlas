@@ -145,11 +145,8 @@
     "SETTINGS_ACKNOWLEDGEMENT_INVALID": "Máy chủ trả về xác nhận lưu cài đặt không hợp lệ. Các thay đổi của bạn vẫn được giữ; hãy thử lại.",
     "NETWORK_ERROR": "Kết nối mạng không thành công. Hãy kiểm tra kết nối của bạn và thử lại.",
     "REQUEST_FAILED": "Yêu cầu không thành công. Vui lòng thử lại.",
-
     "DISCOVER_RESEARCH_SOURCE_REQUIRED": "Hãy thêm liên kết chính thức của trường, chương trình, phòng thí nghiệm, giáo sư hướng dẫn hoặc nguồn tài trợ trước khi bổ sung thông tin.",
-
     "AI_RESEARCH_SAFE_QUEUE_REQUIRED": "Nghiên cứu AI trực tiếp phải đi qua hàng đợi xác minh nguồn. Hãy bắt đầu từ Khám phá rồi thử lại.",
-
     "BOOTSTRAP_SECRET_REGENERATION_REQUIRES_RESTART": "Không thể tạo lại khóa khởi chạy lần đầu trong khi đang cài đặt. Hãy cấu hình khóa rồi khởi động lại máy chủ.",
     "REQUEST_TOO_LARGE": "Yêu cầu quá lớn. Hãy giảm kích thước nội dung tải lên hoặc yêu cầu rồi thử lại.",
     "RESPONSE_TOO_LARGE": "Kết quả quá lớn để tải an toàn. Hãy thu hẹp không gian làm việc hoặc yêu cầu rồi thử lại.",
@@ -185,9 +182,7 @@
     "MAIL_NOT_CONFIGURED": "Cài đặt thư chưa hoàn tất. Kiểm tra cài đặt máy chủ, cổng và hộp thư.",
     "MAIL_CONNECTION_FAILED": "Không thể kết nối với máy chủ thư. Kiểm tra cài đặt thư đến.",
     "MAIL_FETCH_ERROR": "Đồng bộ hóa thư không thành công. Hãy kiểm tra cài đặt thư đến và thử lại.",
-
     "MAIL_CLASSIFICATION_FAILED": "Dịch vụ AI không thể phân loại những email này. Không có gì bị thay đổi — hãy kiểm tra khóa AI trong Cài đặt rồi thử lại.",
-
     "MAIL_CLASSIFICATION_PROVIDER_BUSY": "Dịch vụ AI hiện đang bận. Không có gì bị thay đổi; hãy thử phân loại lại sau giây lát.",
     "INVALID_CAPTCHA": "Mã xác minh không chính xác.",
     "INVALID_EMAIL_CODE": "Mã xác minh email không chính xác hoặc đã hết hạn.",
@@ -306,7 +301,19 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "Hãy chọn cả nhóm và sinh viên được phân công cho nghiên cứu nhóm.",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "Giảng viên hướng dẫn được chọn không có địa chỉ email đã xác minh.",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "Cần có hồ sơ và email thực của giảng viên hướng dẫn trước khi có thể thêm chương trình này vào hồ sơ ứng tuyển.",
-    "MAIL_ATTACHMENT_TOO_LARGE": "Một tệp đính kèm quá lớn để thêm vào email."
+    "MAIL_ATTACHMENT_TOO_LARGE": "Một tệp đính kèm quá lớn để thêm vào email.",
+    "DESKTOP_ADMIN_UNAVAILABLE": "Ứng dụng máy tính không có bảng quản trị.",
+    "DESKTOP_CONNECT_FAILED": "Không kết nối được hệ thống web. Kiểm tra URL, email và mật khẩu.",
+    "DESKTOP_IMPORT_INVALID": "Tệp này không phải kho lưu trữ đầy đủ của PhD Atlas.",
+    "DESKTOP_IMPORT_LOCAL_ONLY": "Hãy nhập kho lưu trữ đầy đủ khi ứng dụng đang dùng lưu trữ cục bộ.",
+    "DESKTOP_SHARE_REQUIRES_REMOTE": "Liên kết chia sẻ chỉ có sau khi ứng dụng máy tính được kết nối với hệ thống web của bạn.",
+    "DESKTOP_SHARE_NOT_SYNCED": "Hồ sơ này chưa có trên tài khoản web đã kết nối. Hãy kết nối lại để đồng bộ trước khi tạo liên kết chia sẻ.",
+    "DESKTOP_UNLOCK_REQUIRED": "Ứng dụng máy tính đang khóa. Hãy nhập mật khẩu mở ứng dụng.",
+    "DESKTOP_UNLOCK_INVALID": "Mật khẩu mở ứng dụng không đúng.",
+    "DESKTOP_UNLOCK_PASSWORD_REQUIRED": "Hãy nhập mật khẩu mở ứng dụng.",
+    "DESKTOP_UNLOCK_MISMATCH": "Hai mật khẩu không khớp.",
+    "DESKTOP_UNLOCK_TOO_SHORT": "Mật khẩu mở ứng dụng cần ít nhất 4 ký tự.",
+    "DESKTOP_SESSION_UNAVAILABLE": "Không thể mở không gian làm việc trên máy tính."
   },
   "apiErrorFields": {
     "professor.name": "tên giáo sư hướng dẫn",

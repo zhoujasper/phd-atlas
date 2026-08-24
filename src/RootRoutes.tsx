@@ -4,6 +4,7 @@ import { LaunchScreen } from './components/shared/LaunchScreen'
 import { PUBLIC_EDITION } from './edition'
 import { AdminAccessGate } from './admin/AdminAccessGate'
 import { createRecoverableModuleLoader } from './lazyModuleRecovery'
+import { desktopAdminEnabled, readDesktopRuntime } from './desktopRuntime'
 
 const App = lazy(createRecoverableModuleLoader(() => import('./App')))
 const AdminApp = lazy(createRecoverableModuleLoader(() => import('./admin/AdminApp').then((m) => ({ default: m.AdminApp }))))
@@ -33,6 +34,7 @@ function RouteFallback() {
 }
 
 export function RootRoutes() {
+  const desktopRuntime = readDesktopRuntime()
   const isAdminRoute = window.location.pathname.startsWith('/admin')
   const isShareRoute = window.location.pathname.startsWith('/share/')
   const isAssetUploadRoute = window.location.pathname.startsWith('/asset-upload/')
@@ -40,6 +42,8 @@ export function RootRoutes() {
   const isUpgradeRoute = ['/upgrade-pro', '/pro', '/membership'].includes(window.location.pathname)
   const isTeamInviteRoute = !PUBLIC_EDITION && window.location.pathname.startsWith('/team/accept-invite/')
   const isTeamJoinRoute = !PUBLIC_EDITION && window.location.pathname.startsWith('/team/join/')
+  const allowAdminRoute = desktopAdminEnabled(desktopRuntime)
+  const allowUpgradeRoute = !desktopRuntime.enabled || !desktopRuntime.unlimited
 
   return (
     <Suspense fallback={<RouteFallback />}>
@@ -59,7 +63,7 @@ export function RootRoutes() {
         <StandaloneProviders>
           <TeamJoinScreen code={decodeURIComponent(window.location.pathname.split('/team/join/')[1] ?? '')} />
         </StandaloneProviders>
-      ) : isUpgradeRoute ? (
+      ) : isUpgradeRoute && allowUpgradeRoute ? (
         <StandaloneProviders>
           <UpgradeProScreen />
         </StandaloneProviders>
@@ -67,7 +71,7 @@ export function RootRoutes() {
         <StandaloneProviders>
           <ResetPassword token={decodeURIComponent(window.location.pathname.split('/reset-password/')[1] ?? '')} />
         </StandaloneProviders>
-      ) : isAdminRoute ? (
+      ) : isAdminRoute && allowAdminRoute ? (
         <StandaloneProviders>
           <AdminAccessGate>
             <AdminApp />

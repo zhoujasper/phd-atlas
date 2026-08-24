@@ -634,11 +634,20 @@ function ExternalValuePlugin({
     previousTokenRef.current = syncToken
     if (mode !== 'visual') return
     if (visualDirtyRef.current) return
+    const localEcho = lastEmittedValueRef.current === value || recentVisualValuesRef.current.includes(value)
     if (!enteringVisual && !forced) {
-      if (lastEmittedValueRef.current === value || recentVisualValuesRef.current.includes(value)) return
+      if (localEcho) return
     }
 
     const nextValue = enteringVisual || forced ? visualSyncValueRef.current : value
+    if (!localEcho) {
+      // A value outside the current editor's acknowledgement window starts a
+      // new external revision. Retire old local echoes so deliberately cycling
+      // back to one of those values (for example reopening a saved draft after
+      // the composer was cleared) is applied instead of ignored forever.
+      lastEmittedValueRef.current = null
+      recentVisualValuesRef.current = []
+    }
     const format = formatForValue(nextValue)
     const preserveNewLines = shouldPreservePlainLineBreaks(nextValue, preservePlainLineBreaks)
     formatRef.current = format
@@ -1157,6 +1166,12 @@ export const MarkdownTextarea = forwardRef<HTMLTextAreaElement, MarkdownTextarea
         sourceChangeTimerRef.current = null
       }
     }
+    // Once the parent publishes a value that did not originate from this
+    // editor, the previous local acknowledgement window belongs to an older
+    // external revision. Retire it so a later authoritative value may
+    // deliberately reuse earlier text (for example, reopening a saved draft
+    // after the composer has been cleared).
+    recentSourceValuesRef.current = []
     sourceDraftValueRef.current = value
     formatRef.current = sourceFormatForValue(value)
     setSourceDraftValue((current) => current === value ? current : value)

@@ -114,7 +114,7 @@
     "hiddenCount": "已隐藏 {count}",
     "watchedBadge": "关注中",
     "importedToast": "已导入到申请列表",
-    "partialImportToast": "已添加现有资料。官方来源或当前申请截止日期仍有缺失，请在申请中继续核实。",
+    "partialImportToast": "已添加现有资料。导师联系方式、官方来源或当前申请截止日期如有缺失，请在申请中继续核实。",
     "savedToast": "发现偏好已保存",
     "submittedToast": "发现偏好已提交",
     "researchToast": "调研智能体已完成",

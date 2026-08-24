@@ -69,7 +69,14 @@ describe('cross-process update helper claim', () => {
           packagePath,
           helperPid: Number(helperPid),
         }).catch(() => false)
-        process.send({ ok: false, code: error?.code, cleared })
+        process.send({
+          ok: false,
+          code: error?.code,
+          causeCode: error?.cause?.code,
+          errorMessage: error?.message,
+          causeMessage: error?.cause?.message,
+          cleared,
+        })
         process.exit(0)
       }
     `, 'utf8')
@@ -90,7 +97,10 @@ describe('cross-process update helper claim', () => {
     const winners = messages.filter(({ message }) => message.ok)
     const losers = messages.filter(({ message }) => !message.ok)
 
-    expect(winners).toHaveLength(1)
+    expect(
+      winners,
+      `unexpected helper outcomes: ${JSON.stringify(messages.map(({ message }) => message))}`,
+    ).toHaveLength(1)
     expect(losers).toHaveLength(1)
     expect(losers[0].message).toMatchObject({
       code: 'UPDATE_HELPER_ALREADY_CLAIMED',

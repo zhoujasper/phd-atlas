@@ -27,6 +27,7 @@ import {
   UPDATE_BOOT_PENDING_NAME,
   UPDATE_RESULT_NAME,
   UPDATE_RUNTIME_INVALID_NAME,
+  validateUpdateDeltaBasePackage,
   validateUpdatePackage,
   writeUpdateLock,
 } from './systemUpdate.js'
@@ -76,8 +77,8 @@ function packageLock(version) {
   }, null, 2)}\n`
 }
 
-function runtimeFiles(version) {
-  return new Map([
+function runtimeFiles(version, options = {}) {
+  const files = new Map([
     ['dist/index.html', `<title>PhD Atlas ${version}</title>\n`],
     ['dist/assets/Asset-Z.js', 'export const upperCaseAsset = true\n'],
     ['dist/assets/asset-a.js', 'export const lowerCaseAsset = true\n'],
@@ -92,6 +93,12 @@ function runtimeFiles(version) {
     ['package.json', packageJson(version)],
     ['package-lock.json', packageLock(version)],
   ])
+  if (options.legacyRuntime) {
+    for (const relativePath of REQUIRED_RUNTIME_FILES) {
+      if (relativePath.startsWith('server/shared/')) files.delete(relativePath)
+    }
+  }
+  return files
 }
 
 async function writeRelative(root, relativePath, contents) {
@@ -115,7 +122,7 @@ function contentFingerprint(files) {
 async function createUpdatePackage(root, version, options = {}) {
   const stageRoot = path.join(root, `stage-${randomUUID()}`)
   const packagePath = path.join(root, `phd-atlas-${version}-${randomUUID()}.tar.gz`)
-  const sources = runtimeFiles(version)
+  const sources = runtimeFiles(version, options)
   if (options.omitSupervisor) sources.delete('tools/container-entrypoint.mjs')
   if (options.brokenStartServer) {
     sources.set('tools/start-server.mjs', 'export const broken =\n')
@@ -213,7 +220,7 @@ async function createDuplicateRootArchive(root) {
 }
 
 async function createRuntime(root, version, options = {}) {
-  for (const [relativePath, contents] of runtimeFiles(version)) {
+  for (const [relativePath, contents] of runtimeFiles(version, options)) {
     await writeRelative(root, relativePath, contents)
   }
   await writeRelative(root, 'server/pre-update-sentinel.txt', `runtime-${version}\n`)
@@ -222,6 +229,44 @@ async function createRuntime(root, version, options = {}) {
   }
   await fs.mkdir(path.join(root, 'storage'), { recursive: true })
   return root
+}
+
+async function seedHistoricalActivePackage(storageRoot, packagePath) {
+  const validated = await validateUpdateDeltaBasePackage(
+    packagePath,
+    path.join(storageRoot, 'historical-seed-validation'),
+  )
+  try {
+    const payload = await fs.readFile(packagePath)
+    const packageSha256 = createHash('sha256').update(payload).digest('hex')
+    const packageFile = `packages/${packageSha256}.tar.gz`
+    const storedPackagePath = path.join(
+      storageRoot,
+      ACTIVE_UPDATE_DIRECTORY_NAME,
+      ...packageFile.split('/'),
+    )
+    await fs.mkdir(path.dirname(storedPackagePath), { recursive: true })
+    await fs.copyFile(packagePath, storedPackagePath)
+    const metadata = {
+      formatVersion: 1,
+      appId: 'phd-atlas',
+      version: validated.manifest.version,
+      contentSha256: validated.manifest.contentSha256,
+      packageSha256,
+      packageSize: payload.length,
+      packageFile,
+      files: validated.manifest.files,
+      activatedAt: '2026-08-18T00:00:00.000Z',
+    }
+    await writeRelative(
+      storageRoot,
+      `${ACTIVE_UPDATE_DIRECTORY_NAME}/${ACTIVE_UPDATE_POINTER_NAME}`,
+      `${JSON.stringify(metadata, null, 2)}\n`,
+    )
+    return { ...metadata, packagePath: storedPackagePath }
+  } finally {
+    await fs.rm(validated.extractRoot, { recursive: true, force: true })
+  }
 }
 
 describe('system update package safety', () => {
@@ -470,6 +515,72 @@ describe('system update package safety', () => {
     expect(restoredPackage.version).toBe('0.2.0-beta.2')
     expect(restoredActive.packageSha256).toBe(knownGood.packageSha256)
     await expect(readPendingUpdateBoot(storageRoot)).resolves.toBeNull()
+  })
+
+  it('restores an integrity-bound legacy active package after a current candidate fails first boot', async () => {
+    const root = await scratch('boot-rollback-legacy-active')
+    const legacyPackage = await createUpdatePackage(root, '0.1.1', { legacyRuntime: true })
+    const currentPackage = await createUpdatePackage(root, '0.1.3')
+    const projectRoot = await createRuntime(path.join(root, 'runtime'), '0.1.1', {
+      legacyRuntime: true,
+    })
+    const storageRoot = path.join(projectRoot, 'storage')
+    const knownGood = await seedHistoricalActivePackage(storageRoot, legacyPackage)
+
+    await applyUpdatePackage({
+      packagePath: currentPackage,
+      projectRoot,
+      storageRoot,
+      installDependencies: async () => {},
+    })
+    const pending = await readPendingUpdateBoot(storageRoot)
+    expect(pending).toMatchObject({
+      fromVersion: '0.1.1',
+      toVersion: '0.1.3',
+      previousActive: expect.objectContaining({
+        packageSha256: knownGood.packageSha256,
+      }),
+    })
+    await claimPendingUpdateBoot(storageRoot, 211)
+
+    const recovered = await recoverAbandonedPendingUpdateBoot({
+      projectRoot,
+      storageRoot,
+      installDependencies: async () => {},
+      processExists: async () => false,
+    })
+    const restoredPackage = JSON.parse(await fs.readFile(path.join(projectRoot, 'package.json'), 'utf8'))
+    const restoredActive = await readActiveUpdatePackage(storageRoot)
+
+    expect(recovered).toMatchObject({
+      rolledBack: true,
+      version: '0.1.1',
+      previousActiveVersion: '0.1.1',
+    })
+    expect(restoredPackage.version).toBe('0.1.1')
+    expect(restoredActive.packageSha256).toBe(knownGood.packageSha256)
+    await expect(fs.access(path.join(projectRoot, 'server', 'shared', 'aiConcurrency.js')))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(fs.access(path.join(storageRoot, UPDATE_RUNTIME_INVALID_NAME)))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readPendingUpdateBoot(storageRoot)).resolves.toBeNull()
+  })
+
+  it('does not relax current-schema validation for ordinary legacy active replay', async () => {
+    const root = await scratch('strict-legacy-active-replay')
+    const legacyPackage = await createUpdatePackage(root, '0.1.1', { legacyRuntime: true })
+    const projectRoot = await createRuntime(path.join(root, 'runtime'), '0.1.0-beta.8')
+    const storageRoot = path.join(projectRoot, 'storage')
+    await seedHistoricalActivePackage(storageRoot, legacyPackage)
+
+    await expect(replayActiveUpdateIfNeeded({
+      projectRoot,
+      storageRoot,
+      installDependencies: async () => {},
+    })).rejects.toMatchObject({ code: 'INVALID_UPDATE_PACKAGE' })
+
+    const unchangedPackage = JSON.parse(await fs.readFile(path.join(projectRoot, 'package.json'), 'utf8'))
+    expect(unchangedPackage.version).toBe('0.1.0-beta.8')
   })
 
   it('restores a missing previous active package from the durable rollback backup', async () => {

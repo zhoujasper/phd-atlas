@@ -45,6 +45,7 @@ describe('lazy route stylesheet ownership', () => {
     ['src/components/shared/ProjectFooter.tsx', "import '../../styles/project-footer.css'"],
     ['src/components/screens/AuthScreen.tsx', "import '../../styles/marketing.css'"],
     ['src/components/screens/AuthScreen.tsx', "import '../../styles/homepage.css'"],
+    ['src/components/screens/DesktopUnlockScreen.tsx', "import '../../styles/desktopUnlock.css'"],
     ['src/components/screens/UpgradeProScreen.tsx', "import '../../styles/marketing.css'"],
   ])('%s owns %s', (modulePath, stylesheetImport) => {
     expect(source(modulePath)).toContain(stylesheetImport)

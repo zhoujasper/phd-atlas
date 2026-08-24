@@ -145,11 +145,8 @@
     "SETTINGS_ACKNOWLEDGEMENT_INVALID": "서버가 잘못된 설정 저장 확인을 반환했습니다. 변경 내용은 유지되므로 다시 시도하세요.",
     "NETWORK_ERROR": "네트워크 연결에 실패했습니다. 연결을 확인하고 다시 시도하세요.",
     "REQUEST_FAILED": "요청이 실패했습니다. 다시 시도해 주세요.",
-
     "DISCOVER_RESEARCH_SOURCE_REQUIRED": "정보 보강을 실행하기 전에 학교, 프로그램, 연구실, 지도교수 또는 지원금의 공식 링크를 추가하세요.",
-
     "AI_RESEARCH_SAFE_QUEUE_REQUIRED": "실시간 AI 리서치는 출처 검증 대기열을 거쳐야 합니다. 탐색에서 시작한 뒤 다시 시도하세요.",
-
     "BOOTSTRAP_SECRET_REGENERATION_REQUIRES_RESTART": "최초 실행 키는 설치 중에 다시 생성할 수 없습니다. 키를 설정한 뒤 서버를 재시작하세요.",
     "REQUEST_TOO_LARGE": "요청이 너무 큽니다. 업로드 또는 요청 크기를 줄인 후 다시 시도해 주세요.",
     "RESPONSE_TOO_LARGE": "결과가 너무 커서 안전하게 불러올 수 없습니다. 작업 공간이나 요청 범위를 줄인 후 다시 시도하세요.",
@@ -185,9 +182,7 @@
     "MAIL_NOT_CONFIGURED": "메일 설정이 완료되지 않았습니다. 호스트, 포트, 메일함 설정을 확인하세요.",
     "MAIL_CONNECTION_FAILED": "메일 서버에 연결할 수 없습니다. 수신 메일 설정을 확인하세요.",
     "MAIL_FETCH_ERROR": "메일 동기화에 실패했습니다. 수신 메일 설정을 확인하고 다시 시도하세요.",
-
     "MAIL_CLASSIFICATION_FAILED": "AI 서비스가 이 메일을 분류하지 못했습니다. 변경된 내용은 없습니다. 설정에서 AI 키를 확인한 뒤 다시 시도하세요.",
-
     "MAIL_CLASSIFICATION_PROVIDER_BUSY": "AI 서비스가 현재 사용량이 많습니다. 변경된 내용은 없습니다. 잠시 후 다시 분류해 보세요.",
     "INVALID_CAPTCHA": "인증코드가 올바르지 않습니다.",
     "INVALID_EMAIL_CODE": "이메일 인증 코드가 올바르지 않거나 만료되었습니다.",
@@ -306,7 +301,19 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "팀 탐색을 위해 팀과 할당된 학생을 모두 선택하세요.",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "선택한 지도교수에게 확인된 이메일 주소가 없습니다.",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "이 프로그램을 지원서에 추가하려면 실제 지도교수 프로필과 이메일이 필요합니다.",
-    "MAIL_ATTACHMENT_TOO_LARGE": "첨부 파일이 너무 커서 이메일에 추가할 수 없습니다."
+    "MAIL_ATTACHMENT_TOO_LARGE": "첨부 파일이 너무 커서 이메일에 추가할 수 없습니다.",
+    "DESKTOP_ADMIN_UNAVAILABLE": "데스크톱 앱에는 관리자 콘솔이 없습니다.",
+    "DESKTOP_CONNECT_FAILED": "배포된 웹 시스템에 연결하지 못했습니다. URL, 이메일, 비밀번호를 확인하세요.",
+    "DESKTOP_IMPORT_INVALID": "이 파일은 완전한 PhD Atlas 작업 공간 아카이브가 아닙니다.",
+    "DESKTOP_IMPORT_LOCAL_ONLY": "전체 아카이브는 로컬 저장을 사용할 때 가져오세요.",
+    "DESKTOP_SHARE_REQUIRES_REMOTE": "공유 링크는 이 데스크톱 앱을 배포된 웹 시스템에 연결한 후에만 사용할 수 있습니다.",
+    "DESKTOP_SHARE_NOT_SYNCED": "이 지원서는 연결된 웹 계정에 아직 없습니다. 다시 연결하여 동기화한 뒤 공유 링크를 만드세요.",
+    "DESKTOP_UNLOCK_REQUIRED": "데스크톱 앱이 잠겨 있습니다. 실행 암호를 입력하세요.",
+    "DESKTOP_UNLOCK_INVALID": "실행 암호가 올바르지 않습니다.",
+    "DESKTOP_UNLOCK_PASSWORD_REQUIRED": "실행 암호를 입력하세요.",
+    "DESKTOP_UNLOCK_MISMATCH": "두 암호가 일치하지 않습니다.",
+    "DESKTOP_UNLOCK_TOO_SHORT": "실행 암호는 최소 4자여야 합니다.",
+    "DESKTOP_SESSION_UNAVAILABLE": "데스크톱 작업 공간을 열 수 없습니다."
   },
   "apiErrorFields": {
     "professor.name": "지도교수 이름",

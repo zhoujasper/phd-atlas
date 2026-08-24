@@ -112,7 +112,7 @@
     "hiddenCount": "{count} nascosto",
     "watchedBadge": "Guardando",
     "importedToast": "Importato nelle applicazioni",
-    "partialImportToast": "Sono stati aggiunti i dati disponibili. Mancano ancora fonti ufficiali o la scadenza attuale; verificali nella candidatura.",
+    "partialImportToast": "Sono stati aggiunti i dati disponibili. Il contatto del relatore, le fonti ufficiali o la scadenza attuale potrebbero mancare; verificali nella candidatura.",
     "savedToast": "Scopri le preferenze salvate",
     "submittedToast": "Preferenze Discover inviate",
     "researchToast": "Gli agenti di ricerca hanno finito",

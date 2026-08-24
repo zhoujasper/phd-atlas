@@ -2,15 +2,20 @@ import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  COMPOSE_VALIDATION_IMAGE,
+  assertDesktopReleaseWorkflowContract,
+  assertGitHookInstallationContract,
   assertPackageMetadata,
   assertPublicContainerWorkflowContract,
   assertReleaseWorkflowExecutionContract,
   assertReleaseWorkflowStateContract,
   assertWorkflowValidationContract,
+  composeValidationCreateArguments,
   parsePrePushInput,
   parseWorkflowDocument,
   prePushBranchUpdates,
   releaseTreeScriptArguments,
+  releaseTreeScriptInvocations,
 } from '../tools/release-preflight.mjs'
 import {
   parseSmokeOptions,
@@ -55,7 +60,7 @@ describe('release preflight contracts', () => {
     })).toThrow(/Package-name mismatch/)
   })
 
-  it('serializes only the release-gate Vitest suite', () => {
+  it('serializes the release-gate Vitest suite across four isolated shards', () => {
     expect(releaseTreeScriptArguments('test')).toEqual([
       'run',
       'test',
@@ -64,6 +69,31 @@ describe('release preflight contracts', () => {
       '--no-file-parallelism',
     ])
     expect(releaseTreeScriptArguments('typecheck')).toEqual(['run', 'typecheck'])
+    expect(releaseTreeScriptInvocations('test')).toEqual([
+      ['run', 'test', '--', '--maxWorkers=1', '--no-file-parallelism', '--shard=1/4'],
+      ['run', 'test', '--', '--maxWorkers=1', '--no-file-parallelism', '--shard=2/4'],
+      ['run', 'test', '--', '--maxWorkers=1', '--no-file-parallelism', '--shard=3/4'],
+      ['run', 'test', '--', '--maxWorkers=1', '--no-file-parallelism', '--shard=4/4'],
+    ])
+    expect(releaseTreeScriptInvocations('typecheck')).toEqual([['run', 'typecheck']])
+  })
+
+  it('validates Compose through one digest-pinned official CLI container', () => {
+    expect(COMPOSE_VALIDATION_IMAGE).toMatch(
+      /^docker:\d+\.\d+\.\d+-cli@sha256:[a-f0-9]{64}$/u,
+    )
+    expect(composeValidationCreateArguments('phd-atlas-compose-contract')).toEqual([
+      'create',
+      '--name', 'phd-atlas-compose-contract',
+      COMPOSE_VALIDATION_IMAGE,
+      'compose',
+      '--project-name', 'phd-atlas',
+      '--project-directory', '/',
+      '-f', '/compose.yaml',
+      '--env-file', '/.env',
+      'config',
+      '--quiet',
+    ])
   })
 
   it('parses workflow YAML and rejects workflows without jobs', () => {
@@ -153,6 +183,48 @@ describe('release preflight contracts', () => {
       ),
       workflowPath,
     )).toThrow(/historical beta\.8 updater/)
+  })
+
+  it('builds desktop packages on native runners from the released commit', () => {
+    const workflowPath = resolvePublicWorkflow('desktop-release.yml')
+    const workflow = readWorkflowFixture(workflowPath)
+    expect(() => assertDesktopReleaseWorkflowContract(workflow, workflowPath)).not.toThrow()
+    expect(() => assertDesktopReleaseWorkflowContract(
+      replaceRequired(
+        workflow,
+        'ref: ${{ github.event.workflow_run.head_sha }}',
+        'ref: main',
+      ),
+      workflowPath,
+    )).toThrow(/exact released commit SHA/)
+    expect(() => assertDesktopReleaseWorkflowContract(
+      replaceRequired(workflow, 'npm run desktop:build:win', 'npm run build'),
+      workflowPath,
+    )).toThrow(/desktop:build:win/)
+    expect(() => assertDesktopReleaseWorkflowContract(
+      replaceRequired(
+        workflow,
+        "github.event.workflow_run.conclusion == 'success'",
+        "github.event.workflow_run.conclusion != 'cancelled'",
+      ),
+      workflowPath,
+    )).toThrow(/successful canonical Release run/)
+  })
+
+  it('keeps the installed pre-push gate executable on POSIX checkouts', () => {
+    const installer = readFileSync(resolve('tools', 'install-git-hooks.mjs'), 'utf8')
+    expect(() => assertGitHookInstallationContract(
+      '100755 0123456789abcdef 0\t.githooks/pre-push',
+      installer,
+    )).not.toThrow()
+    expect(() => assertGitHookInstallationContract(
+      '100644 0123456789abcdef 0\t.githooks/pre-push',
+      installer,
+    )).toThrow(/executable mode 100755/)
+    expect(() => assertGitHookInstallationContract(
+      '100755 0123456789abcdef 0\t.githooks/pre-push',
+      replaceRequired(installer, 'chmod(prePushHook, 0o755)', 'void prePushHook'),
+    )).toThrow(/installer contract/)
   })
 
   it('blocks manual version-tag pushes before immutable tags can be created early', () => {

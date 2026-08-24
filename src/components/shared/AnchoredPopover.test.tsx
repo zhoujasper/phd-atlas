@@ -67,6 +67,32 @@ describe('AnchoredPopover', () => {
     expect(focusSpy).not.toHaveBeenCalled()
   })
 
+  it('does not steal focus from a field reached before delayed initial focus runs', async () => {
+    render(
+      <AnchoredPopover
+        trigger="Recipients"
+        triggerAriaLabel="Recipients"
+        popoverAriaLabel="Recipient settings"
+      >
+        {() => (
+          <>
+            <button type="button" data-popover-autofocus="true">Current recipient</button>
+            <label>
+              Add recipient
+              <input />
+            </label>
+          </>
+        )}
+      </AnchoredPopover>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Recipients' }))
+    const input = screen.getByRole('textbox', { name: 'Add recipient' })
+    input.focus()
+
+    await waitFor(() => expect(document.activeElement).toBe(input))
+  })
+
   it('keeps a nested Select above its parent and lets Escape close the Select first', () => {
     vi.useFakeTimers()
     render(

@@ -112,7 +112,7 @@
     "hiddenCount": "{count} 非表示",
     "watchedBadge": "見てる",
     "importedToast": "アプリケーションにインポートされる",
-    "partialImportToast": "取得できた情報を追加しました。公式情報源または現在の出願期限が不足しているため、出願情報で確認してください。",
+    "partialImportToast": "取得できた情報を追加しました。指導教員の連絡先、公式情報源、または現在の出願期限が不足している場合は、出願情報で確認してください。",
     "savedToast": "保存された設定を検出する",
     "submittedToast": "Discover設定を送信しました",
     "researchToast": "研究エージェントが終了しました",

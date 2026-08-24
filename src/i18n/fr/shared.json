@@ -145,11 +145,8 @@
     "SETTINGS_ACKNOWLEDGEMENT_INVALID": "Le serveur a renvoyé une confirmation d’enregistrement des paramètres non valide. Vos modifications restent disponibles ; réessayez.",
     "NETWORK_ERROR": "La connexion réseau a échoué. Vérifiez votre connexion et réessayez.",
     "REQUEST_FAILED": "La demande a échoué. Veuillez réessayer.",
-
     "DISCOVER_RESEARCH_SOURCE_REQUIRED": "Ajoutez un lien officiel vers l'université, le programme, le laboratoire, l'encadrant ou le financement avant de lancer l'enrichissement.",
-
     "AI_RESEARCH_SAFE_QUEUE_REQUIRED": "La recherche IA en direct doit passer par la file de sources vérifiées. Lancez-la depuis Découvrir puis réessayez.",
-
     "BOOTSTRAP_SECRET_REGENERATION_REQUIRES_RESTART": "Les clés de première exécution ne peuvent pas être régénérées pendant l'installation. Configurez-les, puis redémarrez le serveur.",
     "REQUEST_TOO_LARGE": "La requête est trop volumineuse. Réduisez le fichier envoyé ou la requête, puis réessayez.",
     "RESPONSE_TOO_LARGE": "Ce résultat est trop volumineux pour être chargé en toute sécurité. Réduisez l’espace de travail ou la demande, puis réessayez.",
@@ -185,9 +182,7 @@
     "MAIL_NOT_CONFIGURED": "Les paramètres de messagerie sont incomplets. Vérifiez les paramètres de l'hôte, du port et de la boîte aux lettres.",
     "MAIL_CONNECTION_FAILED": "Impossible de se connecter au serveur de messagerie. Vérifiez les paramètres du courrier entrant.",
     "MAIL_FETCH_ERROR": "La synchronisation du courrier a échoué. Vérifiez les paramètres du courrier entrant et réessayez.",
-
     "MAIL_CLASSIFICATION_FAILED": "Le service d'IA n'a pas pu classer ces e-mails. Rien n'a été modifié : vérifiez la clé d'IA dans les Paramètres, puis réessayez.",
-
     "MAIL_CLASSIFICATION_PROVIDER_BUSY": "Le service d'IA est actuellement occupé. Rien n'a été modifié ; réessayez la classification dans un instant.",
     "INVALID_CAPTCHA": "Le code de vérification est incorrect.",
     "INVALID_EMAIL_CODE": "Le code de vérification de l'e-mail est incorrect ou a expiré.",
@@ -306,7 +301,19 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "Choisissez à la fois une équipe et un étudiant attribué pour la recherche d’équipe.",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "Le directeur de thèse sélectionné ne possède pas d’adresse e-mail vérifiée.",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "Un profil et une adresse e-mail réels du directeur de thèse sont requis avant d’ajouter ce programme aux candidatures.",
-    "MAIL_ATTACHMENT_TOO_LARGE": "Une pièce jointe est trop volumineuse pour être ajoutée à l’e-mail."
+    "MAIL_ATTACHMENT_TOO_LARGE": "Une pièce jointe est trop volumineuse pour être ajoutée à l’e-mail.",
+    "DESKTOP_ADMIN_UNAVAILABLE": "L’application de bureau n’inclut pas de console d’administration.",
+    "DESKTOP_CONNECT_FAILED": "Impossible de se connecter au système web déployé. Vérifiez l’URL, l’e-mail et le mot de passe.",
+    "DESKTOP_IMPORT_INVALID": "Ce fichier n’est pas une archive complète de l’espace PhD Atlas.",
+    "DESKTOP_IMPORT_LOCAL_ONLY": "Importez les archives complètes lorsque cette application utilise le stockage local.",
+    "DESKTOP_SHARE_REQUIRES_REMOTE": "Les liens de partage ne sont disponibles qu’après connexion de cette application à votre système web déployé.",
+    "DESKTOP_SHARE_NOT_SYNCED": "Cette candidature n’est pas encore sur le compte web connecté. Reconnectez-vous pour la synchroniser avant de créer un lien.",
+    "DESKTOP_UNLOCK_REQUIRED": "Cette application de bureau est verrouillée. Entrez le mot de passe d’ouverture.",
+    "DESKTOP_UNLOCK_INVALID": "Le mot de passe d’ouverture est incorrect.",
+    "DESKTOP_UNLOCK_PASSWORD_REQUIRED": "Entrez le mot de passe d’ouverture.",
+    "DESKTOP_UNLOCK_MISMATCH": "Les deux mots de passe ne correspondent pas.",
+    "DESKTOP_UNLOCK_TOO_SHORT": "Utilisez au moins 4 caractères pour le mot de passe d’ouverture.",
+    "DESKTOP_SESSION_UNAVAILABLE": "Impossible d’ouvrir l’espace de travail du bureau."
   },
   "apiErrorFields": {
     "professor.name": "nom du directeur de thèse",

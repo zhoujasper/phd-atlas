@@ -1,0 +1,245 @@
+name: Package Windows and macOS desktop apps
+
+on:
+  workflow_run:
+    workflows:
+      - Release update package and container
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phd-atlas-desktop-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: windows-latest
+    timeout-minutes: 50
+    steps:
+      - name: Check out the released commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Build unsigned Windows installers
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run desktop:build:win
+
+      - name: Prepare Windows checksums
+        run: npm run desktop:release-artifacts -- --platform windows
+
+      - name: Upload immutable Windows candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: phd-atlas-desktop-windows-${{ github.event.workflow_run.head_sha }}
+          if-no-files-found: error
+          retention-days: 3
+          path: |
+            dist-desktop/PhDAtlas-*-win-*-setup.exe
+            dist-desktop/PhDAtlas-*-win-*-setup.exe.sha256
+            dist-desktop/PhDAtlas-*-win-*-portable.exe
+            dist-desktop/PhDAtlas-*-win-*-portable.exe.sha256
+
+  build-macos:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: macos-latest
+    timeout-minutes: 50
+    steps:
+      - name: Check out the released commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Build unsigned macOS images
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run desktop:build:mac
+
+      - name: Prepare macOS checksums
+        run: npm run desktop:release-artifacts -- --platform macos
+
+      - name: Upload immutable macOS candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: phd-atlas-desktop-macos-${{ github.event.workflow_run.head_sha }}
+          if-no-files-found: error
+          retention-days: 3
+          path: |
+            dist-desktop/PhDAtlas-*-mac-*.dmg
+            dist-desktop/PhDAtlas-*-mac-*.dmg.sha256
+            dist-desktop/PhDAtlas-*-mac-*.zip
+            dist-desktop/PhDAtlas-*-mac-*.zip.sha256
+
+  attach-release-assets:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    needs:
+      - build-windows
+      - build-macos
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the released commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Download native desktop candidates
+        uses: actions/download-artifact@v4
+        with:
+          pattern: phd-atlas-desktop-*-${{ github.event.workflow_run.head_sha }}
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify tag ownership and local checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")"
+          tag="v${version}"
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+          tag_target="$(git rev-list -n 1 "$tag")"
+          if [[ "$tag_target" != "${{ github.event.workflow_run.head_sha }}" ]]; then
+            echo "::error title=Desktop tag mismatch::$tag targets $tag_target instead of ${{ github.event.workflow_run.head_sha }}."
+            exit 1
+          fi
+
+          shopt -s nullglob
+          installers=(
+            release-assets/PhDAtlas-"$version"-win-*-setup.exe
+            release-assets/PhDAtlas-"$version"-win-*-portable.exe
+            release-assets/PhDAtlas-"$version"-mac-*.dmg
+            release-assets/PhDAtlas-"$version"-mac-*.zip
+          )
+          if [[ "${#installers[@]}" -ne 4 ]]; then
+            echo "::error title=Incomplete desktop package set::Expected four installers, found ${#installers[@]}."
+            find release-assets -maxdepth 1 -type f -print | sort
+            exit 1
+          fi
+          for installer in "${installers[@]}"; do
+            checksum="${installer}.sha256"
+            if [[ ! -f "$checksum" ]]; then
+              echo "::error title=Missing desktop checksum::$(basename "$checksum") was not produced."
+              exit 1
+            fi
+            (
+              cd release-assets
+              sha256sum --check "$(basename "$checksum")"
+            )
+          done
+          echo "DESKTOP_VERSION=$version" >> "$GITHUB_ENV"
+          echo "DESKTOP_TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Attach the exact desktop assets idempotently
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_json="$RUNNER_TEMP/phd-atlas-desktop-release.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${DESKTOP_TAG}" > "$release_json"
+          if [[ "$(jq -r '.draft' "$release_json")" != false ]]; then
+            echo "::error title=Desktop Release is not public::$DESKTOP_TAG is still a draft."
+            exit 1
+          fi
+
+          shopt -s nullglob
+          asset_paths=(release-assets/PhDAtlas-"$DESKTOP_VERSION"-*)
+          expected_names="$RUNNER_TEMP/phd-atlas-desktop-expected-names.txt"
+          printf '%s\n' "${asset_paths[@]##*/}" | sort > "$expected_names"
+          if [[ "$(wc -l < "$expected_names" | tr -d ' ')" -ne 8 ]]; then
+            echo "::error title=Unexpected desktop asset count::Expected four packages and four checksums."
+            cat "$expected_names"
+            exit 1
+          fi
+
+          unexpected="$({
+            jq -r --arg prefix "PhDAtlas-${DESKTOP_VERSION}-" '.assets[].name | select(startswith($prefix))' "$release_json"
+          } | grep -Fvx -f "$expected_names" || true)"
+          if [[ -n "$unexpected" ]]; then
+            echo "::error title=Unexpected desktop Release assets::Refusing to replace: $unexpected"
+            exit 1
+          fi
+
+          verify_or_upload() {
+            local asset_path="$1"
+            local asset_name asset_count asset_id remote_path
+            asset_name="$(basename "$asset_path")"
+            asset_count="$(jq -r --arg name "$asset_name" '[.assets[] | select(.name == $name)] | length' "$release_json")"
+            if [[ "$asset_count" -gt 1 ]]; then
+              echo "::error title=Duplicate desktop asset::$asset_name appears more than once."
+              exit 1
+            fi
+            if [[ "$asset_count" -eq 0 ]]; then
+              gh release upload "$DESKTOP_TAG" "$asset_path" --repo "$GITHUB_REPOSITORY"
+              gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${DESKTOP_TAG}" > "$release_json"
+              return
+            fi
+            asset_id="$(jq -r --arg name "$asset_name" '.assets[] | select(.name == $name) | .id' "$release_json")"
+            remote_path="$RUNNER_TEMP/${asset_id}-${asset_name}"
+            gh api \
+              --header 'Accept: application/octet-stream' \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > "$remote_path"
+            if ! cmp --silent "$asset_path" "$remote_path"; then
+              echo "::error title=Immutable desktop asset mismatch::$asset_name differs from the published asset."
+              exit 1
+            fi
+          }
+
+          for asset_path in "${asset_paths[@]}"; do
+            verify_or_upload "$asset_path"
+          done
+
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${DESKTOP_TAG}" > "$release_json"
+          for asset_path in "${asset_paths[@]}"; do
+            asset_name="$(basename "$asset_path")"
+            asset_count="$(jq -r --arg name "$asset_name" '[.assets[] | select(.name == $name)] | length' "$release_json")"
+            if [[ "$asset_count" -ne 1 ]]; then
+              echo "::error title=Desktop asset publication failed::$asset_name is not present exactly once."
+              exit 1
+            fi
+          done

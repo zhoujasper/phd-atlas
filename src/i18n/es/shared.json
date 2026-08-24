@@ -145,11 +145,8 @@
     "SETTINGS_ACKNOWLEDGEMENT_INVALID": "El servidor devolvió una confirmación de guardado no válida. Tus cambios siguen disponibles; inténtalo de nuevo.",
     "NETWORK_ERROR": "La conexión de red falló. Comprueba tu conexión y vuelve a intentarlo.",
     "REQUEST_FAILED": "La solicitud falló. Por favor inténtalo de nuevo.",
-
     "DISCOVER_RESEARCH_SOURCE_REQUIRED": "Agregue un enlace oficial de la universidad, el programa, el laboratorio, el asesor o la financiación antes de ejecutar el enriquecimiento.",
-
     "AI_RESEARCH_SAFE_QUEUE_REQUIRED": "La investigación con IA en vivo debe ejecutarse por la cola de fuentes verificadas. Iníciela desde Descubrir e inténtelo de nuevo.",
-
     "BOOTSTRAP_SECRET_REGENERATION_REQUIRES_RESTART": "Las claves de primera ejecución no pueden regenerarse durante la instalación. Configúrelas y reinicie el servidor.",
     "REQUEST_TOO_LARGE": "La solicitud es demasiado grande. Reduzca la carga o la solicitud y vuelva a intentarlo.",
     "RESPONSE_TOO_LARGE": "El resultado es demasiado grande para cargarlo de forma segura. Reduce el espacio de trabajo o la solicitud e inténtalo de nuevo.",
@@ -185,9 +182,7 @@
     "MAIL_NOT_CONFIGURED": "La configuración del correo está incompleta. Verifique la configuración del host, el puerto y el buzón.",
     "MAIL_CONNECTION_FAILED": "No se pudo conectar al servidor de correo. Verifique la configuración del correo entrante.",
     "MAIL_FETCH_ERROR": "Falló la sincronización del correo. Verifique la configuración del correo entrante e inténtelo nuevamente.",
-
     "MAIL_CLASSIFICATION_FAILED": "El servicio de IA no pudo clasificar estos correos. No se cambió nada: revise la clave de IA en Configuración e inténtelo de nuevo.",
-
     "MAIL_CLASSIFICATION_PROVIDER_BUSY": "El servicio de IA está ocupado en este momento. No se cambió nada; vuelva a intentar la clasificación en un momento.",
     "INVALID_CAPTCHA": "El código de verificación es incorrecto.",
     "INVALID_EMAIL_CODE": "El código de verificación por correo electrónico es incorrecto o ha caducado.",
@@ -306,7 +301,19 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "Elige un equipo y un estudiante asignado para la búsqueda de equipo.",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "El asesor seleccionado no tiene una dirección de correo verificada.",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "Se requiere un perfil y correo real del asesor antes de poder añadir este programa a las solicitudes.",
-    "MAIL_ATTACHMENT_TOO_LARGE": "Un archivo adjunto es demasiado grande para incluirlo en el correo."
+    "MAIL_ATTACHMENT_TOO_LARGE": "Un archivo adjunto es demasiado grande para incluirlo en el correo.",
+    "DESKTOP_ADMIN_UNAVAILABLE": "La app de escritorio no incluye una consola de administrador.",
+    "DESKTOP_CONNECT_FAILED": "No se pudo conectar al sistema web. Comprueba la URL, el correo y la contraseña.",
+    "DESKTOP_IMPORT_INVALID": "Este archivo no es un archivo completo del espacio de PhD Atlas.",
+    "DESKTOP_IMPORT_LOCAL_ONLY": "Importa archivos completos mientras esta app usa almacenamiento local.",
+    "DESKTOP_SHARE_REQUIRES_REMOTE": "Los enlaces compartidos solo están disponibles después de conectar esta app a tu sistema web desplegado.",
+    "DESKTOP_SHARE_NOT_SYNCED": "Esta solicitud aún no está en la cuenta web conectada. Vuelve a conectar para sincronizarla antes de crear un enlace.",
+    "DESKTOP_UNLOCK_REQUIRED": "Esta app de escritorio está bloqueada. Introduce la contraseña de apertura.",
+    "DESKTOP_UNLOCK_INVALID": "La contraseña de apertura es incorrecta.",
+    "DESKTOP_UNLOCK_PASSWORD_REQUIRED": "Introduce la contraseña de apertura.",
+    "DESKTOP_UNLOCK_MISMATCH": "Las dos contraseñas no coinciden.",
+    "DESKTOP_UNLOCK_TOO_SHORT": "Usa al menos 4 caracteres para la contraseña de apertura.",
+    "DESKTOP_SESSION_UNAVAILABLE": "No se pudo abrir el espacio de trabajo de escritorio."
   },
   "apiErrorFields": {
     "professor.name": "nombre del supervisor",

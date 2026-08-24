@@ -145,11 +145,8 @@
     "SETTINGS_ACKNOWLEDGEMENT_INVALID": "O servidor retornou uma confirmação de salvamento inválida. Suas alterações continuam disponíveis; tente novamente.",
     "NETWORK_ERROR": "Falha na conexão de rede. Verifique sua conexão e tente novamente.",
     "REQUEST_FAILED": "Falha na solicitação. Por favor, tente novamente.",
-
     "DISCOVER_RESEARCH_SOURCE_REQUIRED": "Adicione um link oficial da universidade, do programa, do laboratório, do orientador ou do financiamento antes de executar o enriquecimento.",
-
     "AI_RESEARCH_SAFE_QUEUE_REQUIRED": "A pesquisa com IA ao vivo precisa passar pela fila de fontes verificadas. Inicie-a em Descobrir e tente novamente.",
-
     "BOOTSTRAP_SECRET_REGENERATION_REQUIRES_RESTART": "As chaves de primeira execução não podem ser regeradas durante a instalação. Configure-as e reinicie o servidor.",
     "REQUEST_TOO_LARGE": "A solicitação é grande demais. Reduza o upload ou a solicitação e tente novamente.",
     "RESPONSE_TOO_LARGE": "O resultado é grande demais para ser carregado com segurança. Reduza o espaço de trabalho ou a solicitação e tente novamente.",
@@ -185,9 +182,7 @@
     "MAIL_NOT_CONFIGURED": "As configurações de e-mail estão incompletas. Verifique as configurações de host, porta e caixa de correio.",
     "MAIL_CONNECTION_FAILED": "Não foi possível conectar-se ao servidor de e-mail. Verifique as configurações de e-mail recebido.",
     "MAIL_FETCH_ERROR": "Falha na sincronização de e-mail. Verifique as configurações de e-mail recebido e tente novamente.",
-
     "MAIL_CLASSIFICATION_FAILED": "O serviço de IA não conseguiu classificar estes e-mails. Nada foi alterado — verifique a chave de IA nas Configurações e tente novamente.",
-
     "MAIL_CLASSIFICATION_PROVIDER_BUSY": "O serviço de IA está ocupado no momento. Nada foi alterado; tente classificar novamente em instantes.",
     "INVALID_CAPTCHA": "O código de verificação está incorreto.",
     "INVALID_EMAIL_CODE": "O código de verificação de e-mail está incorreto ou expirou.",
@@ -306,7 +301,19 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "Escolha uma equipe e um estudante atribuído para a pesquisa de equipe.",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "O orientador selecionado não possui um endereço de e-mail verificado.",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "É necessário um perfil e e-mail reais do orientador antes de adicionar este programa às candidaturas.",
-    "MAIL_ATTACHMENT_TOO_LARGE": "Um anexo é grande demais para ser incluído no e-mail."
+    "MAIL_ATTACHMENT_TOO_LARGE": "Um anexo é grande demais para ser incluído no e-mail.",
+    "DESKTOP_ADMIN_UNAVAILABLE": "A aplicação de ambiente de trabalho não inclui uma consola de administrador.",
+    "DESKTOP_CONNECT_FAILED": "Não foi possível ligar ao sistema web. Verifique o URL, o e-mail e a palavra-passe.",
+    "DESKTOP_IMPORT_INVALID": "Este ficheiro não é um arquivo completo do espaço PhD Atlas.",
+    "DESKTOP_IMPORT_LOCAL_ONLY": "Importe arquivos completos enquanto esta aplicação usa armazenamento local.",
+    "DESKTOP_SHARE_REQUIRES_REMOTE": "Os links partilhados só ficam disponíveis depois de ligar esta aplicação ao seu sistema web.",
+    "DESKTOP_SHARE_NOT_SYNCED": "Esta candidatura ainda não está na conta web ligada. Volte a ligar para a sincronizar antes de criar um link.",
+    "DESKTOP_UNLOCK_REQUIRED": "Esta aplicação está bloqueada. Introduza a palavra-passe de abertura.",
+    "DESKTOP_UNLOCK_INVALID": "A palavra-passe de abertura está incorreta.",
+    "DESKTOP_UNLOCK_PASSWORD_REQUIRED": "Introduza a palavra-passe de abertura.",
+    "DESKTOP_UNLOCK_MISMATCH": "As duas palavras-passe não coincidem.",
+    "DESKTOP_UNLOCK_TOO_SHORT": "Use pelo menos 4 caracteres na palavra-passe de abertura.",
+    "DESKTOP_SESSION_UNAVAILABLE": "Não foi possível abrir o espaço de trabalho."
   },
   "apiErrorFields": {
     "professor.name": "nome do orientador",

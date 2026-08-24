@@ -2528,6 +2528,41 @@ function pearson(pairs) {
   return num / Math.sqrt(dx * dy)
 }
 
+const PLACEHOLDER_DISCOVER_ADVISOR_EMAIL = /example\.|phd-atlas\.local$/i
+
+export function isPlaceholderDiscoverAdvisorEmail(email) {
+  return PLACEHOLDER_DISCOVER_ADVISOR_EMAIL.test(String(email || ''))
+}
+
+export function hasUsableDiscoverAdvisorEmail(email) {
+  const value = String(email || '').trim()
+  return value.includes('@') && !isPlaceholderDiscoverAdvisorEmail(value)
+}
+
+export function isVerifiedDiscoverAdvisor(pi) {
+  return Boolean(
+    pi?.name
+    && String(pi.url || '').startsWith('https://')
+    && hasUsableDiscoverAdvisorEmail(pi.email),
+  )
+}
+
+export function selectDiscoverImportAdvisor(program, requestedPi = null) {
+  if (requestedPi) return requestedPi
+  const pis = Array.isArray(program?.pis) ? program.pis : []
+  return pis.find((candidate) => isVerifiedDiscoverAdvisor(candidate))
+    || pis.find((candidate) => candidate?.name)
+    || null
+}
+
+export function collectDiscoverImportWarnings(program, pi, payload) {
+  return [
+    ...(!program.sources?.length || !program.website?.startsWith('https://') ? ['missingOfficialSource'] : []),
+    ...(!payload?.deadline ? ['missingDeadline'] : []),
+    ...(!isVerifiedDiscoverAdvisor(pi) ? ['missingAdvisor'] : []),
+  ]
+}
+
 export function buildImportPayload(program, pi, { includeNotes = true, programNote = '', piNote = '' } = {}) {
   const enriched = attachRequirements(program)
   const req = enriched.requirements
@@ -2572,7 +2607,7 @@ export function buildImportPayload(program, pi, { includeNotes = true, programNo
   return {
     professor: professorName,
     professorChinese: '',
-    professorEmail: (pi?.email && pi.email.includes('@')) ? pi.email : '',
+    professorEmail: hasUsableDiscoverAdvisorEmail(pi?.email) ? String(pi.email).trim() : '',
     professorHomepage: pi?.url || program.website || '',
     university: program.school,
     country: program.country || 'United States',

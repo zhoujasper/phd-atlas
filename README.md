@@ -32,6 +32,24 @@ This repository is the **public self-hosted stable edition**. The current produc
 is personal-only. Team collaboration is archived in the private source and is
 not exposed, loaded, tested, or published by this distribution.
 
+## Desktop downloads
+
+Each completed Release includes native desktop packages built from the same
+tagged source after the server, update, database, and container gates pass:
+
+- Windows x64 setup and portable `.exe` packages;
+- a native macOS `.dmg` and `.zip` for the architecture shown in the filename;
+- one adjacent `.sha256` file for every desktop package.
+
+Download them only from the
+[official Releases page](https://github.com/zhoujasper/phd-atlas/releases) and
+verify the matching SHA-256 before opening a package. The current desktop
+packages are unsigned, so Windows SmartScreen or macOS Gatekeeper may require
+an explicit user confirmation. The desktop app starts as a local, personal,
+unlimited workspace, supports a local unlock password and complete export,
+and can optionally connect to an existing PhD Atlas web account for remote
+storage and share links.
+
 ## Real interface
 
 Every image below is captured from the running product, not a hand-drawn

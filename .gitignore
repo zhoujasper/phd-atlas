@@ -58,3 +58,8 @@ tools/.i18n-translate-cache.json
 *.sln
 *.sw?
 .tmp
+
+# Desktop packaging outputs and the copied Node runtime binary
+dist-desktop/
+desktop/resources/runtime/
+desktop/vendor/

@@ -314,7 +314,7 @@ export const ApplicationSchema = z.object({
   professor: z.object({
     english: z.string().min(1),
     chinese: z.string(),
-    email: z.email(),
+    email: z.union([z.email(), z.literal('')]),
     correspondenceEmails: z.array(z.email().max(254)).max(9).optional(),
     phone: z.string(),
     social: z.string(),

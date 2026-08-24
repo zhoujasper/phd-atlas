@@ -322,6 +322,352 @@ describe('external workspace durable revision', () => {
     expect(restarted.meta.revision).toBe(external.rows.get('postgresql:restart_target').revision)
   })
 
+  it('keeps local workspace backups on a live SQLite source across encryption-mode replacement', async () => {
+    const diskStore = await storage.readStore()
+    diskStore.settings.encryptionAtRest = false
+    diskStore.settings.sqliteEncryption = false
+    await storage.writeStore(diskStore)
+
+    const firstBackupStarted = deferred()
+    const firstBackupRelease = deferred()
+    const transitionWaiting = deferred()
+    const transitionDrained = deferred()
+    const transitionCloseRelease = deferred()
+    const secondBackupWaiting = deferred()
+    const events = []
+    const backupSources = []
+    let sourceGateWaitCount = 0
+    let firstBackup
+    let transition
+    let secondBackup
+
+    const originalBackup = Database.prototype.backup
+    const backupSpy = vi.spyOn(Database.prototype, 'backup').mockImplementation(async function (...args) {
+      backupSources.push(this)
+      if (backupSources.length === 1) {
+        events.push('first-backup-started')
+        firstBackupStarted.resolve()
+        await firstBackupRelease.promise
+      }
+      const result = await originalBackup.apply(this, args)
+      events.push(`backup-${backupSources.length}-finished`)
+      return result
+    })
+    const originalClose = Database.prototype.close
+    const closeSpy = vi.spyOn(Database.prototype, 'close').mockImplementation(function (...args) {
+      if (this === backupSources[0]) events.push('first-source-closed')
+      return originalClose.apply(this, args)
+    })
+
+    vi.stubEnv('NODE_ENV', 'test')
+    storage.configureDatabaseHandleReplacementFailpointForTests(async ({ stage }) => {
+      events.push(stage)
+      if (stage === 'database-source-gate-waiting') {
+        sourceGateWaitCount += 1
+        if (sourceGateWaitCount === 1) transitionWaiting.resolve()
+        if (sourceGateWaitCount === 2) secondBackupWaiting.resolve()
+      }
+      if (stage === 'after-drain') {
+        transitionDrained.resolve()
+        await transitionCloseRelease.promise
+      }
+    })
+    vi.stubEnv('NODE_ENV', 'development')
+
+    try {
+      firstBackup = storage.createBackup(diskStore, 'workspace-backup-race', null, 5, {
+        prune: false,
+      })
+      await firstBackupStarted.promise
+
+      const encryptedStore = await storage.readStore()
+      encryptedStore.settings.encryptionAtRest = true
+      encryptedStore.settings.sqliteEncryption = true
+      transition = storage.writeStore(encryptedStore)
+      await transitionWaiting.promise
+
+      expect(backupSources).toHaveLength(1)
+      expect(events).not.toContain('first-source-closed')
+
+      firstBackupRelease.resolve()
+      await transitionDrained.promise
+      await expect(firstBackup).resolves.toMatchObject({ kind: 'workspace' })
+
+      secondBackup = storage.createBackup(encryptedStore, 'workspace-backup-race', null, 5, {
+        prune: false,
+      })
+      await secondBackupWaiting.promise
+      expect(backupSources).toHaveLength(1)
+      expect(events).not.toContain('first-source-closed')
+
+      transitionCloseRelease.resolve()
+      await expect(transition).resolves.toBeTruthy()
+      await expect(secondBackup).resolves.toMatchObject({ kind: 'workspace' })
+
+      expect(backupSources).toHaveLength(2)
+      expect(backupSources[1]).not.toBe(backupSources[0])
+      expect(events.indexOf('backup-1-finished')).toBeLessThan(events.indexOf('after-drain'))
+      expect(events.indexOf('after-drain')).toBeLessThan(events.indexOf('first-source-closed'))
+      expect(events.indexOf('first-source-closed')).toBeLessThan(events.indexOf('backup-2-finished'))
+    } finally {
+      firstBackupRelease.resolve()
+      transitionCloseRelease.resolve()
+      await firstBackup?.catch(() => undefined)
+      await transition?.catch(() => undefined)
+      await secondBackup?.catch(() => undefined)
+      storage.configureDatabaseHandleReplacementFailpointForTests(null)
+      backupSpy.mockRestore()
+      closeSpy.mockRestore()
+    }
+  }, 120_000)
+
+  it('drains an in-flight external snapshot before replacing its SQLite source handle', async () => {
+    await storage.configureDatabaseConfiguration(postgresql('handle_transition'), {
+      allowExistingState: false,
+    })
+    const seeded = await storage.readStore()
+    const userId = seeded.users[0].id
+    const applicationId = seeded.applications[0].id
+    const snapshotStarted = deferred()
+    const snapshotRelease = deferred()
+    const transitionStarted = deferred()
+    const transitionDrained = deferred()
+    const transitionCloseRelease = deferred()
+    const forcedSyncWaiting = deferred()
+    const events = []
+    let sourceDatabase = null
+    let blockedSnapshot = false
+    let transition
+    let lateWrite
+    let lateFlush
+
+    const originalBackup = Database.prototype.backup
+    const backupSpy = vi.spyOn(Database.prototype, 'backup').mockImplementation(async function (...args) {
+      sourceDatabase ??= this
+      if (!blockedSnapshot) {
+        blockedSnapshot = true
+        events.push('snapshot-started')
+        snapshotStarted.resolve()
+        await snapshotRelease.promise
+        const result = await originalBackup.apply(this, args)
+        events.push('snapshot-finished')
+        return result
+      }
+      return originalBackup.apply(this, args)
+    })
+    const originalClose = Database.prototype.close
+    const closeSpy = vi.spyOn(Database.prototype, 'close').mockImplementation(function (...args) {
+      if (this === sourceDatabase) events.push('source-closed')
+      return originalClose.apply(this, args)
+    })
+
+    vi.stubEnv('NODE_ENV', 'test')
+    storage.configureDatabaseHandleReplacementFailpointForTests(async ({ stage }) => {
+      events.push(stage)
+      if (stage === 'before-drain') transitionStarted.resolve()
+      if (stage === 'after-drain') {
+        transitionDrained.resolve()
+        await transitionCloseRelease.promise
+      }
+      if (stage === 'external-sync-waiting') forcedSyncWaiting.resolve()
+    })
+    vi.stubEnv('NODE_ENV', 'development')
+
+    try {
+      await storage.writeAdmissionSignalReport(userId, applicationId, {
+        marker: 'before-handle-transition',
+      })
+      await snapshotStarted.promise
+
+      const update = await storage.readStore()
+      update.settings.notificationMailbox = 'handle-transition@example.test'
+      transition = storage.writeStore(update)
+      await transitionStarted.promise
+
+      expect(events).toContain('snapshot-started')
+      expect(events).toContain('before-drain')
+      expect(events).not.toContain('snapshot-finished')
+      expect(events).not.toContain('after-drain')
+      expect(events).not.toContain('source-closed')
+
+      snapshotRelease.resolve()
+      await transitionDrained.promise
+      let lateWriteSettled = false
+      lateWrite = storage.writeAdmissionSignalReport(userId, applicationId, {
+        marker: 'after-handle-transition',
+      })
+      void lateWrite.then(
+        () => { lateWriteSettled = true },
+        () => { lateWriteSettled = true },
+      )
+      lateFlush = storage.flushDurableStorage()
+      await forcedSyncWaiting.promise
+
+      expect(lateWriteSettled).toBe(false)
+      expect(events).not.toContain('source-closed')
+      transitionCloseRelease.resolve()
+      await expect(transition).resolves.toBeTruthy()
+      await expect(lateFlush).resolves.toBeUndefined()
+      await expect(lateWrite).resolves.toMatchObject({
+        marker: 'after-handle-transition',
+      })
+      await storage.flushDurableStorage()
+      expect(events.indexOf('snapshot-finished')).toBeLessThan(events.indexOf('after-drain'))
+      expect(events.indexOf('after-drain')).toBeLessThan(events.indexOf('source-closed'))
+    } finally {
+      snapshotRelease.resolve()
+      transitionCloseRelease.resolve()
+      await transition?.catch(() => undefined)
+      await lateFlush?.catch(() => undefined)
+      await lateWrite?.catch(() => undefined)
+      storage.configureDatabaseHandleReplacementFailpointForTests(null)
+      backupSpy.mockRestore()
+      closeSpy.mockRestore()
+    }
+
+    const remote = await openRemoteWorkspace('handle_transition')
+    try {
+      expect(remote.database.prepare(
+        'SELECT notification_mailbox AS mailbox FROM system_settings WHERE id = ?'
+      ).get('global')).toEqual({ mailbox: 'handle-transition@example.test' })
+      expect(remote.database.prepare(
+        'SELECT COUNT(*) AS count FROM admission_signal_reports WHERE user_id = ? AND application_id = ?'
+      ).get(userId, applicationId).count).toBe(1)
+    } finally {
+      remote.database.close()
+    }
+
+    await storage.shutdownStorage()
+    storage = null
+    await Promise.all([
+      fs.rm(sqlitePath, { force: true }),
+      fs.rm(`${sqlitePath}-wal`, { force: true }),
+      fs.rm(`${sqlitePath}-shm`, { force: true }),
+    ])
+    vi.resetModules()
+    storage = await import('./storage.js')
+    const restarted = await storage.readStore()
+    expect(restarted.settings.notificationMailbox).toBe('handle-transition@example.test')
+    await expect(storage.readAdmissionSignalReport(userId, applicationId)).resolves.toMatchObject({
+      marker: 'after-handle-transition',
+    })
+  })
+
+  it('keeps the old SQLite handle authoritative when its pre-transition external flush fails', async () => {
+    await storage.configureDatabaseConfiguration(postgresql('handle_transition_retry'), {
+      allowExistingState: false,
+    })
+    const events = []
+    let sourceDatabase = null
+    const originalBackup = Database.prototype.backup
+    const backupSpy = vi.spyOn(Database.prototype, 'backup').mockImplementation(async function (...args) {
+      sourceDatabase ??= this
+      return originalBackup.apply(this, args)
+    })
+    const originalClose = Database.prototype.close
+    const closeSpy = vi.spyOn(Database.prototype, 'close').mockImplementation(function (...args) {
+      if (this === sourceDatabase) events.push('source-closed')
+      return originalClose.apply(this, args)
+    })
+
+    vi.stubEnv('NODE_ENV', 'test')
+    storage.configureDatabaseHandleReplacementFailpointForTests(({ stage }) => events.push(stage))
+    vi.stubEnv('NODE_ENV', 'development')
+
+    try {
+      const update = await storage.readStore()
+      update.settings.notificationMailbox = 'handle-transition-retry@example.test'
+      external.failuresRemaining = 1
+      await expect(storage.writeStore(update)).rejects.toMatchObject({
+        code: 'DATABASE_CONNECTION_FAILED',
+      })
+      const failedAttempt = external.writes.at(-1)
+      expect(failedAttempt).toBeTruthy()
+      expect(events).toContain('before-drain')
+      expect(events).not.toContain('after-drain')
+      expect(events).not.toContain('source-closed')
+
+      const retry = await storage.readStore()
+      retry.settings.notificationMailbox = 'handle-transition-confirmed@example.test'
+      await expect(storage.writeStore(retry)).resolves.toBeTruthy()
+
+      const exactRevisionAttempts = external.writes.filter(({ key, revision }) => (
+        key === 'postgresql:handle_transition_retry' && revision === failedAttempt.revision
+      ))
+      expect(exactRevisionAttempts).toHaveLength(2)
+      expect(exactRevisionAttempts[1].payload.equals(exactRevisionAttempts[0].payload)).toBe(true)
+      expect(events).toContain('after-drain')
+      expect(events).toContain('source-closed')
+    } finally {
+      storage.configureDatabaseHandleReplacementFailpointForTests(null)
+      backupSpy.mockRestore()
+      closeSpy.mockRestore()
+    }
+
+    const remote = await openRemoteWorkspace('handle_transition_retry')
+    try {
+      expect(remote.database.prepare(
+        'SELECT notification_mailbox AS mailbox FROM system_settings WHERE id = ?'
+      ).get('global')).toEqual({ mailbox: 'handle-transition-confirmed@example.test' })
+    } finally {
+      remote.database.close()
+    }
+  })
+
+  it('does not let a stale tenant store reverse a completed encryption-mode transition', async () => {
+    await storage.configureDatabaseConfiguration(postgresql('stale_policy_write'), {
+      allowExistingState: false,
+    })
+    const enabled = await storage.readStore()
+    enabled.settings.encryptionAtRest = true
+    enabled.settings.notificationMailbox = 'policy-enabled@example.test'
+    await storage.writeStore(enabled)
+
+    const staleTenantStore = await storage.readStore()
+    const disabled = await storage.readStore()
+    disabled.settings.encryptionAtRest = false
+    disabled.settings.notificationMailbox = 'policy-disabled@example.test'
+    await storage.writeStore(disabled)
+    expect(storage.getEncryptionPolicy().encryptionAtRest).toBe(false)
+
+    const transitionStages = []
+    vi.stubEnv('NODE_ENV', 'test')
+    storage.configureDatabaseHandleReplacementFailpointForTests(({ stage }) => {
+      transitionStages.push(stage)
+    })
+    vi.stubEnv('NODE_ENV', 'development')
+    try {
+      staleTenantStore.applications[0].snapshotCapacityProbe = 'stale-policy-tenant-write'
+      await expect(storage.writeStore(staleTenantStore)).resolves.toBeTruthy()
+      expect(storage.getEncryptionPolicy().encryptionAtRest).toBe(false)
+      expect(transitionStages).not.toContain('before-drain')
+    } finally {
+      storage.configureDatabaseHandleReplacementFailpointForTests(null)
+    }
+
+    const remote = await openRemoteWorkspace('stale_policy_write')
+    try {
+      expect(remote.database.prepare(
+        'SELECT encryption_at_rest AS enabled FROM system_settings WHERE id = ?'
+      ).get('global')).toEqual({ enabled: 0 })
+    } finally {
+      remote.database.close()
+    }
+
+    await storage.shutdownStorage()
+    storage = null
+    await Promise.all([
+      fs.rm(sqlitePath, { force: true }),
+      fs.rm(`${sqlitePath}-wal`, { force: true }),
+      fs.rm(`${sqlitePath}-shm`, { force: true }),
+    ])
+    vi.resetModules()
+    storage = await import('./storage.js')
+    const restarted = await storage.readStore()
+    expect(restarted.settings.encryptionAtRest).toBe(false)
+    expect(restarted.applications[0].snapshotCapacityProbe).toBe('stale-policy-tenant-write')
+  })
+
   it('bounds a large external one-field snapshot and restores it in a fresh process image', async () => {
     const markerBytes = 6 * 1024 * 1024
     await storage.configureDatabaseConfiguration(postgresql('bounded_target'), { allowExistingState: false })

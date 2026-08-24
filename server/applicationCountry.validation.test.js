@@ -55,4 +55,28 @@ describe('optional application country validation', () => {
 
     expect(parsed.country).toBe('')
   })
+
+  it('accepts an empty professor email on a complete application update', () => {
+    const complete = applicationWithCountry('United States')
+    expect(parseOrThrow(ApplicationSchema, complete).professor.email).toBe('lee@example.edu')
+    expect(parseOrThrow(ApplicationSchema, {
+      ...complete,
+      professor: {
+        ...complete.professor,
+        email: '',
+      },
+    }).professor.email).toBe('')
+  })
+
+  it('accepts an empty professor email when creating an application', () => {
+    const parsed = parseOrThrow(CreateApplicationSchema, {
+      professor: 'Professor Lee',
+      professorEmail: '',
+      university: 'Example University',
+      program: 'Computer Science PhD',
+      deadline: '',
+    })
+
+    expect(parsed.professorEmail).toBe('')
+  })
 })

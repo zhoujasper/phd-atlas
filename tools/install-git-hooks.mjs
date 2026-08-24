@@ -1,8 +1,15 @@
 import { spawnSync } from 'node:child_process'
+import { chmod } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const prePushHook = path.join(projectRoot, '.githooks', 'pre-push')
+
+if (process.platform !== 'win32') {
+  await chmod(prePushHook, 0o755)
+}
+
 const result = spawnSync('git', ['config', '--local', 'core.hooksPath', '.githooks'], {
   cwd: projectRoot,
   encoding: 'utf8',

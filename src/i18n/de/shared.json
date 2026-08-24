@@ -145,11 +145,8 @@
     "SETTINGS_ACKNOWLEDGEMENT_INVALID": "Der Server hat eine ungültige Bestätigung zum Speichern der Einstellungen zurückgegeben. Ihre Änderungen bleiben erhalten; versuchen Sie es erneut.",
     "NETWORK_ERROR": "Netzwerkverbindung fehlgeschlagen. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
     "REQUEST_FAILED": "Die Anfrage ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
-
     "DISCOVER_RESEARCH_SOURCE_REQUIRED": "Fügen Sie einen offiziellen Link zu Hochschule, Programm, Labor, Betreuung oder Förderung hinzu, bevor Sie die Anreicherung starten.",
-
     "AI_RESEARCH_SAFE_QUEUE_REQUIRED": "Live-KI-Recherche muss über die Warteschlange mit Quellenprüfung laufen. Starten Sie sie in „Entdecken“ und versuchen Sie es erneut.",
-
     "BOOTSTRAP_SECRET_REGENERATION_REQUIRES_RESTART": "Erstinstallations-Schlüssel können während der Einrichtung nicht neu erzeugt werden. Konfigurieren Sie sie und starten Sie den Server neu.",
     "REQUEST_TOO_LARGE": "Die Anfrage ist zu groß. Verkleinern Sie den Upload oder die Anfrage und versuchen Sie es erneut.",
     "RESPONSE_TOO_LARGE": "Dieses Ergebnis ist zu groß, um sicher geladen zu werden. Grenzen Sie den Arbeitsbereich oder die Anfrage ein und versuchen Sie es erneut.",
@@ -185,9 +182,7 @@
     "MAIL_NOT_CONFIGURED": "Die E-Mail-Einstellungen sind unvollständig. Überprüfen Sie die Host-, Port- und Postfacheinstellungen.",
     "MAIL_CONNECTION_FAILED": "Es konnte keine Verbindung zum Mailserver hergestellt werden. Überprüfen Sie die Einstellungen für den Posteingang.",
     "MAIL_FETCH_ERROR": "Die E-Mail-Synchronisierung ist fehlgeschlagen. Überprüfen Sie die Einstellungen für eingehende E-Mails und versuchen Sie es erneut.",
-
     "MAIL_CLASSIFICATION_FAILED": "Der KI-Dienst konnte diese E-Mails nicht klassifizieren. Es wurde nichts geändert – prüfen Sie den KI-Schlüssel in den Einstellungen und versuchen Sie es erneut.",
-
     "MAIL_CLASSIFICATION_PROVIDER_BUSY": "Der KI-Dienst ist gerade ausgelastet. Es wurde nichts geändert; versuchen Sie die Klassifizierung gleich noch einmal.",
     "INVALID_CAPTCHA": "Der Bestätigungscode ist falsch.",
     "INVALID_EMAIL_CODE": "Der E-Mail-Bestätigungscode ist falsch oder abgelaufen.",
@@ -306,7 +301,19 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "Wählen Sie für die Teamrecherche sowohl ein Team als auch einen zugewiesenen Studierenden.",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "Die ausgewählte Betreuungsperson hat keine verifizierte E-Mail-Adresse.",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "Ein echtes Profil und eine E-Mail-Adresse der Betreuungsperson sind erforderlich, bevor dieses Programm zu Bewerbungen hinzugefügt werden kann.",
-    "MAIL_ATTACHMENT_TOO_LARGE": "Ein Anhang ist zu groß, um in die E-Mail aufgenommen zu werden."
+    "MAIL_ATTACHMENT_TOO_LARGE": "Ein Anhang ist zu groß, um in die E-Mail aufgenommen zu werden.",
+    "DESKTOP_ADMIN_UNAVAILABLE": "Die Desktop-App enthält keine Administratorkonsole.",
+    "DESKTOP_CONNECT_FAILED": "Verbindung zum bereitgestellten Websystem fehlgeschlagen. Prüfen Sie URL, E-Mail und Passwort.",
+    "DESKTOP_IMPORT_INVALID": "Diese Datei ist kein vollständiges PhD-Atlas-Arbeitsbereichsarchiv.",
+    "DESKTOP_IMPORT_LOCAL_ONLY": "Importieren Sie vollständige Archive, während diese App lokalen Speicher verwendet.",
+    "DESKTOP_SHARE_REQUIRES_REMOTE": "Freigabelinks sind erst verfügbar, nachdem diese Desktop-App mit Ihrem bereitgestellten Websystem verbunden wurde.",
+    "DESKTOP_SHARE_NOT_SYNCED": "Diese Bewerbung ist noch nicht auf dem verbundenen Webkonto. Verbinden Sie erneut, bevor Sie einen Freigabelink erstellen.",
+    "DESKTOP_UNLOCK_REQUIRED": "Diese Desktop-App ist gesperrt. Geben Sie das Startpasswort ein.",
+    "DESKTOP_UNLOCK_INVALID": "Das Startpasswort ist falsch.",
+    "DESKTOP_UNLOCK_PASSWORD_REQUIRED": "Geben Sie das Startpasswort ein.",
+    "DESKTOP_UNLOCK_MISMATCH": "Die beiden Passwörter stimmen nicht überein.",
+    "DESKTOP_UNLOCK_TOO_SHORT": "Verwenden Sie mindestens 4 Zeichen für das Startpasswort.",
+    "DESKTOP_SESSION_UNAVAILABLE": "Der Desktop-Arbeitsbereich konnte nicht geöffnet werden."
   },
   "apiErrorFields": {
     "professor.name": "Name der Betreuung",

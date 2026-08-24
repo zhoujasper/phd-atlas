@@ -78,6 +78,9 @@ import { AiKeyManager } from '../shared/AiKeyManager'
 import { AvatarCropDialog } from '../shared/AvatarCropDialog'
 import { UserAvatar } from '../shared/UserAvatar'
 import { CodexAuthorizationManager } from './CodexAuthorizationManager'
+import { DesktopStorageSettings } from './DesktopStorageSettings'
+import { DesktopUnlockSettings } from './DesktopUnlockSettings'
+import type { DesktopRuntime } from '../../desktopRuntime'
 import {
   TableCell,
   TableColGroup,
@@ -463,6 +466,12 @@ export function SettingsScreen({
   onSyncMailHistory,
   onExport,
   exportApplicationCount,
+  desktopRuntime,
+  onDesktopConnect,
+  onDesktopDisconnect,
+  onDesktopUnlockPassword,
+  onCompleteExport,
+  onCompleteImport,
   onDeleteAccount,
   allShares = [],
   onRevokeShare,
@@ -516,6 +525,17 @@ export function SettingsScreen({
   onSyncMailHistory?: (patch?: Partial<UserSettings>) => Promise<void> | void
   onExport?: (format: 'json' | 'csv' | 'excel' | 'pdf') => void
   exportApplicationCount?: number
+  desktopRuntime?: DesktopRuntime | null
+  onDesktopConnect?: (origin: string, email: string, password: string) => Promise<void> | void
+  onDesktopDisconnect?: () => Promise<void> | void
+  onDesktopUnlockPassword?: (input: {
+    enabled: boolean
+    password?: string
+    confirmPassword?: string
+    currentPassword?: string
+  }) => Promise<void> | void
+  onCompleteExport?: () => Promise<void> | void
+  onCompleteImport?: (file: File) => Promise<void> | void
   onDeleteAccount: () => void
   allShares?: SharedLinkInfo[]
   onRevokeShare?: (applicationId: string, shareId: string) => Promise<void> | void
@@ -2666,6 +2686,12 @@ export function SettingsScreen({
         </div>
 
         <div className="settings-security-grid">
+        {desktopRuntime?.enabled && onDesktopUnlockPassword ? (
+          <DesktopUnlockSettings
+            runtime={desktopRuntime}
+            onSave={onDesktopUnlockPassword}
+          />
+        ) : null}
         <section className={`mail-config-card mail-collapsible session-window-card ${sessionWindowOpen ? 'expanded' : ''}`} aria-label={tx('settings.loginSession')}>
           <button
             type="button"
@@ -3033,6 +3059,16 @@ export function SettingsScreen({
         </div>
         </div>
 
+        {desktopRuntime?.enabled && onDesktopConnect && onDesktopDisconnect && onCompleteExport && onCompleteImport ? (
+          <DesktopStorageSettings
+            runtime={desktopRuntime}
+            onConnect={onDesktopConnect}
+            onDisconnect={onDesktopDisconnect}
+            onCompleteExport={onCompleteExport}
+            onCompleteImport={onCompleteImport}
+          />
+        ) : null}
+
         {onExport ? (
           <section className="settings-export-card" aria-labelledby="settings-export-heading">
             <div className="settings-export-head">
@@ -3069,6 +3105,24 @@ export function SettingsScreen({
                   <em>{tx(hintKey)}</em>
                 </button>
               ))}
+              {onCompleteExport ? (
+                <button
+                  type="button"
+                  className="settings-export-format"
+                  onClick={() => void onCompleteExport()}
+                  aria-label={tx('settings.desktopCompleteExportAction')}
+                >
+                  <span className="settings-export-format-top">
+                    <span className="settings-export-format-icon" aria-hidden="true">
+                      <Database size={16} />
+                    </span>
+                    <Download size={13} className="settings-export-format-dl" aria-hidden="true" />
+                  </span>
+                  <span className="settings-export-format-ext">{tx('settings.completeArchiveExt')}</span>
+                  <strong>{tx('settings.desktopCompleteExportAction')}</strong>
+                  <em>{tx('settings.desktopCompleteExportDesc')}</em>
+                </button>
+              ) : null}
             </div>
           </section>
         ) : null}
@@ -3077,6 +3131,7 @@ export function SettingsScreen({
         </div> : null}
 
         {settingsRevealStep >= 3 ? <div id="settings-data-section" className="settings-progressive-group settings-lazy-reveal settings-data-group settings-block settings-block-data">
+        {desktopRuntime?.enabled && !desktopRuntime.shareEnabled ? null : (
         <section className="settings-share-panel" aria-label={tx('settings.sharedLinks')}>
           <header className="settings-share-panel-head">
             <div className="settings-share-panel-copy">
@@ -3350,6 +3405,7 @@ export function SettingsScreen({
             </div>
           )}
         </section>
+        )}
 
         <ConfirmDialog
           open={confirmRevokeShare !== null}

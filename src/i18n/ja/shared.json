@@ -157,11 +157,8 @@
     "SETTINGS_ACKNOWLEDGEMENT_INVALID": "サーバーから無効な設定保存確認が返されました。変更内容は保持されています。もう一度お試しください。",
     "NETWORK_ERROR": "ネットワーク接続に失敗しました。接続を確認して、もう一度試してください。",
     "REQUEST_FAILED": "リクエストは失敗しました。もう一度試してください。",
-
     "DISCOVER_RESEARCH_SOURCE_REQUIRED": "情報の補完を実行する前に、大学・プログラム・研究室・指導教員・資金の公式リンクを追加してください。",
-
     "AI_RESEARCH_SAFE_QUEUE_REQUIRED": "ライブ AI リサーチは出典検証キューを通す必要があります。ディスカバーから開始してもう一度お試しください。",
-
     "BOOTSTRAP_SECRET_REGENERATION_REQUIRES_RESTART": "初回起動キーはセットアップの実行中には再生成できません。設定してからサーバーを再起動してください。",
     "REQUEST_TOO_LARGE": "リクエストが大きすぎます。アップロードまたはリクエストの内容を減らして、もう一度お試しください。",
     "RESPONSE_TOO_LARGE": "結果が大きすぎるため安全に読み込めません。ワークスペースまたはリクエストの範囲を絞って再試行してください。",
@@ -201,9 +198,7 @@
     "MAIL_NOT_CONFIGURED": "メール設定が不完全です。ホスト、ポート、メールボックスの設定を確認してください。",
     "MAIL_CONNECTION_FAILED": "メールサーバーに接続できませんでした。メールの受信設定を確認してください。",
     "MAIL_FETCH_ERROR": "メールの同期に失敗しました。受信メール設定を確認して、もう一度お試しください。",
-
     "MAIL_CLASSIFICATION_FAILED": "AI サービスがこれらのメールを分類できませんでした。変更は行われていません。設定で AI キーを確認してから、もう一度お試しください。",
-
     "MAIL_CLASSIFICATION_PROVIDER_BUSY": "AI サービスが現在混み合っています。変更は行われていません。少し待ってから分類をやり直してください。",
     "INVALID_CAPTCHA": "認証コードが間違っています。",
     "INVALID_EMAIL_CODE": "メール認証コードが間違っているか、有効期限が切れています。",
@@ -318,7 +313,19 @@
     "TEAM_DISCOVER_TARGET_REQUIRED": "チーム探索では、チームと割り当てられた学生の両方を選択してください。",
     "DISCOVER_ADVISOR_EMAIL_REQUIRED": "選択した指導教員には確認済みのメールアドレスがありません。",
     "DISCOVER_ADVISOR_NOT_VERIFIED": "このプログラムを出願に追加する前に、有効な指導教員プロフィールとメールアドレスが必要です。",
-    "MAIL_ATTACHMENT_TOO_LARGE": "添付ファイルのサイズが大きすぎるため、メールに追加できません。"
+    "MAIL_ATTACHMENT_TOO_LARGE": "添付ファイルのサイズが大きすぎるため、メールに追加できません。",
+    "DESKTOP_ADMIN_UNAVAILABLE": "デスクトップアプリに管理者コンソールはありません。",
+    "DESKTOP_CONNECT_FAILED": "導入済みのウェブシステムに接続できませんでした。URL・メール・パスワードを確認してください。",
+    "DESKTOP_IMPORT_INVALID": "このファイルは PhD Atlas の完全なワークスペースアーカイブではありません。",
+    "DESKTOP_IMPORT_LOCAL_ONLY": "完全アーカイブはローカル保存のときに取り込んでください。",
+    "DESKTOP_SHARE_REQUIRES_REMOTE": "共有リンクは、このデスクトップアプリを導入済みウェブシステムに接続したあとだけ使えます。",
+    "DESKTOP_SHARE_NOT_SYNCED": "この出願は接続先のウェブアカウントにまだありません。再接続して同期してから共有リンクを作成してください。",
+    "DESKTOP_UNLOCK_REQUIRED": "デスクトップアプリはロックされています。起動パスワードを入力してください。",
+    "DESKTOP_UNLOCK_INVALID": "起動パスワードが正しくありません。",
+    "DESKTOP_UNLOCK_PASSWORD_REQUIRED": "起動パスワードを入力してください。",
+    "DESKTOP_UNLOCK_MISMATCH": "2つのパスワードが一致しません。",
+    "DESKTOP_UNLOCK_TOO_SHORT": "起動パスワードは4文字以上にしてください。",
+    "DESKTOP_SESSION_UNAVAILABLE": "デスクトップのワークスペースを開けませんでした。"
   },
   "apiErrorFields": {
     "professor.name": "指導教員の氏名",

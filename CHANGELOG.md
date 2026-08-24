@@ -8,6 +8,56 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-24
+
+### Added
+
+- Added native Windows setup/portable and macOS DMG/ZIP desktop delivery. Every
+  package is built on its native runner from the exact successful Release
+  commit and is paired with a SHA-256 file before idempotent attachment.
+- Added a personal desktop runtime with unlimited local quotas, optional local
+  unlock password, complete workspace export/import, and an explicit remote
+  account connection for web-backed storage and share links.
+- Allowed Discover programmes without an individually verified advisor email
+  to enter Applications with explicit evidence warnings instead of fabricated
+  contact data or a hard import failure.
+
+### Fixed
+
+- Kept current update packages under the full runtime-file gate while allowing
+  an integrity-checked historical Release package to serve as a differential
+  base under its original launch contract. This lets the release workflow
+  build the optional v0.1.1-to-v0.1.3 delta without weakening validation of the
+  v0.1.3 target or reconstructed package.
+- Published the complete successor to the tag-only v0.1.2 candidate. The
+  Beta.8 direct-upgrade repair, real extracted-runtime preflight, historical
+  updater replay, and rollback coverage are all carried forward.
+- Preserved first-boot disaster recovery across runtime-schema generations:
+  an exact previous-active format-v1 package can be restored after a failed
+  current candidate, while ordinary active replay stays on the strict current
+  schema.
+- Split release qualification into four isolated serial Vitest shards. All
+  shards remain mandatory, while each worker has a bounded lifetime instead of
+  accumulating the entire source and public-export suites in one process.
+- Made local Compose qualification independent of host CLI plugins and
+  bind-mountable temporary paths. A digest-pinned official Docker CLI container
+  receives the exact Compose and environment files through `docker cp` and
+  must validate them before either architecture can be built.
+- Persisted the update-helper SQLite guard schema and added a bounded 250 ms
+  scheduler handoff, preventing a transient just-closed handle from making
+  both detached helpers lose while preserving exactly-one-winner semantics.
+- Serialized SQLite handle replacement behind an exclusive source gate shared
+  by encryption transitions, adapter maintenance, shutdown, forced external
+  sync, and workspace hot backups. The gate fixes both pre-drain and post-drain
+  races; transient remote failures retain the authoritative old handle and exact
+  pending payload, and stale tenant stores cannot reverse the active policy.
+- Canonicalized the bundled MCP CLI entrypoint before main-module detection so
+  Claude Desktop packages launch through macOS path aliases, and prevented a
+  popover's delayed initial focus from interrupting recipient-address typing.
+- Restored reused Markdown bodies when reopening saved email drafts after a
+  composer clear, and prevented delayed new-recommender focus from splitting
+  rapid input across the name and email fields.
+
 ## [0.1.2] - 2026-08-18
 
 ### Fixed
@@ -875,7 +925,8 @@ the selected external database when applicable.
   light/dark themes, and twelve language packs.
 - Published the first GitHub Release update archive and SHA-256 sidecar.
 
-[0.1.2]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.2
+[0.1.3]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.3
+[0.1.2]: https://github.com/zhoujasper/phd-atlas/tree/v0.1.2
 [0.1.1]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.1
 [0.1.0]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0
 [0.1.0-beta.8]: https://github.com/zhoujasper/phd-atlas/releases/tag/v0.1.0-beta.8

@@ -1,0 +1,64 @@
+appId: local.phd-atlas.desktop
+productName: PhD Atlas
+copyright: PhD Atlas
+asar: true
+asarUnpack:
+  - desktop/**/*
+  - server/**/*
+  - shared/**/*
+  - src/i18n/**/*
+  - dist/**/*
+  - tools/**/*
+  - package.json
+  - node_modules/**/*
+npmRebuild: false
+nodeGypRebuild: false
+buildDependenciesFromSource: false
+removePackageScripts: true
+directories:
+  output: dist-desktop
+  buildResources: desktop/resources
+files:
+  - desktop/**/*
+  - '!desktop/resources/runtime/**'
+  - '!desktop/vendor/**'
+  - '!desktop/*.test.js'
+  - server/**/*
+  - '!server/**/*.test.js'
+  - shared/**/*
+  - src/i18n/**/*
+  - dist/**/*
+  - tools/start-server.mjs
+  - tools/container-entrypoint.mjs
+  - package.json
+  - LICENSE
+extraMetadata:
+  main: desktop/main.mjs
+extraResources:
+  - from: desktop/resources/runtime
+    to: runtime
+win:
+  target:
+    - nsis
+    - portable
+  signAndEditExecutable: false
+  verifyUpdateCodeSignature: false
+mac:
+  target:
+    - dmg
+    - zip
+  identity: null
+  artifactName: PhDAtlas-${version}-mac-${arch}.${ext}
+  category: public.app-category.education
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: PhDAtlas-${version}-win-${arch}-setup.${ext}
+portable:
+  artifactName: PhDAtlas-${version}-win-${arch}-portable.${ext}
+electronFuses:
+  runAsNode: false
+  enableNodeCliInspectArguments: false
+  enableNodeOptionsEnvironmentVariable: false
+  onlyLoadAppFromAsar: true

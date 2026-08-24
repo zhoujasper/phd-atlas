@@ -572,6 +572,70 @@ describe('MarkdownTextarea rich editor', () => {
     expect(screen.getByRole('textbox', { name: 'Notes' })).toHaveTextContent('Original local edit')
   })
 
+  it('accepts a reused local value after an external clear starts a new revision', async () => {
+    vi.useFakeTimers()
+    const controllerRef = createRef<MarkdownTextareaController>()
+    const received: string[] = []
+    const handleChange = (event: ChangeEvent<HTMLTextAreaElement>) => received.push(event.target.value)
+    const renderSurface = (value: string) => (
+      <ControlledEditorHarness
+        controllerRef={controllerRef}
+        value={value}
+        onChange={handleChange}
+      />
+    )
+    const view = render(renderSurface(''))
+
+    await act(async () => {
+      controllerRef.current?.focus({ atEnd: true })
+      controllerRef.current?.insertText('Reusable draft')
+    })
+    act(() => vi.advanceTimersByTime(48))
+    expect(received).toEqual(['Reusable draft'])
+
+    await act(async () => view.rerender(renderSurface('Reusable draft')))
+    await act(async () => view.rerender(renderSurface('')))
+    expect(controllerRef.current?.getValue()).toBe('')
+
+    await act(async () => view.rerender(renderSurface('Reusable draft')))
+    expect(controllerRef.current?.getValue()).toBe('Reusable draft')
+  })
+
+  it('refreshes the source mirror when a saved visual value is reused after an external clear', async () => {
+    function ReusedSourceMirrorHarness() {
+      const [value, setValue] = useState('')
+      return (
+        <>
+          <MarkdownTextarea
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            placeholder="Draft body"
+          />
+          <button type="button" onClick={() => setValue('')}>Clear externally</button>
+          <button type="button" onClick={() => setValue('Reusable draft')}>Reopen saved draft</button>
+        </>
+      )
+    }
+
+    render(<ReusedSourceMirrorHarness />)
+    const sourceMirror = screen.getByPlaceholderText('Draft body')
+
+    await act(async () => {
+      fireEvent.change(sourceMirror, { target: { value: 'Reusable draft' } })
+    })
+    expect(sourceMirror).toHaveValue('Reusable draft')
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Clear externally' }))
+    })
+    expect(sourceMirror).toHaveValue('')
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Reopen saved draft' }))
+    })
+    expect(sourceMirror).toHaveValue('Reusable draft')
+  })
+
   it('keeps Shift+Enter as a hard Markdown break after a source round-trip', async () => {
     const user = userEvent.setup()
     render(<EditorHarness initial="Line" />)

@@ -172,6 +172,10 @@ export function AnchoredPopover({
   useEffect(() => {
     if (!open || !positionReady) return undefined
     const focusFrame = window.requestAnimationFrame(() => {
+      // Opening schedules focus for the next frame so the positioned surface is
+      // ready first. A fast pointer interaction can reach a field before that
+      // frame runs; never let the delayed initial-focus job steal it back.
+      if (popoverRef.current?.contains(document.activeElement)) return
       const preferredFocus = popoverRef.current?.querySelector<HTMLElement>('[data-popover-autofocus]')
       const firstFocus = popoverRef.current?.querySelector<HTMLElement>(focusableSelector)
       ;(preferredFocus ?? firstFocus)?.focus()
