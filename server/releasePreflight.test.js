@@ -144,6 +144,12 @@ describe('release preflight contracts', () => {
   it('makes public main container publication consume the matching CI result once', () => {
     const workflowPath = resolvePublicWorkflow('publish-container.yml')
     const workflow = readWorkflowFixture(workflowPath)
+    const mainBuildStart = workflow.indexOf('  build-main-architecture:')
+    const nonNativeMainBuild = `${workflow.slice(0, mainBuildStart)}${replaceRequired(
+      workflow.slice(mainBuildStart),
+      'runner: ubuntu-24.04-arm',
+      'runner: ubuntu-24.04',
+    )}`
     expect(() => assertPublicContainerWorkflowContract(workflow, workflowPath)).not.toThrow()
     expect(() => assertPublicContainerWorkflowContract(
       replaceRequired(workflow, '--commit "$GITHUB_SHA"', '--branch main'),
@@ -152,11 +158,19 @@ describe('release preflight contracts', () => {
     expect(() => assertPublicContainerWorkflowContract(
       replaceRequired(
         workflow,
-        '      - name: Define candidate and immutable SHA tags',
-        '      - name: Repeat full tree gate\n        run: npm run verify:tree\n\n      - name: Define candidate and immutable SHA tags',
+        '      - name: Assemble the multi-architecture candidate',
+        '      - name: Repeat full tree gate\n        run: npm run verify:tree\n\n      - name: Assemble the multi-architecture candidate',
       ),
       workflowPath,
     )).toThrow(/instead of repeating the full tree gate/)
+    expect(() => assertPublicContainerWorkflowContract(
+      nonNativeMainBuild,
+      workflowPath,
+    )).toThrow(/build linux\/arm64 natively/)
+    expect(() => assertPublicContainerWorkflowContract(
+      `${workflow}\n# docker/setup-qemu-action`,
+      workflowPath,
+    )).toThrow(/native architecture runners/)
   })
 
   it('keeps MSSQL and Release publication on one runner and installs once', () => {
@@ -187,6 +201,14 @@ describe('release preflight contracts', () => {
       ),
       workflowPath,
     )).toThrow(/historical beta\.8 updater/)
+    expect(() => assertReleaseWorkflowExecutionContract(
+      replaceRequired(workflow, 'sha-${GITHUB_SHA:0:12}', 'candidate-${GITHUB_RUN_ID}'),
+      workflowPath,
+    )).toThrow(/exact qualified main image/)
+    expect(() => assertReleaseWorkflowExecutionContract(
+      `${workflow}\n# uses: docker/build-push-action@v6`,
+      workflowPath,
+    )).toThrow(/must not rebuild a tagged image under QEMU/)
   })
 
   it('builds desktop packages on native runners from the released commit', () => {

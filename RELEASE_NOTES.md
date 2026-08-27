@@ -51,6 +51,10 @@ history while the next version can be prepared in the same file.
 - The minimal Docker build stage now carries the portable-path module and its
   declaration for full TypeScript qualification without expanding the runtime
   server image into a desktop bundle.
+- Public x64 and ARM64 containers are built and smoked independently on native
+  GitHub runners, assembled only after both pass, and promoted with an
+  immutable source-SHA tag. Version publication reuses that exact qualified
+  image instead of rebuilding production dependencies through QEMU.
 - Node 24 qualification no longer lets Node's experimental `localStorage`
   shadow jsdom, measures login RSS after explicit collection, closes each local
   Web Push test connection instead of reusing a stale keep-alive socket, and
@@ -86,6 +90,9 @@ history while the next version can be prepared in the same file.
   失败关闭，而不是继续跟随或跳过。
 - Docker 最小构建阶段现在带上便携路径模块及声明，以通过完整 TypeScript 验收，同时
   不会把桌面打包资源扩进服务器运行镜像。
+- 公开 x64 与 ARM64 容器分别在对应原生 GitHub runner 构建和冒烟，两者均通过后才
+  组装，并以源码 SHA 不可变标签提升；版本发布复用这份精确验收镜像，不再经 QEMU
+  重建生产依赖。
 - Node 24 验收不再让 Node 实验性 `localStorage` 遮蔽 jsdom；登录 RSS 在明确回收后
   测量，Web Push 测试不再复用过期本地 keep-alive socket，200 请求突发也改为有界
   分批。生产行为、响应断言和 128 MiB 阈值均未放松。

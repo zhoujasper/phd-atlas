@@ -185,14 +185,14 @@ function workflowStepScripts(job) {
 
 export function assertPublicContainerWorkflowContract(contents, label = 'publish-container.yml') {
   const workflow = parseWorkflowDocument(contents, label)
-  const publishJob = workflow.jobs?.['publish-main']
-  if (!publishJob) {
-    throw new Error(`${label} is missing the publish-main job.`)
+  const gateJob = workflow.jobs?.['gate-main']
+  if (!gateJob) {
+    throw new Error(`${label} is missing the gate-main job.`)
   }
-  if (publishJob.permissions?.actions !== 'read') {
-    throw new Error(`${label} publish-main must have read access to matching CI run state.`)
+  if (gateJob.permissions?.actions !== 'read') {
+    throw new Error(`${label} gate-main must have read access to matching CI run state.`)
   }
-  const scripts = workflowStepScripts(publishJob)
+  const gateScripts = workflowStepScripts(gateJob)
   for (const required of [
     '--workflow ci.yml',
     '--commit "$GITHUB_SHA"',
@@ -200,14 +200,81 @@ export function assertPublicContainerWorkflowContract(contents, label = 'publish
     'gh run watch "$run_id"',
     '--exit-status',
   ]) {
-    if (!scripts.includes(required)) {
-      throw new Error(`${label} publish-main is missing the matching-CI contract '${required}'.`)
+    if (!gateScripts.includes(required)) {
+      throw new Error(`${label} gate-main is missing the matching-CI contract '${required}'.`)
     }
   }
-  if (scripts.includes('npm run verify:tree')) {
+
+  const buildJob = workflow.jobs?.['build-main-architecture']
+  if (!buildJob) {
+    throw new Error(`${label} is missing the build-main-architecture job.`)
+  }
+  if (buildJob.needs !== 'gate-main') {
+    throw new Error(`${label} native architecture builds must wait for gate-main.`)
+  }
+  if (buildJob['runs-on'] !== '${{ matrix.runner }}') {
+    throw new Error(`${label} native architecture builds must use the matrix runner.`)
+  }
+  const architectureMatrix = buildJob.strategy?.matrix?.include
+  const expectedArchitectures = [
+    ['amd64', 'linux/amd64', 'ubuntu-24.04'],
+    ['arm64', 'linux/arm64', 'ubuntu-24.04-arm'],
+  ]
+  for (const [architecture, platform, runner] of expectedArchitectures) {
+    const entry = Array.isArray(architectureMatrix)
+      ? architectureMatrix.find((candidate) => candidate?.architecture === architecture)
+      : undefined
+    if (entry?.platform !== platform || entry?.runner !== runner) {
+      throw new Error(
+        `${label} must build ${platform} natively on ${runner}.`,
+      )
+    }
+  }
+  const buildScripts = workflowStepScripts(buildJob)
+  for (const required of [
+    'wait-for-container-digest.sh "$IMAGE_REF" "$IMAGE_DIGEST"',
+    '--architectures "$ARCHITECTURE"',
+  ]) {
+    if (!buildScripts.includes(required)) {
+      throw new Error(`${label} native architecture build is missing '${required}'.`)
+    }
+  }
+
+  const publishJob = workflow.jobs?.['publish-main']
+  if (!publishJob) {
+    throw new Error(`${label} is missing the publish-main job.`)
+  }
+  const scripts = workflowStepScripts(publishJob)
+  for (const required of [
+    '"${candidate_ref}-amd64"',
+    '"${candidate_ref}-arm64"',
+    'sha-${SHORT_SHA}',
+    'wait-for-container-digest.sh "$ref" "$CANDIDATE_DIGEST"',
+  ]) {
+    if (!scripts.includes(required)) {
+      throw new Error(`${label} publish-main is missing the immutable manifest contract '${required}'.`)
+    }
+  }
+  const emulatedMultiArchitectureBuild = contents.includes('docker/setup-qemu-action')
+    || contents.includes('platforms: linux/amd64,linux/arm64')
+  if (emulatedMultiArchitectureBuild) {
+    throw new Error(
+      `${label} must use native architecture runners instead of a QEMU multi-architecture build.`,
+    )
+  }
+  if (contents.includes('npm run verify:tree') && scripts.includes('npm run verify:tree')) {
     throw new Error(
       `${label} publish-main must consume the matching CI result instead of repeating the full tree gate.`,
     )
+  }
+
+  const smokeJob = workflow.jobs?.['smoke-promoted-main']
+  if (!smokeJob || smokeJob['runs-on'] !== '${{ matrix.runner }}') {
+    throw new Error(`${label} must smoke promoted main on native architecture runners.`)
+  }
+  const smokeScripts = workflowStepScripts(smokeJob)
+  if (!smokeScripts.includes('--architectures "$ARCHITECTURE"')) {
+    throw new Error(`${label} promoted-main smoke must select its native architecture.`)
   }
 }
 
@@ -231,6 +298,20 @@ export function assertReleaseWorkflowExecutionContract(contents, label = 'releas
   }
   if (!scripts.includes('npm run verify:beta8-update -- "$package_path"')) {
     throw new Error(`${label} release job must replay the published package through the historical beta.8 updater.`)
+  }
+  for (const required of [
+    'sha-${GITHUB_SHA:0:12}',
+    'Missing qualified image',
+    'RELEASE_IMAGE_DIGEST=$release_digest',
+  ]) {
+    if (!scripts.includes(required)) {
+      throw new Error(`${label} release job must reuse the exact qualified main image via '${required}'.`)
+    }
+  }
+  if (contents.includes('docker/build-push-action')) {
+    throw new Error(
+      `${label} must not rebuild a tagged image under QEMU; reuse the exact qualified main SHA image.`,
+    )
   }
   const installCount = scripts.match(/(?:^|\n)\s*npm ci\s*(?:\n|$)/g)?.length ?? 0
   if (installCount !== 1) {

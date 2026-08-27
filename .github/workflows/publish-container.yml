@@ -21,7 +21,7 @@ env:
 jobs:
   validate-pull-request:
     if: github.repository == 'zhoujasper/phd-atlas' && github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
       contents: read
@@ -39,40 +39,52 @@ jobs:
         run: |
           npm ci
           npm run verify:tree
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Build both architectures without publishing
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
-  publish-main:
-    if: github.repository == 'zhoujasper/phd-atlas' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 75
+  build-pull-request-image:
+    if: github.repository == 'zhoujasper/phd-atlas' && github.event_name == 'pull_request'
+    needs: validate-pull-request
+    name: build-pr-${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     permissions:
-      actions: read
       contents: read
-      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Check out source
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build the native architecture without publishing
+        uses: docker/build-push-action@v6
         with:
-          node-version: 24
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: false
+          cache-from: type=gha,scope=container-${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=container-${{ matrix.architecture }}
 
+  gate-main:
+    if: github.repository == 'zhoujasper/phd-atlas' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      candidate-tag: ${{ steps.identity.outputs.candidate_tag }}
+      short-sha: ${{ steps.identity.outputs.short_sha }}
+    steps:
       - name: Wait for matching CI gate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -107,46 +119,138 @@ jobs:
             --exit-status
 
       - name: Define candidate and immutable SHA tags
+        id: identity
         shell: bash
         run: |
           set -euo pipefail
-          {
-            echo "CANDIDATE_TAG=candidate-main-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-            echo "SHORT_SHA=${GITHUB_SHA:0:12}"
-          } >> "$GITHUB_ENV"
+          echo "candidate_tag=candidate-main-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+  build-main-architecture:
+    needs: gate-main
+    name: build-main-${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
         with:
-          platforms: arm64
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in for candidate publication
+      - name: Log in for architecture candidate publication
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish a candidate image
-        id: candidate
+      - name: Build and publish the native architecture candidate
+        id: image
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.CANDIDATE_TAG }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.gate-main.outputs.candidate-tag }}-${{ matrix.architecture }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=main
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=container-${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=container-${{ matrix.architecture }}
 
-      - name: Remove registry credentials before validation
+      - name: Remove registry credentials before architecture validation
         shell: bash
         run: docker logout "$REGISTRY"
+
+      - name: Verify and smoke test the anonymous architecture candidate
+        shell: bash
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.gate-main.outputs.candidate-tag }}-${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error title=Missing architecture digest::Buildx did not return a canonical ${ARCHITECTURE} digest."
+            exit 1
+          fi
+          bash tools/wait-for-container-digest.sh "$IMAGE_REF" "$IMAGE_DIGEST"
+          node tools/smoke-container-image.mjs \
+            "${IMAGE_REF}@${IMAGE_DIGEST}" \
+            "main-candidate-${ARCHITECTURE}" \
+            --architectures "$ARCHITECTURE"
+
+  publish-main:
+    needs: [gate-main, build-main-architecture]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.candidate.outputs.digest }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to assemble the multi-architecture candidate
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assemble the multi-architecture candidate
+        id: candidate
+        shell: bash
+        env:
+          CANDIDATE_TAG: ${{ needs.gate-main.outputs.candidate-tag }}
+        run: |
+          set -euo pipefail
+          candidate_ref="${REGISTRY}/${IMAGE_NAME}:${CANDIDATE_TAG}"
+          docker buildx imagetools create \
+            --tag "$candidate_ref" \
+            "${candidate_ref}-amd64" \
+            "${candidate_ref}-arm64"
+          output="$(docker buildx imagetools inspect "$candidate_ref")"
+          candidate_digest="$(printf '%s\n' "$output" | awk '$1 == "Digest:" { print $2; exit }')"
+          if ! [[ "$candidate_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error title=Missing candidate digest::The assembled manifest has no canonical digest."
+            exit 1
+          fi
+          echo "digest=$candidate_digest" >> "$GITHUB_OUTPUT"
+          docker logout "$REGISTRY"
 
       - name: Verify anonymous candidate manifest
         shell: bash
@@ -154,10 +258,6 @@ jobs:
           CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
         run: |
           set -euo pipefail
-          if ! [[ "$CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error title=Missing candidate digest::Buildx did not return a canonical manifest digest."
-            exit 1
-          fi
           bash tools/wait-for-container-digest.sh \
             "${REGISTRY}/${IMAGE_NAME}@${CANDIDATE_DIGEST}" \
             "$CANDIDATE_DIGEST"
@@ -179,15 +279,6 @@ jobs:
           }
           NODE
 
-      - name: Smoke test candidate on amd64 and arm64
-        shell: bash
-        env:
-          CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
-        run: |
-          node tools/smoke-container-image.mjs \
-            "${REGISTRY}/${IMAGE_NAME}@${CANDIDATE_DIGEST}" \
-            main-candidate
-
       - name: Log in to promote validated tags
         uses: docker/login-action@v3
         with:
@@ -199,6 +290,7 @@ jobs:
         shell: bash
         env:
           CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
+          SHORT_SHA: ${{ needs.gate-main.outputs.short-sha }}
         run: |
           set -euo pipefail
           sha_ref="${REGISTRY}/${IMAGE_NAME}:sha-${SHORT_SHA}"
@@ -219,6 +311,7 @@ jobs:
         shell: bash
         env:
           CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
+          SHORT_SHA: ${{ needs.gate-main.outputs.short-sha }}
         run: |
           set -euo pipefail
           for ref in \
@@ -227,9 +320,41 @@ jobs:
             bash tools/wait-for-container-digest.sh "$ref" "$CANDIDATE_DIGEST"
           done
 
-      - name: Smoke test promoted main on amd64 and arm64
+  smoke-promoted-main:
+    needs: [gate-main, publish-main]
+    name: smoke-main-${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify and smoke test promoted main
         shell: bash
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+          CANDIDATE_DIGEST: ${{ needs.publish-main.outputs.digest }}
         run: |
+          set -euo pipefail
+          bash tools/wait-for-container-digest.sh \
+            "${REGISTRY}/${IMAGE_NAME}:main" \
+            "$CANDIDATE_DIGEST"
           node tools/smoke-container-image.mjs \
             "${REGISTRY}/${IMAGE_NAME}:main" \
-            main
+            "main-${ARCHITECTURE}" \
+            --architectures "$ARCHITECTURE"

@@ -41,6 +41,10 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Restored the portable-path source/declaration pair to the minimal Docker
   build stage so full TypeScript qualification succeeds without adding desktop
   resources to the server runtime image.
+- Build and smoke x64 and ARM64 public containers on native GitHub runners,
+  assemble them only after both pass, and make version Releases reuse the
+  immutable image qualified for the exact public commit instead of rebuilding
+  production dependencies under QEMU.
 - Removed abandoned route/middleware scaffolds and orphaned investigation
   scripts, restored TypeScript coverage for portable desktop paths, and added
   commit/push guards that reject `Co-authored-by` trailers.
