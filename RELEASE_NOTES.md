@@ -55,6 +55,10 @@ history while the next version can be prepared in the same file.
   GitHub runners, assembled only after both pass, and promoted with an
   immutable source-SHA tag. Version publication reuses that exact qualified
   image instead of rebuilding production dependencies through QEMU.
+- Public CI and native container jobs retain bounded but realistic execution
+  budgets, so an uncached Alpine toolchain download cannot cancel an otherwise
+  clean release at the former 35-minute limit; no source, image, or smoke gate
+  is skipped.
 - Node 24 qualification no longer lets Node's experimental `localStorage`
   shadow jsdom, measures login RSS after explicit collection, closes each local
   Web Push test connection instead of reusing a stale keep-alive socket, and
@@ -93,6 +97,9 @@ history while the next version can be prepared in the same file.
 - 公开 x64 与 ARM64 容器分别在对应原生 GitHub runner 构建和冒烟，两者均通过后才
   组装，并以源码 SHA 不可变标签提升；版本发布复用这份精确验收镜像，不再经 QEMU
   重建生产依赖。
+- 公开 CI 与原生容器任务使用仍然有界但符合实际下载耗时的预算，未命中缓存的 Alpine
+  工具链下载不会再在原 35 分钟上限处取消一条其余均通过的发布；源码、镜像和冒烟门禁
+  一个也不会跳过。
 - Node 24 验收不再让 Node 实验性 `localStorage` 遮蔽 jsdom；登录 RSS 在明确回收后
   测量，Web Push 测试不再复用过期本地 keep-alive socket，200 请求突发也改为有界
   分批。生产行为、响应断言和 128 MiB 阈值均未放松。

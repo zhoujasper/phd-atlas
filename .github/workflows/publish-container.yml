@@ -45,7 +45,7 @@ jobs:
     needs: validate-pull-request
     name: build-pr-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     permissions:
       contents: read
     strategy:
@@ -77,7 +77,7 @@ jobs:
   gate-main:
     if: github.repository == 'zhoujasper/phd-atlas' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 110
     permissions:
       actions: read
       contents: read
@@ -130,7 +130,7 @@ jobs:
     needs: gate-main
     name: build-main-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     permissions:
       contents: read
       packages: write

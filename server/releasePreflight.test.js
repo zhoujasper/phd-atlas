@@ -113,6 +113,7 @@ describe('release preflight contracts', () => {
       'jobs:',
       '  verify:',
       '    runs-on: ubuntu-latest',
+      '    timeout-minutes: 90',
       '    steps:',
       '      - run: npm run verify:tree',
       '',
@@ -122,6 +123,10 @@ describe('release preflight contracts', () => {
       valid.replace('npm run verify:tree', 'npx tsc --noEmit'),
       'ci.yml',
     )).toThrow(/weaker tsc --noEmit/)
+    expect(() => assertWorkflowValidationContract(
+      valid.replace('timeout-minutes: 90', 'timeout-minutes: 35'),
+      'ci.yml',
+    )).toThrow(/CI timeout must be at least 90 minutes/)
   })
 
   it('pins Draft Release operations to the numeric Release ID', () => {
@@ -150,6 +155,11 @@ describe('release preflight contracts', () => {
       'runner: ubuntu-24.04-arm',
       'runner: ubuntu-24.04',
     )}`
+    const underBudgetMainBuild = `${workflow.slice(0, mainBuildStart)}${replaceRequired(
+      workflow.slice(mainBuildStart),
+      '    timeout-minutes: 75',
+      '    timeout-minutes: 45',
+    )}`
     expect(() => assertPublicContainerWorkflowContract(workflow, workflowPath)).not.toThrow()
     expect(() => assertPublicContainerWorkflowContract(
       replaceRequired(workflow, '--commit "$GITHUB_SHA"', '--branch main'),
@@ -171,6 +181,14 @@ describe('release preflight contracts', () => {
       `${workflow}\n# docker/setup-qemu-action`,
       workflowPath,
     )).toThrow(/native architecture runners/)
+    expect(() => assertPublicContainerWorkflowContract(
+      replaceRequired(workflow, '    timeout-minutes: 110', '    timeout-minutes: 45'),
+      workflowPath,
+    )).toThrow(/gate-main timeout must cover/)
+    expect(() => assertPublicContainerWorkflowContract(
+      underBudgetMainBuild,
+      workflowPath,
+    )).toThrow(/native architecture build timeout/)
   })
 
   it('keeps MSSQL and Release publication on one runner and installs once', () => {

@@ -168,12 +168,18 @@ export function parseWorkflowDocument(contents, label) {
 }
 
 export function assertWorkflowValidationContract(contents, label) {
-  parseWorkflowDocument(contents, label)
+  const workflow = parseWorkflowDocument(contents, label)
   if (contents.includes('npx tsc --noEmit')) {
     throw new Error(`${label} uses the weaker tsc --noEmit check; use the shared tsc -b preflight.`)
   }
   if (!contents.includes('npm run verify:tree')) {
     throw new Error(`${label} does not call the shared verify:tree gate.`)
+  }
+  if (path.basename(label) === 'ci.yml') {
+    const timeoutMinutes = workflow.jobs?.verify?.['timeout-minutes']
+    if (!Number.isInteger(timeoutMinutes) || timeoutMinutes < 90) {
+      throw new Error(`${label} CI timeout must be at least 90 minutes for the full tree and Docker build.`)
+    }
   }
 }
 
@@ -191,6 +197,9 @@ export function assertPublicContainerWorkflowContract(contents, label = 'publish
   }
   if (gateJob.permissions?.actions !== 'read') {
     throw new Error(`${label} gate-main must have read access to matching CI run state.`)
+  }
+  if (!Number.isInteger(gateJob['timeout-minutes']) || gateJob['timeout-minutes'] < 110) {
+    throw new Error(`${label} gate-main timeout must cover the complete matching CI run.`)
   }
   const gateScripts = workflowStepScripts(gateJob)
   for (const required of [
@@ -214,6 +223,16 @@ export function assertPublicContainerWorkflowContract(contents, label = 'publish
   }
   if (buildJob['runs-on'] !== '${{ matrix.runner }}') {
     throw new Error(`${label} native architecture builds must use the matrix runner.`)
+  }
+  if (!Number.isInteger(buildJob['timeout-minutes']) || buildJob['timeout-minutes'] < 75) {
+    throw new Error(`${label} native architecture build timeout must be at least 75 minutes.`)
+  }
+  const pullRequestBuildJob = workflow.jobs?.['build-pull-request-image']
+  if (
+    !Number.isInteger(pullRequestBuildJob?.['timeout-minutes'])
+    || pullRequestBuildJob['timeout-minutes'] < 75
+  ) {
+    throw new Error(`${label} pull-request architecture build timeout must be at least 75 minutes.`)
   }
   const architectureMatrix = buildJob.strategy?.matrix?.include
   const expectedArchitectures = [

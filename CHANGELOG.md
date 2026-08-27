@@ -45,6 +45,10 @@ and the project uses [Semantic Versioning](https://semver.org/).
   assemble them only after both pass, and make version Releases reuse the
   immutable image qualified for the exact public commit instead of rebuilding
   production dependencies under QEMU.
+- Extended the bounded public CI and native container job budgets after an
+  otherwise clean uncached Docker build exceeded the former 35-minute limit
+  while downloading Alpine build tools; all source, image, and smoke gates
+  remain mandatory.
 - Removed abandoned route/middleware scaffolds and orphaned investigation
   scripts, restored TypeScript coverage for portable desktop paths, and added
   commit/push guards that reject `Co-authored-by` trailers.
