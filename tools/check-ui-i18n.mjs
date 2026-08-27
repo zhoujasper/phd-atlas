@@ -50,6 +50,10 @@ function sourceFiles(directory) {
     const entryPath = path.join(directory, entry.name)
     if (entry.isDirectory()) return sourceFiles(entryPath)
     if (!/\.tsx?$/.test(entry.name) || entry.name.includes('.test.')) return []
+    // This file is executable documentation for component authors and is not
+    // imported by any production entry. Audit the components it demonstrates,
+    // not deliberately literal sample copy such as "Item 1" and "Trigger Error".
+    if (entry.name === 'FeedbackIntegrationExamples.tsx') return []
     return [entryPath]
   })
 }

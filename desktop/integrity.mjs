@@ -10,8 +10,9 @@ export const INTEGRITY_MANIFEST_NAME = 'integrity-manifest.json'
 
 export const INTEGRITY_PATHS = Object.freeze([
   'desktop/main.mjs',
-  'desktop/preload.mjs',
+  'desktop/preload.cjs',
   'desktop/launch-runtime.mjs',
+  'desktop/portablePaths.mjs',
   'desktop/resolve-runtime-node.mjs',
   'server/desktopRuntime.js',
   'server/desktopRoutes.js',

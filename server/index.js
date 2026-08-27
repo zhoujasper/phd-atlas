@@ -9859,9 +9859,21 @@ export function createApp(options = {}) {
     60 * 60_000,
   )
   const mutationAdmission = createMutationAdmissionController({
-    maxActive: boundedRuntimeIntegerEnv('MUTATION_MAX_ACTIVE', 4, 64),
+    // This gate sits in front of every authenticated PATCH/POST/PUT/DELETE
+    // to /api (not just application saves), so one account's own ordinary
+    // interactive burst (autosave + a checklist toggle + a material write,
+    // say) can occupy several slots at once. It used to be a single global
+    // 4-slot semaphore with no per-account key, so one signed-in user could
+    // exhaust it alone and see SERVER_BUSY with zero real contention. It is
+    // now keyed per-account like `heavyWorkAdmission` below: a generous
+    // personal budget that queues instead of rejecting when exceeded, inside
+    // a larger global ceiling that still bounds aggregate hydration memory.
+    maxActive: boundedRuntimeIntegerEnv('MUTATION_MAX_ACTIVE', 16, 64),
     maxQueued: boundedRuntimeIntegerEnv('MUTATION_MAX_QUEUED', 64, 10_000),
     waitTimeoutMs: boundedRuntimeIntegerEnv('MUTATION_WAIT_TIMEOUT_MS', 15_000, 120_000),
+    maxActivePerKey: boundedRuntimeIntegerEnv('MUTATION_MAX_ACTIVE_PER_ACCOUNT', 6, 32),
+    maxQueuedPerKey: boundedRuntimeIntegerEnv('MUTATION_MAX_QUEUED_PER_ACCOUNT', 32, 256),
+    queueWhenPerKeyActive: true,
   })
   const heavyWorkMaxActive = boundedRuntimeIntegerEnv('HEAVY_WORK_MAX_ACTIVE', 1, 8)
   const heavyWorkMaxQueued = boundedRuntimeIntegerEnv('HEAVY_WORK_MAX_QUEUED', 32, 1_000)
@@ -10332,6 +10344,7 @@ export function createApp(options = {}) {
     code: 'SERVER_BUSY',
     message: 'The server is handling many updates. Please retry shortly.',
     retryAfterMs: 1_000,
+    keyForRequest: requestBodyAdmissionKey,
     memoryWorkClass: apiMemoryWorkClass,
     holdUntilTrackedWorkSettles: true,
   })

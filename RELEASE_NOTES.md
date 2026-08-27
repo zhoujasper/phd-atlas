@@ -5,6 +5,93 @@ section per version using the exact heading `## v<package.json version>`.
 Automation extracts only the matching section, so older notes remain immutable
 history while the next version can be prepared in the same file.
 
+## v0.1.4
+
+**Desktop local-workspace parity and solo-user reliability.**
+
+> **Upgrade path:** existing `0.1.3` server installations can update normally
+> from Admin. Desktop users should download the new native package for their
+> platform. Back up the complete workspace before upgrading. Native packages
+> remain unsigned and may require explicit SmartScreen or Gatekeeper approval.
+>
+> **升级路径：** 现有 `0.1.3` 服务端可以直接从管理后台正常升级；桌面用户请下载
+> 对应平台的新原生安装包。升级前请备份完整工作空间。当前原生包仍未签名，可能需要
+> 明确通过 SmartScreen 或 Gatekeeper 确认。
+
+- The packaged desktop now opens straight into its local personal workspace.
+  A website email/password screen no longer blocks first launch; the optional
+  opening password remains the only local authentication gate.
+- Unlinked desktop Settings no longer presents SMTP/IMAP, mail reminders,
+  share links, calendar URLs, browser push, mail status, or website Pro upgrade
+  surfaces. Those features appear only after the user connects a deployed web
+  account, and local persistence errors no longer blame a remote server.
+- Portable Windows and macOS layouts keep workspace data, `User Data`, and
+  `Cache` beside the executable or app. Legacy local folders migrate on first
+  launch without sending application data to the user profile or home folder.
+- The macOS package adds native window chrome, an immediate local splash, and
+  an ad-hoc signature after Electron fuses so the unsigned build can launch on
+  current macOS instead of being killed for an invalid code signature.
+- Authenticated mutations are now admitted per account. The global default is
+  16 active requests, each account receives six active slots plus a bounded
+  queue, and one person's autosave/file/checklist burst no longer exhausts a
+  server-wide four-slot semaphore and returns `SERVER_BUSY`.
+- Removed 35 never-imported route and middleware stubs, three dead storage
+  helpers, and six orphaned performance-investigation scripts. The production
+  server remains the real inline implementation, and the portable-path module
+  now has the `.d.mts` declaration TypeScript actually resolves for `.mjs`.
+- Release commits are enforced as single-author commits: the creation-time
+  hook and strict outgoing-range scan reject every `Co-authored-by` trailer.
+- Mail parsing now resolves through `mailparser` 3.9.16,
+  `html-to-text` 10.0.1, and `deepmerge-ts` 8.0.2; IP classification uses
+  `ip-address` 10.5.0, while build-time Nano ID and Undici paths also resolve
+  to patched versions. Production-only and complete npm audits both report
+  zero vulnerabilities, and release-tree validation now blocks on the audit.
+- Source-secret qualification now covers both Git worktrees and the Git-free
+  public export, rejecting links or special entries instead of following them.
+- The minimal Docker build stage now carries the portable-path module and its
+  declaration for full TypeScript qualification without expanding the runtime
+  server image into a desktop bundle.
+- Node 24 qualification no longer lets Node's experimental `localStorage`
+  shadow jsdom, measures login RSS after explicit collection, closes each local
+  Web Push test connection instead of reusing a stale keep-alive socket, and
+  dispatches 200-request bursts in bounded batches. Production behavior and the
+  original response and 128 MiB assertions remain unchanged.
+- Refreshed Windows setup/portable and macOS DMG/ZIP packages are built on
+  native runners from the exact successful public Release commit, paired with
+  SHA-256 files, and attached without replacing an existing asset.
+
+### 中文摘要
+
+- 打包桌面版现在首次启动就进入本地个人工作空间，不再被网页邮箱/密码登录阻断；本地
+  唯一可选认证门禁仍是启动密码。
+- 未连接网页账号时，桌面设置不再显示 SMTP/IMAP、邮件提醒、分享链接、日历地址、
+  浏览器推送、邮件状态和网站 Pro 升级入口；本地持久化失败也不再归咎于远端服务器。
+- Windows 与 macOS 的工作空间数据、`User Data` 和 `Cache` 都随可执行文件或应用便携
+  存放；旧目录会在首次启动迁移，不会把应用数据送进系统用户目录。
+- macOS 包新增原生窗口样式、本地启动画面，并在 Electron fuse 修改后进行 ad-hoc
+  签名，避免当前 macOS 因无效代码签名直接终止未签名应用。
+- 已认证写入准入改为按账号隔离：全局默认 16 个活动请求，单账号 6 个活动槽位并带
+  有界队列；一个人的自动保存、文件和清单突发不再耗尽全服务器四槽门禁并返回
+  `SERVER_BUSY`。
+- 删除 35 个从未导入的路由/中间件桩、3 个无调用的存储 helper 和 6 个孤立性能调查
+  脚本；生产服务继续使用真实内联实现，便携路径模块也补上 TypeScript 对 `.mjs` 实际
+  会解析的 `.d.mts` 声明。
+- 提交创建与严格推送范围检查都会拒绝任何 `Co-authored-by` 尾注，发布提交只记录一个
+  Git 主作者。
+- 邮件解析链已更新到 `mailparser` 3.9.16、`html-to-text` 10.0.1 与
+  `deepmerge-ts` 8.0.2，IP 分类更新到 `ip-address` 10.5.0，构建期 Nano ID 与
+  Undici 也采用修复版本。生产依赖和完整 npm 审计均为 0 漏洞，源码发布门今后会把
+  审计失败作为阻断条件。
+- 源码密钥验收同时覆盖 Git 工作区与无 `.git` 的公开导出树；遇到链接或特殊条目时会
+  失败关闭，而不是继续跟随或跳过。
+- Docker 最小构建阶段现在带上便携路径模块及声明，以通过完整 TypeScript 验收，同时
+  不会把桌面打包资源扩进服务器运行镜像。
+- Node 24 验收不再让 Node 实验性 `localStorage` 遮蔽 jsdom；登录 RSS 在明确回收后
+  测量，Web Push 测试不再复用过期本地 keep-alive socket，200 请求突发也改为有界
+  分批。生产行为、响应断言和 128 MiB 阈值均未放松。
+- Windows 安装版/便携版与 macOS DMG/ZIP 会从公开 Release 的同一成功提交在原生
+  runner 重新构建，逐个配套 SHA-256，且不会覆盖任何已存在资产。
+
 ## v0.1.3
 
 **Beta.8 direct-upgrade repair with legacy-delta compatibility.**

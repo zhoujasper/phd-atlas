@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>PhD Atlas</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #f5f5f7;
+      }
+      @media (prefers-color-scheme: dark) {
+        html,
+        body {
+          background: #111114;
+        }
+      }
+      .mark {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+      }
+      .spin {
+        width: 22px;
+        height: 22px;
+        border: 1.5px solid rgba(0, 113, 227, 0.16);
+        border-top-color: #0071e3;
+        border-radius: 50%;
+        animation: spin 0.68s linear infinite;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .spin { animation: none; opacity: 0.55; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mark"><div class="spin" aria-label="Loading"></div></div>
+  </body>
+</html>

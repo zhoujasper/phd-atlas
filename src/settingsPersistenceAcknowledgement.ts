@@ -10,7 +10,7 @@ export class SettingsPersistenceAcknowledgementError extends Error {
   readonly code = 'SETTINGS_PERSISTENCE_NOT_ACKNOWLEDGED'
 
   constructor() {
-    super('The server did not durably acknowledge every submitted setting.')
+    super('Settings could not be confirmed as saved.')
     this.name = 'SettingsPersistenceAcknowledgementError'
   }
 }

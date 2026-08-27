@@ -18,6 +18,24 @@ function configFilePath(moduleUrl: string) {
   return fileURLToPath(parsed)
 }
 
+// Node's own experimental global `localStorage`/`sessionStorage` (unbacked
+// without --localstorage-file) can shadow jsdom's per-window Storage
+// instances depending on install order, leaving `localStorage` undefined in
+// every Vitest run regardless of app code. Forked test workers inherit this
+// process's env, so disabling it here reaches them before jsdom installs its
+// own Storage globals.
+// --expose-gc backs the deterministic memory-growth assertions in
+// server/loginConcurrency.test.js: without a forced collection immediately
+// before each `process.memoryUsage()` snapshot, not-yet-collected garbage
+// from an earlier large allocation can inflate one snapshot but not the
+// other, making an RSS delta assertion measure GC timing instead of actual
+// retained memory.
+process.env.NODE_OPTIONS = [
+  process.env.NODE_OPTIONS,
+  '--no-experimental-webstorage',
+  '--expose-gc',
+].filter(Boolean).join(' ')
+
 const projectRoot = dirname(configFilePath(import.meta.url))
 const packageMetadata = JSON.parse(
   readFileSync(resolve(projectRoot, 'package.json'), 'utf8'),

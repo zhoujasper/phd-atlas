@@ -13,6 +13,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import YAML from 'yaml'
+import { assertNoCoauthorTrailers } from './no-coauthors.mjs'
 import { planPublicSync } from './plan-public-sync.mjs'
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url))
@@ -110,6 +111,15 @@ export function assertPackageMetadata(packageJson, lockJson) {
     )
   }
   return { name: packageName, version: packageVersion }
+}
+
+export function assertDesktopReleaseScriptContract(packageJson) {
+  const required = 'node desktop/prepare-release-artifacts.mjs'
+  if (packageJson.scripts?.['desktop:release-artifacts'] !== required) {
+    throw new Error(
+      `package.json script 'desktop:release-artifacts' must be exactly '${required}'.`,
+    )
+  }
 }
 
 export function releaseTreeScriptArguments(script) {
@@ -336,7 +346,9 @@ export function assertGitHookInstallationContract(indexEntry, installerContents)
   }
   for (const required of [
     "path.join(projectRoot, '.githooks', 'pre-push')",
+    "path.join(projectRoot, '.githooks', 'commit-msg')",
     'chmod(prePushHook, 0o755)',
+    'chmod(commitMessageHook, 0o755)',
     "core.hooksPath', '.githooks'",
   ]) {
     if (!installerContents.includes(required)) {
@@ -353,6 +365,7 @@ async function validateContracts(root) {
   const packageJson = await readJson(path.join(root, 'package.json'))
   const lockJson = await readJson(path.join(root, 'package-lock.json'))
   const metadata = assertPackageMetadata(packageJson, lockJson)
+  assertDesktopReleaseScriptContract(packageJson)
   if (packageJson.scripts?.typecheck !== 'tsc -b --force') {
     throw new Error("package.json script 'typecheck' must be exactly 'tsc -b --force'.")
   }
@@ -475,6 +488,7 @@ async function validateContracts(root) {
   for (const required of [
     'FROM node:24-alpine AS build',
     'COPY shared ./shared',
+    'COPY desktop/portablePaths.mjs desktop/portablePaths.d.mts ./desktop/',
     'COPY tools/start-server.mjs tools/apply-update.mjs tools/container-entrypoint.mjs tools/stamp-service-worker.mjs tools/verify-build-entry-budget.mjs ./tools/',
     'npm --ignore-scripts run build',
     'npm prune --omit=dev',
@@ -532,6 +546,7 @@ async function runTree(root) {
   console.log(`[preflight] Verifying ${metadata.name}@${metadata.version}`)
   for (const script of [
     'lint',
+    'security:audit',
     'i18n:check',
     'release:notes:check',
     'typecheck',
@@ -768,6 +783,26 @@ export function prePushBranchUpdates(updates) {
   )
 }
 
+export function prePushRevisionSpecs(updates) {
+  return [...new Set(updates
+    .filter((update) => update.localSha !== zeroSha)
+    .map((update) => update.remoteSha === zeroSha
+      ? update.localSha
+      : `${update.remoteSha}..${update.localSha}`))]
+}
+
+async function assertPrePushCommitsHaveNoCoauthors(updates) {
+  for (const revision of prePushRevisionSpecs(updates)) {
+    const log = await gitOutput(['log', '--format=%H%x00%B%x00', revision])
+    const fields = log.split('\0')
+    for (let index = 0; index + 1 < fields.length; index += 2) {
+      const sha = fields[index].trim()
+      if (!sha) continue
+      assertNoCoauthorTrailers(fields[index + 1], `Commit ${sha}`)
+    }
+  }
+}
+
 async function assertHookTargetsCurrentCleanHead(updates) {
   const branchUpdates = prePushBranchUpdates(updates)
   const pushedShas = [...new Set(branchUpdates.map((update) => update.localSha))]
@@ -805,6 +840,7 @@ async function runPush({ hook = false } = {}) {
   if (hook) {
     const stdin = await readStandardInput()
     updates = parsePrePushInput(stdin)
+    await assertPrePushCommitsHaveNoCoauthors(updates)
     const hasBranchUpdate = await assertHookTargetsCurrentCleanHead(updates)
     if (!hasBranchUpdate) {
       console.log('[preflight] No branch update requires verification.')

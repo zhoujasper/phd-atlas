@@ -1,0 +1,412 @@
+/**
+ * Animation & Interaction Optimization
+ *
+ * Deterministic loading states, unified page transitions, and improved feedback.
+ * Applied after surface-polish.css for consistent motion language.
+ */
+
+/* --------------------------------------------------------------------------
+   1. Deterministic Skeleton Pulse (replaces infinite breathe)
+   -------------------------------------------------------------------------- */
+
+/* Two-cycle pulse that ends at full opacity for clean crossfade to content */
+@keyframes skeleton-pulse-deterministic {
+  0% { opacity: 0.72; }
+  25% { opacity: 1; }
+  50% { opacity: 0.72; }
+  75% { opacity: 1; }
+  100% { opacity: 1; }
+}
+
+/* Skeleton to content crossfade */
+@keyframes skeleton-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes content-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Apply deterministic pulse to all skeleton elements */
+.loading-skeleton-bar,
+.screen-skeleton-action,
+.screen-skeleton-tabs span,
+.pane-skeleton-search,
+.pane-skeleton-chips span,
+.pane-skeleton-avatar,
+.pane-skeleton-ring,
+.launch-auth-input,
+.launch-auth-button,
+.launch-admin-brand,
+.launch-admin-tabs span,
+.launch-admin-account {
+  animation: skeleton-pulse-deterministic 2.8s var(--ease-out) forwards !important;
+}
+
+/* Skeleton container fades out while content fades in */
+.workspace-deferred-panel.content-ready {
+  animation: skeleton-fade-out 240ms var(--ease-fluid) forwards;
+}
+
+.workspace-deferred-main.content-loaded {
+  animation: content-fade-in 240ms var(--ease-fluid) both;
+}
+
+/* --------------------------------------------------------------------------
+   2. Unified Page Transition Motion
+   -------------------------------------------------------------------------- */
+
+/* Consistent page-flow-in across all route changes */
+.route-content-reveal,
+.dashboard-screen,
+.dossier-pane,
+.discover-workspace,
+.profile-screen,
+.settings-screen,
+.admin-screen,
+.interview-workspace,
+.team-dashboard-screen {
+  animation: page-flow-in var(--duration-page) var(--ease-fluid) both;
+  transform-origin: 50% 18%;
+}
+
+/* Optimize page-flow-in for consistent reveal */
+@keyframes page-flow-in {
+  from {
+    opacity: 0.76;
+    transform: translate3d(0, 6px, 0) scale(0.997);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   3. Optimized Launch Curtain (280ms exit with staggered content)
+   -------------------------------------------------------------------------- */
+
+.launch-screen.is-exiting {
+  animation: launch-curtain-exit-optimized 280ms var(--ease-in-out) both;
+  will-change: opacity, transform;
+}
+
+@keyframes launch-curtain-exit-optimized {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, -2px, 0) scale(1.002);
+  }
+}
+
+/* Content starts fading in 80ms before curtain fully exits */
+.atlas-shell.curtain-exiting {
+  animation: content-early-reveal 280ms var(--ease-fluid) both;
+  animation-delay: 80ms;
+}
+
+@keyframes content-early-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* --------------------------------------------------------------------------
+   4. Symmetric Toast Animations (240ms both directions)
+   -------------------------------------------------------------------------- */
+
+.atlas-toast {
+  animation: toast-enter-unified 240ms var(--ease-fluid) both !important;
+}
+
+.atlas-toast.exiting {
+  animation: toast-exit-unified 240ms var(--ease-fluid) forwards !important;
+}
+
+@keyframes toast-enter-unified {
+  from {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes toast-exit-unified {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.98);
+  }
+}
+
+.atlas-toast-slot {
+  animation: toast-slot-enter-unified 240ms var(--ease-fluid) both !important;
+}
+
+.atlas-toast-slot.exiting {
+  animation: toast-slot-exit-unified 240ms var(--ease-fluid) forwards !important;
+}
+
+@keyframes toast-slot-enter-unified {
+  from { max-height: 0; margin-bottom: -8px; }
+  to { max-height: 96px; margin-bottom: 0; }
+}
+
+@keyframes toast-slot-exit-unified {
+  from { max-height: 96px; margin-bottom: 0; }
+  to { max-height: 0; margin-bottom: -8px; }
+}
+
+/* --------------------------------------------------------------------------
+   5. Save Status Indicator (persistent feedback in DossierView)
+   -------------------------------------------------------------------------- */
+
+.dossier-save-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1;
+  white-space: nowrap;
+  transition: opacity 200ms var(--ease-fluid);
+}
+
+.dossier-save-status.saving {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.dossier-save-status.saved {
+  background: var(--success-bg);
+  color: var(--success-text);
+  animation: save-success-pulse 400ms var(--ease-out);
+}
+
+.dossier-save-status.error {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.dossier-save-status.hiding {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dossier-save-status-icon {
+  display: inline-flex;
+  animation: save-icon-spin 760ms linear infinite;
+}
+
+.dossier-save-status.saved .dossier-save-status-icon,
+.dossier-save-status.error .dossier-save-status-icon {
+  animation: save-icon-pop 300ms var(--ease-spring);
+}
+
+@keyframes save-icon-spin {
+  to { transform: rotate(1turn); }
+}
+
+@keyframes save-icon-pop {
+  0% { transform: scale(0.6); }
+  60% { transform: scale(1.15); }
+  100% { transform: scale(1); }
+}
+
+@keyframes save-success-pulse {
+  0% {
+    background: var(--accent-soft);
+    transform: scale(0.98);
+  }
+  50% {
+    background: var(--success-bg);
+    transform: scale(1.02);
+  }
+  100% {
+    background: var(--success-bg);
+    transform: scale(1);
+  }
+}
+
+/* Position in dossier header actions */
+.dossier-actions .dossier-save-status {
+  order: -1;
+  margin-right: 4px;
+}
+
+/* --------------------------------------------------------------------------
+   6. Tab Loading Skeleton Rows
+   -------------------------------------------------------------------------- */
+
+.tab-content-loading {
+  display: grid;
+  gap: 8px;
+  padding: 18px 16px;
+  animation: content-fade-in 200ms var(--ease-fluid) both;
+}
+
+.tab-skeleton-row {
+  min-height: 62px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.tab-skeleton-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: linear-gradient(
+    100deg,
+    color-mix(in srgb, var(--surface-secondary) 86%, var(--border) 14%) 8%,
+    color-mix(in srgb, var(--surface) 76%, var(--border) 24%) 34%,
+    color-mix(in srgb, var(--surface-secondary) 86%, var(--border) 14%) 58%
+  );
+  background-size: 240% 100%;
+  animation: skeleton-pulse-deterministic 2.8s var(--ease-out) forwards;
+}
+
+.tab-skeleton-content {
+  display: grid;
+  gap: 6px;
+}
+
+.tab-skeleton-bar {
+  height: 12px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(
+    100deg,
+    color-mix(in srgb, var(--surface-secondary) 86%, var(--border) 14%) 8%,
+    color-mix(in srgb, var(--surface) 76%, var(--border) 24%) 34%,
+    color-mix(in srgb, var(--surface-secondary) 86%, var(--border) 14%) 58%
+  );
+  background-size: 240% 100%;
+  animation: skeleton-pulse-deterministic 2.8s var(--ease-out) forwards;
+}
+
+.tab-skeleton-bar.full { width: 100%; }
+.tab-skeleton-bar.medium { width: 72%; }
+.tab-skeleton-bar.short { width: 46%; }
+
+/* --------------------------------------------------------------------------
+   7. Enhanced Button Feedback (brightness shift on active)
+   -------------------------------------------------------------------------- */
+
+.primary-action:active:not(:disabled),
+.quiet-action:active:not(:disabled),
+.ghost-action:active:not(:disabled),
+.compact-action:active:not(:disabled) {
+  transform: scale(0.97);
+  filter: brightness(0.98);
+  transition:
+    transform 80ms var(--ease-out),
+    filter 80ms var(--ease-out);
+}
+
+/* --------------------------------------------------------------------------
+   8. Reduced Motion Support
+   -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-skeleton-bar,
+  .screen-skeleton-action,
+  .screen-skeleton-tabs span,
+  .pane-skeleton-search,
+  .pane-skeleton-chips span,
+  .pane-skeleton-avatar,
+  .pane-skeleton-ring,
+  .launch-auth-input,
+  .launch-auth-button,
+  .launch-admin-brand,
+  .launch-admin-tabs span,
+  .launch-admin-account,
+  .tab-skeleton-avatar,
+  .tab-skeleton-bar {
+    animation: none !important;
+    opacity: 0.88;
+  }
+
+  .route-content-reveal,
+  .dashboard-screen,
+  .dossier-pane,
+  .discover-workspace,
+  .profile-screen,
+  .settings-screen,
+  .admin-screen,
+  .interview-workspace,
+  .team-dashboard-screen,
+  .launch-screen.is-exiting,
+  .atlas-shell.curtain-exiting,
+  .workspace-deferred-panel.content-ready,
+  .workspace-deferred-main.content-loaded {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+  }
+
+  .atlas-toast,
+  .atlas-toast.exiting,
+  .atlas-toast-slot,
+  .atlas-toast-slot.exiting {
+    animation-duration: 0.01ms !important;
+  }
+
+  .dossier-save-status.saved {
+    animation: none;
+  }
+
+  .dossier-save-status-icon {
+    animation: none !important;
+  }
+
+  .primary-action:active:not(:disabled),
+  .quiet-action:active:not(:disabled),
+  .ghost-action:active:not(:disabled),
+  .compact-action:active:not(:disabled) {
+    transform: none;
+    filter: none;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   9. GPU Acceleration & Containment
+   -------------------------------------------------------------------------- */
+
+.route-content-reveal,
+.workspace-deferred-panel,
+.atlas-toast,
+.launch-screen.is-exiting {
+  will-change: auto;
+}
+
+.route-content-reveal.animating,
+.workspace-deferred-panel.animating,
+.atlas-toast:not(.exiting),
+.launch-screen.is-exiting {
+  will-change: opacity, transform;
+}
+
+.workspace-deferred-panel,
+.tab-content-loading,
+.dossier-pane {
+  contain: layout paint;
+}

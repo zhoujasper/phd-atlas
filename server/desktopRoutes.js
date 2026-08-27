@@ -38,6 +38,16 @@ export function installDesktopPublicRoutes(app, options = {}) {
   const issueLocalSession = options.issueLocalSession
   const verifyUnlockPassword = options.verifyUnlockPassword
 
+  app.get('/desktop-shell.js', (_request, response) => {
+    response.setHeader('Content-Type', 'application/javascript; charset=utf-8')
+    response.setHeader('Cache-Control', 'no-store')
+    if (app.locals.desktopEnabled) {
+      response.send('window.phdAtlasDesktop=Object.assign({enabled:true},window.phdAtlasDesktop||{});')
+      return
+    }
+    response.send('window.phdAtlasDesktop=window.phdAtlasDesktop||{enabled:false};')
+  })
+
   app.get('/api/desktop/runtime', wrap(async (request, response) => {
     if (!app.locals.desktopEnabled) {
       fail(response, 404, 'NOT_FOUND', `API route not found: ${request.method} ${request.originalUrl}`)

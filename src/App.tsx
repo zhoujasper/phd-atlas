@@ -210,7 +210,9 @@ import {
 import { contentLanguagesFromSettings } from './contentLanguages'
 import { PUBLIC_EDITION } from './edition'
 import {
+  desktopRemoteEnabled,
   desktopShareEnabled,
+  isDesktopShell,
   loadDesktopRuntime,
   readDesktopRuntime,
   setDesktopRuntime as rememberDesktopRuntime,
@@ -481,10 +483,6 @@ const validScreens: Screen[] = PUBLIC_EDITION
 const validTabs: DetailTab[] = ['dossier', 'materials', 'mail', 'funding', 'timeline', 'admissions', 'review']
 const validTeamSections: TeamSection[] = ['overview', 'applications', 'members', 'resources', 'discover', 'interview', 'audit', 'settings']
 const shortcutTabs: DetailTab[] = ['dossier', 'materials', 'mail', 'funding', 'timeline', 'admissions', 'review']
-
-function isDesktopShell() {
-  return typeof window !== 'undefined' && Boolean(window.phdAtlasDesktop?.enabled)
-}
 
 function readStartupSession(): AuthSession | null {
   const stored = safeParseJson<AuthSession>(localStorage.getItem(SESSION_KEY))
@@ -1754,10 +1752,11 @@ export default function App() {
   const [session, setSession] = useState<AuthSession | null>(() => (
     desktopShell ? null : readStartupSession()
   ))
-  const [desktopGate, setDesktopGate] = useState<'checking' | 'unlock' | 'open'>(
+  const [desktopGate, setDesktopGate] = useState<'checking' | 'unlock' | 'open' | 'error'>(
     desktopShell ? 'checking' : 'open',
   )
   const [desktopUnlockError, setDesktopUnlockError] = useState<string | null>(null)
+  const [desktopBootNonce, setDesktopBootNonce] = useState(0)
   const [initialOfflineMetadata] = useState(() => {
     if (!session) return null
     const snapshot = loadOfflineSnapshot(session)
@@ -2161,18 +2160,8 @@ export default function App() {
     nextSession: AuthSession,
     runtime?: DesktopRuntime | null,
   ) => Promise<boolean>>(async () => false)
-  const desktopBootStartedRef = useRef(false)
 
   useEffect(() => {
-    if (!isDesktopShell()) {
-      void loadDesktopRuntime().then((runtime) => {
-        rememberDesktopRuntime(runtime)
-        setDesktopRuntimeState(runtime)
-      })
-      return
-    }
-    if (desktopBootStartedRef.current) return
-    desktopBootStartedRef.current = true
     let cancelled = false
     void (async () => {
       try {
@@ -2180,6 +2169,12 @@ export default function App() {
         if (cancelled) return
         rememberDesktopRuntime(runtime)
         setDesktopRuntimeState(runtime)
+        if (!runtime.enabled) {
+          if (!isDesktopShell()) {
+            setDesktopGate('open')
+            return
+          }
+        }
         if (runtime.unlockRequired && !runtime.unlocked) {
           setDesktopGate('unlock')
           return
@@ -2189,27 +2184,48 @@ export default function App() {
           const entered = await establishDesktopWorkspaceRef.current(stored, runtime)
           if (cancelled || entered) return
         }
-        const payload = await phdApi.createDesktopSession()
-        if (cancelled) return
-        if (payload.runtime) {
-          rememberDesktopRuntime(payload.runtime)
-          setDesktopRuntimeState(payload.runtime)
+        let lastError: unknown = null
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          try {
+            const payload = await phdApi.createDesktopSession()
+            if (cancelled) return
+            if (payload.runtime) {
+              rememberDesktopRuntime(payload.runtime)
+              setDesktopRuntimeState(payload.runtime)
+            }
+            await establishDesktopWorkspaceRef.current(payload, payload.runtime)
+            return
+          } catch (error) {
+            lastError = error
+            if (error instanceof ApiError && error.code === 'DESKTOP_UNLOCK_REQUIRED') {
+              setDesktopGate('unlock')
+              return
+            }
+            await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)))
+            if (cancelled) return
+          }
         }
-        await establishDesktopWorkspaceRef.current(payload, payload.runtime)
+        if (cancelled) return
+        setDesktopUnlockError(normalizeError(lastError, languageRef.current))
+        setDesktopGate('error')
       } catch (error) {
         if (cancelled) return
         if (error instanceof ApiError && error.code === 'DESKTOP_UNLOCK_REQUIRED') {
           setDesktopGate('unlock')
           return
         }
-        setDesktopUnlockError(normalizeError(error, languageRef.current))
-        setDesktopGate('unlock')
+        if (isDesktopShell() || readDesktopRuntime().enabled) {
+          setDesktopUnlockError(normalizeError(error, languageRef.current))
+          setDesktopGate('error')
+          return
+        }
+        setDesktopGate('open')
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [desktopBootNonce])
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return undefined
@@ -5832,7 +5848,7 @@ export default function App() {
         return false
       }
       setDesktopUnlockError(normalizeError(error, languageRef.current))
-      setDesktopGate('unlock')
+      setDesktopGate(error instanceof ApiError && error.code === 'DESKTOP_UNLOCK_REQUIRED' ? 'unlock' : 'error')
       return false
     } finally {
       if (appMountedRef.current) setBusy(false)
@@ -6811,7 +6827,8 @@ export default function App() {
 
   if (!session) {
     const showOfflineUnavailable = connectivity.mode === 'offline' && !connectivity.browserOnline
-    const showDesktopUnlock = desktopShell && desktopGate !== 'open'
+    const showDesktopUnlock = desktopShell && desktopGate === 'unlock'
+    const showDesktopBootError = desktopShell && desktopGate === 'error'
     return (
       <ThemeContext.Provider value={themeProvider}>
         <I18nContext.Provider value={i18nValue}>
@@ -6825,7 +6842,6 @@ export default function App() {
           {showOfflineUnavailable ? (
             <OfflineUnavailableScreen onRetry={() => probeServerConnectivity({ force: true })} tx={i18nValue.tx} />
           ) : showDesktopUnlock ? (
-            desktopGate === 'unlock' ? (
               <Suspense fallback={<LaunchScreen message="PhD Atlas" />}>
                 <DesktopUnlockScreen
                   busy={busy}
@@ -6833,9 +6849,26 @@ export default function App() {
                   onUnlock={handleDesktopUnlock}
                 />
               </Suspense>
-            ) : (
-              <LaunchScreen message="PhD Atlas" />
-            )
+          ) : showDesktopBootError ? (
+            <main className="desktop-unlock-screen">
+              <section className="desktop-unlock-card" aria-labelledby="desktop-boot-error-title">
+                <h1 id="desktop-boot-error-title">{i18nValue.tx('settings.desktopBootFailed')}</h1>
+                <p>{desktopUnlockError || i18nValue.tx('settings.desktopBootFailed')}</p>
+                <button
+                  type="button"
+                  className="primary-action"
+                  onClick={() => {
+                    setDesktopUnlockError(null)
+                    setDesktopGate('checking')
+                    setDesktopBootNonce((value) => value + 1)
+                  }}
+                >
+                  {i18nValue.tx('settings.desktopBootRetry')}
+                </button>
+              </section>
+            </main>
+          ) : desktopShell || desktopRuntime.enabled ? (
+            <LaunchScreen message="PhD Atlas" />
           ) : (
             <>
               <AuthScreen
@@ -7191,6 +7224,7 @@ export default function App() {
     requested = String(applications.length + 1),
     limit = String(applicationLimit),
   ) {
+    if (desktopRuntime.enabled && !desktopRemoteEnabled(desktopRuntime)) return
     const params = new URLSearchParams({ feature, requested, limit })
     window.open(`/upgrade-pro?${params.toString()}`, '_blank', 'noopener,noreferrer')
   }
@@ -10382,6 +10416,7 @@ export default function App() {
             }
             readOnly={isTeamMode && !canEditInCurrentTeam}
             canShareApplication={canShareInCurrentTeam}
+            canDeliverMail={desktopRemoteEnabled(desktopRuntime)}
             canDeleteApplication={!isTeamMode || canEditInCurrentTeam}
             jumpIntent={workspaceJumpIntent}
             onJumpIntentConsumed={consumeWorkspaceJumpIntent}

@@ -17,6 +17,12 @@ let userId
 let endpoint
 let settingsMutationSequence = 0
 
+function localFetch(input, init = {}) {
+  const headers = new Headers(init.headers)
+  headers.set('connection', 'close')
+  return fetch(input, { ...init, headers })
+}
+
 function currentSettingsHeaders() {
   settingsMutationSequence += 1
   return {
@@ -35,7 +41,7 @@ beforeEach(async () => {
   await new Promise((resolve) => server.once('listening', resolve))
   const address = server.address()
   baseUrl = `http://127.0.0.1:${address.port}`
-  const response = await fetch(`${baseUrl}/api/auth/login`, {
+  const response = await localFetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email: 'jasper@example.com', password: 'demo123456' }),
@@ -44,7 +50,7 @@ beforeEach(async () => {
   token = payload.data.token
   userId = payload.data.user.id
   endpoint = `https://push.example.test/subscriptions/${Date.now()}`
-  await fetch(`${baseUrl}/api/settings`, {
+  await localFetch(`${baseUrl}/api/settings`, {
     method: 'PATCH',
     headers: currentSettingsHeaders(),
     body: JSON.stringify({ browserNotificationsEnabled: true }),
@@ -65,13 +71,13 @@ afterEach(async () => {
 describe('web push subscription API', () => {
   it('returns the VAPID public key and saves then removes the authenticated device endpoint', async () => {
     const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
-    const keyResponse = await fetch(`${baseUrl}/api/push/public-key`, { headers })
+    const keyResponse = await localFetch(`${baseUrl}/api/push/public-key`, { headers })
     const keyPayload = await keyResponse.json()
 
     expect(keyResponse.status).toBe(200)
     expect(keyPayload.data.publicKey).toHaveLength(87)
 
-    const saveResponse = await fetch(`${baseUrl}/api/push/subscriptions`, {
+    const saveResponse = await localFetch(`${baseUrl}/api/push/subscriptions`, {
       method: 'PUT',
       headers,
       body: JSON.stringify({
@@ -81,7 +87,7 @@ describe('web push subscription API', () => {
     })
     expect(await saveResponse.json()).toMatchObject({ ok: true, data: { endpoint } })
 
-    const deleteResponse = await fetch(`${baseUrl}/api/push/subscriptions`, {
+    const deleteResponse = await localFetch(`${baseUrl}/api/push/subscriptions`, {
       method: 'DELETE',
       headers,
       body: JSON.stringify({ endpoint }),
@@ -90,15 +96,15 @@ describe('web push subscription API', () => {
   })
 
   it('sends a real test alert through the authenticated device subscription', async () => {
-    const listBeforeResponse = await fetch(`${baseUrl}/api/notifications`, {
+    const listBeforeResponse = await localFetch(`${baseUrl}/api/notifications`, {
       headers: { authorization: `Bearer ${token}` },
     })
     const listBefore = await listBeforeResponse.json()
-    const response = await fetch(`${baseUrl}/api/push/test`, {
+    const response = await localFetch(`${baseUrl}/api/push/test`, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}` },
     })
-    const listAfterResponse = await fetch(`${baseUrl}/api/notifications`, {
+    const listAfterResponse = await localFetch(`${baseUrl}/api/notifications`, {
       headers: { authorization: `Bearer ${token}` },
     })
     const listAfter = await listAfterResponse.json()
@@ -130,19 +136,19 @@ describe('web push subscription API', () => {
   it('does not send a browser alert after the account-level browser setting is turned off', async () => {
     const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
     try {
-      const settingResponse = await fetch(`${baseUrl}/api/settings`, {
+      const settingResponse = await localFetch(`${baseUrl}/api/settings`, {
         method: 'PATCH',
         headers: currentSettingsHeaders(),
         body: JSON.stringify({ browserNotificationsEnabled: false }),
       })
       expect(settingResponse.status).toBe(200)
 
-      const response = await fetch(`${baseUrl}/api/push/test`, { method: 'POST', headers })
+      const response = await localFetch(`${baseUrl}/api/push/test`, { method: 'POST', headers })
       expect(response.status).toBe(409)
       expect(await response.json()).toMatchObject({ ok: false, error: { code: 'PUSH_DISABLED' } })
       expect(webPush.deliverWebPush).not.toHaveBeenCalled()
     } finally {
-      await fetch(`${baseUrl}/api/settings`, {
+      await localFetch(`${baseUrl}/api/settings`, {
         method: 'PATCH',
         headers: currentSettingsHeaders(),
         body: JSON.stringify({ browserNotificationsEnabled: true }),
@@ -151,15 +157,14 @@ describe('web push subscription API', () => {
   })
 
   it('drops an already queued browser alert if the account setting is turned off before flush', async () => {
-    const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
-    const adminResponse = await fetch(`${baseUrl}/api/auth/login`, {
+    const adminResponse = await localFetch(`${baseUrl}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ email: 'admin@phd-atlas.local', password: 'admin123456', scope: 'admin' }),
     })
     const adminPayload = await adminResponse.json()
     try {
-      const publishResponse = await fetch(`${baseUrl}/api/admin/notifications/publish`, {
+      const publishResponse = await localFetch(`${baseUrl}/api/admin/notifications/publish`, {
         method: 'POST',
         headers: {
           authorization: `Bearer ${adminPayload.data.token}`,
@@ -177,7 +182,7 @@ describe('web push subscription API', () => {
       expect(publishResponse.status).toBe(200)
       expect(webPush.deliverWebPush).not.toHaveBeenCalled()
 
-      const settingResponse = await fetch(`${baseUrl}/api/settings`, {
+      const settingResponse = await localFetch(`${baseUrl}/api/settings`, {
         method: 'PATCH',
         headers: currentSettingsHeaders(),
         body: JSON.stringify({ browserNotificationsEnabled: false }),
@@ -190,7 +195,7 @@ describe('web push subscription API', () => {
       }))
       expect(webPush.deliverWebPush).not.toHaveBeenCalled()
     } finally {
-      await fetch(`${baseUrl}/api/settings`, {
+      await localFetch(`${baseUrl}/api/settings`, {
         method: 'PATCH',
         headers: currentSettingsHeaders(),
         body: JSON.stringify({ browserNotificationsEnabled: true }),
@@ -199,14 +204,14 @@ describe('web push subscription API', () => {
   })
 
   it('persists an admin-published message and leaves Web Push delivery to the aggregate batcher', async () => {
-    const adminResponse = await fetch(`${baseUrl}/api/auth/login`, {
+    const adminResponse = await localFetch(`${baseUrl}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ email: 'admin@phd-atlas.local', password: 'admin123456', scope: 'admin' }),
     })
     const adminPayload = await adminResponse.json()
     const title = `Push route test ${Date.now()}`
-    const response = await fetch(`${baseUrl}/api/admin/notifications/publish`, {
+    const response = await localFetch(`${baseUrl}/api/admin/notifications/publish`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${adminPayload.data.token}`,
@@ -226,7 +231,7 @@ describe('web push subscription API', () => {
     expect(await response.json()).toMatchObject({ ok: true, data: { recipients: 1, created: 1 } })
     expect(webPush.deliverWebPush).not.toHaveBeenCalled()
 
-    const notificationsResponse = await fetch(`${baseUrl}/api/notifications`, {
+    const notificationsResponse = await localFetch(`${baseUrl}/api/notifications`, {
       headers: { authorization: `Bearer ${token}` },
     })
     const notificationsPayload = await notificationsResponse.json()

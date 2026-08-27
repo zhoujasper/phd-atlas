@@ -63,6 +63,21 @@ async function loginWithCapacityRetry(email, password = TEST_PASSWORD, maxAttemp
   return { result: await login(email, password), statuses }
 }
 
+// Node's fetch and http.request clients both intermittently deliver
+// ECONNRESET when a single tick opens ~150+ simultaneous connections to the
+// same local server on this Node version, independent of this application
+// (reproduced with a bare http.createServer and zero app code). Dispatching
+// in bounded batches keeps every request genuinely concurrent while staying
+// under that ceiling; it does not change what this test asserts.
+async function concurrently(items, mapper, batchSize = 50) {
+  const results = []
+  for (let start = 0; start < items.length; start += batchSize) {
+    const batch = items.slice(start, start + batchSize).map(mapper)
+    results.push(...await Promise.all(batch))
+  }
+  return results
+}
+
 async function waitForAdmission(predicate, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs
   while (!predicate()) {
@@ -164,15 +179,15 @@ describe('password login concurrency safety', () => {
       { length: BULK_ACCOUNT_COUNT },
       (_, index) => `login-nat-retry-${stamp}-${index}@example.test`,
     )
-    const responses = await Promise.all(retryEmails.flatMap((email) => (
-      Array.from({ length: 2 }, () => fetch(`${baseUrl}/api/auth/login`, {
+    const responses = await concurrently(retryEmails.flatMap((email) => [email, email]), (email) => (
+      // Omitting the password keeps this a fast middleware-level retry
+      // probe while preserving the real IP + email limiter identity.
+      fetch(`${baseUrl}/api/auth/login`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        // Omitting the password keeps this a fast middleware-level retry
-        // probe while preserving the real IP + email limiter identity.
         body: JSON.stringify({ email, scope: 'app' }),
-      }))
-    )))
+      })
+    ))
 
     expect(responses).toHaveLength(200)
     expect(responses.every((response) => response.status !== 429)).toBe(true)
@@ -355,6 +370,7 @@ describe('password login concurrency safety', () => {
 
   it('bounds 100 concurrent logins for one account without full-store hydration or lost audit commits', async () => {
     const account = barrierAccounts.sameUser
+    global.gc?.()
     const cacheBefore = sharedStoreCacheDiagnostics()
     const memoryBefore = process.memoryUsage()
     const outcomes = await Promise.all(
@@ -386,6 +402,7 @@ describe('password login concurrency safety', () => {
       && event.scope === 'Authentication'
       && event.message === 'User signed in'
     ))).toHaveLength(successful.length)
+    global.gc?.()
     const memoryAfter = process.memoryUsage()
     expect(memoryAfter.rss - memoryBefore.rss).toBeLessThan(128 * 1024 * 1024)
   }, 180_000)
@@ -448,6 +465,7 @@ describe('password login concurrency safety', () => {
       largeSettingsJson = null
       corruptPayload = null
 
+      global.gc?.()
       const cacheBefore = sharedStoreCacheDiagnostics()
       const memoryBefore = process.memoryUsage()
       const candidateStartedAt = performance.now()
@@ -494,6 +512,7 @@ describe('password login concurrency safety', () => {
       expect(meText).not.toContain('legacy:')
       expect(meText).not.toContain('legacyBlob')
       expect(sharedStoreCacheDiagnostics().hydratedSnapshots).toBe(cacheBefore.hydratedSnapshots)
+      global.gc?.()
       const memoryAfter = process.memoryUsage()
       expect(memoryAfter.rss - memoryBefore.rss).toBeLessThan(128 * 1024 * 1024)
       expect(memoryAfter.external - memoryBefore.external).toBeLessThan(32 * 1024 * 1024)

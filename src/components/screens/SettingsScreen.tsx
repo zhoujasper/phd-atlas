@@ -81,6 +81,7 @@ import { CodexAuthorizationManager } from './CodexAuthorizationManager'
 import { DesktopStorageSettings } from './DesktopStorageSettings'
 import { DesktopUnlockSettings } from './DesktopUnlockSettings'
 import type { DesktopRuntime } from '../../desktopRuntime'
+import { desktopRemoteEnabled } from '../../desktopRuntime'
 import {
   TableCell,
   TableColGroup,
@@ -821,6 +822,7 @@ export function SettingsScreen({
   const calendarOutlookUrl = calendarFeedUrl
     ? `https://outlook.live.com/calendar/0/addfromweb?url=${encodeURIComponent(calendarFeedUrl)}&name=${encodeURIComponent(tx('calendar.feedName', 'PhD Atlas deadlines'))}`
     : ''
+  const desktopLocalOnly = Boolean(desktopRuntime?.enabled && !desktopRemoteEnabled(desktopRuntime))
   const calendarTokenBusy = calendarTokenActionPending !== null
   const calendarEnabling = calendarTokenActionPending === 'enable' && !calendarToken
   const calendarRegenerating = calendarTokenActionPending === 'regenerate'
@@ -1519,6 +1521,7 @@ export function SettingsScreen({
   }
 
   const openUpgradePage = (feature: string, requested: string, limit = String(maxBackupsLimit)) => {
+    if (desktopLocalOnly) return
     const params = new URLSearchParams({
       feature,
       limit,
@@ -1545,21 +1548,25 @@ export function SettingsScreen({
           : tx('settings.installAppBrowserDesc')
 
   const showDeviceGrid = Boolean(
-    (installStatus && installStatus !== 'installed')
-    || webPushStatus
+    (installStatus && installStatus !== 'installed' && !desktopRuntime?.enabled)
+    || (webPushStatus && !desktopLocalOnly)
     || onReplayTutorial,
   )
-  const accountPlanLabel = tx(isAdmin ? 'settings.planAdmin' : isTeam ? 'settings.planTeam' : isPro ? 'settings.planPro' : 'settings.planFree')
+  const accountPlanLabel = desktopLocalOnly
+    ? tx('settings.planDesktopLocal')
+    : tx(isAdmin ? 'settings.planAdmin' : isTeam ? 'settings.planTeam' : isPro ? 'settings.planPro' : 'settings.planFree')
   const mailReady = outgoingConfigured && incomingConfigured
   const settingsSections = [
-    { id: 'settings-appearance-section', label: tx('settings.appearance'), icon: Palette },
-    { id: 'settings-ai-section', label: tx('settings.ai.title'), icon: KeyRound },
-    { id: 'settings-mail-section', label: tx('settings.emailConfiguration'), icon: Mail },
-    { id: 'settings-security-section', label: tx('settings.security'), icon: Shield },
-    { id: 'settings-codex-section', label: tx('settings.codex.title'), icon: Bot },
-    { id: 'settings-usage-section', label: tx('settings.usageAndLimits'), icon: HardDrive },
-    { id: 'settings-data-section', label: tx('settings.dataManagement'), icon: Database },
-  ] as const
+    { id: 'settings-appearance-section' as const, label: tx('settings.appearance'), icon: Palette },
+    { id: 'settings-ai-section' as const, label: tx('settings.ai.title'), icon: KeyRound },
+    ...(!desktopLocalOnly
+      ? [{ id: 'settings-mail-section' as const, label: tx('settings.emailConfiguration'), icon: Mail }]
+      : []),
+    { id: 'settings-security-section' as const, label: tx('settings.security'), icon: Shield },
+    { id: 'settings-codex-section' as const, label: tx('settings.codex.title'), icon: Bot },
+    { id: 'settings-usage-section' as const, label: tx('settings.usageAndLimits'), icon: HardDrive },
+    { id: 'settings-data-section' as const, label: tx('settings.dataManagement'), icon: Database },
+  ]
 
   const startSettingsSectionScroll = useCallback((id: SettingsSectionId) => {
     const target = document.getElementById(id)
@@ -1717,13 +1724,15 @@ export function SettingsScreen({
         </div>
         <div className="settings-hero-status" aria-label={tx('settings.title')}>
           <span className="settings-status-chip">
-            <Shield size={13} aria-hidden="true" />
+            {desktopLocalOnly ? <HardDrive size={13} aria-hidden="true" /> : <Shield size={13} aria-hidden="true" />}
             {accountPlanLabel}
           </span>
-          <span className={`settings-status-chip ${mailReady ? 'is-ready' : 'needs-attention'}`}>
-            <Mail size={13} aria-hidden="true" />
-            {mailReady ? tx('settings.mailConfigured') : tx('settings.mailNeedsSetup')}
-          </span>
+          {desktopLocalOnly ? null : (
+            <span className={`settings-status-chip ${mailReady ? 'is-ready' : 'needs-attention'}`}>
+              <Mail size={13} aria-hidden="true" />
+              {mailReady ? tx('settings.mailConfigured') : tx('settings.mailNeedsSetup')}
+            </span>
+          )}
           <span className="settings-account-id">
             <Fingerprint size={13} aria-hidden="true" />
             <span>
@@ -1970,10 +1979,20 @@ export function SettingsScreen({
           </div>
         </section>
 
+        {desktopRuntime?.enabled && onDesktopConnect && onDesktopDisconnect && onCompleteExport && onCompleteImport ? (
+          <DesktopStorageSettings
+            runtime={desktopRuntime}
+            onConnect={onDesktopConnect}
+            onDisconnect={onDesktopDisconnect}
+            onCompleteExport={onCompleteExport}
+            onCompleteImport={onCompleteImport}
+          />
+        ) : null}
+
         {/* ── Device experience: install, push, tutorial ── */}
         {showDeviceGrid ? (
           <div className="settings-device-grid">
-            {installStatus && installStatus !== 'installed' ? (
+            {installStatus && installStatus !== 'installed' && !desktopRuntime?.enabled ? (
               <div className={`settings-install-card is-${installStatus}`}>
                 <div className="settings-install-icon" aria-hidden="true">
                   <MonitorDown size={20} />
@@ -2032,7 +2051,7 @@ export function SettingsScreen({
               </div>
             ) : null}
 
-            {webPushStatus ? (
+            {webPushStatus && !desktopLocalOnly ? (
               <section
                 className={`settings-install-card settings-push-card is-${webPushStatusTone}${webPushBusy ? ' is-busy' : ''}`}
                 aria-label={tx('settings.pushTitle')}
@@ -2150,7 +2169,7 @@ export function SettingsScreen({
           onNotify={onNotify}
         /></div> : null}
 
-        {settingsRevealStep >= 1 ? <div id="settings-mail-section" className="settings-progressive-group settings-lazy-reveal settings-block settings-block-mail">
+        {settingsRevealStep >= 1 && !desktopLocalOnly ? <div id="settings-mail-section" className="settings-progressive-group settings-lazy-reveal settings-block settings-block-mail">
         <div className="section-title settings-section-title">
           <h4>
             <Mail size={13} aria-hidden="true" />
@@ -2931,9 +2950,13 @@ export function SettingsScreen({
                     })
                   : format(tx('settings.storageUsageUnlimited'), { used: formatBytes(storageUsedBytes) })}
               </h4>
-              <p>{isPro ? tx('settings.storageUsageProHint') : tx('settings.storageUsageFreeHint')}</p>
+              <p>
+                {desktopLocalOnly
+                  ? tx('settings.storageUsageDesktopHint')
+                  : isPro ? tx('settings.storageUsageProHint') : tx('settings.storageUsageFreeHint')}
+              </p>
             </div>
-            <span className="storage-plan-chip">{tx(isAdmin ? 'settings.planAdmin' : isTeam ? 'settings.planTeam' : isPro ? 'settings.planPro' : 'settings.planFree')}</span>
+            <span className="storage-plan-chip">{accountPlanLabel}</span>
           </div>
           {storageQuotaBytes ? (
             <div className="storage-usage-meter" aria-label={format(tx('settings.storageUsagePercent'), { percent: storagePercent })}>
@@ -2949,12 +2972,14 @@ export function SettingsScreen({
               count: session.usage?.applicationCount ?? 0,
               limit: session.usage?.applicationQuota === Number.MAX_SAFE_INTEGER ? tx('settings.unlimited') : String(session.usage?.applicationQuota ?? 3),
             })}</span>
-            <span>{format(tx('settings.shareUsage'), {
-              active: activeShares.length,
-              activeLimit: shareQuota >= Number.MAX_SAFE_INTEGER ? tx('settings.unlimited') : String(shareQuota),
-              created: shareCreatedCount,
-              createLimit: shareCreateQuota >= Number.MAX_SAFE_INTEGER ? tx('settings.unlimited') : String(shareCreateQuota),
-            })}</span>
+            {desktopLocalOnly ? null : (
+              <span>{format(tx('settings.shareUsage'), {
+                active: activeShares.length,
+                activeLimit: shareQuota >= Number.MAX_SAFE_INTEGER ? tx('settings.unlimited') : String(shareQuota),
+                created: shareCreatedCount,
+                createLimit: shareCreateQuota >= Number.MAX_SAFE_INTEGER ? tx('settings.unlimited') : String(shareCreateQuota),
+              })}</span>
+            )}
           </div>
         </section>
 
@@ -3058,16 +3083,6 @@ export function SettingsScreen({
         </div>
         </div>
         </div>
-
-        {desktopRuntime?.enabled && onDesktopConnect && onDesktopDisconnect && onCompleteExport && onCompleteImport ? (
-          <DesktopStorageSettings
-            runtime={desktopRuntime}
-            onConnect={onDesktopConnect}
-            onDisconnect={onDesktopDisconnect}
-            onCompleteExport={onCompleteExport}
-            onCompleteImport={onCompleteImport}
-          />
-        ) : null}
 
         {onExport ? (
           <section className="settings-export-card" aria-labelledby="settings-export-heading">
@@ -3442,6 +3457,7 @@ export function SettingsScreen({
         />
 
         <div className="settings-footer-layout">
+          {!desktopLocalOnly ? (
           <section
             className={`calendar-feed-card ${calendarToken ? 'is-enabled' : 'is-disabled'}${calendarTokenBusy ? ' is-pending' : ''}`}
             aria-busy={calendarTokenBusy || undefined}
@@ -3540,6 +3556,7 @@ export function SettingsScreen({
               </div>
             )}
           </section>
+          ) : null}
 
           <div className="danger-zone">
             <h4><AlertTriangle size={14} aria-hidden="true" /> {tx('settings.dangerZone')}</h4>

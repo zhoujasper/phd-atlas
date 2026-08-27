@@ -5,9 +5,11 @@ import { fileURLToPath } from 'node:url'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const prePushHook = path.join(projectRoot, '.githooks', 'pre-push')
+const commitMessageHook = path.join(projectRoot, '.githooks', 'commit-msg')
 
 if (process.platform !== 'win32') {
   await chmod(prePushHook, 0o755)
+  await chmod(commitMessageHook, 0o755)
 }
 
 const result = spawnSync('git', ['config', '--local', 'core.hooksPath', '.githooks'], {

@@ -12,9 +12,13 @@
   }
 
   const path = location.pathname
+  const desktopShell = Boolean(window.phdAtlasDesktop?.enabled)
+    || /\bElectron\b/i.test(String(navigator.userAgent || ''))
   let variant = 'dashboard'
   if (path.startsWith('/admin')) {
     variant = hasToken('phd-atlas-admin-session') ? 'admin' : 'auth'
+  } else if (desktopShell) {
+    variant = 'dashboard'
   } else if (
     path.startsWith('/share/') ||
     path.startsWith('/asset-upload/') ||

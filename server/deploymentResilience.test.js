@@ -84,6 +84,9 @@ describe('deployment resilience configuration', () => {
       /PHD_ATLAS_PROJECT_ROOT=\/app[\s\S]*?PHD_ATLAS_STORAGE_ROOT=\/app\/storage/u,
     )
     expect(dockerfile).toContain('COPY shared ./shared')
+    expect(dockerfile).toContain(
+      'COPY desktop/portablePaths.mjs desktop/portablePaths.d.mts ./desktop/',
+    )
     expect(dockerfile).not.toContain('COPY --from=build --chown=node:node /app/shared ./shared')
     expect(dockerfile).toContain('COPY --from=build --chown=node:node /app/server ./server')
     expect(dockerfile).toContain('tools/verify-build-entry-budget.mjs ./tools/')
@@ -514,10 +517,8 @@ describe('deployment resilience configuration', () => {
     )).not.toContain('client_max_body_size')
     expect(installation).not.toContain('client_max_body_size 550m')
     expect(installationZh).not.toContain('client_max_body_size 550m')
-    const installationLf = installation.replace(/\r\n?/gu, '\n')
-    const installationZhLf = installationZh.replace(/\r\n?/gu, '\n')
-    expect(installationLf).toContain('only the\nnine audited multipart endpoints')
-    expect(installationZhLf).toContain('审计过的 9 个\nmultipart 端点')
+    expect(installation).toContain('only the\nnine audited multipart endpoints')
+    expect(installationZh).toContain('审计过的 9 个\nmultipart 端点')
   })
 
   it('serves precompressed immutable assets directly or through a locked proxy cache', async () => {

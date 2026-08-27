@@ -20,7 +20,7 @@ vi.mock('./serviceWorkerUpdateChecks', () => ({
   startServiceWorkerUpdateChecks: serviceWorkerMocks.startChecks,
 }))
 
-import { activatePwaUpdate, registerServiceWorker } from './serviceWorker'
+import { activatePwaUpdate, disableServiceWorkerForDesktop, registerServiceWorker } from './serviceWorker'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -68,5 +68,22 @@ describe('service worker update reload boundary', () => {
     expect(serviceWorkerMocks.prepare).toHaveBeenCalledTimes(2)
 
     window.removeEventListener('phd-atlas:pwa-update-ready', updateReady)
+  })
+
+  it('unregisters existing workers when the desktop shell is active', async () => {
+    const unregister = vi.fn().mockResolvedValue(true)
+    const container = Object.assign(new EventTarget(), {
+      controller: {},
+      getRegistrations: vi.fn().mockResolvedValue([{ unregister }]),
+      register: vi.fn(),
+    })
+    Object.defineProperty(window.navigator, 'serviceWorker', {
+      configurable: true,
+      value: container,
+    })
+
+    disableServiceWorkerForDesktop()
+    await waitFor(() => expect(unregister).toHaveBeenCalledTimes(1))
+    expect(container.register).not.toHaveBeenCalled()
   })
 })

@@ -153,8 +153,8 @@
     "APPLICATION_VERSION_REQUIRED": "本次保存缺少必要的申请版本信息，无法安全写入。你的草稿仍然保留，请重新保存；如果持续失败，请重新打开该申请。",
     "APPLICATION_DELTA_CANONICAL_MISMATCH": "服务器无法完整保留本次提交的所有字段，保存未完成。你的草稿仍然保留，请重新保存；如果持续失败，请重新打开该申请。",
     "CODEX_DEVICE_AUTHORIZATION_CHANGED": "设备授权状态在操作完成前已变化。请查看最新授权状态后重试。",
-    "SETTINGS_PERSISTENCE_NOT_ACKNOWLEDGED": "服务器未确认设置已保存。你的更改仍然保留，请重试。",
-    "SETTINGS_ACKNOWLEDGEMENT_INVALID": "服务器返回的设置保存确认无效。你的更改仍然保留，请重试。",
+    "SETTINGS_PERSISTENCE_NOT_ACKNOWLEDGED": "设置未能确认已保存。你的更改仍然保留，请重试。",
+    "SETTINGS_ACKNOWLEDGEMENT_INVALID": "设置保存确认无效。你的更改仍然保留，请重试。",
     "NETWORK_ERROR": "网络连接失败，请检查网络后重试。",
     "REQUEST_FAILED": "请求失败，请重试。",
 

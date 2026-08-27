@@ -186,6 +186,12 @@ describe('normalizeErrorMessage', () => {
         expect(localized.trim(), `${language}:${code}`).not.toBe('')
       }
     }
+    expect(
+      normalizeErrorMessage(new ApiError('Sensitive persistence diagnostic.', 'SETTINGS_PERSISTENCE_NOT_ACKNOWLEDGED', 500), 'zh'),
+    ).toBe('设置未能确认已保存。你的更改仍然保留，请重试。')
+    expect(
+      normalizeErrorMessage(new ApiError('Sensitive persistence diagnostic.', 'SETTINGS_PERSISTENCE_NOT_ACKNOWLEDGED', 500), 'en'),
+    ).not.toMatch(/server/i)
   })
 
   it('localizes structured capacity responses as retryable busy states', () => {

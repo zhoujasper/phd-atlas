@@ -23,6 +23,8 @@ files:
   - '!desktop/resources/runtime/**'
   - '!desktop/vendor/**'
   - '!desktop/*.test.js'
+  - '!desktop/sign-mac-app.mjs'
+  - '!desktop/write-portable-layout.mjs'
   - server/**/*
   - '!server/**/*.test.js'
   - shared/**/*
@@ -47,9 +49,12 @@ mac:
   target:
     - dmg
     - zip
-  identity: null
   artifactName: PhDAtlas-${version}-mac-${arch}.${ext}
   category: public.app-category.education
+  identity: "-"
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  darkModeSupport: true
 nsis:
   oneClick: false
   perMachine: false

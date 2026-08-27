@@ -2416,6 +2416,33 @@ html[lang^="ko"] .settings-screen .mail-incoming-fields label > span {
   color: var(--text);
 }
 
+.settings-screen .settings-desktop-capabilities {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.settings-screen .settings-desktop-capabilities h5 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.settings-screen .settings-desktop-capabilities p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.settings-screen .settings-desktop-connect-hint {
+  margin: 0 0 2px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-tertiary);
+}
+
 .settings-screen .settings-desktop-connect {
   display: grid;
   gap: 10px;

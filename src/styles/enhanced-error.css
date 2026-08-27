@@ -1,0 +1,119 @@
+/* Enhanced Error Toast Styles */
+.enhanced-error-toast {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+}
+
+.enhanced-error-icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  flex: 0 0 auto;
+}
+
+.enhanced-error-content {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.enhanced-error-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.enhanced-error-message {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.enhanced-error-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.enhanced-error-retry {
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    transform 80ms var(--ease-out);
+}
+
+.enhanced-error-retry:hover {
+  background: var(--accent-hover);
+}
+
+.enhanced-error-retry:active {
+  transform: scale(0.97);
+  filter: brightness(0.98);
+}
+
+.enhanced-error-dismiss {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.enhanced-error-dismiss:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.enhanced-error-dismiss:active {
+  transform: scale(0.97);
+}
+
+/* Network error variant */
+.enhanced-error-toast.network .enhanced-error-icon {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+/* Conflict error variant */
+.enhanced-error-toast.conflict .enhanced-error-icon {
+  background: var(--info-bg);
+  color: var(--info-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .enhanced-error-retry:active,
+  .enhanced-error-dismiss:active {
+    transform: none;
+    filter: none;
+  }
+}

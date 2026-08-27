@@ -41,8 +41,10 @@ describe('desktop storage settings', () => {
       unlockRequired: false,
       unlocked: true,
     })
-    expect(screen.getByText('Local SQLite')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Connect and sync' })).toBeInTheDocument()
+    expect(screen.getByText('This computer only')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sign in to deployed web' })).toBeInTheDocument()
+    expect(screen.getByText('Always available locally')).toBeInTheDocument()
+    expect(screen.getByText('After connecting the web system')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Use local storage' })).not.toBeInTheDocument()
   })
 

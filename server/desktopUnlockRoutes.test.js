@@ -75,6 +75,10 @@ describe('desktop opening password and auto session', () => {
     const me = await jsonRequest('/api/auth/me')
     expect(me.response.status).toBe(200)
     expect(me.data.user.id).toBe(session.data.user.id)
+
+    const shell = await fetch(`${baseUrl}/desktop-shell.js`)
+    expect(shell.status).toBe(200)
+    expect(await shell.text()).toContain('enabled:true')
   })
 
   it('rejects a mismatched or too-short opening password and keeps the app unlocked in this process', async () => {

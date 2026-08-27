@@ -6818,18 +6818,6 @@ export async function readUserSettingsPersistenceState(userId) {
   }
 }
 
-function authenticationVersionFromSettingsJson(settingsJson) {
-  const value = Number(fromJson(settingsJson, {}).authVersion ?? 0)
-  return Number.isSafeInteger(value) && value >= 0 ? value : 0
-}
-
-function authenticationVersionFromUserRow(row) {
-  return Math.max(
-    normalizeAccountAuthVersion(row?.auth_version),
-    authenticationVersionFromSettingsJson(row?.settings_json),
-  )
-}
-
 const FOCUSED_SESSION_SETTINGS_BUDGET_BYTES = 860 * 1024
 /**
  * Shed in size order when a legacy account exceeds the session budget. The
@@ -9953,21 +9941,6 @@ function reconcileApplicationWithOutgoingDeliveryJournalRows(application, rows) 
   const nextApplication = { ...application, communications }
   reconcileMailClassificationFingerprints(nextApplication)
   return nextApplication
-}
-
-function reconcileApplicationWithOutgoingDeliveryJournal(
-  database,
-  application,
-  selectApplicationDeliveries = null,
-) {
-  const selectDeliveries = selectApplicationDeliveries ?? database.prepare(
-    `SELECT * FROM outgoing_mail_deliveries
-     WHERE application_id = ? AND status IN ('sending', 'accepted', 'sent')`,
-  )
-  return reconcileApplicationWithOutgoingDeliveryJournalRows(
-    application,
-    selectDeliveries.all(application.id),
-  )
 }
 
 function outgoingDeliveryRowsFingerprint(rows) {
@@ -22517,24 +22490,6 @@ function decodeMailClassificationTaskPayload(value, fallback = null) {
   if (!value) return fallback
   const decoded = decodePayloadFromStorage(value)
   return decoded && typeof decoded === 'object' ? decoded : fallback
-}
-
-function mailClassificationTaskRow(row) {
-  if (!row) return null
-  return {
-    idempotencyKey: row.idempotency_key,
-    fingerprint: row.fingerprint,
-    actorId: row.actor_id,
-    applicationId: row.application_id,
-    operation: row.operation,
-    status: row.status,
-    leaseToken: row.lease_token ?? null,
-    leaseExpiresAt: row.lease_expires_at ?? null,
-    updates: decodeMailClassificationTaskPayload(row.updates_encrypted, null),
-    result: decodeMailClassificationTaskPayload(row.result_encrypted, null),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  }
 }
 
 function assertMatchingMailClassificationTask(row, identity) {

@@ -100,6 +100,13 @@ export async function requestOfflineSync() {
   ;(registration.active ?? navigator.serviceWorker.controller)?.postMessage({ type: 'REQUEST_OFFLINE_SYNC' })
 }
 
+export function disableServiceWorkerForDesktop() {
+  if (!('serviceWorker' in navigator)) return
+  void navigator.serviceWorker.getRegistrations()
+    .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+    .catch(() => {})
+}
+
 export function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return
   if (!import.meta.env.PROD && !canRegisterDevelopmentWorker()) return

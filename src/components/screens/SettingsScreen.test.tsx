@@ -1530,3 +1530,55 @@ describe('SettingsScreen security controls', () => {
     await waitFor(() => expect(panel).toHaveClass('open'))
   })
 })
+
+describe('SettingsScreen unlinked desktop workspace', () => {
+  it('hides web-only mail, share, calendar, and plan chrome until a web account is connected', async () => {
+    await preloadLanguage('en', ['settings'])
+    render(
+      <I18nContext.Provider
+        value={{
+          lang: 'en',
+          t: getDict('en'),
+          format: tpl,
+          tx: (path, fallback) => t('en', path, fallback),
+        }}
+      >
+        <SettingsScreen
+          session={session()}
+          desktopRuntime={{
+            enabled: true,
+            mode: 'local',
+            remoteOrigin: null,
+            remoteEmail: null,
+            shareEnabled: false,
+            adminEnabled: false,
+            teamEnabled: false,
+            unlimited: true,
+            linkedAt: null,
+            unlockRequired: false,
+            unlocked: true,
+          }}
+          onDesktopConnect={vi.fn()}
+          onDesktopDisconnect={vi.fn()}
+          onCompleteExport={vi.fn()}
+          onCompleteImport={vi.fn()}
+          webPushStatus="ready"
+          onEnableWebPush={vi.fn()}
+          onLanguage={vi.fn()}
+          onHighContrast={vi.fn()}
+          onDeleteAccount={vi.fn()}
+        />
+      </I18nContext.Provider>,
+    )
+
+    expect(screen.getAllByText('This computer').length).toBeGreaterThan(0)
+    expect(screen.getByText('This computer only')).toBeInTheDocument()
+    expect(screen.queryByText('Pro', { exact: true })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Email Configuration' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Needs setup')).not.toBeInTheDocument()
+    expect(screen.queryByText('Stay informed')).not.toBeInTheDocument()
+    expect(screen.queryByText('Calendar Feed')).not.toBeInTheDocument()
+    expect(screen.queryByText('Link management')).not.toBeInTheDocument()
+    expect(screen.getByText('Files stay on this computer. There is no web-plan storage limit.')).toBeInTheDocument()
+  })
+})

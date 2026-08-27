@@ -8,6 +8,43 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-27
+
+### Changed
+
+- Desktop launches now enter the local personal workspace directly. The web
+  email/password screen remains a browser-only entry point, while the optional
+  opening password is the sole local gate.
+- Desktop data is portable beside the Windows executable or macOS app. User
+  Data and Cache stay with the package, and legacy local folders are migrated
+  without redirecting workspace data into the operating-system profile.
+
+### Fixed
+
+- Hid SMTP/IMAP, mail reminders, share links, calendars, browser push, and
+  website upgrade chrome until a desktop installation is explicitly connected
+  to a deployed web account; local save failures now use local wording.
+- Sharded the HTTP mutation admission gate per account, raised the global
+  default from 4 to 16, and queued each account above its six active slots so
+  one user's normal save burst no longer reports `SERVER_BUSY` as global load.
+- Stabilized the complete Node 24 release suite by disabling Node's shadowing
+  experimental web storage, forcing collection around RSS assertions, and
+  preventing stale local keep-alive reuse in Web Push route tests while
+  batching 200-request client bursts without weakening assertions.
+- Updated the mail parsing, IP classification, ID generation, and HTTP client
+  dependency paths to patched versions after a same-day audit found six high
+  advisories. Both production-only and complete dependency audits now report
+  zero vulnerabilities, and the strict tree gate runs the audit on every
+  future release.
+- Made the source-secret audit qualify both Git checkouts and the Git-free
+  public export used by release preflight, with fail-closed link handling.
+- Restored the portable-path source/declaration pair to the minimal Docker
+  build stage so full TypeScript qualification succeeds without adding desktop
+  resources to the server runtime image.
+- Removed abandoned route/middleware scaffolds and orphaned investigation
+  scripts, restored TypeScript coverage for portable desktop paths, and added
+  commit/push guards that reject `Co-authored-by` trailers.
+
 ## [0.1.3] - 2026-08-24
 
 ### Added

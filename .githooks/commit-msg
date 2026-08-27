@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -eu
+
+exec node tools/no-coauthors.mjs "$1"

@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const MAX_SCANNED_FILE_BYTES = 5 * 1024 * 1024
 const ALLOWED_SENSITIVE_PATHS = new Set(['.env.example'])
+const GENERATED_ROOT_PATHS = new Set(['.git', 'node_modules'])
 const SENSITIVE_PATH = /(^|\/)(?:\.env(?:\.|$)|storage(?:\/|$)|uploads?(?:\/|$)|[^/]+\.(?:pem|key|p12|pfx|sqlite|db|bak|backup))$/i
 const SECRET_SIGNATURES = [
   ['private-key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/u],
@@ -51,6 +52,12 @@ export function excludeDeletedTrackedFiles(sourceFiles, deletedFiles) {
 }
 
 async function trackedFiles() {
+  try {
+    await lstat(path.join(root, '.git'))
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+    return filesystemSourceFiles(root)
+  }
   const [sourceFiles, deletedFiles] = await Promise.all([
     gitFileList(['ls-files', '-z', '--cached', '--others', '--exclude-standard']),
     gitFileList(['ls-files', '-z', '--deleted']),
@@ -59,6 +66,33 @@ async function trackedFiles() {
   // source that would ship with this change. Other read failures remain
   // findings below, preserving the audit's fail-closed behavior.
   return excludeDeletedTrackedFiles(sourceFiles, deletedFiles)
+}
+
+export async function filesystemSourceFiles(sourceRoot) {
+  const files = []
+  async function visit(directory, relativeDirectory = '') {
+    const entries = await readdir(directory, { withFileTypes: true })
+    entries.sort((left, right) => left.name.localeCompare(right.name, 'en'))
+    for (const entry of entries) {
+      if (!relativeDirectory && GENERATED_ROOT_PATHS.has(entry.name)) continue
+      const relativePath = relativeDirectory
+        ? `${relativeDirectory}/${entry.name}`
+        : entry.name
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Refusing to audit a symbolic link outside generated dependencies: ${relativePath}`)
+      }
+      if (entry.isDirectory()) {
+        await visit(path.join(directory, entry.name), relativePath)
+        continue
+      }
+      if (!entry.isFile()) {
+        throw new Error(`Refusing to skip a non-file source entry: ${relativePath}`)
+      }
+      files.push(relativePath)
+    }
+  }
+  await visit(sourceRoot)
+  return files
 }
 
 export async function auditTrackedSource(files) {
@@ -95,7 +129,7 @@ async function main() {
     process.exitCode = 1
     return
   }
-  console.log('[security:source] No tracked secret signatures or runtime-data paths found.')
+  console.log('[security:source] No source secret signatures or runtime-data paths found.')
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

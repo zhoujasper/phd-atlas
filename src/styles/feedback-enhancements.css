@@ -1,0 +1,295 @@
+/* --------------------------------------------------------------------------
+   Network Status Banner — minimal connection feedback
+   -------------------------------------------------------------------------- */
+
+.network-status-banner {
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  backdrop-filter: blur(12px) saturate(1.1);
+  transition:
+    transform 240ms var(--ease-fluid),
+    opacity 240ms var(--ease-fluid);
+}
+
+.network-status-banner.offline {
+  background: color-mix(in srgb, var(--warning-bg) 92%, transparent 8%);
+  color: var(--warning-text);
+}
+
+.network-status-banner.reconnecting {
+  background: color-mix(in srgb, var(--info-bg) 92%, transparent 8%);
+  color: var(--info-text);
+}
+
+.network-status-banner.online {
+  background: color-mix(in srgb, var(--success-bg) 92%, transparent 8%);
+  color: var(--success-text);
+}
+
+.network-status-banner.hiding {
+  opacity: 0;
+  transform: translateY(-100%);
+  pointer-events: none;
+}
+
+.network-status-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.network-status-banner.reconnecting .network-status-icon {
+  animation: pending-label-spin 760ms linear infinite;
+}
+
+.network-status-text {
+  flex: 0 0 auto;
+}
+
+.network-status-retry {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  margin-left: 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    transform 80ms var(--ease-out);
+}
+
+.network-status-retry:hover {
+  background: var(--surface-hover);
+}
+
+.network-status-retry:active {
+  transform: scale(0.97);
+}
+
+/* --------------------------------------------------------------------------
+   Error Recovery Dialog — structured error guidance
+   -------------------------------------------------------------------------- */
+
+.error-recovery-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.48);
+  backdrop-filter: blur(8px);
+  animation: error-overlay-enter 200ms var(--ease-out);
+}
+
+.error-recovery-dialog {
+  width: min(520px, 100%);
+  max-height: calc(100vh - 48px);
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-xl);
+  overflow: hidden;
+  animation: error-dialog-enter 240ms var(--ease-spring);
+}
+
+.error-recovery-header {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.error-recovery-icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: var(--radius);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.error-recovery-dialog.severity-conflict .error-recovery-icon {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.error-recovery-dialog.severity-recoverable .error-recovery-icon {
+  background: var(--info-bg);
+  color: var(--info-text);
+}
+
+.error-recovery-heading {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.error-recovery-heading h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 640;
+  line-height: 1.3;
+}
+
+.error-recovery-heading p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.error-recovery-close {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.error-recovery-close:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.error-recovery-steps {
+  display: grid;
+  gap: 10px;
+  padding: 16px 20px;
+  background: var(--surface-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.error-recovery-steps strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 640;
+}
+
+.error-recovery-steps ol {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.error-recovery-steps li {
+  margin-bottom: 6px;
+}
+
+.error-recovery-steps li:last-child {
+  margin-bottom: 0;
+}
+
+.error-recovery-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 16px;
+}
+
+@keyframes error-overlay-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes error-dialog-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@media (max-width: 600px) {
+  .error-recovery-overlay {
+    padding: 16px;
+  }
+
+  .error-recovery-dialog {
+    width: 100%;
+  }
+
+  .error-recovery-header {
+    padding: 16px 16px 12px;
+  }
+
+  .error-recovery-steps {
+    padding: 12px 16px;
+  }
+
+  .error-recovery-actions {
+    flex-direction: column-reverse;
+    padding: 12px 16px;
+  }
+
+  .error-recovery-actions button {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .network-status-banner,
+  .network-status-banner.hiding {
+    transition: none;
+  }
+
+  .network-status-banner.reconnecting .network-status-icon {
+    animation: none;
+  }
+
+  .network-status-retry:active {
+    transform: none;
+  }
+
+  .error-recovery-overlay,
+  .error-recovery-dialog {
+    animation: none;
+  }
+}

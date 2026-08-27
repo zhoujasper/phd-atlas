@@ -2099,6 +2099,7 @@ export function DossierView({
   readOnly = false,
   readOnlyBanner,
   canShareApplication,
+  canDeliverMail,
   canDeleteApplication,
 }: {
   application: ApplicationRecord
@@ -2295,6 +2296,8 @@ export function DossierView({
   readOnlyBanner?: string
   /** Share management is independently delegable from dossier editing in Team workspaces. */
   canShareApplication?: boolean
+  /** SMTP delivery is only available after a desktop app connects to a deployed web system. */
+  canDeliverMail?: boolean
   /** Team teachers/admins may remove an assigned student's application into their own recycle bin. */
   canDeleteApplication?: boolean
 }) {
@@ -2400,6 +2403,7 @@ export function DossierView({
     [isOwnApplication, recommenderOptions, session.user.settings.profileRecommenders],
   )
   const canShare = canShareApplication ?? (!isReadOnly && isOwnApplication)
+  const canSendMail = canDeliverMail !== false
   const canDelete = !isReadOnly && (canDeleteApplication ?? isOwnApplication)
   const pendingTeamTransfer =
     application.teamTransferRequest?.status === 'pending' ? application.teamTransferRequest : null
@@ -14188,6 +14192,7 @@ export function DossierView({
                           </div>
                         </div>
                         <div className="composer-actions">
+                          {canSendMail ? (
                           <button
                             type="button"
                             className="primary-action composer-action"
@@ -14196,9 +14201,10 @@ export function DossierView({
                           >
                             <Send size={13} /> {tx('dossier.sendEmailNow')}
                           </button>
+                          ) : null}
                           {canUseDrafts ? (
                             <>
-                              {emailSubjectReady && !composerFieldsDisabled ? (
+                              {canSendMail && emailSubjectReady && !composerFieldsDisabled ? (
                                 <AnchoredPopover
                                   trigger={
                                     <>
@@ -14268,11 +14274,11 @@ export function DossierView({
                                     </div>
                                   )}
                                 </AnchoredPopover>
-                              ) : (
+                              ) : canSendMail ? (
                                 <button type="button" className="quiet-action composer-action" disabled>
                                   <Clock size={13} aria-hidden="true" /> {tx('dossier.scheduleSend')}
                                 </button>
-                              )}
+                              ) : null}
                               <button
                                 type="button"
                                 className="quiet-action save-action composer-action"

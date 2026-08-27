@@ -33,7 +33,9 @@ let inflight: Promise<DesktopRuntime> | null = null
 
 declare global {
   interface Window {
-    phdAtlasDesktop?: Partial<DesktopRuntime>
+    phdAtlasDesktop?: Partial<DesktopRuntime> & {
+      platform?: string
+    }
   }
 }
 
@@ -41,11 +43,15 @@ export function disabledDesktopRuntime(): DesktopRuntime {
   return { ...disabledRuntime }
 }
 
+export function isDesktopShell(target: Window | undefined = typeof window === 'undefined' ? undefined : window): boolean {
+  if (!target) return false
+  if (target.phdAtlasDesktop?.enabled) return true
+  return /\bElectron\b/i.test(String(target.navigator?.userAgent ?? ''))
+}
+
 export function readDesktopRuntime(): DesktopRuntime {
   if (cached) return cached
-  if (typeof window !== 'undefined' && window.phdAtlasDesktop?.enabled) {
-    return desktopEnabledPlaceholder()
-  }
+  if (isDesktopShell()) return desktopEnabledPlaceholder()
   return disabledDesktopRuntime()
 }
 
@@ -63,12 +69,17 @@ export function desktopAdminEnabled(runtime = readDesktopRuntime()) {
   return runtime.adminEnabled === true
 }
 
+export function desktopRemoteEnabled(runtime = readDesktopRuntime()) {
+  if (!runtime.enabled) return true
+  return runtime.mode === 'remote'
+}
+
 export async function loadDesktopRuntime(fetchImpl: typeof fetch = fetch): Promise<DesktopRuntime> {
   if (inflight) return inflight
   inflight = fetchImpl('/api/desktop/runtime')
     .then(async (response) => {
       if (response.status === 404) {
-        const next = disabledDesktopRuntime()
+        const next = isDesktopShell() ? desktopEnabledPlaceholder() : disabledDesktopRuntime()
         cached = next
         return next
       }
@@ -81,9 +92,7 @@ export async function loadDesktopRuntime(fetchImpl: typeof fetch = fetch): Promi
     })
     .catch(() => {
       if (cached) return cached
-      if (typeof window !== 'undefined' && window.phdAtlasDesktop?.enabled) {
-        return desktopEnabledPlaceholder()
-      }
+      if (isDesktopShell()) return desktopEnabledPlaceholder()
       return disabledDesktopRuntime()
     })
     .finally(() => {

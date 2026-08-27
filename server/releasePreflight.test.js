@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   COMPOSE_VALIDATION_IMAGE,
+  assertDesktopReleaseScriptContract,
   assertDesktopReleaseWorkflowContract,
   assertGitHookInstallationContract,
   assertPackageMetadata,
@@ -14,9 +15,11 @@ import {
   parsePrePushInput,
   parseWorkflowDocument,
   prePushBranchUpdates,
+  prePushRevisionSpecs,
   releaseTreeScriptArguments,
   releaseTreeScriptInvocations,
 } from '../tools/release-preflight.mjs'
+import { assertNoCoauthorTrailers } from '../tools/no-coauthors.mjs'
 import {
   parseSmokeOptions,
   sanitizeContainerName,
@@ -76,6 +79,7 @@ describe('release preflight contracts', () => {
       ['run', 'test', '--', '--maxWorkers=1', '--no-file-parallelism', '--shard=4/4'],
     ])
     expect(releaseTreeScriptInvocations('typecheck')).toEqual([['run', 'typecheck']])
+    expect(releaseTreeScriptInvocations('security:audit')).toEqual([['run', 'security:audit']])
   })
 
   it('validates Compose through one digest-pinned official CLI container', () => {
@@ -186,6 +190,14 @@ describe('release preflight contracts', () => {
   })
 
   it('builds desktop packages on native runners from the released commit', () => {
+    expect(() => assertDesktopReleaseScriptContract({
+      scripts: {
+        'desktop:release-artifacts': 'node desktop/prepare-release-artifacts.mjs',
+      },
+    })).not.toThrow()
+    expect(() => assertDesktopReleaseScriptContract({ scripts: {} }))
+      .toThrow(/desktop:release-artifacts/)
+
     const workflowPath = resolvePublicWorkflow('desktop-release.yml')
     const workflow = readWorkflowFixture(workflowPath)
     expect(() => assertDesktopReleaseWorkflowContract(workflow, workflowPath)).not.toThrow()
@@ -225,6 +237,29 @@ describe('release preflight contracts', () => {
       '100755 0123456789abcdef 0\t.githooks/pre-push',
       replaceRequired(installer, 'chmod(prePushHook, 0o755)', 'void prePushHook'),
     )).toThrow(/installer contract/)
+  })
+
+  it('rejects every Co-authored-by trailer before commit or push', () => {
+    expect(() => assertNoCoauthorTrailers('fix: ordinary commit\n')).not.toThrow()
+    expect(() => assertNoCoauthorTrailers(
+      'fix: attributed commit\n\nCo-Authored-By: Anyone <anyone@example.com>\n',
+    )).toThrow(/forbidden Co-authored-by trailer/)
+    expect(() => assertNoCoauthorTrailers(
+      'fix: attributed commit\n\n  co-authored-by : Claude <noreply@anthropic.com>\n',
+    )).toThrow(/forbidden Co-authored-by trailer/)
+
+    const localSha = 'a'.repeat(40)
+    const remoteSha = 'b'.repeat(40)
+    expect(prePushRevisionSpecs([
+      { localRef: 'refs/heads/main', localSha, remoteRef: 'refs/heads/main', remoteSha },
+      { localRef: 'refs/heads/new', localSha, remoteRef: 'refs/heads/new', remoteSha: '0'.repeat(40) },
+      {
+        localRef: '(delete)',
+        localSha: '0'.repeat(40),
+        remoteRef: 'refs/heads/old',
+        remoteSha,
+      },
+    ])).toEqual([`${remoteSha}..${localSha}`, localSha])
   })
 
   it('blocks manual version-tag pushes before immutable tags can be created early', () => {

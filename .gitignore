@@ -16,6 +16,7 @@ node_modules
 dist
 dist-ssr
 storage
+/data/
 /output/
 /playwright-report/
 /test-results/
@@ -40,6 +41,8 @@ tools/.i18n-translate-cache.json
 /harness-progress.txt
 /harness-tasks.json
 /harness-tasks.json.bak
+/performance-report.json
+/animation-optimization-summary.json
 
 # Editor directories and files
 .vscode/*

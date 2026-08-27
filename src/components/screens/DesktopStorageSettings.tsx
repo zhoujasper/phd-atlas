@@ -71,6 +71,17 @@ export function DesktopStorageSettings({
         ) : null}
       </dl>
 
+      <div className="settings-desktop-capabilities">
+        <div>
+          <h5>{tx('settings.desktopLocalCapabilitiesTitle')}</h5>
+          <p>{tx('settings.desktopLocalCapabilities')}</p>
+        </div>
+        <div>
+          <h5>{tx('settings.desktopWebCapabilitiesTitle')}</h5>
+          <p>{tx('settings.desktopWebCapabilities')}</p>
+        </div>
+      </div>
+
       {linked ? (
         <div className="settings-desktop-actions">
           <button
@@ -93,6 +104,7 @@ export function DesktopStorageSettings({
             void run('connect', () => onConnect(origin, email, password))
           }}
         >
+          <p className="settings-desktop-connect-hint">{tx('settings.desktopConnectHint')}</p>
           <label>
             <span>{tx('settings.desktopOriginLabel')}</span>
             <input

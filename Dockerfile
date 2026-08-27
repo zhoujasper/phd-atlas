@@ -15,6 +15,7 @@ COPY public ./public
 COPY src ./src
 COPY server ./server
 COPY shared ./shared
+COPY desktop/portablePaths.mjs desktop/portablePaths.d.mts ./desktop/
 COPY tools/start-server.mjs tools/apply-update.mjs tools/container-entrypoint.mjs tools/stamp-service-worker.mjs tools/verify-build-entry-budget.mjs ./tools/
 
 # The repository prebuild hook regenerates checked-in Codex distribution

@@ -3,10 +3,11 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import './styles/loading.css'
 import './styles/surface-polish.css'
+import './styles/desktop-mac.css'
 import mobileStylesheetUrl from './styles/mobile.css?url'
 import { RootRoutes } from './RootRoutes'
 import { startConnectivityMonitoring } from './connectivity'
-import { registerServiceWorker } from './serviceWorker'
+import { disableServiceWorkerForDesktop, registerServiceWorker } from './serviceWorker'
 import { installLazyModuleRecovery } from './lazyModuleRecovery'
 import { installResponsiveStylesheet } from './responsiveStylesheet'
 import { AppErrorBoundary } from './components/shared/AppErrorBoundary'
@@ -15,6 +16,15 @@ import { AppErrorBoundary } from './components/shared/AppErrorBoundary'
 import { capturePwaInstallPrompt } from './components/hooks/usePwaInstall'
 
 capturePwaInstallPrompt()
+if (typeof window !== 'undefined' && window.phdAtlasDesktop?.enabled && window.phdAtlasDesktop.platform === 'darwin') {
+  document.documentElement.classList.add('desktop-mac')
+  if (document.body && !document.querySelector('.desktop-mac-drag-strip')) {
+    const strip = document.createElement('div')
+    strip.className = 'desktop-mac-drag-strip'
+    strip.setAttribute('aria-hidden', 'true')
+    document.body.prepend(strip)
+  }
+}
 installResponsiveStylesheet('mobile-product-shell', mobileStylesheetUrl, '(max-width: 820px)')
 const stopLazyModuleRecovery = installLazyModuleRecovery()
 const stopConnectivityMonitoring = startConnectivityMonitoring()
@@ -29,4 +39,8 @@ createRoot(document.getElementById('root')!).render(
   </StrictMode>,
 )
 
-registerServiceWorker()
+if (window.phdAtlasDesktop?.enabled || /\bElectron\b/i.test(String(navigator.userAgent || ''))) {
+  disableServiceWorkerForDesktop()
+} else {
+  registerServiceWorker()
+}

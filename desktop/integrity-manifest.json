@@ -2,12 +2,13 @@
   "version": 1,
   "algorithm": "sha256",
   "files": {
-    "desktop/main.mjs": "41dbffea3efdf22b9e7be7235838ffd30ccbf67e71a7830db9a9c59a8ca9c60a",
-    "desktop/preload.mjs": "940e7df4557a9c77d27835af07cba6bdb28105be35ff0045d3f9ee8d88e67e31",
-    "desktop/launch-runtime.mjs": "09fe48268a77bebe7fb200e2818cf01474f99206e06e866e21a5cb6eec522470",
+    "desktop/main.mjs": "0a5b3ae6ff4ae0f1c4fedc67f4e611ca09d84d99c677d2a64266617c92169292",
+    "desktop/preload.cjs": "a1c403d7ab44e10c1eb9b2b6fb884625ddb7ebf9d734c33c650ab16539792d14",
+    "desktop/launch-runtime.mjs": "40f2e6eaffe2b3cefdc7c999a4f6ceba0a037bd29aba9aa7d83a4ab8c90e41d2",
+    "desktop/portablePaths.mjs": "0614d1031aec4d91e7512b96d940475a3f02ed0c14918acf3835332126c49187",
     "desktop/resolve-runtime-node.mjs": "e45eb50028c9f793431346c4184fdc679ffe2dcc7c952b10d65c5ad16e34ae82",
     "server/desktopRuntime.js": "45db2b16fbf5c5a8651143fef3bbc4ce0545976b152c1e3f7ff8727f62b63e4b",
-    "server/desktopRoutes.js": "156ec4f85915a4a4c05c1ae569a4825b9575b9201a75de5dbcd18a4002b2734d",
+    "server/desktopRoutes.js": "9dd89dbfa2be73f49e4992c730962e39d78effc4c3f716ba4cedb59811257d6e",
     "server/desktopCompleteExport.js": "c36157ea0c4e86e338441fcb3a63559784d088e509327d8cd6bb713ee54381d9",
     "server/desktopRemoteSync.js": "be552fafca6a88bb8577d677af2412c3e531c8d9ec64860802a2ac6a104c496b",
     "server/index.js": "818124a2fa262d2c9944e043120d11e9a6c287b7e416ea850a426ccf7edd154a"

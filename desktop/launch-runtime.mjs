@@ -1,8 +1,8 @@
 import { createServer } from 'node:http'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assertDesktopIntegrity } from './integrity.mjs'
+import { resolvePortableStorageRoot } from './portablePaths.mjs'
 
 const projectRoot = join(fileURLToPath(new URL('..', import.meta.url)))
 const dev = process.env.PHD_ATLAS_DESKTOP_DEV === '1' || process.env.NODE_ENV === 'test'
@@ -10,7 +10,11 @@ const dev = process.env.PHD_ATLAS_DESKTOP_DEV === '1' || process.env.NODE_ENV ==
 assertDesktopIntegrity(projectRoot, { dev })
 
 process.env.PHD_ATLAS_DESKTOP = '1'
-process.env.PHD_ATLAS_STORAGE_ROOT ??= join(homedir(), 'PhD Atlas', 'storage')
+process.env.PHD_ATLAS_STORAGE_ROOT = resolvePortableStorageRoot({
+  packaged: false,
+  projectRoot,
+  envStorageRoot: process.env.PHD_ATLAS_STORAGE_ROOT,
+})
 process.env.HOST ??= '127.0.0.1'
 process.env.PORT ??= await findFreePort()
 

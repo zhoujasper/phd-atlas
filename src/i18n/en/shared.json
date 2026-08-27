@@ -153,8 +153,8 @@
     "APPLICATION_VERSION_REQUIRED": "This save is missing the application version it needs to write safely. Your draft is still here; retry the save, or reopen the application if it keeps failing.",
     "APPLICATION_DELTA_CANONICAL_MISMATCH": "The server could not preserve every submitted field, so this save was not completed. Your draft is still here; retry it, or reopen the application if it keeps failing.",
     "CODEX_DEVICE_AUTHORIZATION_CHANGED": "This device authorization changed before the action could finish. Check the latest authorization status and try again.",
-    "SETTINGS_PERSISTENCE_NOT_ACKNOWLEDGED": "The server did not confirm that your settings were saved. Your changes are still available; try again.",
-    "SETTINGS_ACKNOWLEDGEMENT_INVALID": "The server returned an invalid settings save confirmation. Your changes are still available; try again.",
+    "SETTINGS_PERSISTENCE_NOT_ACKNOWLEDGED": "Settings could not be confirmed as saved. Your changes are still available; try again.",
+    "SETTINGS_ACKNOWLEDGEMENT_INVALID": "The settings save confirmation was invalid. Your changes are still available; try again.",
     "NETWORK_ERROR": "Network connection failed. Check your connection and try again.",
     "REQUEST_FAILED": "Request failed. Please try again.",
 

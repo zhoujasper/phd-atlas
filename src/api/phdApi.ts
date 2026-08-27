@@ -2327,7 +2327,7 @@ function createSettingsMutationId() {
 
 function settingsAcknowledgementFailure(): ApiError {
   return new ApiError(
-    'The server did not provide a verifiable durable settings acknowledgement. The editor remains available so you can retry.',
+    'Settings could not be confirmed as saved. The editor remains available so you can retry.',
     'SETTINGS_PERSISTENCE_NOT_ACKNOWLEDGED',
     409,
   )
