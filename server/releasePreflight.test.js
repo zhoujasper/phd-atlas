@@ -232,11 +232,22 @@ describe('release preflight contracts', () => {
   it('builds desktop packages on native runners from the released commit', () => {
     expect(() => assertDesktopReleaseScriptContract({
       scripts: {
+        'desktop:build': 'electron-builder --publish never',
+        'desktop:build:win': 'electron-builder --win --publish never',
+        'desktop:build:mac': 'electron-builder --mac --publish never',
         'desktop:release-artifacts': 'node desktop/prepare-release-artifacts.mjs',
       },
     })).not.toThrow()
     expect(() => assertDesktopReleaseScriptContract({ scripts: {} }))
       .toThrow(/desktop:release-artifacts/)
+    expect(() => assertDesktopReleaseScriptContract({
+      scripts: {
+        'desktop:build': 'electron-builder --publish never',
+        'desktop:build:win': 'electron-builder --win',
+        'desktop:build:mac': 'electron-builder --mac --publish never',
+        'desktop:release-artifacts': 'node desktop/prepare-release-artifacts.mjs',
+      },
+    })).toThrow(/desktop:build:win.*--publish never/)
 
     const workflowPath = resolvePublicWorkflow('desktop-release.yml')
     const workflow = readWorkflowFixture(workflowPath)
@@ -244,7 +255,7 @@ describe('release preflight contracts', () => {
     expect(() => assertDesktopReleaseWorkflowContract(
       replaceRequired(
         workflow,
-        'ref: ${{ github.event.workflow_run.head_sha }}',
+        "ref: ${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}",
         'ref: main',
       ),
       workflowPath,
@@ -253,6 +264,10 @@ describe('release preflight contracts', () => {
       replaceRequired(workflow, 'npm run desktop:build:win', 'npm run build'),
       workflowPath,
     )).toThrow(/desktop:build:win/)
+    expect(() => assertDesktopReleaseWorkflowContract(
+      replaceRequired(workflow, '          CI: "false"', '          CI: "true"'),
+      workflowPath,
+    )).toThrow(/disable CI auto-publishing/)
     expect(() => assertDesktopReleaseWorkflowContract(
       replaceRequired(
         workflow,

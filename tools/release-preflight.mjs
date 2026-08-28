@@ -120,6 +120,14 @@ export function assertDesktopReleaseScriptContract(packageJson) {
       `package.json script 'desktop:release-artifacts' must be exactly '${required}'.`,
     )
   }
+  for (const scriptName of ['desktop:build', 'desktop:build:win', 'desktop:build:mac']) {
+    const script = String(packageJson.scripts?.[scriptName] ?? '')
+    if (!script.includes('electron-builder') || !script.includes('--publish never')) {
+      throw new Error(
+        `package.json script '${scriptName}' must explicitly disable electron-builder publication with '--publish never'.`,
+      )
+    }
+  }
 }
 
 export function releaseTreeScriptArguments(script) {
@@ -363,6 +371,7 @@ export function assertReleaseWorkflowStateContract(contents, label = 'release.ym
 export function assertDesktopReleaseWorkflowContract(contents, label = 'desktop-release.yml') {
   const workflow = parseWorkflowDocument(contents, label)
   const trigger = workflow.on?.workflow_run
+  const manualTrigger = workflow.on?.workflow_dispatch
   const triggerWorkflows = Array.isArray(trigger?.workflows) ? trigger.workflows : []
   const triggerTypes = Array.isArray(trigger?.types) ? trigger.types : []
   if (
@@ -371,11 +380,16 @@ export function assertDesktopReleaseWorkflowContract(contents, label = 'desktop-
   ) {
     throw new Error(`${label} must run only after the canonical public Release workflow completes.`)
   }
+  if (manualTrigger?.inputs?.released_sha?.required !== true) {
+    throw new Error(`${label} manual recovery must require an exact released_sha.`)
+  }
   if (workflow.permissions?.contents !== 'read') {
     throw new Error(`${label} must default to read-only repository contents.`)
   }
 
   const requiredGuard = "github.event.workflow_run.conclusion == 'success'"
+  const manualGuard = "github.event_name == 'workflow_dispatch'"
+  const releasedShaExpression = "${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}"
   const buildContracts = [
     ['build-windows', 'windows-latest', 'npm run desktop:build:win', '--platform windows'],
     ['build-macos', 'macos-latest', 'npm run desktop:build:mac', '--platform macos'],
@@ -389,8 +403,11 @@ export function assertDesktopReleaseWorkflowContract(contents, label = 'desktop-
     if (!String(job.if ?? '').includes(requiredGuard)) {
       throw new Error(`${label} ${jobName} must be gated by a successful canonical Release run.`)
     }
+    if (!String(job.if ?? '').includes(manualGuard)) {
+      throw new Error(`${label} ${jobName} must permit an explicit released-SHA recovery run.`)
+    }
     const checkout = job.steps?.find((step) => step?.uses === 'actions/checkout@v4')
-    if (checkout?.with?.ref !== '${{ github.event.workflow_run.head_sha }}') {
+    if (checkout?.with?.ref !== releasedShaExpression) {
       throw new Error(`${label} ${jobName} must build the exact released commit SHA.`)
     }
     const scripts = workflowStepScripts(job)
@@ -402,12 +419,21 @@ export function assertDesktopReleaseWorkflowContract(contents, label = 'desktop-
     if (!job.steps?.some((step) => step?.uses === 'actions/upload-artifact@v4')) {
       throw new Error(`${label} ${jobName} must upload its native candidates before Release attachment.`)
     }
+    const buildStep = job.steps?.find((step) => step?.run === buildCommand)
+    if (buildStep?.env?.CI !== 'false') {
+      throw new Error(
+        `${label} ${jobName} must disable CI auto-publishing for historical tagged scripts.`,
+      )
+    }
   }
 
   const attachJob = workflow.jobs?.['attach-release-assets']
   if (!attachJob) throw new Error(`${label} is missing attach-release-assets.`)
   if (!String(attachJob.if ?? '').includes(requiredGuard)) {
     throw new Error(`${label} attach-release-assets must be gated by a successful canonical Release run.`)
+  }
+  if (!String(attachJob.if ?? '').includes(manualGuard)) {
+    throw new Error(`${label} attachment must permit an explicit released-SHA recovery run.`)
   }
   if (attachJob.permissions?.contents !== 'write') {
     throw new Error(`${label} must grant write access only to the final Release attachment job.`)
@@ -417,7 +443,7 @@ export function assertDesktopReleaseWorkflowContract(contents, label = 'desktop-
     throw new Error(`${label} must wait for both native desktop builds before attaching assets.`)
   }
   const checkout = attachJob.steps?.find((step) => step?.uses === 'actions/checkout@v4')
-  if (checkout?.with?.ref !== '${{ github.event.workflow_run.head_sha }}') {
+  if (checkout?.with?.ref !== releasedShaExpression) {
     throw new Error(`${label} attachment must verify the exact released commit SHA.`)
   }
   if (!attachJob.steps?.some((step) => step?.uses === 'actions/download-artifact@v4')) {
@@ -427,6 +453,7 @@ export function assertDesktopReleaseWorkflowContract(contents, label = 'desktop-
   for (const required of [
     'sha256sum --check',
     'git rev-list -n 1 "$tag"',
+    '"$tag_target" != "$RELEASED_SHA"',
     'releases/tags/${DESKTOP_TAG}',
     'releases/assets/${asset_id}',
     'cmp --silent "$asset_path" "$remote_path"',

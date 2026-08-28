@@ -8,6 +8,13 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Made every Electron desktop build explicitly non-publishing, and added a
+  tag-owned manual recovery path for native artifacts so CI cannot consume a
+  missing `GH_TOKEN` after successfully creating installers. The final job
+  remains the only writer and refuses to replace a different Release asset.
+
 ## [0.1.4] - 2026-08-27
 
 ### Changed

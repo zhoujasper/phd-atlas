@@ -6,27 +6,35 @@ on:
       - Release update package and container
     types:
       - completed
+  workflow_dispatch:
+    inputs:
+      released_sha:
+        description: Exact commit targeted by an existing public version tag
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: phd-atlas-desktop-${{ github.event.workflow_run.head_sha }}
+  group: phd-atlas-desktop-${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 jobs:
   build-windows:
     if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: windows-latest
     timeout-minutes: 50
     steps:
       - name: Check out the released commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -42,6 +50,7 @@ jobs:
       - name: Build unsigned Windows installers
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          CI: "false"
         run: npm run desktop:build:win
 
       - name: Prepare Windows checksums
@@ -50,7 +59,7 @@ jobs:
       - name: Upload immutable Windows candidates
         uses: actions/upload-artifact@v4
         with:
-          name: phd-atlas-desktop-windows-${{ github.event.workflow_run.head_sha }}
+          name: phd-atlas-desktop-windows-${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
           if-no-files-found: error
           retention-days: 3
           path: |
@@ -61,16 +70,18 @@ jobs:
 
   build-macos:
     if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: macos-latest
     timeout-minutes: 50
     steps:
       - name: Check out the released commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -86,6 +97,7 @@ jobs:
       - name: Build unsigned macOS images
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          CI: "false"
         run: npm run desktop:build:mac
 
       - name: Prepare macOS checksums
@@ -94,7 +106,7 @@ jobs:
       - name: Upload immutable macOS candidates
         uses: actions/upload-artifact@v4
         with:
-          name: phd-atlas-desktop-macos-${{ github.event.workflow_run.head_sha }}
+          name: phd-atlas-desktop-macos-${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
           if-no-files-found: error
           retention-days: 3
           path: |
@@ -105,9 +117,11 @@ jobs:
 
   attach-release-assets:
     if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event.workflow_run.head_repository.full_name == github.repository)
     needs:
       - build-windows
       - build-macos
@@ -119,7 +133,7 @@ jobs:
       - name: Check out the released commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -131,11 +145,13 @@ jobs:
       - name: Download native desktop candidates
         uses: actions/download-artifact@v4
         with:
-          pattern: phd-atlas-desktop-*-${{ github.event.workflow_run.head_sha }}
+          pattern: phd-atlas-desktop-*-${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
           path: release-assets
           merge-multiple: true
 
       - name: Verify tag ownership and local checksums
+        env:
+          RELEASED_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -143,8 +159,8 @@ jobs:
           tag="v${version}"
           git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
           tag_target="$(git rev-list -n 1 "$tag")"
-          if [[ "$tag_target" != "${{ github.event.workflow_run.head_sha }}" ]]; then
-            echo "::error title=Desktop tag mismatch::$tag targets $tag_target instead of ${{ github.event.workflow_run.head_sha }}."
+          if [[ "$tag_target" != "$RELEASED_SHA" ]]; then
+            echo "::error title=Desktop tag mismatch::$tag targets $tag_target instead of $RELEASED_SHA."
             exit 1
           fi
 

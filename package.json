@@ -54,10 +54,10 @@
     "desktop:integrity": "node desktop/prepare-integrity.mjs",
     "desktop:runtime-node": "node desktop/prepare-runtime-node.mjs",
     "desktop:dev": "node desktop/launch-runtime.mjs",
-    "desktop:build": "vite build && node tools/stamp-service-worker.mjs && node desktop/prepare-runtime-node.mjs && node desktop/prepare-integrity.mjs && electron-builder --config desktop/electron-builder.yml && node desktop/write-portable-layout.mjs",
-    "desktop:build:win": "vite build && node tools/stamp-service-worker.mjs && node desktop/prepare-runtime-node.mjs && node desktop/prepare-integrity.mjs && electron-builder --config desktop/electron-builder.yml --win && node desktop/write-portable-layout.mjs",
+    "desktop:build": "vite build && node tools/stamp-service-worker.mjs && node desktop/prepare-runtime-node.mjs && node desktop/prepare-integrity.mjs && electron-builder --config desktop/electron-builder.yml --publish never && node desktop/write-portable-layout.mjs",
+    "desktop:build:win": "vite build && node tools/stamp-service-worker.mjs && node desktop/prepare-runtime-node.mjs && node desktop/prepare-integrity.mjs && electron-builder --config desktop/electron-builder.yml --win --publish never && node desktop/write-portable-layout.mjs",
     "desktop:build:win-setup": "node desktop/prepare-runtime-node.mjs && node desktop/prepare-integrity.mjs && node desktop/stage-windows-installer.mjs",
-    "desktop:build:mac": "vite build && node tools/stamp-service-worker.mjs && node desktop/prepare-runtime-node.mjs && node desktop/prepare-integrity.mjs && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config desktop/electron-builder.yml --mac --arm64 && node desktop/sign-mac-app.mjs && node desktop/write-portable-layout.mjs",
+    "desktop:build:mac": "vite build && node tools/stamp-service-worker.mjs && node desktop/prepare-runtime-node.mjs && node desktop/prepare-integrity.mjs && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config desktop/electron-builder.yml --mac --arm64 --publish never && node desktop/sign-mac-app.mjs && node desktop/write-portable-layout.mjs",
     "desktop:release-artifacts": "node desktop/prepare-release-artifacts.mjs"
   },
   "dependencies": {
