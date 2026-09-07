@@ -37,7 +37,7 @@ describe('App offline persistence acknowledgement contract', () => {
     // behind a button that cannot clear it.
     const syncLoop = sourceBetween(
       'for (const operation of pendingQueue) {',
-      '      if (!isCurrentRun()) return synced\n      removeOfflineQueueItems(',
+      '      const remainingQueue = removeOfflineQueueItems(',
     )
     expect(syncLoop).toContain('mergeOfflineApplicationUpdate(operation, current, { autoResolve: true })')
     expect(syncLoop).not.toContain('markOfflineQueueItemBlocked')
@@ -46,7 +46,7 @@ describe('App offline persistence acknowledgement contract', () => {
   it('never counts a queued change as synced when it was only discarded or deferred', () => {
     const syncLoop = sourceBetween(
       'for (const operation of pendingQueue) {',
-      '      if (!isCurrentRun()) return synced\n      removeOfflineQueueItems(',
+      '      const remainingQueue = removeOfflineQueueItems(',
     )
     const noTargetDiscard = syncLoop.indexOf('if (!current || (current.ownerId && current.ownerId !== activeSession.user.id))')
     const successCount = syncLoop.indexOf('syncedIds.push(operation.id)')

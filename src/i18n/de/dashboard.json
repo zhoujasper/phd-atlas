@@ -60,7 +60,7 @@
     "noPriorityHint": "Bewerbungen mit der Priorität 80+ werden hier angezeigt.",
     "recentMaterials": "Aktuelle Checkliste",
     "priorityValue": "Priorität {value}",
-    "dayShort": "{count} T",
+    "dayShort": "{count} T.",
     "noTimeline": "Noch keine Timeline-Ereignisse.",
     "noMaterials": "Noch keine Checklistenpunkte.",
     "taskChecklistPanelDesc": "Zum Abschließen tippen · zum Springen mit der Maus bewegen",

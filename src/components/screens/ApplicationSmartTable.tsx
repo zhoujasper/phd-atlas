@@ -1,3 +1,4 @@
+import { applicationProfessors, professorName, professorAddresses } from '../../../shared/applicationProfessors.js'
 import {
   ArrowDown,
   ArrowRight,
@@ -371,6 +372,7 @@ export type ApplicationSmartTableProps = {
   onOpenMany?: (ids: string[]) => void
   onExportApplication?: (id: string) => void
   onExportMany?: (ids: string[]) => void
+  onDuplicate?: (application: ApplicationRecord) => void
   onCopy?: (value: string, label: string) => void
   onDeleteApplication?: (id: string) => void
   onDeleteMany?: (ids: string[]) => void
@@ -390,6 +392,7 @@ export function ApplicationSmartTable({
   onExportApplication,
   onExportMany,
   onCopy,
+  onDuplicate,
   onDeleteApplication,
   onDeleteMany,
   onNew,
@@ -761,6 +764,13 @@ export function ApplicationSmartTable({
         icon: <Download size={14} aria-hidden="true" />,
         disabled: !onExportApplication,
         onSelect: () => onExportApplication?.(application.id),
+      },
+      {
+        id: 'duplicate',
+        label: tx('dossier.supervisors.duplicate'),
+        icon: <Copy size={14} aria-hidden="true" />,
+        disabled: !onDuplicate,
+        onSelect: () => onDuplicate?.(application),
       },
       {
         id: 'copy-school',
@@ -1282,8 +1292,8 @@ export function ApplicationSmartTable({
                     dataLabel={tx('kanban.tableProfessor')}
                   >
                     <span className="application-table-professor">
-                      <strong>{application.professor.english || '—'}</strong>
-                      <em>{application.professor.email || '—'}</em>
+                      <strong title={applicationProfessors(application).map((professor) => professorName(professor)).join(' · ')}>{applicationProfessors(application).map((professor) => professorName(professor)).filter(Boolean).join(' · ') || '—'}</strong>
+                      <em title={applicationProfessors(application).flatMap(professorAddresses).join(', ')}>{application.professor.email || '—'}{application.additionalProfessors?.length ? ` +${application.additionalProfessors.length}` : ''}</em>
                     </span>
                   </TableCell>
                   <TableCell

@@ -28,6 +28,20 @@ const localRuntime = {
 }
 
 describe('desktop opening password settings', () => {
+  it('shows a failed password save without claiming the lock is enabled', async () => {
+    render(
+      <I18nContext.Provider value={{ lang: 'en', t: {}, ready: true, tx, format: (value: string) => value }}>
+        <DesktopUnlockSettings runtime={localRuntime} onSave={vi.fn().mockRejectedValue(new Error('Could not save the opening password.'))} />
+      </I18nContext.Provider>,
+    )
+    await userEvent.click(screen.getByRole('switch', { name: 'Require a password when opening' }))
+    await userEvent.type(screen.getByLabelText('Opening password', { selector: 'input' }), 'lock-4321')
+    await userEvent.type(screen.getByLabelText('Confirm password'), 'lock-4321')
+    await userEvent.click(screen.getByRole('button', { name: 'Turn on password' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save the opening password.')
+    expect(screen.getByRole('button', { name: 'Turn on password' })).toBeEnabled()
+  })
+
   it('warns that a forgotten opening password cannot be recovered', async () => {
     const onSave = vi.fn()
     render(

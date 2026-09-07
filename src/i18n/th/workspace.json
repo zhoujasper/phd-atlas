@@ -33,7 +33,7 @@
     "noApps": "ยังไม่มีประวัติการรับสมัคร",
     "noMatch": "ไม่มีบันทึกการสมัครเข้าเรียนที่ตรงกัน",
     "today": "วันนี้",
-    "dayShort": "{count}d",
+    "dayShort": "{count} วัน",
     "daysPast": "{count} ผ่านไปแล้ว",
     "sortDeadline": "กำหนดส่ง",
     "sortName": "โรงเรียน",

@@ -1,0 +1,100 @@
+.application-professors { min-width: 0; }
+.professors-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.professors-heading h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; font-weight: 620; }
+.professors-heading .quiet-action { flex-shrink: 0; }
+.professors-heading-actions { display: flex; align-items: center; flex-shrink: 0; gap: 8px; }
+.professors-navigation { display: flex; align-items: center; gap: 2px; }
+.professors-hint { margin: 8px 0 10px; font-size: 12px; line-height: 1.6; color: var(--text-secondary); }
+.professors-selector-shell { position: relative; min-width: 0; }
+.professors-selector { display: flex; align-items: center; gap: 8px; overflow-x: auto; padding: 4px 2px 10px; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; scroll-behavior: smooth; scroll-snap-type: x proximity; overscroll-behavior-x: contain; }
+.professor-card { position: relative; flex: 0 0 auto; width: 244px; max-width: calc(100% - 4px); min-width: 0; box-sizing: border-box; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); scroll-snap-align: start; transition: background 220ms var(--ease-out), border-color 220ms var(--ease-out); animation: professor-card-enter 180ms var(--ease-out) backwards; }
+.professor-card:hover { border-color: var(--border-strong); background: var(--surface-secondary); }
+.professor-card[data-selected="true"] { border-color: color-mix(in srgb, var(--accent) 70%, var(--border)); background: var(--accent-soft); }
+.professor-card[data-confirming="true"] { border-color: var(--border-danger); background: var(--danger-bg); }
+.professor-choice { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 46px; box-sizing: border-box; padding: 4px 10px; border: 0; border-radius: inherit; background: transparent; text-align: start; color: var(--text); cursor: pointer; transition: transform 120ms var(--ease-out); }
+.professor-card[data-removable="true"] .professor-choice { padding-inline-end: 42px; }
+.professor-choice-label { min-width: 0; display: grid; gap: 1px; transition: opacity 160ms var(--ease-out), transform 220ms var(--ease-out); }
+.professor-card[data-confirming="true"] .professor-choice-label { opacity: 0; transform: translateX(-8px); }
+.professor-choice strong, .professor-choice small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.professor-choice strong { font-size: 12px; line-height: 17px; font-weight: 590; }
+.professor-choice small { font-size: 11px; line-height: 14px; color: var(--text-secondary); }
+.professor-choice .professor-avatar { width: 26px; height: 26px; font-size: 10px; }
+.professor-card-actions { position: absolute; inset-inline-end: 6px; top: 50%; display: grid; align-items: center; justify-items: end; max-width: calc(100% - 46px); transform: translateY(-50%); pointer-events: none; }
+.professor-card-remove, .professor-card-confirm { grid-area: 1 / 1; }
+.professor-card-actions button { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; min-height: 30px; padding: 0 8px; border: 0; border-radius: var(--radius); background: transparent; font-size: 12px; line-height: 1.2; font-weight: 500; white-space: nowrap; cursor: pointer; pointer-events: auto; transition: background 120ms var(--ease-out), color 120ms var(--ease-out), opacity 160ms var(--ease-out), transform 220ms var(--ease-out), visibility 160ms; }
+.professor-card-actions .professor-card-remove { width: 30px; padding: 0; color: var(--text-secondary); opacity: .65; }
+.professor-card:hover .professor-card-remove, .professor-card:focus-within .professor-card-remove { opacity: 1; }
+.professor-card-actions .professor-card-remove:hover { color: var(--danger-text); background: var(--danger-bg); }
+.professor-card-confirm { display: flex; align-items: center; gap: 4px; max-width: 100%; opacity: 0; visibility: hidden; transform: translateX(12px) scale(.96); transform-origin: right center; transition: opacity 160ms var(--ease-out), transform 220ms var(--ease-out), visibility 160ms; }
+.professor-card[data-confirming="true"] .professor-card-remove { opacity: 0; visibility: hidden; transform: scale(.8); pointer-events: none; }
+.professor-card[data-confirming="true"] .professor-card-confirm { opacity: 1; visibility: visible; transform: none; }
+.professor-card-actions .professor-card-confirm-delete { color: var(--danger-text); background: color-mix(in srgb, var(--danger-text) 10%, var(--danger-bg)); }
+.professor-card-actions .professor-card-confirm-delete:hover { background: color-mix(in srgb, var(--danger-text) 18%, var(--danger-bg)); }
+.professor-card-actions .professor-card-confirm-cancel { color: var(--text-secondary); }
+.professor-card-actions .professor-card-confirm-cancel:hover { color: var(--text); background: var(--surface); }
+.professor-card-actions button:active { transform: scale(.96); }
+.professor-card-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.professors-scroll { display: flex; align-items: center; justify-content: center; width: 26px; height: 28px; padding: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text-secondary); cursor: pointer; transition: background 120ms var(--ease-out), color 120ms var(--ease-out), transform 120ms var(--ease-out); }
+.professors-scroll:hover { color: var(--accent); background: var(--surface-secondary); }
+.professors-scroll:active { transform: scale(.96); }
+.professors-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@keyframes professor-card-enter {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: none; }
+}
+.professor-avatar { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 30px; height: 30px; border-radius: 50%; font-size: 11px; font-weight: 650; background: var(--surface-secondary); color: var(--text); }
+.professor-avatar[data-tone="0"], .correspondence-event-dot[data-professor-tone="0"] { background: var(--accent-soft); color: var(--accent); }
+.professor-avatar[data-tone="1"], .correspondence-event-dot[data-professor-tone="1"] { background: var(--success-bg); color: var(--success-text); }
+.professor-avatar[data-tone="2"], .correspondence-event-dot[data-professor-tone="2"] { background: var(--warning-bg); color: var(--warning-text); }
+.professor-avatar[data-tone="3"], .correspondence-event-dot[data-professor-tone="3"] { background: var(--danger-bg); color: var(--danger-text); }
+.professor-avatar[data-tone="4"], .correspondence-event-dot[data-professor-tone="4"] { background: var(--info-bg); color: var(--info-text); }
+.professor-avatar[data-tone="5"], .correspondence-event-dot[data-professor-tone="5"] { background: var(--surface-secondary); color: var(--text-secondary); }
+.correspondence-event-dot[data-professor-tone] .correspondence-event-avatar { background: transparent; color: inherit; }
+.professor-editor { border-top: 1px solid var(--border); padding-top: 12px; }
+.professor-editor-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.professor-editor-actions > span { color: var(--text-secondary); font-size: 11px; margin-inline-end: auto; }
+.professor-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.professor-fields label { display: grid; gap: 6px; min-width: 0; color: var(--text-secondary); font-size: 12px; }
+.professor-fields input, .professor-alias-input input { width: 100%; min-width: 0; box-sizing: border-box; }
+.application-professors .textarea-field { margin-top: 16px; }
+.professor-more { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.professor-more > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 12px; cursor: pointer; list-style: none; color: var(--text-secondary); }
+.professor-more > summary::-webkit-details-marker { display: none; }
+.professor-more[open] > summary { margin-bottom: 12px; }
+.professor-more > summary svg { transition: transform 120ms var(--ease-out); }
+.professor-more[open] > summary svg { transform: rotate(180deg); }
+.professor-aliases { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; font-size: 12px; }
+.professor-aliases > span:first-child { width: 100%; color: var(--text-secondary); }
+.professor-alias { display: inline-flex; align-items: center; gap: 8px; padding: 4px 8px; background: var(--surface-secondary); border-radius: var(--radius); overflow-wrap: anywhere; }
+.professor-alias button { display: inline-flex; padding: 4px; color: var(--text-secondary); background: transparent; border: 0; }
+.professor-alias-input { display: flex; gap: 8px; width: 100%; }
+.professor-error { margin: 8px 0; font-size: 12px; color: var(--danger-text); }
+.professor-mail-filter { display: flex; align-items: center; gap: 8px; overflow-x: auto; padding: 4px 2px 12px; scrollbar-width: thin; }
+.professor-mail-filter > button { display: inline-flex; align-items: center; flex: 0 0 auto; gap: 6px; min-height: 36px; padding: 4px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text-secondary); font-size: 12px; transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out); }
+.professor-mail-filter > button:hover { background: var(--surface-secondary); }
+.professor-mail-filter > button[aria-pressed="true"] { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+.professor-mail-filter .professor-avatar { width: 22px; height: 22px; font-size: 10px; }
+.professor-choice:focus-visible, .professor-mail-filter > button:focus-visible, .professor-more > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.professor-choice:active, .professor-mail-filter > button:active { transform: scale(.98); }
+.professor-choice:disabled, .application-professors button:disabled { opacity: .4; cursor: not-allowed; }
+.composer-recipient-options .professor-option { display: flex; align-items: center; gap: 8px; }
+.composer-recipient-options .professor-option > span:last-child { display: grid; gap: 4px; min-width: 0; }
+.composer-recipient-options .professor-option strong, .composer-recipient-options .professor-option small { overflow-wrap: anywhere; }
+.new-application-professors { grid-column: 1 / -1; border-top: 1px solid var(--border); padding-top: 16px; }
+@media (max-width: 820px) {
+  .professor-fields { grid-template-columns: minmax(0, 1fr); }
+  .professor-card { width: 232px; }
+  .professor-editor-actions button { min-height: 36px; }
+}
+@media (pointer: coarse) {
+  .professor-card-actions button { min-height: 40px; }
+  .professor-card-actions .professor-card-remove { width: 40px; opacity: 1; }
+  .professor-card[data-removable="true"] .professor-choice { padding-inline-end: 48px; }
+  .professors-scroll { width: 36px; height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .professors-selector { scroll-behavior: auto; }
+  .professor-card { animation: none; }
+  .professor-card, .professor-choice, .professor-choice-label, .professor-card-actions button, .professor-card-confirm, .professors-scroll, .professor-mail-filter > button, .professor-more > summary svg { transition: none; }
+  .professor-choice:active, .professor-card-actions button:active, .professors-scroll:active, .professor-mail-filter > button:active { transform: none; }
+}

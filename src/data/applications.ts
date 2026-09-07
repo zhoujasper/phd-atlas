@@ -1,3 +1,5 @@
+import type { ApplicationProfessor } from '../../shared/applicationProfessors.js'
+export type { ApplicationProfessor } from '../../shared/applicationProfessors.js'
 import type { DetailTab } from '../appModel'
 import type { MailCategory, MailClassification } from '../mailClassification'
 
@@ -171,20 +173,9 @@ export type ApplicationRecord = {
     decidedBy?: string | null
     decidedAt?: string | null
   } | null
-  professor: {
-    english: string
-    chinese: string
-    email: string
-    /** Additional exact-match addresses filed into this application's correspondence timeline. */
-    correspondenceEmails?: string[]
-    phone: string
-    social: string
-    homepage: string
-    research: string
-    lab: string
-    labUrl?: string
-    projectUrl?: string
-  }
+  professor: ApplicationProfessor
+  /** Intended supervisors, separate from recommendation-letter contacts. */
+  additionalProfessors?: Array<ApplicationProfessor & { id: string }>
   school: {
     name: string
     country: string

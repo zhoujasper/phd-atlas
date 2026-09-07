@@ -33,7 +33,7 @@
     "noApps": "まだ出願はありません",
     "noMatch": "一致する出願がありません",
     "today": "今日",
-    "dayShort": "{count}d",
+    "dayShort": "{count}日",
     "daysPast": "{count}過去",
     "sortDeadline": "締切",
     "sortName": "学校",

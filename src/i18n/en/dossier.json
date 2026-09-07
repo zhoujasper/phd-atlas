@@ -1117,7 +1117,31 @@
     "aiProfileSelectedMaterials": "{count} selected",
     "aiProfileSelectVisible": "Pick specific ones",
     "aiProfileUseAll": "Use everything",
-    "aiProfileNoMatch": "No material matches that search."
+    "aiProfileNoMatch": "No material matches that search.",
+    "supervisors": {
+      "title": "Intended supervisors",
+      "add": "Add supervisor",
+      "hint": "One application can include several supervisors. Recommendation-letter contacts are managed separately.",
+      "unnamed": "Supervisor details",
+      "emailOptional": "Email can be added later",
+      "default": "Default contact",
+      "contact": "Intended supervisor",
+      "write": "Write email",
+      "makeDefault": "Make default",
+      "remove": "Remove supervisor",
+      "confirmRemove": "Confirm delete",
+      "scrollLeft": "Scroll supervisors left",
+      "scrollRight": "Scroll supervisors right",
+      "removeHint": "Remove this supervisor? Existing messages will remain with their original addresses.",
+      "chineseName": "Chinese name",
+      "more": "Contact, lab and other details",
+      "aliases": "Other email addresses",
+      "duplicateEmail": "This address is already assigned to a supervisor in this application.",
+      "filter": "Filter by supervisor",
+      "all": "All supervisors",
+      "duplicate": "Duplicate application",
+      "copyHint": "Copies the school, programme, supervisors, recommenders and requirements. Progress starts over; messages, uploaded files and share links are not copied."
+    }
   },
   "fees": {
     "sectionTitle": "Tuition / Application Fees",

@@ -1,18 +1,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import { containsTranslationMarker, isReviewedLiteral, looksLikeSharedEnglish } from './i18n-literal-policy.mjs'
 
 const i18nRoot = path.join(process.cwd(), 'src', 'i18n')
 const requiredLanguages = ['en', 'zh', 'ja', 'ko', 'es', 'fr', 'de', 'pt', 'it', 'ru', 'vi', 'th']
-// Translation providers may transliterate I18N/PH marker text while keeping the
-// surrounding double underscores, so reject the transport envelope itself.
-const markerPattern = /__/
-const reviewedIdenticalTechnicalKeys = new Set([
-  'admin.database.mssql',
-  'dossier.materialTypePlaceholder',
-  'notificationPublisher.csvTemplateFilename',
-  'team.bulkInvitePlaceholder',
-])
+const sharedPhrases = new Map()
+let translatedStrings = 0
 
 function flatten(value, prefix = '', output = new Map()) {
   if (Array.isArray(value)) {
@@ -28,14 +22,6 @@ function flatten(value, prefix = '', output = new Map()) {
 function placeholders(value) {
   if (typeof value !== 'string') return []
   return Array.from(value.matchAll(/\{(\w+)\}/g), (match) => match[1]).sort()
-}
-
-function looksLikeUntranslatedEnglishPhrase(value) {
-  if (typeof value !== 'string' || value.length < 18) return false
-  const withoutTechnicalValues = value
-    .replace(/\{[^}]+\}/g, '')
-    .replace(/https?:\/\/\S+|\S+@\S+/g, '')
-  return (withoutTechnicalValues.match(/[A-Za-z]{3,}/g) ?? []).length >= 3
 }
 
 function readJson(filePath, errors) {
@@ -106,8 +92,9 @@ for (const language of requiredLanguages) {
         continue
       }
       if (typeof target === 'string') {
+        translatedStrings += 1
         if (source && !target.trim()) errors.push(`${language}/${file}:${key}: empty translation`)
-        if (markerPattern.test(target)) errors.push(`${language}/${file}:${key}: contains an internal translation marker`)
+        if (containsTranslationMarker(language, key, source, target)) errors.push(`${language}/${file}:${key}: contains a translation marker`)
         if (placeholders(source).join(',') !== placeholders(target).join(',')) {
           errors.push(`${language}/${file}:${key}: placeholders differ (${placeholders(source).join(',')} -> ${placeholders(target).join(',')})`)
         }
@@ -116,14 +103,14 @@ for (const language of requiredLanguages) {
         if (sourceLineBreaks !== targetLineBreaks) {
           errors.push(`${language}/${file}:${key}: line-break structure differs (${sourceLineBreaks} -> ${targetLineBreaks})`)
         }
-        if (language !== 'en' && !key.startsWith('_staticText.') && target === source && /[A-Za-z]{3}/.test(source)) {
+        if (language !== 'en' && target === source && /[A-Za-z]/.test(source.replace(/\{[^}]+\}/g, ''))) {
           identical += 1
-          if (
-            looksLikeUntranslatedEnglishPhrase(source)
-            && !reviewedIdenticalTechnicalKeys.has(key)
-          ) {
-            errors.push(`${language}/${file}:${key}: likely untranslated English phrase ${JSON.stringify(source)}`)
-          }
+          if (!isReviewedLiteral(language, key, source)) errors.push(`${language}/${file}:${key}: unreviewed English-identical text ${JSON.stringify(source)}`)
+        }
+        if (language !== 'en' && looksLikeSharedEnglish(target) && !isReviewedLiteral(language, key, target)) {
+          const entries = sharedPhrases.get(target) ?? []
+          entries.push({ language, file, key })
+          sharedPhrases.set(target, entries)
         }
       }
     }
@@ -132,6 +119,28 @@ for (const language of requiredLanguages) {
     }
   }
   if (language !== 'en' && identical > 0) warnings.push(`${language}: ${identical} English-identical strings (brands and technical labels included)`)
+}
+
+// Catch copied older English even when the current English baseline has changed.
+for (const [value, entries] of sharedPhrases) {
+  if (new Set(entries.map((entry) => entry.language)).size >= 3) {
+    errors.push(`Unreviewed Latin phrase shared by several languages: ${JSON.stringify(value)} (${entries.map((entry) => `${entry.language}/${entry.file}:${entry.key}`).join(', ')})`)
+  }
+}
+
+const nativeRoot = path.join(process.cwd(), 'desktop', 'locales')
+const nativeEnglish = flatten(readJson(path.join(nativeRoot, 'en.json'), errors) ?? {})
+for (const language of requiredLanguages) {
+  const localized = flatten(readJson(path.join(nativeRoot, `${language}.json`), errors) ?? {})
+  for (const [key, source] of nativeEnglish) {
+    const target = localized.get(key)
+    translatedStrings += 1
+    if (typeof target !== 'string' || !target.trim()) { errors.push(`desktop/${language}:${key}: missing translation`); continue }
+    if (containsTranslationMarker(language, key, source, target)) errors.push(`desktop/${language}:${key}: contains a translation marker`)
+    if (placeholders(source).join(',') !== placeholders(target).join(',')) errors.push(`desktop/${language}:${key}: placeholders differ`)
+    if (language !== 'en' && target === source && !isReviewedLiteral(language, key, source)) errors.push(`desktop/${language}:${key}: unreviewed English-identical text`)
+  }
+  for (const key of localized.keys()) if (!nativeEnglish.has(key)) errors.push(`desktop/${language}:${key}: unexpected translation`)
 }
 
 if (warnings.length) {
@@ -145,4 +154,4 @@ if (errors.length) {
   process.exit(1)
 }
 
-console.log(`\ni18n validation passed: ${requiredLanguages.length} languages × ${englishFiles.length} namespaces.`)
+console.log(`\ni18n validation passed: ${requiredLanguages.length} languages × ${englishFiles.length} namespaces, ${requiredLanguages.length} native desktop packs, ${translatedStrings} string entries.`)

@@ -597,12 +597,14 @@
     "desktopImporting": "Import",
     "completeArchiveExt": "TOUT",
     "desktopLocalCapabilitiesTitle": "Toujours disponible en local",
-    "desktopLocalCapabilities": "Candidatures, liste de matériaux, correspondance enregistrée, financement, chronologie, Discover, préparation d’entretien, profil et sauvegardes locales.",
+    "desktopLocalCapabilities": "Candidatures, documents, correspondance enregistrée, financement, calendrier, résultats Discover enregistrés, notes d’entretien, profil et sauvegardes locales.",
     "desktopWebCapabilitiesTitle": "Après connexion au système web",
     "desktopWebCapabilities": "Envoi et réception d’e-mails, rappels par e-mail, liens de partage, URL d’abonnement calendrier et push navigateur.",
     "desktopConnectHint": "Facultatif. L’usage local n’a pas besoin d’un compte web.",
     "desktopBootFailed": "L’espace de travail bureau n’a pas pu s’ouvrir.",
-    "desktopBootRetry": "Réessayer"
+    "desktopBootRetry": "Réessayer",
+    "desktopConnectOptionalAction": "Connecter le système web (facultatif)",
+    "desktopOnlineToolsHint": "La génération par IA et la recherche en ligne nécessitent internet et le fournisseur configuré, sans compte web PhD Atlas."
   },
   "calendar": {
     "title": "Flux de calendrier",

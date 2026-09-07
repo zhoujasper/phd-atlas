@@ -62,6 +62,15 @@ function isLoopbackNetworkAddress(value) {
   return address === '127.0.0.1' || address === '::1'
 }
 
+export function trustedDesktopRequestHost(value, socket) {
+  if (!isLoopbackNetworkAddress(socket?.remoteAddress) || !isLoopbackNetworkAddress(socket?.localAddress)) return ''
+  const host = normalizeHttpHost(value)
+  if (!host) return ''
+  const parsed = new URL(`http://${host}/`)
+  if (!['127.0.0.1', '[::1]', 'localhost'].includes(parsed.hostname)) return ''
+  return Number(parsed.port || 80) === socket.localPort ? host : ''
+}
+
 /**
  * Narrow compatibility boundary for an isolated production-like QA listener
  * bound to an OS-selected loopback port. The normal production allowlist still

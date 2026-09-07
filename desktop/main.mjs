@@ -1,8 +1,10 @@
-import { app, BrowserWindow, Menu, dialog, nativeTheme, session, shell } from 'electron'
+import { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, nativeTheme, session, shell } from 'electron'
 import { spawn } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assertDesktopIntegrity } from './integrity.mjs'
+import { desktopExternalUrlAllowed, desktopNavigationAllowed, desktopResponseHeaders } from './windowPolicy.mjs'
+import { desktopContextMenuTemplate, desktopLanguages, desktopMenuTemplate, desktopTranslator, readDesktopLanguage, saveDesktopLanguage } from './localization.mjs'
 import {
   assertDirectoryWritable,
   installPortableLayout,
@@ -34,6 +36,15 @@ const userDataRoot = resolvePortableUserDataRoot(portableOptions)
 let child = null
 let mainWindow = null
 let isQuitting = false
+let runtimeOrigin = null
+let quitHandlerReady = false
+let quitPrepared = false
+let quitDiscardApproved = false
+let quitRequestId = 0
+let quitTimer = null
+const languageFile = join(userDataRoot, 'desktop-language.json')
+let desktopLanguage = readDesktopLanguage(languageFile, app.getPreferredSystemLanguages()[0])
+let translate = desktopTranslator(desktopLanguage)
 
 app.setName('PhD Atlas')
 app.commandLine.appendSwitch('disable-remote-debugging-port')
@@ -46,10 +57,7 @@ function installPortableAppPaths() {
     assertDirectoryWritable(storageRoot)
     assertDirectoryWritable(userDataRoot)
   } catch {
-    const message = [
-      '这是便携版：请把应用程序复制到一个可写文件夹后再打开。申请数据保存在同一文件夹的 User Data/ 里。',
-      'This portable app needs a writable folder. Copy the app there and open it; your work stays in that folder’s User Data/ directory.',
-    ].join('\n\n')
+    const message = translate('portableFolderError')
     const showAndQuit = () => {
       dialog.showErrorBox('PhD Atlas', message)
       app.quit()
@@ -73,27 +81,10 @@ function installNativeMacMenu() {
     Menu.setApplicationMenu(null)
     return
   }
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    {
-      label: app.name,
-      submenu: [
-        { role: 'about' },
-        { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
-        { type: 'separator' },
-        { role: 'quit' },
-      ],
-    },
-    { role: 'editMenu' },
-    { role: 'viewMenu' },
-    { role: 'windowMenu' },
-  ]))
+  Menu.setApplicationMenu(Menu.buildFromTemplate(desktopMenuTemplate(translate, { isDev })))
 }
 
 if (installPortableAppPaths()) {
-  assertDesktopIntegrity(projectRoot, { dev: isDev })
   const gotLock = app.requestSingleInstanceLock()
   if (!gotLock) {
     app.quit()
@@ -105,23 +96,79 @@ if (installPortableAppPaths()) {
       mainWindow.focus()
     })
     app.whenReady().then(() => {
+      assertDesktopIntegrity(projectRoot, { dev: isDev })
       installNativeMacMenu()
       return startDesktop()
     }).catch((error) => {
-      dialog.showErrorBox('PhD Atlas', error instanceof Error ? error.message : String(error))
+      const message = translate(error?.code === 'DESKTOP_INTEGRITY_FAILED' ? 'integrityError' : 'startupError')
+      dialog.showErrorBox('PhD Atlas', `${message}\n\n${error instanceof Error ? error.message : String(error)}`)
       app.quit()
     })
   }
 }
 
-app.on('before-quit', () => {
+function keepEditing() {
+  if (quitTimer) clearTimeout(quitTimer)
+  quitTimer = null
+  quitPrepared = false
+  isQuitting = false
+  mainWindow?.show()
+  const choice = dialog.showMessageBoxSync(mainWindow, {
+    type: 'warning', title: 'PhD Atlas',
+    message: translate('unsavedTitle'),
+    detail: translate('unsavedDetail'),
+    buttons: [translate('returnToEditing'), translate('discardAndQuit')],
+    defaultId: 0, cancelId: 0,
+  })
+  if (choice === 1) {
+    quitDiscardApproved = true
+    quitPrepared = true
+    app.quit()
+  }
+}
+
+ipcMain.on('desktop:set-language', (event, language) => {
+  if (event.sender !== mainWindow?.webContents || event.senderFrame !== mainWindow?.webContents.mainFrame || !desktopLanguages.includes(language)) return
+  if (desktopLanguage === language) { saveDesktopLanguage(languageFile, language); return }
+  desktopLanguage = language
+  translate = desktopTranslator(language)
+  saveDesktopLanguage(languageFile, language)
+  installNativeMacMenu()
+})
+
+ipcMain.on('desktop:quit-handler-ready', (event, ready) => {
+  if (event.sender === mainWindow?.webContents) quitHandlerReady = ready !== false
+})
+ipcMain.on('desktop:quit-ready', (event, message) => {
+  if (event.sender !== mainWindow?.webContents || !quitTimer || message?.requestId !== quitRequestId) return
+  clearTimeout(quitTimer)
+  quitTimer = null
+  if (message.allowed !== true) { keepEditing(); return }
+  quitPrepared = true
+  app.quit()
+})
+
+app.on('before-quit', (event) => {
+  if (!quitPrepared && quitHandlerReady && mainWindow && !mainWindow.isDestroyed()) {
+    event.preventDefault()
+    if (!quitTimer) {
+      quitTimer = setTimeout(keepEditing, 30_000)
+      mainWindow.webContents.send('desktop:prepare-quit', ++quitRequestId)
+    }
+    return
+  }
   isQuitting = true
-  stopRuntime()
+})
+
+// Let renderer beforeunload guards finish before stopping the local database.
+app.on('will-quit', (event) => {
+  if (!child) return
+  event.preventDefault()
+  void stopRuntime().finally(() => app.quit())
 })
 
 app.on('window-all-closed', () => {
   if (!isMac) {
-    stopRuntime()
     app.quit()
   }
 })
@@ -143,10 +190,11 @@ async function startDesktop() {
   try {
     const port = await runtimeReady
     if (!mainWindow || mainWindow.isDestroyed()) return
-    await mainWindow.loadURL(`http://127.0.0.1:${port}`)
+    runtimeOrigin = `http://127.0.0.1:${port}`
+    await mainWindow.loadURL(runtimeOrigin)
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    dialog.showErrorBox('PhD Atlas', `桌面运行时未能启动。\n\n${detail}`)
+    dialog.showErrorBox('PhD Atlas', `${translate('startupError')}\n\n${detail}`)
     app.quit()
   }
 }
@@ -170,6 +218,7 @@ function createMainWindow() {
     roundedCorners: true,
     webPreferences: {
       preload: join(desktopRoot, 'preload.cjs'),
+      additionalArguments: [`--phd-atlas-language=${desktopLanguage}`],
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -183,14 +232,29 @@ function createMainWindow() {
     mainWindow.removeMenu()
   }
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://127.0.0.1') || url.startsWith('https://')) {
+    if (desktopExternalUrlAllowed(url)) {
       void shell.openExternal(url)
     }
     return { action: 'deny' }
   })
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    const allowed = url.startsWith('http://127.0.0.1') || url.startsWith('file://')
+    const allowed = desktopNavigationAllowed(url, { runtimeOrigin, splashPath: join(desktopRoot, 'splash.html') })
     if (!allowed) event.preventDefault()
+  })
+  mainWindow.webContents.on('dom-ready', () => {
+    mainWindow?.webContents.send('desktop:locale', { language: desktopLanguage, loading: translate('loading') })
+  })
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    const template = desktopContextMenuTemplate(translate, params, {
+      allowLink: desktopExternalUrlAllowed,
+      openLink: (url) => { void shell.openExternal(url) },
+      copyLink: (url) => clipboard.writeText(url),
+    })
+    if (template.length) Menu.buildFromTemplate(template).popup({ window: mainWindow })
+  })
+  mainWindow.webContents.on('will-prevent-unload', (event) => {
+    if (quitDiscardApproved) event.preventDefault()
+    else keepEditing()
   })
   mainWindow.on('close', (event) => {
     if (isMac && !isQuitting) {
@@ -221,12 +285,7 @@ function hardenSession(current) {
   current.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
   current.webRequest.onHeadersReceived((details, callback) => {
     callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        'Content-Security-Policy': [
-          "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; font-src 'self' data:",
-        ],
-      },
+      responseHeaders: desktopResponseHeaders(details.responseHeaders),
     })
   })
 }
@@ -243,6 +302,8 @@ async function startRuntime() {
     ...process.env,
     PHD_ATLAS_DESKTOP: '1',
     PHD_ATLAS_STORAGE_ROOT: storageRoot,
+    PHD_ATLAS_DESKTOP_PORT_FILE: join(userDataRoot, 'desktop-http.json'),
+    NODE_ENV: isDev ? (process.env.NODE_ENV || 'development') : 'production',
     HOST: '127.0.0.1',
     PORT: process.env.PORT || '0',
   }, resolved)
@@ -253,41 +314,61 @@ async function startRuntime() {
   child = spawn(resolved.command, [...resolved.args, workspace.entry], {
     cwd: workspace.projectRoot,
     env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  })
+  child.once('exit', () => {
+    if (runtimeOrigin && !isQuitting && mainWindow && !mainWindow.isDestroyed()) {
+      dialog.showErrorBox('PhD Atlas', translate('runtimeStopped'))
+      app.quit()
+    }
   })
   return await waitForReady(child)
 }
 
 function waitForReady(processRef) {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('Desktop runtime did not become ready.')), 60_000)
+    const timeout = setTimeout(() => reject(new Error(translate('startupTimeout'))), 60_000)
     let buffer = ''
     const onData = (chunk) => {
-      buffer += chunk.toString('utf8')
+      buffer = (buffer + chunk.toString('utf8')).slice(-16_384)
       const match = buffer.match(/desktop runtime ready on http:\/\/127\.0\.0\.1:(\d+)/u)
       if (match) {
         clearTimeout(timeout)
         processRef.stdout.off('data', onData)
+        processRef.stdout.resume()
         resolve(Number(match[1]))
       }
     }
     processRef.stdout.on('data', onData)
+    processRef.once('error', (error) => { clearTimeout(timeout); reject(error) })
     processRef.stderr.on('data', (chunk) => {
       process.stderr.write(chunk)
     })
     processRef.once('exit', (code) => {
       clearTimeout(timeout)
-      reject(new Error(`Desktop runtime exited before ready (${code}).`))
+      reject(new Error(translate('startupExited', { code })))
     })
   })
 }
 
 function stopRuntime() {
-  if (!child || child.killed) return
+  if (!child) return Promise.resolve()
   const current = child
   child = null
-  current.kill('SIGTERM')
-  setTimeout(() => {
-    if (!current.killed) current.kill('SIGKILL')
-  }, 1200).unref?.()
+  if (current.exitCode !== null || current.signalCode !== null) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      if (current.exitCode === null && current.signalCode === null) current.kill('SIGKILL')
+    }, 75_000)
+    const finished = () => { clearTimeout(timeout); resolve() }
+    current.once('exit', finished)
+    current.once('error', finished)
+    try {
+      if (current.connected) {
+        current.send({ type: 'phd-atlas-desktop-shutdown' }, (error) => {
+          if (error && current.exitCode === null && current.signalCode === null) current.kill('SIGTERM')
+        })
+      } else current.kill('SIGTERM')
+    } catch { finished() }
+  })
 }

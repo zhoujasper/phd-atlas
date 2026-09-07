@@ -41,7 +41,9 @@ function readPrefs(storageKey: string): TableColumnPrefs | null {
 function writePrefs(storageKey: string, prefs: TableColumnPrefs) {
   if (typeof window === 'undefined') return
   try {
-    window.localStorage.setItem(`${PREFS_PREFIX}${storageKey}`, JSON.stringify(prefs))
+    const key = `${PREFS_PREFIX}${storageKey}`
+    const serialized = JSON.stringify(prefs)
+    if (window.localStorage.getItem(key) !== serialized) window.localStorage.setItem(key, serialized)
   } catch {
     // Ignore quota / private mode failures.
   }
@@ -61,7 +63,7 @@ function buildWidths(columns: TableColumnDef[], stored?: Record<string, number>)
 function buildHidden(columns: TableColumnDef[], stored?: string[]) {
   const hideableIds = new Set(columns.filter((column) => column.hideable !== false).map((column) => column.id))
   const alwaysVisible = columns.filter((column) => column.hideable === false).map((column) => column.id)
-  const hidden = (stored ?? []).filter((id) => hideableIds.has(id))
+  const hidden = [...new Set((stored ?? []).filter((id) => hideableIds.has(id)))]
   // Never hide every column — keep at least one visible.
   const visibleCount = columns.length - hidden.length
   if (visibleCount <= 0 && columns[0]) {
@@ -72,9 +74,14 @@ function buildHidden(columns: TableColumnDef[], stored?: string[]) {
 }
 
 export function useTableColumns(storageKey: string, columns: TableColumnDef[]) {
-  const columnsKey = columns.map((column) => column.id).join('|')
+  const columnsKey = JSON.stringify(columns.map(({ id, defaultWidth, minWidth, maxWidth, hideable, resizable }) => (
+    [id, defaultWidth, minWidth, maxWidth, hideable, resizable]
+  )))
+  const scopeKey = JSON.stringify([storageKey, columnsKey])
   const columnsRef = useRef(columns)
   columnsRef.current = columns
+  const resizeCleanupRef = useRef<((updateState?: boolean) => void) | null>(null)
+  const [loadedScope, setLoadedScope] = useState(scopeKey)
 
   const [widths, setWidths] = useState<Record<string, number>>(() => {
     const stored = readPrefs(storageKey)
@@ -84,17 +91,25 @@ export function useTableColumns(storageKey: string, columns: TableColumnDef[]) {
     const stored = readPrefs(storageKey)
     return buildHidden(columns, stored?.hidden)
   })
+  const widthsRef = useRef(widths)
+  const hiddenRef = useRef(hidden)
+  widthsRef.current = widths
+  hiddenRef.current = hidden
+
+  useEffect(() => () => resizeCleanupRef.current?.(false), [scopeKey])
 
   // Re-sync when column definitions change (new table versions).
   useEffect(() => {
     const stored = readPrefs(storageKey)
     setWidths(buildWidths(columnsRef.current, stored?.widths))
     setHidden(buildHidden(columnsRef.current, stored?.hidden))
-  }, [storageKey, columnsKey])
+    setLoadedScope(scopeKey)
+  }, [storageKey, scopeKey])
 
   useEffect(() => {
+    if (resizeCleanupRef.current || loadedScope !== scopeKey) return
     writePrefs(storageKey, { widths, hidden })
-  }, [storageKey, widths, hidden])
+  }, [storageKey, widths, hidden, loadedScope, scopeKey])
 
   const isVisible = useCallback((id: string) => !hidden.includes(id), [hidden])
 
@@ -153,6 +168,7 @@ export function useTableColumns(storageKey: string, columns: TableColumnDef[]) {
     if (!column || column.resizable === false) return
     event.preventDefault()
     event.stopPropagation()
+    resizeCleanupRef.current?.()
     const startX = 'clientX' in event ? event.clientX : 0
     const startWidth = widthOf(id)
     const min = column.minWidth ?? 72
@@ -161,23 +177,42 @@ export function useTableColumns(storageKey: string, columns: TableColumnDef[]) {
     const previousCursor = document.body.style.cursor
     document.body.style.userSelect = 'none'
     document.body.style.cursor = 'col-resize'
+    let finalWidth = startWidth
+    let frame: number | null = null
+    let finished = false
+
+    const applyWidth = () => {
+      frame = null
+      setWidths((current) => current[id] === finalWidth ? current : { ...current, [id]: finalWidth })
+    }
 
     const onMove = (moveEvent: MouseEvent) => {
       const delta = moveEvent.clientX - startX
-      setWidths((current) => ({
-        ...current,
-        [id]: clamp(startWidth + delta, min, max),
-      }))
+      finalWidth = clamp(startWidth + delta, min, max)
+      if (frame === null) frame = window.requestAnimationFrame(applyWidth)
     }
-    const onUp = () => {
+    const finish = (updateState = true) => {
+      if (finished) return
+      finished = true
+      if (frame !== null) window.cancelAnimationFrame(frame)
+      frame = null
+      resizeCleanupRef.current = null
       document.body.style.userSelect = previousUserSelect
       document.body.style.cursor = previousCursor
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('blur', onUp)
+      // Persist the last pointer position even if mouseup beats the paint or
+      // navigation unmounts the table. No storage writes run during movement.
+      writePrefs(storageKey, { widths: { ...widthsRef.current, [id]: finalWidth }, hidden: hiddenRef.current })
+      if (updateState) applyWidth()
     }
+    const onUp = () => finish()
+    resizeCleanupRef.current = finish
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
-  }, [widthOf])
+    window.addEventListener('blur', onUp)
+  }, [storageKey, widthOf])
 
   return {
     columns,
@@ -192,6 +227,7 @@ export function useTableColumns(storageKey: string, columns: TableColumnDef[]) {
     reset,
     beginResize,
     setWidth: (id: string, width: number) => {
+      if (!Number.isFinite(width)) return
       const column = columnsRef.current.find((item) => item.id === id)
       if (!column) return
       const min = column.minWidth ?? 72

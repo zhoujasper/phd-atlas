@@ -597,12 +597,14 @@
     "desktopImporting": "A importar",
     "completeArchiveExt": "TUDO",
     "desktopLocalCapabilitiesTitle": "Sempre disponível em local",
-    "desktopLocalCapabilities": "Candidaturas, lista de materiais, correspondência registada, financiamento, cronologia, Discover, preparação de entrevista, perfil e copias locais.",
+    "desktopLocalCapabilities": "Candidaturas, documentos, correspondência guardada, financiamento, cronologia, resultados Discover guardados, registos de entrevistas, perfil e cópias locais.",
     "desktopWebCapabilitiesTitle": "Depois de ligar o sistema web",
     "desktopWebCapabilities": "Enviar e receber email, lembretes por email, ligações de partilha, URLs de calendário e push do browser.",
     "desktopConnectHint": "Opcional. O uso local não precisa de conta web.",
     "desktopBootFailed": "Não foi possível abrir o espaço de trabalho do ambiente de trabalho.",
-    "desktopBootRetry": "Tentar novamente"
+    "desktopBootRetry": "Tentar novamente",
+    "desktopConnectOptionalAction": "Conectar sistema web (opcional)",
+    "desktopOnlineToolsHint": "A geração por IA e a pesquisa online exigem internet e o fornecedor configurado, sem uma conta web PhD Atlas."
   },
   "calendar": {
     "title": "Feed de calendário",

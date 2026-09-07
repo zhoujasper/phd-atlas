@@ -96,7 +96,7 @@
     "noPriorityHint": "บันทึกการสมัครเข้าศึกษาที่มีลำดับความสำคัญ 80+ จะปรากฏที่นี่",
     "recentMaterials": "รายการตรวจสอบล่าสุด",
     "priorityValue": "ลำดับความสำคัญ {value}",
-    "dayShort": "{count}d",
+    "dayShort": "{count} วัน",
     "noTimeline": "ยังไม่มีเหตุการณ์ไทม์ไลน์",
     "noMaterials": "ยังไม่มีรายการตรวจสอบ",
     "discoverCta": "เปิดค้นพบ",

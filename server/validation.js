@@ -1,3 +1,4 @@
+import { professorCollectionIssues } from './shared/applicationProfessors.js'
 import { z } from 'zod'
 import { Buffer } from 'node:buffer'
 import { AI_KEY_MAX_CONCURRENCY } from './shared/aiConcurrency.js'
@@ -1041,6 +1042,23 @@ export const FeePatchSchema = z.object({
   notes: z.string().max(500).optional(),
 })
 
+export const ApplicationProfessorSchema = z.object({
+    id: z.string().min(1).max(128).optional(),
+    english: z.string().max(200),
+    chinese: z.string(),
+    email: z.union([z.email(), z.literal('')]),
+    correspondenceEmails: z.array(z.email().max(254)).max(9).optional(),
+    phone: z.string(),
+    social: z.string(),
+    homepage: OptionalUrlSchema,
+    // A saved default contact may become an additional contact or a copy.
+    // Retain the historical dossier text boundary in every position.
+    research: z.string(),
+    lab: z.string(),
+    labUrl: OptionalUrlSchema.optional(),
+    projectUrl: OptionalUrlSchema.optional(),
+})
+
 export const ApplicationSchema = z.object({
   id: z.string().min(1),
   ownerId: z.string().min(1).optional(),
@@ -1058,19 +1076,10 @@ export const ApplicationSchema = z.object({
     })
     .nullable()
     .optional(),
-  professor: z.object({
-    english: z.string().min(1),
-    chinese: z.string(),
-    email: z.union([z.email(), z.literal('')]),
-    correspondenceEmails: z.array(z.email().max(254)).max(9).optional(),
-    phone: z.string(),
-    social: z.string(),
-    homepage: OptionalUrlSchema,
-    research: z.string().min(1),
-    lab: z.string(),
-    labUrl: OptionalUrlSchema.optional(),
-    projectUrl: OptionalUrlSchema.optional(),
-  }),
+  // Existing dossiers may already contain long research notes. New profile
+  // inputs remain bounded; a small edit must still be able to save older data.
+  professor: ApplicationProfessorSchema.extend({ research: z.string() }),
+  additionalProfessors: z.array(ApplicationProfessorSchema.extend({ id: z.string().min(1).max(128) })).max(29).optional(),
   school: z.object({
     name: z.string().min(1),
     country: z.string(),
@@ -1119,13 +1128,18 @@ export const ApplicationSchema = z.object({
     .default({ autoBackup: false, frequency: '15m', maxBackups: 5 }),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional(),
+}).superRefine((application, context) => {
+  for (const issue of professorCollectionIssues(application)) context.addIssue({ code: 'custom', ...issue })
 })
 
 export const CreateApplicationSchema = z.object({
-  professor: z.string().min(1),
+  professor: z.string().max(200).default(''),
   professorChinese: z.string().optional().default(''),
   professorEmail: z.union([z.email(), z.literal('')]),
   professorHomepage: OptionalUrlSchema.optional().default(''),
+  professorProfile: ApplicationProfessorSchema.optional(),
+  additionalProfessors: z.array(ApplicationProfessorSchema.extend({ id: z.string().min(1).max(128) })).max(29).optional(),
+  duplicateFromId: z.string().min(1).max(128).optional(),
   university: z.string().min(1),
   country: z.string().default(''),
   website: OptionalUrlSchema.optional().default(''),
@@ -1135,6 +1149,11 @@ export const CreateApplicationSchema = z.object({
   visibleToTeam: z.boolean().optional().default(false),
   ownerId: z.string().min(1).optional(),
   teamId: z.string().min(1).max(128).optional(),
+}).superRefine((input, context) => {
+  const professor = { ...input.professorProfile, email: input.professorEmail }
+  for (const issue of professorCollectionIssues({ professor, additionalProfessors: input.additionalProfessors })) {
+    context.addIssue({ code: 'custom', ...issue })
+  }
 })
 
 export const TeamVisibilityPatchSchema = z.object({
@@ -1208,6 +1227,7 @@ export const AiDraftRequestSchema = z.object({
   mode: z.enum(['compose', 'reply']),
   instructions: z.string().trim().min(1).max(4000),
   replyToId: z.string().min(1).max(128).optional(),
+  recipientEmail: z.union([z.email().max(254), z.literal('')]).optional(),
   currentDraft: z
     .object({
       subject: z.string().max(512),

@@ -177,6 +177,7 @@ export function parseWorkflowDocument(contents, label) {
 
 export function assertWorkflowValidationContract(contents, label) {
   const workflow = parseWorkflowDocument(contents, label)
+  if (path.basename(label) !== 'publish-container.yml') assertNativeWorkflowContract(workflow, label)
   if (contents.includes('npx tsc --noEmit')) {
     throw new Error(`${label} uses the weaker tsc --noEmit check; use the shared tsc -b preflight.`)
   }
@@ -186,7 +187,21 @@ export function assertWorkflowValidationContract(contents, label) {
   if (path.basename(label) === 'ci.yml') {
     const timeoutMinutes = workflow.jobs?.verify?.['timeout-minutes']
     if (!Number.isInteger(timeoutMinutes) || timeoutMinutes < 90) {
-      throw new Error(`${label} CI timeout must be at least 90 minutes for the full tree and Docker build.`)
+      throw new Error(`${label} CI timeout must be at least 90 minutes for the complete native tree.`)
+    }
+  }
+}
+
+export function assertNativeWorkflowContract(workflow, label) {
+  for (const job of Object.values(workflow.jobs ?? {})) {
+    if (job.container || job.services) {
+      throw new Error(`${label} native delivery must not start containers or container services.`)
+    }
+    for (const step of job.steps ?? []) {
+      if (/^(?:docker\/|docker:\/\/)/u.test(String(step.uses ?? ''))
+        || /\b(?:docker|podman|colima)\s|(?:publish-container\.yml|smoke-container-image\.mjs|verify:containers)/u.test(String(step.run ?? ''))) {
+        throw new Error(`${label} native delivery must not invoke container commands or workflows.`)
+      }
     }
   }
 }
@@ -199,6 +214,9 @@ function workflowStepScripts(job) {
 
 export function assertPublicContainerWorkflowContract(contents, label = 'publish-container.yml') {
   const workflow = parseWorkflowDocument(contents, label)
+  if (JSON.stringify(Object.keys(workflow.on ?? {})) !== JSON.stringify(['workflow_dispatch'])) {
+    throw new Error(`${label} container work requires an explicit manual dispatch; native delivery must not trigger it.`)
+  }
   const gateJob = workflow.jobs?.['gate-main']
   if (!gateJob) {
     throw new Error(`${label} is missing the gate-main job.`)
@@ -307,11 +325,7 @@ export function assertPublicContainerWorkflowContract(contents, label = 'publish
 
 export function assertReleaseWorkflowExecutionContract(contents, label = 'release.yml') {
   const workflow = parseWorkflowDocument(contents, label)
-  if (workflow.jobs?.['mssql-release-gate']) {
-    throw new Error(
-      `${label} must keep the MSSQL gate in the release job so a passed gate cannot wait for a second runner.`,
-    )
-  }
+  assertNativeWorkflowContract(workflow, label)
   const releaseJob = workflow.jobs?.release
   if (!releaseJob) {
     throw new Error(`${label} is missing the release job.`)
@@ -320,25 +334,17 @@ export function assertReleaseWorkflowExecutionContract(contents, label = 'releas
     throw new Error(`${label} release must not reacquire a runner after a prerequisite job.`)
   }
   const scripts = workflowStepScripts(releaseJob)
-  if (!scripts.includes('PHD_ATLAS_SMOKE_DB_ENGINE=mssql')) {
-    throw new Error(`${label} release job is missing the Microsoft SQL Server gate.`)
-  }
   if (!scripts.includes('npm run verify:beta8-update -- "$package_path"')) {
     throw new Error(`${label} release job must replay the published package through the historical beta.8 updater.`)
   }
   for (const required of [
-    'sha-${GITHUB_SHA:0:12}',
-    'Missing qualified image',
-    'RELEASE_IMAGE_DIGEST=$release_digest',
+    'cmp --silent "$first_package" "$package_path"',
+    'node tools/verify-update-package.mjs "$package_path"',
+    'cmp --silent "$asset_path" "$remote_dir/$asset_name"',
   ]) {
     if (!scripts.includes(required)) {
-      throw new Error(`${label} release job must reuse the exact qualified main image via '${required}'.`)
+      throw new Error(`${label} release job must preserve native artifact verification '${required}'.`)
     }
-  }
-  if (contents.includes('docker/build-push-action')) {
-    throw new Error(
-      `${label} must not rebuild a tagged image under QEMU; reuse the exact qualified main SHA image.`,
-    )
   }
   const installCount = scripts.match(/(?:^|\n)\s*npm ci\s*(?:\n|$)/g)?.length ?? 0
   if (installCount !== 1) {
@@ -370,15 +376,10 @@ export function assertReleaseWorkflowStateContract(contents, label = 'release.ym
 
 export function assertDesktopReleaseWorkflowContract(contents, label = 'desktop-release.yml') {
   const workflow = parseWorkflowDocument(contents, label)
-  const trigger = workflow.on?.workflow_run
+  assertNativeWorkflowContract(workflow, label)
   const manualTrigger = workflow.on?.workflow_dispatch
-  const triggerWorkflows = Array.isArray(trigger?.workflows) ? trigger.workflows : []
-  const triggerTypes = Array.isArray(trigger?.types) ? trigger.types : []
-  if (
-    !triggerWorkflows.includes('Release update package and container')
-    || !triggerTypes.includes('completed')
-  ) {
-    throw new Error(`${label} must run only after the canonical public Release workflow completes.`)
+  if (JSON.stringify(Object.keys(workflow.on ?? {})) !== JSON.stringify(['workflow_dispatch'])) {
+    throw new Error(`${label} desktop recovery must require explicit dispatch to avoid racing externally built assets.`)
   }
   if (manualTrigger?.inputs?.released_sha?.required !== true) {
     throw new Error(`${label} manual recovery must require an exact released_sha.`)
@@ -387,9 +388,8 @@ export function assertDesktopReleaseWorkflowContract(contents, label = 'desktop-
     throw new Error(`${label} must default to read-only repository contents.`)
   }
 
-  const requiredGuard = "github.event.workflow_run.conclusion == 'success'"
   const manualGuard = "github.event_name == 'workflow_dispatch'"
-  const releasedShaExpression = "${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}"
+  const releasedShaExpression = '${{ inputs.released_sha }}'
   const buildContracts = [
     ['build-windows', 'windows-latest', 'npm run desktop:build:win', '--platform windows'],
     ['build-macos', 'macos-latest', 'npm run desktop:build:mac', '--platform macos'],
@@ -399,9 +399,6 @@ export function assertDesktopReleaseWorkflowContract(contents, label = 'desktop-
     if (!job) throw new Error(`${label} is missing ${jobName}.`)
     if (job['runs-on'] !== runner) {
       throw new Error(`${label} ${jobName} must use the native ${runner} runner.`)
-    }
-    if (!String(job.if ?? '').includes(requiredGuard)) {
-      throw new Error(`${label} ${jobName} must be gated by a successful canonical Release run.`)
     }
     if (!String(job.if ?? '').includes(manualGuard)) {
       throw new Error(`${label} ${jobName} must permit an explicit released-SHA recovery run.`)
@@ -429,9 +426,6 @@ export function assertDesktopReleaseWorkflowContract(contents, label = 'desktop-
 
   const attachJob = workflow.jobs?.['attach-release-assets']
   if (!attachJob) throw new Error(`${label} is missing attach-release-assets.`)
-  if (!String(attachJob.if ?? '').includes(requiredGuard)) {
-    throw new Error(`${label} attach-release-assets must be gated by a successful canonical Release run.`)
-  }
   if (!String(attachJob.if ?? '').includes(manualGuard)) {
     throw new Error(`${label} attachment must permit an explicit released-SHA recovery run.`)
   }
@@ -820,7 +814,7 @@ async function verifyDockerImages(publicRoot, version) {
   }
 }
 
-async function runPublic(sourceRoot, { includeReleaseArtifacts = false, includeDocker = false } = {}) {
+async function runPublic(sourceRoot, { includeReleaseArtifacts = false } = {}) {
   const publicRoot = await exportPublicTree(sourceRoot)
   console.log(`[preflight] Public export: ${publicRoot}`)
   try {
@@ -834,7 +828,6 @@ async function runPublic(sourceRoot, { includeReleaseArtifacts = false, includeD
       const packagePath = await verifyDeterministicUpdatePackage(publicRoot, metadata.version, timestamp)
       await verifyBeta8UpdateCompatibility(sourceRoot, packagePath)
     }
-    if (includeDocker) await verifyDockerImages(publicRoot, metadata.version)
     return metadata
   } finally {
     await rm(publicRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 500 })
@@ -849,7 +842,6 @@ async function runCurrentPublicRelease(root) {
   }
   const packagePath = await verifyDeterministicUpdatePackage(root, metadata.version, timestamp)
   await verifyBeta8UpdateCompatibility(root, packagePath)
-  await verifyDockerImages(root, metadata.version)
 }
 
 async function fetchPublicPackage() {
@@ -898,7 +890,7 @@ export function parsePrePushInput(contents) {
   if (manualVersionTag) {
     throw new Error(
       `Refusing manual release-tag push '${manualVersionTag.remoteRef}'. `
-      + 'The sync workflow creates version tags only after public CI and container gates pass.',
+      + 'The sync workflow creates version tags only after the exact public CI gate passes.',
     )
   }
   return updates
@@ -983,7 +975,7 @@ async function runPush({ hook = false } = {}) {
 
   await runTree(projectRoot)
   if (delivery.syncPublic) {
-    await runPublic(projectRoot, { includeReleaseArtifacts: true, includeDocker: true })
+    await runPublic(projectRoot, { includeReleaseArtifacts: true })
   } else {
     console.log('[preflight] Version is unchanged; public sync, Release, and Docker publication remain disabled.')
   }
@@ -1019,15 +1011,20 @@ async function main() {
       if (existsSync(path.join(projectRoot, 'tools', 'export-public.mjs'))) {
         const initialFingerprint = await sourceTreeFingerprint(projectRoot)
         await runTree(projectRoot)
-        await runPublic(projectRoot, { includeReleaseArtifacts: true, includeDocker: true })
+        await runPublic(projectRoot, { includeReleaseArtifacts: true })
         await assertSourceTreeUnchanged(projectRoot, initialFingerprint)
       } else {
         await runCurrentPublicRelease(projectRoot)
       }
     } else if (mode === 'push') {
       await runPush({ hook: args.includes('--hook') })
+    } else if (mode === 'containers') {
+      // Independent, explicitly requested container qualification. Never called
+      // by ordinary source, push, or native release gates.
+      const metadata = await validateContracts(projectRoot)
+      await verifyDockerImages(projectRoot, metadata.version)
     } else {
-      throw new Error('Usage: node tools/release-preflight.mjs contracts|tree|public|release|push [--hook]')
+      throw new Error('Usage: node tools/release-preflight.mjs contracts|tree|public|release|push [--hook] | containers')
     }
     report.result = 'passed'
     console.log(`\n[preflight] ${mode} gate passed.`)

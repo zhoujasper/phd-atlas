@@ -39,12 +39,14 @@ export function applicationCreateAcknowledgementCandidate(input) {
   const deadline = createText(source.deadline)
   return {
     professor: {
+      research: notes || 'Research fit notes to be added.',
+      ...(isRecord(source.professorProfile) ? source.professorProfile : {}),
       english: createText(source.professor),
       chinese: createText(source.professorChinese),
       email: createText(source.professorEmail),
       homepage: createText(source.professorHomepage),
-      research: notes || 'Research fit notes to be added.',
     },
+    ...(Array.isArray(source.additionalProfessors) ? { additionalProfessors: source.additionalProfessors } : {}),
     school: {
       name: createText(source.university),
       country: createText(source.country),
@@ -52,9 +54,11 @@ export function applicationCreateAcknowledgementCandidate(input) {
     },
     program: createText(source.program),
     deadline,
-    nextReminder: deadline,
-    result: notes || 'Draft created.',
-    timeline: [{ note: notes || 'Application workspace initialized.' }],
+    ...(source.duplicateFromId ? {} : {
+      nextReminder: deadline,
+      result: notes || 'Draft created.',
+      timeline: [{ note: notes || 'Application workspace initialized.' }],
+    }),
   }
 }
 

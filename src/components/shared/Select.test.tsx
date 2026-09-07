@@ -1,8 +1,9 @@
 import '@testing-library/jest-dom/vitest'
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Select } from './Select'
+import { useModalA11y } from '../hooks/useModalA11y'
 
 const originalInnerWidth = window.innerWidth
 const originalInnerHeight = window.innerHeight
@@ -19,6 +20,54 @@ describe('Select', () => {
     } else {
       Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
     }
+  })
+
+  it('does not select an option when Enter confirms an input-method composition', async () => {
+    const onChange = vi.fn()
+    render(<Select value="one" options={[{ value: 'one', label: 'One' }]} onChange={onChange} searchable openOnMount />)
+    const input = await screen.findByRole('searchbox')
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })
+    expect(onChange).not.toHaveBeenCalled()
+    expect(screen.getByRole('listbox')).not.toHaveClass('custom-select-exit')
+  })
+
+  it('closes the open menu with Escape while keeping its parent dialog open', async () => {
+    const onClose = vi.fn()
+    function Parent() {
+      const ref = useModalA11y<HTMLDivElement>({ open: true, onClose })
+      return <div ref={ref} role="dialog"><Select value="one" options={[{ value: 'one', label: 'One' }]} onChange={vi.fn()} ariaLabel="Status" /></div>
+    }
+    const user = userEvent.setup()
+    render(<Parent />)
+    await user.click(screen.getByRole('button', { name: 'Status' }))
+    await user.keyboard('{Escape}')
+    expect(screen.getByRole('listbox')).toHaveClass('custom-select-exit')
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('lets a focused custom-option action own Enter', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    const onDelete = vi.fn()
+    render(<Select value="one" options={[{ value: 'one', label: 'One', custom: true }]} onChange={onChange} openOnMount
+      create={{ label: 'Create', placeholder: 'Name', createAriaLabel: 'Create', renameAriaLabel: 'Rename', deleteAriaLabel: 'Delete', onCreate: vi.fn(), onDelete }} />)
+    screen.getByRole('button', { name: 'Delete: One' }).focus()
+    await user.keyboard('{Enter}')
+    expect(onDelete).toHaveBeenCalledWith('one')
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('does not submit a custom option while the name is being composed', async () => {
+    const user = userEvent.setup()
+    const onCreate = vi.fn()
+    render(<Select value="one" options={[{ value: 'one', label: 'One' }]} onChange={vi.fn()} openOnMount
+      create={{ label: 'Create', placeholder: 'Name', createAriaLabel: 'Create name', renameAriaLabel: 'Rename', deleteAriaLabel: 'Delete', onCreate }} />)
+    await user.click(screen.getByRole('button', { name: 'Create' }))
+    const input = screen.getByRole('textbox', { name: 'Create name' })
+    fireEvent.change(input, { target: { value: '中文' } })
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+    expect(onCreate).not.toHaveBeenCalled()
   })
 
   it('keeps the options anchored to the trigger on mobile', async () => {

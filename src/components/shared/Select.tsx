@@ -218,6 +218,7 @@ export function Select<T extends string = string>({
     setPositionReady(false)
     setExiting(false)
     setOpen(true)
+    triggerRef.current?.focus({ preventScroll: true })
     setSearch('')
     setEditMode(null)
     setEditingOption(null)
@@ -280,9 +281,13 @@ export function Select<T extends string = string>({
   }, [disabled, open, close])
 
   useEffect(() => {
-    if (!open || !searchable) return
-    window.setTimeout(() => searchRef.current?.focus(), 0)
-  }, [open, searchable])
+    if (!open || exiting || !searchable || editMode) return
+    const timer = window.setTimeout(() => {
+      if (dropdownRef.current?.contains(document.activeElement)) return
+      searchRef.current?.focus({ preventScroll: true })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [open, exiting, searchable, editMode])
 
   useLayoutEffect(() => {
     if (!open || !editMode) return
@@ -333,24 +338,34 @@ export function Select<T extends string = string>({
 
   // Keyboard navigation
   useEffect(() => {
-    if (!open) return
+    if (!open || exiting) return
     function handleKey(e: KeyboardEvent) {
-      if (editMode) return
+      if (editMode || e.defaultPrevented || e.isComposing || e.keyCode === 229) return
+      const target = e.target instanceof HTMLElement ? e.target : null
+      if (target && target !== document.body && !containerRef.current?.contains(target) && !dropdownRef.current?.contains(target)) return
+      // Focused option/management buttons retain their native click action.
+      // Otherwise Enter on Rename/Delete could select the highlighted option.
+      if (e.key === 'Enter' && (e.repeat || (target?.closest('button') && target.closest('button') !== triggerRef.current))) return
       switch (e.key) {
         case 'Escape':
           e.preventDefault()
+          e.stopPropagation()
+          triggerRef.current?.focus({ preventScroll: true })
           close()
           break
         case 'ArrowDown':
           e.preventDefault()
+          e.stopPropagation()
           setHighlightIndex((prev) => nextNavigableIndex(prev < 0 ? 0 : prev + 1, 1))
           break
         case 'ArrowUp':
           e.preventDefault()
+          e.stopPropagation()
           setHighlightIndex((prev) => nextNavigableIndex(prev < 0 ? filteredOptions.length - 1 : prev - 1, -1))
           break
         case 'Enter':
           e.preventDefault()
+          e.stopPropagation()
           if (highlightIndex >= 0 && highlightIndex < filteredOptions.length) {
             const option = filteredOptions[highlightIndex]
             if (option.disabled && option.locked && onLockedOptionClick) {
@@ -361,11 +376,17 @@ export function Select<T extends string = string>({
             }
           }
           break
+        case 'Tab':
+          triggerRef.current?.focus({ preventScroll: true })
+          close()
+          break
       }
     }
-    document.addEventListener('keydown', handleKey)
-    return () => document.removeEventListener('keydown', handleKey)
-  }, [open, close, editMode, filteredOptions, highlightIndex, nextNavigableIndex, onLockedOptionClick, selectOption])
+    // A menu opened inside a modal handles its keys before the modal's
+    // document-level shortcuts, regardless of effect registration order.
+    document.addEventListener('keydown', handleKey, true)
+    return () => document.removeEventListener('keydown', handleKey, true)
+  }, [open, exiting, close, editMode, filteredOptions, highlightIndex, nextNavigableIndex, onLockedOptionClick, selectOption])
 
   // Scroll highlighted item into view
   useEffect(() => {
@@ -424,6 +445,7 @@ export function Select<T extends string = string>({
           toggle()
         }}
         onKeyDown={(event) => {
+          if (event.defaultPrevented || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
           if (event.key === 'Enter' || event.key === ' ' || event.key === 'ArrowDown') {
             event.preventDefault()
             if (!openVisible) openMenu()
@@ -599,6 +621,7 @@ export function Select<T extends string = string>({
                   aria-label={editMode === 'rename' ? create.renameAriaLabel : create.createAriaLabel}
                   onChange={(event) => setEditValue(event.target.value)}
                   onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
                     event.stopPropagation()
                     if (event.key === 'Enter') {
                       event.preventDefault()

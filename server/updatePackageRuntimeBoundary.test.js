@@ -11,6 +11,7 @@ const runtimeSharedNames = Object.freeze([
   'applicationAuthorityFields.js',
   'applicationCanonical.js',
   'applicationPersistenceProtocol.js',
+  'applicationProfessors.js',
   'backupFrequency.js',
   'realtimeScopes.js',
   'teamLimits.js',
@@ -93,15 +94,22 @@ describe('legacy-compatible update runtime boundary', () => {
   })
 
   it('builds only legacy-accepted roots and preflights the extracted runtime for real', async () => {
-    const [builder, verifier, releasePreflight] = await Promise.all([
+    const [builder, verifier, releasePreflight, publishedVerifier] = await Promise.all([
       readFile(path.join(projectRoot, 'tools', 'build-update-package.mjs'), 'utf8'),
       readFile(path.join(projectRoot, 'tools', 'verify-update-package.mjs'), 'utf8'),
       readFile(path.join(projectRoot, 'tools', 'release-preflight.mjs'), 'utf8'),
+      readFile(path.join(projectRoot, 'tools', 'verify-published-update.mjs'), 'utf8'),
     ])
 
     expect(builder).toContain("for (const entry of ['dist', 'server'])")
     expect(builder).not.toMatch(/for \(const entry of \[[^\]]*'shared'/u)
     expect(verifier).toContain('await preflightRuntime(validation.extractRoot)')
+    const qualification = "run(process.execPath, [join(projectRoot, 'tools', 'verify-update-package.mjs'), candidatePath])"
+    expect(builder).toContain(qualification)
+    expect(builder.indexOf(qualification)).toBeLessThan(builder.indexOf('renameSync(candidatePath, packagePath)'))
+    expect(builder).toContain('rmSync(candidateRoot, { recursive: true, force: true })')
+    expect(publishedVerifier).toContain("if (parsedCurrent.value === '0.1.0-beta.8')")
+    expect(publishedVerifier).toContain("verifyDownloadedPackage('verify-beta8-update-compatibility.mjs')")
     expect(releasePreflight).toContain('await verifyBeta8UpdateCompatibility(sourceRoot, packagePath)')
     expect(releasePreflight).toContain('await verifyBeta8UpdateCompatibility(root, packagePath)')
   })

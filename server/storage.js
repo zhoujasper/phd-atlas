@@ -1,3 +1,4 @@
+import { applicationProfessors, professorAddresses } from './shared/applicationProfessors.js'
 import bcrypt from 'bcryptjs'
 import Database from 'better-sqlite3'
 import tar from 'tar-fs'
@@ -109,6 +110,7 @@ import {
   seedProfileAssets,
 } from './seed-data.js'
 import { PUBLIC_DISTRIBUTION, PUBLIC_EDITION } from './edition.js'
+import { createDesktopLocalOwnerRecord, isDesktopProcess } from './desktopRuntime.js'
 import { ProfileRecommenderListSchema } from './validation.js'
 import {
   isTeacherAssignedToStudent,
@@ -7726,13 +7728,30 @@ export async function readFocusedTrackedProfessorAddressCount(userId) {
        UNION
        SELECT LOWER(TRIM(CAST(extra.value AS TEXT)))
          FROM owned, json_each(owned.payload, '$.professor.correspondenceEmails') extra
+       UNION
+       SELECT LOWER(TRIM(json_extract(prof.value, '$.email')))
+         FROM owned, json_each(owned.payload, '$.additionalProfessors') prof
+       UNION
+       SELECT LOWER(TRIM(CAST(extra.value AS TEXT)))
+         FROM owned, json_each(owned.payload, '$.additionalProfessors') prof,
+              json_each(prof.value, '$.correspondenceEmails') extra
      )
-     SELECT COUNT(*) AS count FROM addresses WHERE address <> ''`,
+     SELECT address FROM addresses WHERE address <> ''`,
     )
     focusedTrackedProfessorAddressCountStatements.set(database, statement)
   }
-  const row = statement.get(normalizedId)
-  return Math.max(0, Number(row?.count) || 0)
+  const addresses = new Set(Array.from(statement.iterate(normalizedId), (row) => row.address))
+  // Encrypted records cannot be inspected with JSON SQL. Decode only this
+  // owner's encrypted rows, one at a time; do not hydrate the whole workspace.
+  for (const row of database.prepare(
+    'SELECT payload_json FROM applications WHERE owner_id = ? AND NOT json_valid(payload_json)',
+  ).iterate(normalizedId)) {
+    const application = decodePayloadFromStorage(row.payload_json)
+    for (const professor of applicationProfessors(application)) {
+      for (const email of professorAddresses(professor)) addresses.add(email)
+    }
+  }
+  return addresses.size
 }
 
 /**
@@ -10421,7 +10440,18 @@ async function createSeedStore() {
   // The published Docker/runtime always uses production and must start with a
   // blank administrator setup. Test and development processes retain seeded
   // fixtures so Team permission coverage remains deterministic.
-  if (PUBLIC_DISTRIBUTION && process.env.NODE_ENV === 'production') {
+  if (isDesktopProcess()) {
+    seedStore.meta.publicSetupState = PUBLIC_SETUP_COMPLETE_STATE
+    seedStore.users = [createDesktopLocalOwnerRecord({
+      id: ownerId, createdAt: now,
+      passwordHash: await bcrypt.hash(randomBytes(32).toString('base64url'), 12),
+    })]
+    seedStore.settings.allowRegistration = false
+    seedStore.settings.notificationMailbox = ''
+    seedStore.profileAssets = []
+    seedStore.applications = []
+    seedStore.systemEvents = []
+  } else if (PUBLIC_DISTRIBUTION && process.env.NODE_ENV === 'production') {
     seedStore.meta.publicSetupState = PUBLIC_SETUP_PENDING_STATE
     seedStore.users = []
     seedStore.profileAssets = []
@@ -11583,10 +11613,10 @@ async function initializeStorage(options = {}) {
       await writeStore(await createSeedStore())
       database = getDb()
     }
-  } else if (!publicProductionSetup) {
+  } else if (!publicProductionSetup && !isDesktopProcess()) {
     await ensureDefaultAdminUser(database)
   }
-  if (!publicProductionSetup && !PUBLIC_EDITION) {
+  if (!publicProductionSetup && !PUBLIC_EDITION && !isDesktopProcess()) {
     await ensureDemoTeamWorkspace(getDb())
   }
 

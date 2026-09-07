@@ -1,3 +1,8 @@
+import { ApplicationProfessorsPanel } from '../shared/ApplicationProfessorsPanel'
+import { ExternalLinkAction as DossierExternalLinkAction } from '../shared/ExternalLinkAction'
+import { ProfessorAvatar } from '../shared/ProfessorAvatar'
+import { applicationProfessors, professorAddresses, professorName, findApplicationProfessor, communicationMatchesProfessor } from '../../../shared/applicationProfessors.js'
+import { correspondenceAvatarIdentity } from '../../correspondenceIdentity'
 import '../../styles/dossier-collapsed.css'
 import '../../styles/application-transfer.css'
 import {
@@ -191,9 +196,7 @@ import { AdmissionSignalsPanel } from '../shared/AdmissionSignalsPanel'
 import { contentLanguagesFromSettings } from '../../contentLanguages'
 import { normalizeErrorMessage } from '../../errorMessages'
 import {
-  MAX_APPLICATION_CORRESPONDENCE_EMAILS,
   additionalCorrespondenceEmails,
-  applicationCorrespondenceEmails,
   isValidCorrespondenceEmail,
   normalizeCorrespondenceEmail,
 } from '../../correspondenceRecipients'
@@ -309,7 +312,6 @@ import { ApplicationRecommendersPanel } from '../shared/ApplicationRecommendersP
 import { ProjectFooter } from '../shared/ProjectFooter'
 import { AnimatedCheckmark } from '../shared/AnimatedCheckmark'
 import { UserAvatar } from '../shared/UserAvatar'
-import { emailLeadingInitial } from '../shared/avatarInitial'
 import FeeTracker, { type FeeTrackerExitGuard } from '../shared/FeeTracker'
 import { formatFeeAmount } from '../shared/feeFormatting'
 import { MarkdownContent } from '../shared/MarkdownContent'
@@ -475,44 +477,6 @@ function communicationTimestamp(item: CommunicationItem, lang: Language) {
   }
 }
 
-function DossierExternalLinkAction({
-  value,
-  label,
-}: {
-  value: string
-  label: string
-}) {
-  const href = normalizedExternalHref(value)
-  const icon = <ExternalLink size={14} aria-hidden="true" />
-
-  if (!href) {
-    return (
-      <button
-        type="button"
-        className="icon-action"
-        aria-label={label}
-        title={label}
-        disabled
-      >
-        {icon}
-      </button>
-    )
-  }
-
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="icon-action"
-      aria-label={label}
-      title={label}
-    >
-      {icon}
-    </a>
-  )
-}
-
 function communicationEditDraftFrom(item: CommunicationItem): CommunicationPatchInput {
   return {
     subject: item.subject,
@@ -535,59 +499,6 @@ function isIncomingEmailForClassification(item: CommunicationItem) {
   return item.channel === 'Email'
     && item.direction === 'incoming'
     && item.messageType !== 'draft-email'
-}
-
-function correspondenceAvatarIdentity(
-  item: CommunicationItem,
-  professorName: string,
-  professorEmail: string,
-  account: {
-    name: string
-    email: string
-    avatarUrl?: string | null
-  },
-) {
-  const direction = communicationDirectionOf(item)
-
-  if (direction !== 'incoming') {
-    return {
-      name: account.name,
-      email: account.email,
-      avatarUrl: account.avatarUrl,
-      displayEmail: '',
-    }
-  }
-
-  const counterpartyEmail = normalizeCorrespondenceEmail(
-    item.from,
-  )
-  const primaryProfessorEmail = normalizeCorrespondenceEmail(professorEmail)
-  const hasMailProvenance = item.messageType === 'fetched-email'
-    || Boolean(
-      item.sourceMessageKey
-      || item.sourceMailbox
-      || item.importedAt
-      || item.deliveryStatus === 'sent',
-    )
-  const useProfessorIdentity = !hasMailProvenance
-    || !counterpartyEmail
-    || counterpartyEmail === primaryProfessorEmail
-
-  if (useProfessorIdentity) {
-    return {
-      name: professorName,
-      email: primaryProfessorEmail,
-      avatarUrl: undefined,
-      displayEmail: '',
-    }
-  }
-
-  return {
-    name: emailLeadingInitial(counterpartyEmail),
-    email: counterpartyEmail,
-    avatarUrl: undefined,
-    displayEmail: counterpartyEmail,
-  }
 }
 
 type ChecklistUploadTarget = { kind: 'material'; id: string }
@@ -2034,6 +1945,7 @@ export function DossierView({
   onSave,
   onDiscardDraft,
   onDelete,
+  onDuplicate,
   onShare,
   onEnrich,
   onResolveSchoolLogo,
@@ -2147,6 +2059,7 @@ export function DossierView({
   onSave: () => boolean | void | Promise<boolean | void>
   onDiscardDraft: () => void
   onDelete: () => void
+  onDuplicate?: () => void
   onShare: (permission?: SharePermission) => void
   onEnrich?: () => void
   onResolveSchoolLogo?: (
@@ -2930,10 +2843,9 @@ export function DossierView({
   }, [application.id, pendingRecommendersAreControlled])
   useEffect(() => {
     const nextPrimary = normalizeCorrespondenceEmail(draft.professor.email)
-    const previousPrimary = previousProfessorEmailRef.current
     previousProfessorEmailRef.current = nextPrimary
     setEmailRecipient((current) =>
-      !current || normalizeCorrespondenceEmail(current) === previousPrimary ? nextPrimary : current,
+      !current ? nextPrimary : current,
     )
   }, [draft.professor.email])
   const commitDraft = useCallback(
@@ -3169,8 +3081,7 @@ export function DossierView({
   const replyTargetAvatarIdentity = replyTargetCommunication
     ? correspondenceAvatarIdentity(
         replyTargetCommunication,
-        professorAvatarName,
-        draft.professor.email,
+        draft,
         accountCorrespondenceIdentity,
       )
     : null
@@ -3182,12 +3093,20 @@ export function DossierView({
     session.user.settings.receiveAt ||
     session.user.email
   const incomingMailbox = session.user.settings.incomingUser || primaryReceiveEmail
-  const trackedRecipientEmails = useMemo(() => applicationCorrespondenceEmails(draft.professor), [draft.professor])
+  const professorApplication = useMemo(() => ({ professor: draft.professor, additionalProfessors: draft.additionalProfessors }), [draft.professor, draft.additionalProfessors])
+  const professors = useMemo(() => applicationProfessors(professorApplication), [professorApplication])
+  const trackedRecipientEmails = useMemo(() => [...new Set(professors.flatMap(professorAddresses))], [professors])
+  const recipientContacts = useMemo(() => professors.flatMap((professor) => professorAddresses(professor).map((email) => ({
+    email, name: professorName(professor, lang), professor,
+  }))), [professors, lang])
+  const [professorFilter, setProfessorFilter] = useState('')
+  const activeProfessorFilter = professors.some((item) => item.id === professorFilter) ? professorFilter : ''
   const selectedRecipient =
     normalizeCorrespondenceEmail(emailRecipient) ||
     trackedRecipientEmails[0] ||
     normalizeCorrespondenceEmail(draft.professor.email)
   const selectedRecipientIsTracked = trackedRecipientEmails.includes(selectedRecipient)
+  const selectedMailProfessor = findApplicationProfessor(draft, selectedRecipient) ?? professors[0]
   const queueDestroyAnimation = (
     ids: string[],
     setRemovingIds: Dispatch<SetStateAction<Set<string>>>,
@@ -4336,30 +4255,24 @@ export function DossierView({
     triggerRouteSwapAnimation('record')
   }
 
+  const setProfessorAliases = (currentDraft: ApplicationRecord, professorId: string, correspondenceEmails: string[]) => {
+    const next = professorId === (currentDraft.professor.id || 'primary')
+      ? { ...currentDraft, professor: { ...currentDraft.professor, correspondenceEmails } }
+      : { ...currentDraft, additionalProfessors: currentDraft.additionalProfessors?.map((professor) =>
+          professor.id === professorId ? { ...professor, correspondenceEmails } : professor) }
+    commitDraft(next, 'immediate')
+  }
+
   const addTrackedRecipient = (email: string) => {
     const normalized = normalizeCorrespondenceEmail(email)
     const currentDraft = draftRef.current
-    const currentEmails = applicationCorrespondenceEmails(currentDraft.professor)
-    if (
-      !isValidCorrespondenceEmail(normalized) ||
-      currentEmails.includes(normalized) ||
-      currentEmails.length >= MAX_APPLICATION_CORRESPONDENCE_EMAILS
-    )
-      return false
-    const correspondenceEmails = additionalCorrespondenceEmails(currentDraft.professor.email, [
-      ...(currentDraft.professor.correspondenceEmails ?? []),
-      normalized,
-    ])
-    commitDraft(
-      {
-        ...currentDraft,
-        professor: {
-          ...currentDraft.professor,
-          correspondenceEmails,
-        },
-      },
-      'immediate',
-    )
+    const target = findApplicationProfessor(currentDraft, selectedRecipient) ?? applicationProfessors(currentDraft)[0]
+    if (!isValidCorrespondenceEmail(normalized)
+      || findApplicationProfessor(currentDraft, normalized)
+      || (target.correspondenceEmails?.length ?? 0) >= 9) return false
+    setProfessorAliases(currentDraft, target.id, additionalCorrespondenceEmails(target.email, [
+      ...(target.correspondenceEmails ?? []), normalized,
+    ]))
     setEmailRecipient(normalized)
     return true
   }
@@ -4367,26 +4280,11 @@ export function DossierView({
   const removeTrackedRecipient = (email: string) => {
     const normalized = normalizeCorrespondenceEmail(email)
     const currentDraft = draftRef.current
-    if (normalized === normalizeCorrespondenceEmail(currentDraft.professor.email)) return
-    const correspondenceEmails = additionalCorrespondenceEmails(
-      currentDraft.professor.email,
-      (currentDraft.professor.correspondenceEmails ?? []).filter(
-        (candidate) => normalizeCorrespondenceEmail(candidate) !== normalized,
-      ),
-    )
-    commitDraft(
-      {
-        ...currentDraft,
-        professor: {
-          ...currentDraft.professor,
-          correspondenceEmails,
-        },
-      },
-      'immediate',
-    )
-    if (normalizeCorrespondenceEmail(emailRecipient) === normalized) {
-      setEmailRecipient(normalizeCorrespondenceEmail(currentDraft.professor.email))
-    }
+    const target = findApplicationProfessor(currentDraft, normalized)
+    if (!target || normalizeCorrespondenceEmail(target.email) === normalized) return
+    setProfessorAliases(currentDraft, target.id,
+      (target.correspondenceEmails ?? []).filter((candidate) => normalizeCorrespondenceEmail(candidate) !== normalized))
+    if (normalizeCorrespondenceEmail(emailRecipient) === normalized) setEmailRecipient(target.email)
   }
 
   const buildCommunicationInput = (
@@ -4528,7 +4426,7 @@ export function DossierView({
       setAiPanelOpen(true)
       if (replyTo) setReplyComposerNavigationToken((current) => current + 1)
     }
-    if (composerOpen && correspondenceMode !== 'draft-email') {
+    if (composerOpen && (correspondenceMode !== 'draft-email' || (replyTo && normalizeCorrespondenceEmail(replyTo.from) !== selectedRecipient && hasComposerContent))) {
       requestComposerExit(open, { keepOpenAfterSave: true })
       return
     }
@@ -7328,7 +7226,7 @@ export function DossierView({
       .join(', '),
     [customMailCategories, tx],
   )
-  const visibleCommunications = useMemo(
+  const categoryFilteredCommunications = useMemo(
     () => {
       if (correspondenceView === 'drafts') return draftCommunications
       if (!hasActiveCommunicationCategoryFilter) return nonDraftCommunications
@@ -7346,6 +7244,10 @@ export function DossierView({
       nonDraftCommunications,
     ],
   )
+  const visibleCommunications = useMemo(() => activeProfessorFilter
+    ? categoryFilteredCommunications.filter((item) => communicationMatchesProfessor(professorApplication, item, activeProfessorFilter))
+    : categoryFilteredCommunications,
+  [activeProfessorFilter, categoryFilteredCommunications, professorApplication])
   const renderedCommunications = useMemo(
     () => visibleCommunications.slice(0, communicationRenderLimit),
     [communicationRenderLimit, visibleCommunications],
@@ -11648,9 +11550,9 @@ export function DossierView({
       mode={aiDraftMode}
       replyToId={aiReplyToId}
       currentDraft={{ subject: emailSubject, body: emailBody }}
-      draftSessionKey={aiDraftSessionKey}
+      draftSessionKey={`${aiDraftSessionKey}:${selectedRecipient}`}
       onClose={() => setAiPanelOpen(false)}
-      onDraft={onAiDraft}
+      onDraft={(input, onEvent, signal) => onAiDraft({ ...input, recipientEmail: selectedRecipient }, onEvent, signal)}
       onDraftChange={({ subject, body }) => {
         if (subject) setEmailSubject(subject)
         if (body !== undefined) setEmailBody(body)
@@ -11711,7 +11613,7 @@ export function DossierView({
               ) : null}
             </span>
             <h2>{application.school.name}</h2>
-            <p>{application.professor.english}</p>
+            <p>{professors.map((professor) => professorName(professor, lang)).filter(Boolean).join(' · ')}</p>
           </div>
         </div>
         {(!isReadOnly && isOwnApplication) || canShare || canDelete || onCloseApplication ? (
@@ -11727,6 +11629,10 @@ export function DossierView({
                 <Sparkles size={14} /> <span className="dossier-action-label">{tx('dossier.enrichApplication', 'Enrich application')}</span>
               </button>
             ) : null}
+            {onDuplicate && !isReadOnly ? <button type="button" className="quiet-action" onClick={onDuplicate}
+              aria-label={tx('dossier.supervisors.duplicate')} title={tx('dossier.supervisors.duplicate')}>
+              <Copy size={14} aria-hidden="true" /><span className="dossier-action-label">{tx('dossier.supervisors.duplicate')}</span>
+            </button> : null}
             {canShare ? (
               <button
                 type="button"
@@ -11991,259 +11897,22 @@ export function DossierView({
                   </CollapsiblePanel>
                 </section>
 
-                <section className="section-card dossier-core-card expanded">
-                  {renderDossierCoreSummary(User, tx('dossier.professor'))}
-                  <CollapsiblePanel
-                    open
-                    className="dossier-core-collapse"
-                    innerClassName="dossier-core-collapse-inner"
-                    keepMounted
-                  >
-                    <div className="field-stack">
-                      <label>
-                        <span>
-                          {tx('dossier.professor')} <span className="field-required-mark">*</span>
-                        </span>
-                        <div className="input-with-copy">
-                          <input
-                            required
-                            value={draft.professor.english}
-                            onChange={(e) =>
-                              commitDraft({
-                                ...draftRef.current,
-                                professor: {
-                                  ...draftRef.current.professor,
-                                  english: e.target.value,
-                                },
-                              })
-                            }
-                            placeholder={tx('dossier.professorNamePlaceholder')}
-                          />
-                          <CopyButton
-                            value={draft.professor.english}
-                            label={tx('inspector.copyProfessor')}
-                            className="copy-inside"
-                            onNotify={onNotify}
-                          />
-                        </div>
-                      </label>
-                      <label>
-                        <span>
-                          {tx('dossier.email')} <span className="field-required-mark">*</span>
-                        </span>
-                        <div className="input-with-copy">
-                          <input
-                            required
-                            type="email"
-                            value={draft.professor.email}
-                            onChange={(e) =>
-                              commitDraft({
-                                ...draftRef.current,
-                                professor: {
-                                  ...draftRef.current.professor,
-                                  email: e.target.value,
-                                },
-                              })
-                            }
-                          />
-                          <CopyButton
-                            value={draft.professor.email}
-                            label={tx('inspector.copyEmail')}
-                            className="copy-inside"
-                            onNotify={onNotify}
-                          />
-                        </div>
-                      </label>
-                      <div className="field-grid field-grid-pair">
-                        <label data-field-path="professor.phone">
-                          <span>{tx('dossier.phone')}</span>
-                          <div className="input-with-copy">
-                            <input
-                              value={draft.professor.phone}
-                              onChange={(e) =>
-                                commitDraft({
-                                  ...draftRef.current,
-                                  professor: {
-                                    ...draftRef.current.professor,
-                                    phone: e.target.value,
-                                  },
-                                })
-                              }
-                            />
-                            <CopyButton
-                              value={draft.professor.phone}
-                              label={tx('dossier.phone')}
-                              className="copy-inside"
-                              onNotify={onNotify}
-                            />
-                          </div>
-                        </label>
-                        <label data-field-path="professor.social">
-                          <span>{tx('dossier.social')}</span>
-                          <div className="input-with-copy">
-                            <input
-                              value={draft.professor.social}
-                              onChange={(e) =>
-                                commitDraft({
-                                  ...draftRef.current,
-                                  professor: {
-                                    ...draftRef.current.professor,
-                                    social: e.target.value,
-                                  },
-                                })
-                              }
-                            />
-                            <CopyButton
-                              value={draft.professor.social}
-                              label={tx('dossier.social')}
-                              className="copy-inside"
-                              onNotify={onNotify}
-                            />
-                          </div>
-                        </label>
-                      </div>
-                      <label data-field-path="professor.homepage">
-                        <span>{tx('dossier.homepage')}</span>
-                        <div className="dossier-link-field">
-                          <input
-                            inputMode="url"
-                            pattern={WEB_ADDRESS_PATTERN}
-                            title={tx('dossier.linkFormatHint')}
-                            value={draft.professor.homepage}
-                            onChange={(e) =>
-                              commitDraft({
-                                ...draftRef.current,
-                                professor: {
-                                  ...draftRef.current.professor,
-                                  homepage: e.target.value,
-                                },
-                              })
-                            }
-                          />
-                          <DossierExternalLinkAction value={draft.professor.homepage} label={tx('dossier.openLink')} />
-                          <CopyButton
-                            value={draft.professor.homepage}
-                            label={tx('dossier.homepage')}
-                            onNotify={onNotify}
-                          />
-                        </div>
-                      </label>
-                    </div>
-                  </CollapsiblePanel>
+                <section className="section-card dossier-core-card expanded dossier-professors-card">
+                  <ApplicationProfessorsPanel value={draft} readOnly={isReadOnly}
+                    deferHeavyContent={!tabContentReady}
+                    onChange={(contacts) => commitDraft({ ...draftRef.current, ...contacts })}
+                    onWrite={isReadOnly ? undefined : (email) => requestComposerExit(() => {
+                      setEmailRecipient(email)
+                      setAiReplyToId(null)
+                      setAiDraftMode('compose')
+                      onTab('mail')
+                      applyCorrespondenceMode('draft-email')
+                      setComposerOpen(true)
+                    }, { keepOpenAfterSave: true })} />
                 </section>
 
                 {tabContentReady ? (
                   <>
-                    <section
-                      className={`section-card dossier-core-card expanded${
-                        isHeavyContentRevealing ? ' dossier-progressive-entry dossier-progressive-entry-first' : ''
-                      }`}
-                    >
-                      {renderDossierCoreSummary(BookOpen, tx('dossier.research'))}
-                      <CollapsiblePanel
-                        open
-                        className="dossier-core-collapse"
-                        innerClassName="dossier-core-collapse-inner"
-                        keepMounted
-                      >
-                        <div className="textarea-field dossier-research-direction-field">
-                          <span>
-                            {tx('dossier.researchDirection')} <span className="field-required-mark">*</span>
-                          </span>
-                          <MarkdownTextarea
-                            required
-                            value={localize(draft.professor.research)}
-                            onChange={(e) =>
-                              commitDraft({
-                                ...draftRef.current,
-                                professor: {
-                                  ...draftRef.current.professor,
-                                  research: e.target.value,
-                                },
-                              })
-                            }
-                            rows={3}
-                            aria-label={tx('dossier.researchDirection')}
-                          />
-                        </div>
-                        <div className="textarea-field">
-                          <span>{tx('dossier.labGroup')}</span>
-                          <MarkdownTextarea
-                            value={localize(draft.professor.lab)}
-                            onChange={(e) =>
-                              commitDraft({
-                                ...draftRef.current,
-                                professor: {
-                                  ...draftRef.current.professor,
-                                  lab: e.target.value,
-                                },
-                              })
-                            }
-                            rows={2}
-                            aria-label={tx('dossier.labGroup')}
-                          />
-                        </div>
-                        <div className="field-stack">
-                          <label data-field-path="professor.labUrl">
-                            <span>{tx('dossier.labLink')}</span>
-                            <div className="dossier-link-field">
-                              <input
-                                type="url"
-                                inputMode="url"
-                                value={draft.professor.labUrl ?? ''}
-                                onChange={(e) =>
-                                  commitDraft({
-                                    ...draftRef.current,
-                                    professor: {
-                                      ...draftRef.current.professor,
-                                      labUrl: e.target.value,
-                                    },
-                                  })
-                                }
-                              />
-                              <DossierExternalLinkAction
-                                value={draft.professor.labUrl ?? ''}
-                                label={tx('dossier.openLink')}
-                              />
-                              <CopyButton
-                                value={draft.professor.labUrl ?? ''}
-                                label={tx('dossier.labLink')}
-                                onNotify={onNotify}
-                              />
-                            </div>
-                          </label>
-                          <label data-field-path="professor.projectUrl">
-                            <span>{tx('dossier.projectLink')}</span>
-                            <div className="dossier-link-field">
-                              <input
-                                type="url"
-                                inputMode="url"
-                                value={draft.professor.projectUrl ?? ''}
-                                onChange={(e) =>
-                                  commitDraft({
-                                    ...draftRef.current,
-                                    professor: {
-                                      ...draftRef.current.professor,
-                                      projectUrl: e.target.value,
-                                    },
-                                  })
-                                }
-                              />
-                              <DossierExternalLinkAction
-                                value={draft.professor.projectUrl ?? ''}
-                                label={tx('dossier.openLink')}
-                              />
-                              <CopyButton
-                                value={draft.professor.projectUrl ?? ''}
-                                label={tx('dossier.projectLink')}
-                                onNotify={onNotify}
-                              />
-                            </div>
-                          </label>
-                        </div>
-                      </CollapsiblePanel>
-                    </section>
-
                     <section
                       className={`section-card dossier-core-card expanded${
                         isHeavyContentRevealing ? ' dossier-progressive-entry dossier-progressive-entry-second' : ''
@@ -13876,9 +13545,19 @@ export function DossierView({
                 {!isReadOnly ? (
                   <CorrespondenceRecipientSettings
                     emails={trackedRecipientEmails}
-                    primaryEmail={draft.professor.email}
+                    contacts={recipientContacts}
+                    primaryEmails={professors.map((professor) => professor.email)}
+                    activeContactEmailCount={(selectedMailProfessor.correspondenceEmails?.length ?? 0) + 1}
+                    addTargetName={professorName(selectedMailProfessor, lang)}
+                    primaryEmail={selectedMailProfessor.email}
                     activeEmail={selectedRecipient}
-                    onSelect={setEmailRecipient}
+                    onSelect={(recipient) => {
+                      setEmailRecipient(recipient)
+                      setAiReplyToId(null)
+                      setAiDraftMode('compose')
+                      setReplyContextExpanded(false)
+                      persistEmailComposerRecovery({ recipient })
+                    }}
                     onAdd={addTrackedRecipient}
                     onRemove={removeTrackedRecipient}
                   />
@@ -13941,9 +13620,13 @@ export function DossierView({
                             <ComposerRecipientControl
                               value={correspondenceTo}
                               trackedEmails={trackedRecipientEmails}
+                              contacts={recipientContacts}
                               primaryEmail={draft.professor.email}
                               onChange={(recipient) => {
                                 setEmailRecipient(recipient)
+                                setAiReplyToId(null)
+                                setAiDraftMode('compose')
+                                setReplyContextExpanded(false)
                                 persistEmailComposerRecovery({ recipient })
                               }}
                             />
@@ -14067,7 +13750,7 @@ export function DossierView({
                                     {tx('dossier.replyContextEyebrow')}
                                   </span>
                                   <span className="composer-reply-context-professor">
-                                    {replyTargetAvatarIdentity?.displayEmail || professorDisplayName}
+                                    {replyTargetAvatarIdentity?.displayEmail || replyTargetAvatarIdentity?.name || professorDisplayName}
                                   </span>
                                   <time dateTime={replyTargetTimestamp?.dateTime}>{replyTargetTimestamp?.label}</time>
                                 </span>
@@ -14559,6 +14242,7 @@ export function DossierView({
               {pendingRecipientSend ? (
                 <RecipientTrackingDialog
                   recipient={normalizeCorrespondenceEmail(pendingRecipientSend.payload.to)}
+                  contactName={professors.length > 1 ? professorName(draft.professor, lang) || tx('dossier.supervisors.default') : undefined}
                   onDecision={handleRecipientTrackingDecision}
                 />
               ) : null}
@@ -14670,6 +14354,15 @@ export function DossierView({
                 </ModalPortal>
               )}
 
+              {professors.length > 1 ? <div className="professor-mail-filter" role="group" aria-label={tx('dossier.supervisors.filter')}>
+                <button type="button" aria-pressed={!activeProfessorFilter} onClick={() => setProfessorFilter('')}>
+                  {tx('dossier.supervisors.all')}
+                </button>
+                {professors.map((professor) => <button type="button" key={professor.id}
+                  aria-pressed={activeProfessorFilter === professor.id} onClick={() => { setProfessorFilter(professor.id); setCommunicationRenderLimit(50) }}>
+                  <ProfessorAvatar professor={professor} />{professorName(professor, lang) || tx('dossier.supervisors.unnamed')}
+                </button>)}
+              </div> : null}
               {/* Communication timeline */}
               <div
                 key={correspondenceView}
@@ -14781,15 +14474,14 @@ export function DossierView({
                             : communicationEditDraftFrom(item)
                         const avatarIdentity = correspondenceAvatarIdentity(
                           item,
-                          professorAvatarName,
-                          draft.professor.email,
+                          draft,
                           accountCorrespondenceIdentity,
                         )
                         const senderLabel =
                           dir === 'outgoing'
-                            ? tx('dossier.messageSenderMe')
+                            ? [tx('dossier.messageSenderMe'), professors.length > 1 ? professorName(findApplicationProfessor(draft, item.to), lang) : ''].filter(Boolean).join(' → ')
                             : dir === 'incoming'
-                              ? avatarIdentity.displayEmail || professorDisplayName
+                              ? avatarIdentity.displayEmail || avatarIdentity.name || professorDisplayName
                               : tx('dossier.messageSenderMe')
                         return (
                           <div
@@ -14797,7 +14489,7 @@ export function DossierView({
                             className={`correspondence-event ${dir} ${isNote ? 'is-note' : ''} ${isDraft ? 'is-draft' : ''} ${isRemoving ? 'is-removing' : ''}`}
                           >
                             <div className="correspondence-event-rail">
-                              <span className={`correspondence-event-dot ${dir} ${isNote ? 'note' : ''}`}>
+                              <span className={`correspondence-event-dot ${dir} ${isNote ? 'note' : ''}`} data-professor-tone={avatarIdentity.tone}>
                                 <UserAvatar
                                   avatarUrl={avatarIdentity.avatarUrl}
                                   name={avatarIdentity.name}

@@ -371,7 +371,7 @@ describe('desktop local/unlinked and web-linked storage mode', () => {
     }
   })
 
-  it('connects to a web account with enough quota, then follows that quota and allows share-create', async () => {
+  it('connects within the web quota while keeping local capacity independent and forwarding shares', async () => {
     const created = await jsonRequest('/api/applications', {
       method: 'POST',
       body: JSON.stringify(createBody(`share-${Date.now()}`)),
@@ -396,8 +396,8 @@ describe('desktop local/unlinked and web-linked storage mode', () => {
       expect(web.remoteApps.length).toBe(connect.data.pushed)
 
       const me = await jsonRequest('/api/auth/me')
-      expect(me.data.usage.applicationQuota).toBe(300)
-      expect(me.data.usage.applicationQuota).toBeLessThan(10_000)
+      expect(me.data.usage.applicationQuota).toBeGreaterThan(10_000)
+      expect(connect.data.runtime.unlimited).toBe(true)
 
       const share = await jsonRequest(`/api/applications/${encodeURIComponent(created.data.id)}/share`, {
         method: 'POST',

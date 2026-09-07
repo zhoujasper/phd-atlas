@@ -1,3 +1,5 @@
+import type { ApplicationRecord } from '../../data/applications'
+import { emptyProfessor } from '../../../shared/applicationProfessors.js'
 import { clearVerifiedStorageItem, setVerifiedStorageItem } from '../../verifiedStorage'
 import type { NewApplicationTeamMode } from './NewApplicationDialog'
 
@@ -16,6 +18,8 @@ export type RecoverableNewApplicationDraft = {
   professorChinese: string
   professorEmail: string
   professorHomepage: string
+  professorProfile?: ApplicationRecord['professor']
+  additionalProfessors?: ApplicationRecord['additionalProfessors']
   university: string
   country: string
   website: string
@@ -46,6 +50,20 @@ function boundedString(value: unknown, maxLength = MAX_SHORT_FIELD_LENGTH) {
   return typeof value === 'string' ? value.slice(0, maxLength) : ''
 }
 
+function recoverProfessor(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  const profile = emptyProfessor()
+  for (const key of ['english', 'chinese', 'email', 'phone', 'social', 'homepage', 'research', 'lab', 'labUrl', 'projectUrl'] as const) {
+    // These can be prefilled from an existing dossier. Storage quota failures
+    // are reported by verifiedStorage; silently shortening profiles loses data.
+    profile[key] = typeof record[key] === 'string' ? record[key] : ''
+  }
+  if (typeof record.id === 'string') profile.id = record.id.slice(0, 128)
+  if (Array.isArray(record.correspondenceEmails)) profile.correspondenceEmails = record.correspondenceEmails.slice(0, 9).map((item) => boundedString(item, 254))
+  return profile
+}
+
 function parseDraft(value: unknown): RecoverableNewApplicationDraft | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const record = value as Record<string, unknown>
@@ -55,6 +73,9 @@ function parseDraft(value: unknown): RecoverableNewApplicationDraft | null {
     professorChinese: boundedString(record.professorChinese),
     professorEmail: boundedString(record.professorEmail),
     professorHomepage: boundedString(record.professorHomepage),
+    ...(record.professorProfile ? { professorProfile: recoverProfessor(record.professorProfile) } : {}),
+    ...(Array.isArray(record.additionalProfessors) ? { additionalProfessors: record.additionalProfessors.slice(0, 29)
+      .map(recoverProfessor).filter((item): item is NonNullable<typeof item> & { id: string } => Boolean(item?.id)) } : {}),
     university: boundedString(record.university),
     country: boundedString(record.country),
     website: boundedString(record.website),

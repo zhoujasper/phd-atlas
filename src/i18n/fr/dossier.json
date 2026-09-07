@@ -1117,7 +1117,31 @@
     "aiProfileSelectedMaterials": "{count} sélectionnés",
     "aiProfileSelectVisible": "En choisir certains",
     "aiProfileUseAll": "Tout utiliser",
-    "aiProfileNoMatch": "Aucun document ne correspond à cette recherche."
+    "aiProfileNoMatch": "Aucun document ne correspond à cette recherche.",
+    "supervisors": {
+      "title": "Directions de thèse envisagées",
+      "add": "Ajouter une personne",
+      "hint": "Une candidature peut inclure plusieurs directions de thèse. Les référents sont gérés séparément.",
+      "unnamed": "Coordonnées à compléter",
+      "emailOptional": "Courriel à ajouter plus tard",
+      "default": "Contact par défaut",
+      "contact": "Direction envisagée",
+      "write": "Écrire un courriel",
+      "makeDefault": "Définir par défaut",
+      "remove": "Retirer cette personne",
+      "confirmRemove": "Supprimer",
+      "scrollLeft": "Faire défiler les encadrants vers la gauche",
+      "scrollRight": "Faire défiler les encadrants vers la droite",
+      "removeHint": "Retirer cette personne ? Les messages existants conserveront leurs adresses originales.",
+      "chineseName": "Nom en chinois",
+      "more": "Coordonnées, laboratoire et autres détails",
+      "aliases": "Autres adresses électroniques",
+      "duplicateEmail": "Cette adresse est déjà attribuée à une personne dans cette candidature.",
+      "filter": "Filtrer par direction",
+      "all": "Toutes les directions",
+      "duplicate": "Dupliquer la candidature",
+      "copyHint": "Copie l’établissement, le programme, les directions, les référents et les exigences. La progression repart de zéro ; les messages, fichiers téléversés et liens de partage ne sont pas copiés."
+    }
   },
   "fees": {
     "sectionTitle": "Frais de scolarité / de candidature",

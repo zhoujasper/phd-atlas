@@ -1,7 +1,8 @@
 import { availableParallelism, cpus } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
-import { resolve } from 'node:path'
+import { dirname, isAbsolute, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const PAYLOAD_WORKER_THRESHOLD_BYTES = 64 * 1024
 
@@ -12,7 +13,8 @@ const DEFAULT_TIMEOUT_MS = 15_000
 const DEFAULT_MAX_QUEUED = 128
 
 function workerPath() {
-  return resolve(process.cwd(), 'server', 'payloadWorker.mjs')
+  const modulePath = isAbsolute(import.meta.url) ? import.meta.url : fileURLToPath(import.meta.url)
+  return resolve(dirname(modulePath), 'payloadWorker.mjs')
 }
 
 function serializedBytes(value) {
@@ -32,7 +34,6 @@ export function createPayloadWorkerPool({
   maxQueued = DEFAULT_MAX_QUEUED,
   thresholdBytes = PAYLOAD_WORKER_THRESHOLD_BYTES,
   workerFactory = defaultWorkerFactory,
-  now = () => Date.now(),
 } = {}) {
   const poolSize = Math.max(1, Math.min(4, Math.trunc(Number(size) || 1)))
   const timeout = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
@@ -81,7 +82,7 @@ export function createPayloadWorkerPool({
 
       worker.on('message', (message) => {
         const entry = pending.get(message?.id)
-        if (!entry) return
+        if (!entry || entry.worker !== worker) return
         pending.delete(message.id)
         active = Math.max(0, active - 1)
         if (message?.error) {
@@ -96,7 +97,7 @@ export function createPayloadWorkerPool({
         drain()
       })
 
-      worker.on('error', (error) => {
+      worker.on('error', () => {
         counters.degraded += 1
         degraded = true
         rejectPendingForWorker(worker)
@@ -112,7 +113,7 @@ export function createPayloadWorkerPool({
         drain()
       })
       return worker
-    } catch (error) {
+    } catch {
       counters.degraded += 1
       degraded = true
       return null
@@ -129,19 +130,29 @@ export function createPayloadWorkerPool({
     entry.worker = target
     pending.set(entry.requestId, entry)
     active += 1
-    target.postMessage({
-      id: entry.requestId,
-      operation: entry.operation,
-      value: entry.value,
-      policy: entry.policy,
-    })
+    try {
+      target.postMessage({
+        id: entry.requestId,
+        operation: entry.operation,
+        value: entry.value,
+        policy: entry.policy,
+      })
+    } catch (error) {
+      pending.delete(entry.requestId)
+      active = Math.max(0, active - 1)
+      counters.rejected += 1
+      entry.reject(error)
+    }
     return true
   }
 
   const drain = () => {
     while (!closed && queue.length > 0) {
+      // Saturation is normal: retain bounded FIFO work until a slot opens.
+      // Falling back here made concurrent reads run CPU work on the event loop.
+      if (!degraded && active >= poolSize) return
       const entry = queue.shift()
-      if (degraded || active >= poolSize || !dispatch(entry)) {
+      if (degraded || !dispatch(entry)) {
         counters.fallbacks += 1
         entry.resolve(null)
       }
@@ -149,6 +160,10 @@ export function createPayloadWorkerPool({
   }
 
   const enqueue = (operation, value, policy) => {
+    if (closed || degraded) {
+      counters.fallbacks += 1
+      return Promise.resolve(null)
+    }
     if (queue.length >= queueLimit) {
       counters.rejected += 1
       const error = new Error('Payload worker queue is full.')
@@ -156,7 +171,6 @@ export function createPayloadWorkerPool({
       return Promise.reject(error)
     }
     const requestId = randomUUID()
-    const startedAt = now()
     const entry = {
       requestId,
       operation,
@@ -168,7 +182,6 @@ export function createPayloadWorkerPool({
       timer: null,
     }
     counters.queued += 1
-    counters.maxQueuedObserved = Math.max(counters.maxQueuedObserved, queue.length + active)
     const promise = new Promise((resolve, reject) => {
       entry.resolve = resolve
       entry.reject = reject
@@ -180,9 +193,14 @@ export function createPayloadWorkerPool({
       if (pending.has(requestId)) {
         pending.delete(requestId)
         active = Math.max(0, active - 1)
+        // A timeout does not stop CPU work. Retire the worker and degrade the
+        // pool instead of posting another job onto the still-busy thread.
+        degraded = true
+        counters.degraded += 1
+        workers.delete(entry.worker)
+        void entry.worker.terminate().catch(() => undefined)
       }
       counters.timedOut += 1
-      counters.fallbacks += 1
       // entry.reject, not the executor's binding: this callback runs outside
       // the Promise executor scope, so a bare reject here is a ReferenceError
       // thrown from a timer -- which terminates the process rather than
@@ -196,6 +214,7 @@ export function createPayloadWorkerPool({
     promise.finally(() => clearTimeout(entry.timer)).catch(() => undefined)
     queue.push(entry)
     drain()
+    counters.maxQueuedObserved = Math.max(counters.maxQueuedObserved, queue.length)
     return promise
   }
 

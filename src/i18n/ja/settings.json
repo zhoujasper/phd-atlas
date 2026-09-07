@@ -597,12 +597,14 @@
     "desktopImporting": "取り込み中",
     "completeArchiveExt": "全件",
     "desktopLocalCapabilitiesTitle": "ローカルで常に使える機能",
-    "desktopLocalCapabilities": "出願、チェックリスト、記録したやり取り、資金、タイムライン、Discover、面接準備、プロフィール、ローカルバックアップ。",
+    "desktopLocalCapabilities": "出願、書類、保存済みのやり取り、資金、タイムライン、保存済み Discover 結果、面接記録、プロフィール、ローカルバックアップ。",
     "desktopWebCapabilitiesTitle": "ウェブ接続後に表示",
     "desktopWebCapabilities": "メールの送受信、メール通知、共有リンク、カレンダー購読 URL、ブラウザプッシュ。",
     "desktopConnectHint": "任意です。ローカル利用にウェブアカウントは不要です。",
     "desktopBootFailed": "デスクトップ作業領域を開けませんでした。",
-    "desktopBootRetry": "再試行"
+    "desktopBootRetry": "再試行",
+    "desktopConnectOptionalAction": "Web システムに接続（任意）",
+    "desktopOnlineToolsHint": "AI 生成とオンライン検索にはインターネットと設定済みのサービスが必要です。PhD Atlas の Web アカウントは不要です。"
   },
   "calendar": {
     "title": "カレンダーフィード",

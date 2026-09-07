@@ -13,19 +13,39 @@ const projectRoot = path.resolve(path.dirname(__filename), '..')
 const packagePath = path.resolve(process.argv[2] ?? '')
 const beta8Tag = 'v0.1.0-beta.8'
 const beta8Version = '0.1.0-beta.8'
+const fixtureOption = process.argv.indexOf('--beta8-runtime')
+const fixtureRoot = fixtureOption >= 0 && process.argv[fixtureOption + 1]
+  ? path.resolve(process.argv[fixtureOption + 1])
+  : null
+// An optional small, authenticated fixture lets a Git-free source export run
+// the original updater. These are unmodified public Beta.8 files from:
+// https://github.com/zhoujasper/phd-atlas/tree/7f4b4d6ab219d504e6be632e455e88f569153d17
+// Only the updater and its rollback snapshot entries are needed; this fixture
+// does not claim to boot the historical application or reinstall its packages.
+const beta8PublicCommit = '7f4b4d6ab219d504e6be632e455e88f569153d17'
+const beta8FixtureHashes = Object.freeze({
+  'server/systemUpdate.js': 'cab236238d1b1dc23f1744eb2d915511384b0c877d435c8384a201de9360709c',
+  'server/index.js': '51bd8de48bb527e5621d20af7c9f6648db2fa8c86302ff3af7e366971623daa0',
+  'tools/start-server.mjs': 'd6b17b8331046e94e0dbb9d5df6d78187c090999861fde7054992f41bb8c2e3f',
+  'tools/apply-update.mjs': 'c37c9b511860399776b3404d0133f16324767bc1188af2a4afe6d0dc90d23313',
+  'tools/container-entrypoint.mjs': '2ca76b072704dd830d5681cb5456399399790b0da54b0189c8034ba0e6bb0a51',
+  'package.json': 'a08def6cb7b7ae2731238853c63c06ecc290e38475acc08515d1d25ccbe7abc4',
+  'package-lock.json': '183f4f4fc6f04c719f5645390b4ffe295b936386936bdc6fd2c1a9183004cc13',
+})
 const runtimeSharedNames = Object.freeze([
   'aiConcurrency.js',
   'aiKeyRouting.js',
   'applicationAuthorityFields.js',
   'applicationCanonical.js',
   'applicationPersistenceProtocol.js',
+  'applicationProfessors.js',
   'backupFrequency.js',
   'realtimeScopes.js',
   'teamLimits.js',
 ])
 
-if (!process.argv[2]) {
-  throw new Error('Usage: node tools/verify-beta8-update-compatibility.mjs <package.tar.gz>')
+if (!process.argv[2] || (process.argv.length > 3 && (fixtureOption !== 3 || process.argv.length !== 5))) {
+  throw new Error('Usage: node tools/verify-beta8-update-compatibility.mjs <package.tar.gz> [--beta8-runtime <original-runtime-files>]')
 }
 
 function assert(condition, message) {
@@ -58,26 +78,44 @@ async function readJson(filePath) {
   return JSON.parse(await fs.readFile(filePath, 'utf8'))
 }
 
-function createBeta8Archive(archivePath) {
-  const result = spawnSync('git', [
-    'archive',
-    '--format=tar',
-    `--output=${archivePath}`,
-    beta8Tag,
-  ], {
-    cwd: projectRoot,
-    encoding: 'utf8',
-    windowsHide: true,
-  })
-  if (result.error) throw result.error
-  if (result.status !== 0) {
-    throw new Error(`Could not archive ${beta8Tag}: ${result.stderr?.trim() || `exit ${result.status}`}`)
+async function createBeta8Archive(archivePath) {
+  const stageRoot = path.join(path.dirname(archivePath), 'beta8-git-files')
+  // git archive prefetches missing blobs outside its pathspec in a partial
+  // clone. Read each exact tagged blob instead; the old updater is unchanged.
+  for (const relativePath of Object.keys(beta8FixtureHashes)) {
+    const result = spawnSync('git', ['cat-file', 'blob', `${beta8Tag}:${relativePath}`], {
+      cwd: projectRoot,
+      timeout: 60_000,
+      maxBuffer: 32 * 1024 * 1024,
+      windowsHide: true,
+    })
+    if (result.error) throw result.error
+    if (result.status !== 0) {
+      throw new Error(`Could not read ${beta8Tag}:${relativePath}: ${result.stderr?.toString().trim() || `exit ${result.status}`}`)
+    }
+    const target = path.join(stageRoot, relativePath)
+    await fs.mkdir(path.dirname(target), { recursive: true })
+    await fs.writeFile(target, result.stdout)
   }
+  await pipeline(tar.pack(stageRoot), createWriteStream(archivePath))
 }
 
 async function extractBeta8Runtime(archivePath, destination) {
   await fs.mkdir(destination, { recursive: true })
-  await pipeline(createReadStream(archivePath), tar.extract(destination))
+  if (fixtureRoot) {
+    for (const [relativePath, expectedHash] of Object.entries(beta8FixtureHashes)) {
+      const contents = await fs.readFile(path.join(fixtureRoot, relativePath))
+      assert(
+        createHash('sha256').update(contents).digest('hex') === expectedHash,
+        `Historical Beta.8 fixture does not match ${beta8PublicCommit}: ${relativePath}`,
+      )
+      const target = path.join(destination, relativePath)
+      await fs.mkdir(path.dirname(target), { recursive: true })
+      await fs.writeFile(target, contents)
+    }
+  } else {
+    await pipeline(createReadStream(archivePath), tar.extract(destination))
+  }
   // dist/ is generated and Git-ignored, but it is present in the published
   // Beta.8 container and is mandatory for its rollback snapshot contract.
   await fs.mkdir(path.join(destination, 'dist'), { recursive: true })
@@ -102,7 +140,9 @@ async function createBrokenPreflightPackage(sourcePackage, stageRoot, outputPath
   const serverEntryPath = path.join(stageRoot, 'server', 'index.js')
   await fs.appendFile(
     serverEntryPath,
-    "\nimport './shared/beta8-compatibility-missing.js'\n",
+    // Reproduce the reported Beta.8 failure: the old updater cannot install a
+    // root shared/ directory, even when an ordinary source checkout has one.
+    "\nimport '../shared/aiConcurrency.js'\n",
     'utf8',
   )
   const manifest = await readJson(manifestPath)
@@ -163,7 +203,7 @@ const rollbackSentinel = 'beta8-rollback-data-survived\n'
 
 try {
   await fs.access(packagePath)
-  createBeta8Archive(beta8ArchivePath)
+  if (!fixtureRoot) await createBeta8Archive(beta8ArchivePath)
   await Promise.all([
     extractBeta8Runtime(beta8ArchivePath, successRuntime),
     extractBeta8Runtime(beta8ArchivePath, replayRuntime),
@@ -239,6 +279,7 @@ try {
     ok: true,
     fromVersion: beta8Version,
     toVersion: targetVersion,
+    historicalSource: fixtureRoot ? `sha256-pinned-runtime-files:${beta8PublicCommit}` : `git:${beta8Tag}`,
     directApply: true,
     firstBootConfirmed: true,
     activeReplayFromBeta8Image: true,

@@ -54,7 +54,7 @@ describe('desktop runtime UI gates', () => {
     expect(fetchImpl).toHaveBeenCalledWith('/api/desktop/runtime')
     expect(runtime.mode).toBe('remote')
     expect(runtime.shareEnabled).toBe(true)
-    expect(runtime.unlimited).toBe(false)
+    expect(runtime.unlimited).toBe(true)
     expect(runtime.remoteOrigin).toBe('https://phd.example.com')
     expect(readDesktopRuntime().mode).toBe('remote')
   })

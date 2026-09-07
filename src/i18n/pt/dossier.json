@@ -1117,7 +1117,31 @@
     "aiProfileSelectedMaterials": "{count} selecionados",
     "aiProfileSelectVisible": "Escolher alguns",
     "aiProfileUseAll": "Usar tudo",
-    "aiProfileNoMatch": "Nenhum material corresponde a essa busca."
+    "aiProfileNoMatch": "Nenhum material corresponde a essa busca.",
+    "supervisors": {
+      "title": "Possíveis orientadores",
+      "add": "Adicionar orientador",
+      "hint": "Uma candidatura pode incluir vários orientadores. Os responsáveis pelas recomendações são geridos separadamente.",
+      "unnamed": "Dados do orientador",
+      "emailOptional": "Pode adicionar o email depois",
+      "default": "Contacto predefinido",
+      "contact": "Possível orientador",
+      "write": "Escrever email",
+      "makeDefault": "Definir como predefinido",
+      "remove": "Remover orientador",
+      "confirmRemove": "Excluir",
+      "scrollLeft": "Rolar orientadores para a esquerda",
+      "scrollRight": "Rolar orientadores para a direita",
+      "removeHint": "Remover este orientador? As mensagens existentes manterão os endereços originais.",
+      "chineseName": "Nome em chinês",
+      "more": "Contacto, laboratório e outros dados",
+      "aliases": "Outros endereços de email",
+      "duplicateEmail": "Este endereço já está associado a um orientador desta candidatura.",
+      "filter": "Filtrar por orientador",
+      "all": "Todos os orientadores",
+      "duplicate": "Duplicar candidatura",
+      "copyHint": "Copia a universidade, programa, orientadores, referências e requisitos. O progresso recomeça; mensagens, ficheiros enviados e ligações de partilha não são copiados."
+    }
   },
   "fees": {
     "sectionTitle": "Taxas de matrícula / candidatura à universidade",

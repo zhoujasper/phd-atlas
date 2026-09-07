@@ -1117,7 +1117,31 @@
     "aiProfileSelectedMaterials": "{count} 件を選択中",
     "aiProfileSelectVisible": "個別に選ぶ",
     "aiProfileUseAll": "すべて使う",
-    "aiProfileNoMatch": "検索条件に合う資料がありません。"
+    "aiProfileNoMatch": "検索条件に合う資料がありません。",
+    "supervisors": {
+      "title": "希望指導教員",
+      "add": "教員を追加",
+      "hint": "1件の出願に複数の指導教員を登録できます。推薦状の推薦者は別の欄で管理します。",
+      "unnamed": "教員情報を入力",
+      "emailOptional": "メールは後から追加できます",
+      "default": "既定の連絡先",
+      "contact": "希望指導教員",
+      "write": "メールを書く",
+      "makeDefault": "既定に設定",
+      "remove": "教員を削除",
+      "confirmRemove": "削除する",
+      "scrollLeft": "指導教員を左にスクロール",
+      "scrollRight": "指導教員を右にスクロール",
+      "removeHint": "この教員を削除しますか？過去のメッセージには元の送受信アドレスが残ります。",
+      "chineseName": "中国語氏名",
+      "more": "連絡先・研究室・その他の情報",
+      "aliases": "その他のメールアドレス",
+      "duplicateEmail": "このアドレスは、この出願の教員に登録済みです。",
+      "filter": "教員で絞り込む",
+      "all": "すべての教員",
+      "duplicate": "出願を複製",
+      "copyHint": "大学、課程、教員、推薦者、提出要件を複製します。進捗は初期化され、メール、アップロード済みファイル、共有リンクは複製されません。"
+    }
   },
   "fees": {
     "sectionTitle": "授業料・入学金",

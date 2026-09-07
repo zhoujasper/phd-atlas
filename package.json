@@ -2,7 +2,7 @@
   "name": "phd-atlas",
   "private": true,
   "license": "MIT",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "PhD Atlas desktop application",
   "author": "PhD Atlas",
   "type": "module",

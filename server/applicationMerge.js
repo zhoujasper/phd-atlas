@@ -3,6 +3,7 @@ const auditIgnoredApplicationFields = new Set(['updatedAt', 'createdAt'])
 const teamMajorApplicationChangeRoots = new Set([
   'school',
   'professor',
+  'additionalProfessors',
   'program',
   'status',
   'deadline',

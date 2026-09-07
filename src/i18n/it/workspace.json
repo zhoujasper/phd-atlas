@@ -33,7 +33,7 @@
     "noApps": "Nessuna candidatura universitaria ancora",
     "noMatch": "Nessuna candidatura universitaria corrispondente",
     "today": "Oggi",
-    "dayShort": "{count}d",
+    "dayShort": "{count} g",
     "daysPast": "{count}d passato",
     "sortDeadline": "Scadenza",
     "sortName": "Scuola",

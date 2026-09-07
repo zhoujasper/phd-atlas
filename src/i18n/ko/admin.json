@@ -229,10 +229,10 @@
     "nodeVersion": "Node.js 버전",
     "platform": "플랫폼",
     "uptime": "가동 시간",
-    "uptimeSeconds": "{count}s",
+    "uptimeSeconds": "{count}초",
     "uptimeMinutes": "{count}분 {sec}초",
-    "uptimeHours": "{count}시 {min}분",
-    "uptimeDays": "{count}d {hr}h",
+    "uptimeHours": "{count}시간 {min}분",
+    "uptimeDays": "{count}일 {hr}시간",
     "memoryUsage": "메모리 사용량",
     "memoryTotal": "총 메모리",
     "memoryUsed": "사용된",
@@ -505,8 +505,8 @@
     },
     "externalDatabaseEncryptionDesc": "외부 데이터베이스가 활성화되어 있으므로 SQLite 파일 암호화는 적용되지 않습니다. 저장 시 암호화는 전체 워크스페이스 상태와 민감한 필드를 외부 데이터베이스에 도달하기 전에 보호합니다."
   },
-  "uptimeSeconds": "{count}s",
+  "uptimeSeconds": "{count}초",
   "uptimeMinutes": "{count}분 {sec}초",
-  "uptimeHours": "{count}시 {min}분",
-  "uptimeDays": "{count}d {hr}h"
+  "uptimeHours": "{count}시간 {min}분",
+  "uptimeDays": "{count}일 {hr}시간"
 }

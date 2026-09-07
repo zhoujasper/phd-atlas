@@ -44557,8 +44557,9 @@ html[lang^="ko"] .country-select-group {
 }
 
 .kanban-empty-action {
-  min-height: 36px;
-  padding-inline: 14px;
+  min-width: 112px;
+  min-height: var(--action-height);
+  padding-inline: 20px;
 }
 
 .kanban-empty-action > svg {

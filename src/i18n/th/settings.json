@@ -597,12 +597,14 @@
     "desktopImporting": "กำลังนำเข้า",
     "completeArchiveExt": "ทั้งหมด",
     "desktopLocalCapabilitiesTitle": "ใช้ในเครื่องได้เสมอ",
-    "desktopLocalCapabilities": "ใบสมัคร รายการเอกสาร จดหมายที่บันทึก ทุน ไทม์ไลน์ Discover เตรียมสัมภาษณ์ โปรไฟล์ และสำรองในเครื่อง",
+    "desktopLocalCapabilities": "ใบสมัคร เอกสาร ประวัติการติดต่อ เงินทุน ไทม์ไลน์ ผล Discover ที่บันทึกไว้ บันทึกการสัมภาษณ์ โปรไฟล์ และข้อมูลสำรองในเครื่อง",
     "desktopWebCapabilitiesTitle": "แสดงหลังเชื่อมระบบเว็บ",
     "desktopWebCapabilities": "ส่งและรับอีเมล แจ้งเตือนทางอีเมล ลิงก์แชร์ URL ปฏิทิน และการแจ้งเตือนเบราว์เซอร์",
     "desktopConnectHint": "ไม่บังคับ การใช้ในเครื่องไม่ต้องมีบัญชีเว็บ",
     "desktopBootFailed": "เปิดพื้นที่ทำงานเดสก์ท็อปไม่ได้",
-    "desktopBootRetry": "ลองอีกครั้ง"
+    "desktopBootRetry": "ลองอีกครั้ง",
+    "desktopConnectOptionalAction": "เชื่อมต่อระบบเว็บ (ไม่บังคับ)",
+    "desktopOnlineToolsHint": "การสร้างด้วย AI และการค้นหาออนไลน์ต้องใช้อินเทอร์เน็ตและบริการที่ตั้งค่าไว้ โดยไม่ต้องมีบัญชีเว็บ PhD Atlas"
   },
   "calendar": {
     "title": "ฟีดปฏิทิน",

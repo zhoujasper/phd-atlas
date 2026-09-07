@@ -33,7 +33,7 @@
     "noApps": "Записей о поступлении пока нет",
     "noMatch": "Нет соответствующих записей заявлений о поступлении",
     "today": "Сегодня",
-    "dayShort": "{count}d",
+    "dayShort": "{count} д",
     "daysPast": "{count}дня прошлого",
     "sortDeadline": "Крайний срок",
     "sortName": "Школа",

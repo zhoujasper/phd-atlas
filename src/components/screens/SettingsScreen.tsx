@@ -557,9 +557,8 @@ export function SettingsScreen({
   focusAiKeys?: boolean
   onAiKeysFocused?: () => void
 }) {
-  const lang = session.user.settings.language
   const accent = normalizeThemeAccent(session.user.settings.themeAccent)
-  const { tx, format } = useI18n()
+  const { lang, tx, format } = useI18n()
   const [codexDeviceCodeRequested, setCodexDeviceCodeRequested] = useState(() => {
     if (typeof window === 'undefined') return false
     const query = new URLSearchParams(window.location.search)
@@ -1552,7 +1551,7 @@ export function SettingsScreen({
     || (webPushStatus && !desktopLocalOnly)
     || onReplayTutorial,
   )
-  const accountPlanLabel = desktopLocalOnly
+  const accountPlanLabel = desktopRuntime?.enabled
     ? tx('settings.planDesktopLocal')
     : tx(isAdmin ? 'settings.planAdmin' : isTeam ? 'settings.planTeam' : isPro ? 'settings.planPro' : 'settings.planFree')
   const mailReady = outgoingConfigured && incomingConfigured
@@ -2711,6 +2710,7 @@ export function SettingsScreen({
             onSave={onDesktopUnlockPassword}
           />
         ) : null}
+        {!desktopRuntime?.enabled ? <>
         <section className={`mail-config-card mail-collapsible session-window-card ${sessionWindowOpen ? 'expanded' : ''}`} aria-label={tx('settings.loginSession')}>
           <button
             type="button"
@@ -2913,6 +2913,7 @@ export function SettingsScreen({
             )}
           </CollapsiblePanel>
         </section>
+        </> : null}
         </div>
 
         <section id="settings-codex-section" className="settings-subsection settings-codex-section">
@@ -2951,7 +2952,7 @@ export function SettingsScreen({
                   : format(tx('settings.storageUsageUnlimited'), { used: formatBytes(storageUsedBytes) })}
               </h4>
               <p>
-                {desktopLocalOnly
+                {desktopRuntime?.enabled
                   ? tx('settings.storageUsageDesktopHint')
                   : isPro ? tx('settings.storageUsageProHint') : tx('settings.storageUsageFreeHint')}
               </p>
@@ -3558,13 +3559,13 @@ export function SettingsScreen({
           </section>
           ) : null}
 
-          <div className="danger-zone">
+          {!desktopRuntime?.enabled ? <div className="danger-zone">
             <h4><AlertTriangle size={14} aria-hidden="true" /> {tx('settings.dangerZone')}</h4>
             <p>{tx('settings.dangerZoneDesc')}</p>
             <button type="button" className="danger-action" onClick={onDeleteAccount}>
               <Trash2 size={14} aria-hidden="true" /> {tx('settings.deleteAccount')}
             </button>
-          </div>
+          </div> : null}
         </div>
         {onLogout ? (
           <section className="settings-mobile-signout" aria-label={tx('signOut')}>

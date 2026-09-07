@@ -91,7 +91,6 @@ export function isDesktopShareEnabled(state) {
 
 export function desktopPublicRuntime(state, { enabled = true, unlocked } = {}) {
   const runtime = normalizeDesktopRuntimeState(state)
-  const local = runtime.mode !== 'remote'
   const unlockRequired = Boolean(runtime.unlockPasswordHash)
   return {
     enabled: Boolean(enabled),
@@ -101,7 +100,7 @@ export function desktopPublicRuntime(state, { enabled = true, unlocked } = {}) {
     shareEnabled: runtime.mode === 'remote',
     adminEnabled: false,
     teamEnabled: false,
-    unlimited: local,
+    unlimited: true,
     linkedAt: runtime.linkedAt,
     unlockRequired,
     unlocked: unlockRequired ? unlocked === true : true,
@@ -139,11 +138,9 @@ export function desktopLinkedAccountSettings(settings = {}, remoteUsage = null) 
   return next
 }
 
-export function applyDesktopAccountSettings(settings, state) {
-  const runtime = normalizeDesktopRuntimeState(state)
-  if (runtime.mode === 'remote') {
-    return desktopLinkedAccountSettings(settings, runtime.remoteUsage)
-  }
+export function applyDesktopAccountSettings(settings) {
+  // Linking adds remote services; its quota cannot restrict files or work on
+  // this computer. Remote writes enforce remoteUsage in their own push plan.
   return desktopLocalAccountSettings(settings)
 }
 

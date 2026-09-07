@@ -1117,7 +1117,31 @@
     "aiProfileSelectedMaterials": "已选 {count} 份",
     "aiProfileSelectVisible": "只选指定几份",
     "aiProfileUseAll": "使用全部",
-    "aiProfileNoMatch": "没有符合搜索条件的资料。"
+    "aiProfileNoMatch": "没有符合搜索条件的资料。",
+    "supervisors": {
+      "title": "意向导师",
+      "add": "添加导师",
+      "hint": "一个申请可关联多位意向导师；申请推荐人在独立区域管理。",
+      "unnamed": "待填写导师",
+      "emailOptional": "邮箱可稍后补充",
+      "default": "默认联系人",
+      "contact": "意向导师",
+      "write": "写邮件",
+      "makeDefault": "设为默认",
+      "remove": "移除导师",
+      "confirmRemove": "确认删除",
+      "scrollLeft": "向左浏览导师",
+      "scrollRight": "向右浏览导师",
+      "removeHint": "移除这位导师？已有往来消息会保留原始收发地址。",
+      "chineseName": "中文姓名",
+      "more": "联系方式、实验室与更多资料",
+      "aliases": "其他邮箱",
+      "duplicateEmail": "这个邮箱已关联本申请中的一位导师。",
+      "filter": "按导师筛选",
+      "all": "全部导师",
+      "duplicate": "复制申请项目",
+      "copyHint": "复制学校、项目、导师、推荐人和材料要求。申请进度重新开始；不复制邮件、已上传文件和分享链接。"
+    }
   },
   "fees": {
     "sectionTitle": "学费/申请费用",

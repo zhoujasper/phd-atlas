@@ -145,6 +145,7 @@ export type AiDraftInput = {
   mode: 'compose' | 'reply'
   instructions: string
   replyToId?: string
+  recipientEmail?: string
   /** The editable email being refined. It is sent only with this draft request. */
   currentDraft?: { subject: string; body: string }
   grants: AiDraftGrants
@@ -1387,7 +1388,10 @@ export type SharedApplicationPayload = {
     country: string
     website: string
   }
+  additionalProfessors?: ApplicationRecord['additionalProfessors']
   professor: {
+    id?: string
+    correspondenceEmails?: string[]
     english: string
     chinese?: string
     email: string
@@ -1459,6 +1463,9 @@ export type CreateApplicationInput = {
   professorChinese?: string
   professorEmail: string
   professorHomepage?: string
+  professorProfile?: ApplicationRecord['professor']
+  additionalProfessors?: ApplicationRecord['additionalProfessors']
+  duplicateFromId?: string
   university: string
   country: string
   website?: string
@@ -3472,6 +3479,14 @@ async function conditionalRequest<T>(
               }
               if (requestGeneration === clientSessionGeneration) {
                 syncSessionFromResponse(response, token)
+                // A successful validator response establishes a new freshness
+                // window just like a 200. Retaining mustRevalidate/storedAt here
+                // turned every later remount into another network request.
+                rememberConditionalResponse(cacheKey, {
+                  etag: response.headers.get('ETag') ?? cached.etag,
+                  data: cached.data,
+                  storedAt: Date.now(),
+                })
               }
               return cached.data as T
             }

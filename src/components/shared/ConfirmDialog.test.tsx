@@ -17,6 +17,32 @@ const zhContext: I18nContextValue = {
 describe('ConfirmDialog', () => {
   afterEach(() => vi.useRealTimers())
 
+  it('does not let completion from a closed confirmation dismiss a newly opened one', async () => {
+    vi.useFakeTimers()
+    let finish!: () => void
+    const onConfirm = vi.fn(() => new Promise<void>((resolve) => { finish = resolve }))
+    const onCancel = vi.fn()
+    const props = { title: 'Delete', message: 'Confirm deletion?', onConfirm, onCancel }
+    const view = render(<ConfirmDialog {...props} open />)
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    await act(async () => Promise.resolve())
+    view.rerender(<ConfirmDialog {...props} open={false} />)
+    view.rerender(<ConfirmDialog {...props} open title="New decision" />)
+    await act(async () => { finish(); await Promise.resolve() })
+    act(() => vi.advanceTimersByTime(200))
+    expect(onCancel).not.toHaveBeenCalled()
+    expect(screen.getByRole('alertdialog', { name: 'New decision' })).toBeInTheDocument()
+  })
+
+  it('admits only one confirmation before React commits the pending state', async () => {
+    const onConfirm = vi.fn(() => new Promise<void>(() => {}))
+    render(<ConfirmDialog open title="Delete" message="Delete?" onConfirm={onConfirm} onCancel={vi.fn()} />)
+    const button = screen.getByRole('button', { name: 'Confirm' })
+    act(() => { button.click(); button.click() })
+    await act(async () => Promise.resolve())
+    expect(onConfirm).toHaveBeenCalledOnce()
+  })
+
   it('localizes default action labels from the active language', () => {
     render(
       <I18nContext.Provider value={zhContext}>

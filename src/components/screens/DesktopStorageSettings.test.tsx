@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { I18nContext } from '../hooks/useI18n'
 import { DesktopStorageSettings } from './DesktopStorageSettings'
@@ -12,7 +12,7 @@ function tx(key: string, fallback?: string) {
   return table[short] ?? table[key] ?? fallback ?? key
 }
 
-function renderDesktop(runtime: Parameters<typeof DesktopStorageSettings>[0]['runtime']) {
+function renderDesktop(runtime: Parameters<typeof DesktopStorageSettings>[0]['runtime'], overrides: Partial<Parameters<typeof DesktopStorageSettings>[0]> = {}) {
   return render(
     <I18nContext.Provider value={{ lang: 'en', t: {}, ready: true, tx, format: (value: string) => value }}>
       <DesktopStorageSettings
@@ -21,13 +21,14 @@ function renderDesktop(runtime: Parameters<typeof DesktopStorageSettings>[0]['ru
         onDisconnect={vi.fn()}
         onCompleteExport={vi.fn()}
         onCompleteImport={vi.fn()}
+        {...overrides}
       />
     </I18nContext.Provider>,
   )
 }
 
 describe('desktop storage settings', () => {
-  it('shows connect fields while unlinked and omits share-related copy', () => {
+  it('keeps website login optional and reveals its fields only on request', () => {
     renderDesktop({
       enabled: true,
       mode: 'local',
@@ -42,10 +43,23 @@ describe('desktop storage settings', () => {
       unlocked: true,
     })
     expect(screen.getByText('This computer only')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Sign in to deployed web' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Connect web system (optional)' }))
     expect(screen.getByRole('button', { name: 'Sign in to deployed web' })).toBeInTheDocument()
     expect(screen.getByText('Always available locally')).toBeInTheDocument()
     expect(screen.getByText('After connecting the web system')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Use local storage' })).not.toBeInTheDocument()
+  })
+
+  it('reports failed local operations and permits retry without losing the workspace', async () => {
+    const exportWorkspace = vi.fn().mockRejectedValueOnce(new Error('Disk is full')).mockResolvedValueOnce(undefined)
+    renderDesktop({ enabled: true, mode: 'local', unlimited: true } as Parameters<typeof DesktopStorageSettings>[0]['runtime'], { onCompleteExport: exportWorkspace })
+    const exportButton = screen.getByRole('button', { name: tx('settings.desktopCompleteExportAction') })
+    fireEvent.click(exportButton)
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Disk is full'))
+    fireEvent.click(exportButton)
+    await waitFor(() => expect(exportWorkspace).toHaveBeenCalledTimes(2))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('shows the connected origin after a web account is linked', () => {

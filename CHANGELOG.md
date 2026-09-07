@@ -8,8 +8,31 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-09-07
+
+### Added
+
+- Multiple complete intended-supervisor profiles per school/programme
+  application, with separate recipient identity across mail, AI drafting,
+  search, sharing, and exports, plus recoverable application duplication.
+- Compact supervisor cards with horizontal scrolling and inline removal
+  confirmation, preserving historical research notes and the final contact.
+- Twelve native desktop language packs for menus, splash screens, context
+  actions, and dialogs, with persistent language selection.
+
 ### Fixed
 
+- Qualify every ordinary update-package build from the actual archive with an
+  isolated production dependency installation and Node preflight. Include all
+  nine shared runtime modules inside the Beta.8-compatible server boundary,
+  reject incomplete candidates before final output, and make the published
+  Beta.8 canary invoke the original historical updater.
+- Preserve local desktop ownership, settings acknowledgements, portable data,
+  and durable shutdown across offline boot and restart without website login.
+- Correct offline revision rebasing, dialog focus and keyboard handling, table
+  resize cleanup, cache revalidation, and bounded payload-worker lifecycles.
+- Refresh dependencies and strengthen checks for untranslated short strings,
+  placeholders, and native interface resources across all 12 languages.
 - Made every Electron desktop build explicitly non-publishing, and added a
   tag-owned manual recovery path for native artifacts so CI cannot consume a
   missing `GH_TOKEN` after successfully creating installers. The final job

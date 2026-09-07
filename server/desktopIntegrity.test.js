@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 import {
@@ -28,6 +28,7 @@ describe('desktop integrity manifest', () => {
     mkdirSync(join(root, 'desktop'), { recursive: true })
     mkdirSync(join(root, 'server'), { recursive: true })
     for (const relative of INTEGRITY_PATHS) {
+      mkdirSync(dirname(join(root, relative)), { recursive: true })
       writeFileSync(join(root, relative), `source:${relative}\n`)
     }
     const manifest = buildIntegrityManifest(root)

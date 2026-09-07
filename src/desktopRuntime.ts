@@ -35,6 +35,9 @@ declare global {
   interface Window {
     phdAtlasDesktop?: Partial<DesktopRuntime> & {
       platform?: string
+      language?: string
+      setLanguage?: (language: string) => void
+      onPrepareQuit?: (prepare: () => Promise<boolean>) => () => void
     }
   }
 }
@@ -128,7 +131,7 @@ function normalizeDesktopRuntime(value: Partial<DesktopRuntime> | undefined): De
     shareEnabled: value?.shareEnabled === true,
     adminEnabled: false,
     teamEnabled: false,
-    unlimited: value?.unlimited !== false && value?.mode !== 'remote',
+    unlimited: true,
     linkedAt: typeof value?.linkedAt === 'string' ? value.linkedAt : null,
     unlockRequired: value?.unlockRequired === true,
     unlocked: value?.unlockRequired === true ? value?.unlocked === true : true,

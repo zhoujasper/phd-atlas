@@ -1,3 +1,5 @@
+import { ProfessorAvatar } from './ProfessorAvatar'
+import type { ApplicationProfessor } from '../../data/applications'
 import {
   AtSign,
   Check,
@@ -25,11 +27,13 @@ import { ModalPortal } from './ModalPortal'
 export function ComposerRecipientControl({
   value,
   trackedEmails,
+  contacts = [],
   primaryEmail,
   onChange,
 }: {
   value: string
   trackedEmails: string[]
+  contacts?: Array<{ email: string; name: string; professor: ApplicationProfessor }>
   primaryEmail: string
   onChange: (email: string) => void
 }) {
@@ -128,7 +132,8 @@ export function ComposerRecipientControl({
           trigger={(
             <span className="composer-recipient-trigger-content">
               <span className="composer-recipient-value">
-                <strong>{normalizedValue || tx('dossier.emailNotConfigured')}</strong>
+                <strong>{contacts.find((contact) => contact.email === normalizedValue)?.name || normalizedValue || tx('dossier.emailNotConfigured')}</strong>
+                {contacts.find((contact) => contact.email === normalizedValue)?.name ? <small>{normalizedValue}</small> : null}
                 <em className={isTracked ? 'tracked' : 'temporary'}>
                   {isTracked ? <ShieldCheck size={11} aria-hidden="true" /> : <AtSign size={11} aria-hidden="true" />}
                   {tx(isTracked ? 'dossier.recipientTracked' : 'dossier.recipientTemporary')}
@@ -147,6 +152,7 @@ export function ComposerRecipientControl({
               <div className="composer-recipient-options" role="list">
                 {trackedEmails.map((email, index) => {
                   const selected = email === normalizedValue
+                  const contact = contacts.find((item) => item.email === email)
                   return (
                     <button
                       key={email}
@@ -158,11 +164,12 @@ export function ComposerRecipientControl({
                         close()
                       }}
                     >
-                      <span>
-                        <strong>{email}</strong>
-                        <small>{email === normalizedPrimary
+                      <span className="professor-option">
+                        {contact ? <ProfessorAvatar professor={contact.professor} /> : null}
+                        <span><strong>{contact?.name || email}</strong>
+                        <small>{contact?.name ? email : email === normalizedPrimary
                           ? tx('dossier.recipientPrimary')
-                          : tx('dossier.recipientTracked')}</small>
+                          : tx('dossier.recipientTracked')}</small></span>
                       </span>
                       {selected ? <Check size={14} aria-hidden="true" /> : <span>{index + 1}</span>}
                     </button>
@@ -192,6 +199,10 @@ export function CorrespondenceRecipientSettings({
   emails,
   primaryEmail,
   activeEmail,
+  contacts = [],
+  primaryEmails,
+  activeContactEmailCount,
+  addTargetName,
   onSelect,
   onAdd,
   onRemove,
@@ -199,6 +210,10 @@ export function CorrespondenceRecipientSettings({
   emails: string[]
   primaryEmail: string
   activeEmail: string
+  contacts?: Array<{ email: string; name: string; professor: ApplicationProfessor }>
+  primaryEmails?: string[]
+  activeContactEmailCount?: number
+  addTargetName?: string
   onSelect: (email: string) => void
   onAdd: (email: string) => boolean
   onRemove: (email: string) => void
@@ -206,7 +221,7 @@ export function CorrespondenceRecipientSettings({
   const { tx, format } = useI18n()
   const [value, setValue] = useState('')
   const [feedback, setFeedback] = useState<{ tone: 'error' | 'success'; message: string } | null>(null)
-  const normalizedPrimary = normalizeCorrespondenceEmail(primaryEmail)
+  const protectedEmails = new Set((primaryEmails ?? [primaryEmail]).map(normalizeCorrespondenceEmail))
   const normalizedActive = normalizeCorrespondenceEmail(activeEmail)
 
   const addRecipient = (event: FormEvent) => {
@@ -220,7 +235,7 @@ export function CorrespondenceRecipientSettings({
       setFeedback({ tone: 'error', message: tx('dossier.recipientDuplicate') })
       return
     }
-    if (emails.length >= MAX_APPLICATION_CORRESPONDENCE_EMAILS) {
+    if ((activeContactEmailCount ?? emails.length) >= MAX_APPLICATION_CORRESPONDENCE_EMAILS) {
       setFeedback({
         tone: 'error',
         message: format(tx('dossier.recipientLimit'), { count: MAX_APPLICATION_CORRESPONDENCE_EMAILS }),
@@ -265,7 +280,8 @@ export function CorrespondenceRecipientSettings({
           </div>
           <div className="recipient-settings-list" role="list">
             {emails.map((email) => {
-              const primary = email === normalizedPrimary
+              const primary = protectedEmails.has(email)
+              const contact = contacts.find((item) => item.email === email)
               const selected = email === normalizedActive
               return (
                 <div key={email} className={`recipient-settings-row${selected ? ' selected' : ''}`}>
@@ -280,7 +296,7 @@ export function CorrespondenceRecipientSettings({
                     </span>
                     <span>
                       <strong>{email}</strong>
-                      <small>{primary ? tx('dossier.recipientPrimary') : tx('dossier.recipientTracked')}</small>
+                      <small>{contact?.name || (primary ? tx('dossier.recipientPrimary') : tx('dossier.recipientTracked'))}</small>
                     </span>
                   </button>
                   {!primary ? (
@@ -300,7 +316,7 @@ export function CorrespondenceRecipientSettings({
           </div>
           <form className="recipient-settings-add" onSubmit={addRecipient}>
             <label htmlFor="recipient-settings-email">
-              <span>{tx('dossier.recipientAddLabel')} <span className="field-required-mark">*</span></span>
+              <span>{tx('dossier.recipientAddLabel')}{addTargetName ? ` · ${addTargetName}` : ''} <span className="field-required-mark">*</span></span>
             </label>
             <div>
               <input
@@ -339,9 +355,11 @@ export function CorrespondenceRecipientSettings({
 
 export function RecipientTrackingDialog({
   recipient,
+  contactName,
   onDecision,
 }: {
   recipient: string
+  contactName?: string
   onDecision: (decision: 'track' | 'once' | 'cancel') => void
 }) {
   const { tx, format } = useI18n()
@@ -380,6 +398,7 @@ export function RecipientTrackingDialog({
             <h3 id={titleId}>{tx('dossier.recipientTrackingTitle')}</h3>
             <p id={messageId}>{format(tx('dossier.recipientTrackingMessage'), { email: recipient })}</p>
             <strong><AtSign size={13} aria-hidden="true" /> {recipient}</strong>
+            {contactName ? <small>{tx('dossier.recipientAddLabel')} · {contactName}</small> : null}
             <small>{tx('dossier.recipientTrackingHint')}</small>
           </div>
           <div className="recipient-tracking-actions">

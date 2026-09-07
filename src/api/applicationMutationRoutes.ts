@@ -19,6 +19,9 @@ type CreateApplicationMutationInput = {
   professorChinese?: string
   professorEmail: string
   professorHomepage?: string
+  professorProfile?: ApplicationRecord['professor']
+  additionalProfessors?: ApplicationRecord['additionalProfessors']
+  duplicateFromId?: string
   university: string
   country: string
   website?: string
@@ -106,11 +109,12 @@ async function acknowledgedApplicationRoute(
 
 function createInputAcknowledged(input: CreateApplicationMutationInput, canonical: ApplicationRecord) {
   const professorExpectation = {
+    ...input.professorProfile,
     english: input.professor,
     email: input.professorEmail,
     ...(input.professorChinese !== undefined ? { chinese: input.professorChinese } : {}),
     ...(input.professorHomepage !== undefined ? { homepage: input.professorHomepage } : {}),
-    ...(input.notes ? { research: input.notes } : {}),
+    ...(input.notes && !input.professorProfile ? { research: input.notes } : {}),
   }
   const schoolExpectation = {
     name: input.university,
@@ -121,7 +125,8 @@ function createInputAcknowledged(input: CreateApplicationMutationInput, canonica
     && persistedSubsetMatches(schoolExpectation, canonical.school)
     && canonical.program === input.program
     && canonical.deadline === input.deadline
-    && (!input.notes || canonical.result === input.notes)
+    && (!input.notes || Boolean(input.duplicateFromId) || canonical.result === input.notes)
+    && (!input.additionalProfessors || persistedSubsetMatches(input.additionalProfessors, canonical.additionalProfessors))
     && (!input.ownerId || canonical.ownerId === input.ownerId)
 }
 

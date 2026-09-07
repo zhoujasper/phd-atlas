@@ -1,3 +1,5 @@
+import { isDesktopShell } from './desktopRuntime'
+
 export type ConnectivityMode = 'checking' | 'online' | 'slow' | 'offline' | 'server-unreachable'
 
 export type ConnectivitySnapshot = {
@@ -39,6 +41,7 @@ const MANUAL_OFFLINE_KEY = 'phd-atlas-manual-offline:v1'
 const listeners = new Set<() => void>()
 
 function storedManualOffline() {
+  if (isDesktopShell()) return false
   if (typeof sessionStorage === 'undefined') return false
   try {
     return sessionStorage.getItem(MANUAL_OFFLINE_KEY) === '1'
@@ -60,6 +63,9 @@ function persistManualOffline(enabled: boolean) {
 }
 
 function browserIsOnline() {
+  // This state governs access to the API. The bundled desktop API is on
+  // loopback and remains available when Wi-Fi/Ethernet is disconnected.
+  if (isDesktopShell()) return true
   return typeof navigator === 'undefined' ? true : navigator.onLine
 }
 
@@ -635,6 +641,7 @@ export function reportApiReachable(
 }
 
 export function setManualOfflineMode(enabled: boolean) {
+  if (isDesktopShell()) enabled = false
   if (enabled === snapshot.manualOffline) return snapshot
   persistManualOffline(enabled)
   if (enabled) {
@@ -852,6 +859,10 @@ export function startConnectivityMonitoring() {
     void probeServerConnectivity({ force: true })
   }
   const handleOffline = () => {
+    if (isDesktopShell()) {
+      checkNow()
+      return
+    }
     clearReconnectTimer()
     cancelRecoveryProbe()
     disconnectHealthSocket()

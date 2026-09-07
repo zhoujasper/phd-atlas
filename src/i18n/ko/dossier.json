@@ -1117,7 +1117,31 @@
     "aiProfileSelectedMaterials": "{count}개 선택됨",
     "aiProfileSelectVisible": "개별 선택",
     "aiProfileUseAll": "전체 사용",
-    "aiProfileNoMatch": "검색과 일치하는 자료가 없습니다."
+    "aiProfileNoMatch": "검색과 일치하는 자료가 없습니다.",
+    "supervisors": {
+      "title": "희망 지도교수",
+      "add": "교수 추가",
+      "hint": "한 지원서에 여러 지도교수를 등록할 수 있습니다. 추천서 작성자는 별도로 관리합니다.",
+      "unnamed": "교수 정보 입력",
+      "emailOptional": "이메일은 나중에 추가 가능",
+      "default": "기본 연락처",
+      "contact": "희망 지도교수",
+      "write": "이메일 작성",
+      "makeDefault": "기본으로 설정",
+      "remove": "교수 삭제",
+      "confirmRemove": "삭제 확인",
+      "scrollLeft": "지도교수 목록을 왼쪽으로 스크롤",
+      "scrollRight": "지도교수 목록을 오른쪽으로 스크롤",
+      "removeHint": "이 교수를 삭제할까요? 기존 메시지의 원래 송수신 주소는 유지됩니다.",
+      "chineseName": "중국어 이름",
+      "more": "연락처, 연구실 및 추가 정보",
+      "aliases": "추가 이메일 주소",
+      "duplicateEmail": "이 주소는 이미 이 지원서의 교수에게 등록되어 있습니다.",
+      "filter": "교수별 필터",
+      "all": "모든 교수",
+      "duplicate": "지원서 복제",
+      "copyHint": "학교, 과정, 교수, 추천인 및 제출 요건을 복사합니다. 진행 상황은 초기화되며 메시지, 업로드한 파일, 공유 링크는 복사하지 않습니다."
+    }
   },
   "fees": {
     "sectionTitle": "수업료 / 신청비",

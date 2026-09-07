@@ -69,17 +69,23 @@ try {
     + `(${downloaded.size} bytes, sha256:${downloaded.sha256}) via `
     + `${downloaded.source.kind}:${downloaded.source.id}`,
   )
-  const verification = spawnSync(
-    process.execPath,
-    [path.join(sourceRoot, 'tools', 'verify-update-package.mjs'), downloaded.packagePath],
-    {
-      cwd: sourceRoot,
-      stdio: 'inherit',
-    },
-  )
-  if (verification.error) throw verification.error
-  if (verification.status !== 0) {
-    throw new Error(`Published update package verification exited with status ${verification.status}.`)
+  function verifyDownloadedPackage(verifier) {
+    const verification = spawnSync(
+      process.execPath,
+      [path.join(sourceRoot, 'tools', verifier), downloaded.packagePath],
+      {
+        cwd: sourceRoot,
+        stdio: 'inherit',
+      },
+    )
+    if (verification.error) throw verification.error
+    if (verification.status !== 0) {
+      throw new Error(`${verifier} exited with status ${verification.status}.`)
+    }
+  }
+  verifyDownloadedPackage('verify-update-package.mjs')
+  if (parsedCurrent.value === '0.1.0-beta.8') {
+    verifyDownloadedPackage('verify-beta8-update-compatibility.mjs')
   }
   console.log(`[published-update] ${currentVersion} -> ${tagName} verified successfully.`)
 } finally {

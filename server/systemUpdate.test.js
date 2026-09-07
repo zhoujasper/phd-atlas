@@ -127,6 +127,11 @@ async function createUpdatePackage(root, version, options = {}) {
   if (options.brokenStartServer) {
     sources.set('tools/start-server.mjs', 'export const broken =\n')
   }
+  if (options.storageSharedImport) {
+    sources.set('server/index.js', "import './storage.js'\n")
+    sources.set('server/storage.js', `export * from '${options.storageSharedImport}'\n`)
+  }
+  if (options.omitSharedModule) sources.delete(`server/shared/${options.omitSharedModule}`)
   const files = []
   for (const [relativePath, contents] of sources) {
     await writeRelative(stageRoot, relativePath, contents)
@@ -799,6 +804,59 @@ describe('system update package safety', () => {
     const restoredPackage = JSON.parse(await fs.readFile(path.join(projectRoot, 'package.json'), 'utf8'))
     expect(restoredPackage.version).toBe('0.2.0-beta.3')
     await expect(readPendingUpdateBoot(storageRoot)).resolves.toBeNull()
+  })
+
+  it('reproduces the Beta.8 missing-root-shared failure and installs the server-local repair', async () => {
+    const root = await scratch('beta8-shared-import')
+    const projectRoot = await createRuntime(path.join(root, 'runtime'), '0.1.0-beta.8', { legacyRuntime: true })
+    const storageRoot = path.join(projectRoot, 'storage')
+    await writeRelative(storageRoot, 'user-data.txt', 'keep the existing applications\n')
+    const brokenPackage = await createUpdatePackage(root, '0.2.0', {
+      storageSharedImport: '../shared/aiConcurrency.js',
+    })
+
+    await expect(applyUpdatePackage({
+      packagePath: brokenPackage,
+      projectRoot,
+      storageRoot,
+      installDependencies: async () => {},
+    })).rejects.toMatchObject({
+      code: 'UPDATE_APPLY_FAILED',
+      rollbackFailed: false,
+      message: expect.stringMatching(/ERR_MODULE_NOT_FOUND.*shared\/aiConcurrency\.js/su),
+    })
+    const restored = JSON.parse(await fs.readFile(path.join(projectRoot, 'package.json'), 'utf8'))
+    expect(restored.version).toBe('0.1.0-beta.8')
+    await expect(readPendingUpdateBoot(storageRoot)).resolves.toBeNull()
+
+    const repairedPackage = await createUpdatePackage(root, '0.2.0', {
+      storageSharedImport: './shared/aiConcurrency.js',
+    })
+    await expect(applyUpdatePackage({
+      packagePath: repairedPackage,
+      projectRoot,
+      storageRoot,
+      installDependencies: async () => {},
+    })).resolves.toMatchObject({ ok: true, fromVersion: '0.1.0-beta.8', toVersion: '0.2.0' })
+    await expect(fs.access(path.join(projectRoot, 'shared'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(fs.readFile(path.join(storageRoot, 'user-data.txt'), 'utf8'))
+      .resolves.toBe('keep the existing applications\n')
+  })
+
+  it('rejects an update missing the new supervisor runtime module before replacing Beta.8', async () => {
+    const root = await scratch('beta8-supervisor-module')
+    const projectRoot = await createRuntime(path.join(root, 'runtime'), '0.1.0-beta.8', { legacyRuntime: true })
+    const packagePath = await createUpdatePackage(root, '0.2.0', { omitSharedModule: 'applicationProfessors.js' })
+    const installDependencies = vi.fn(async () => {})
+    await expect(applyUpdatePackage({
+      packagePath,
+      projectRoot,
+      storageRoot: path.join(projectRoot, 'storage'),
+      installDependencies,
+    })).rejects.toMatchObject({ code: 'INVALID_UPDATE_PACKAGE' })
+    expect(installDependencies).not.toHaveBeenCalled()
+    const unchanged = JSON.parse(await fs.readFile(path.join(projectRoot, 'package.json'), 'utf8'))
+    expect(unchanged.version).toBe('0.1.0-beta.8')
   })
 
   it('recovers abandoned locks by phase and prevents an old helper from clearing its successor', async () => {

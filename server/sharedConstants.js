@@ -48,6 +48,7 @@ export const REQUIRED_RUNTIME_FILES = Object.freeze(new Set([
   'server/shared/applicationAuthorityFields.js',
   'server/shared/applicationCanonical.js',
   'server/shared/applicationPersistenceProtocol.js',
+  'server/shared/applicationProfessors.js',
   'server/shared/backupFrequency.js',
   'server/shared/realtimeScopes.js',
   'server/shared/teamLimits.js',

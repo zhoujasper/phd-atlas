@@ -430,7 +430,7 @@
     "requestMethod": "Metodo",
     "errorCode": "Codice errore",
     "errorMessage": "Messaggio",
-    "timestamp": "Timestamp",
+    "timestamp": "Data e ora",
     "requestTypeRoute": "Navigazione del percorso",
     "requestTypeApplication": "ricerca candidature universitarie",
     "applicationTitle": "candidatura universitaria non trovata",

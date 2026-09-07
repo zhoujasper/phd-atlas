@@ -1,3 +1,4 @@
+import { applicationProfessors, createProfessorId } from '../shared/applicationProfessors.js'
 import {
   Activity,
   createElement,
@@ -232,6 +233,7 @@ import {
   SAFE_RELOAD_BLOCKED_EVENT,
 } from './safeReload'
 import {
+  acknowledgeOfflineApplicationUpdate,
   blockedOfflineQueueSize,
   canQueueApplicationUpdate,
   enqueueApplicationUpdate,
@@ -248,7 +250,6 @@ import {
   isRebaseableApplicationConflict,
   isRecoverableRecommenderVersionError,
   mergeOfflineApplicationUpdate,
-  removeOfflineApplicationUpdates,
   removeOfflineQueueItems,
   saveOfflineSnapshot,
   type OfflineSnapshotData,
@@ -896,7 +897,8 @@ function readLanguagePreference(): Language | null {
 }
 
 function readInitialLanguage(): Language {
-  return readLanguagePreference() ?? browserDefaultLanguage()
+  const nativeLanguage = window.phdAtlasDesktop?.language
+  return readLanguagePreference() ?? (nativeLanguage ? resolveLanguage(nativeLanguage) : browserDefaultLanguage())
 }
 
 const criticalScreenWarmups = new Map<string, Promise<void>>()
@@ -1757,6 +1759,9 @@ export default function App() {
   )
   const [desktopUnlockError, setDesktopUnlockError] = useState<string | null>(null)
   const [desktopBootNonce, setDesktopBootNonce] = useState(0)
+  useEffect(() => window.phdAtlasDesktop?.onPrepareQuit?.(
+    () => prepareForSafeReload({ reason: 'desktop-quit' }),
+  ), [])
   const [initialOfflineMetadata] = useState(() => {
     if (!session) return null
     const snapshot = loadOfflineSnapshot(session)
@@ -2140,6 +2145,7 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [saving, setSaving] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [duplicateSource, setDuplicateSource] = useState<ApplicationRecord | null>(null)
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null)
   const [shareDialogOpen, setShareDialogOpen] = useState(false)
   const [dossierEnrichmentOpen, setDossierEnrichmentOpen] = useState(false)
@@ -2179,11 +2185,8 @@ export default function App() {
           setDesktopGate('unlock')
           return
         }
-        const stored = readStartupSession()
-        if (stored) {
-          const entered = await establishDesktopWorkspaceRef.current(stored, runtime)
-          if (cancelled || entered) return
-        }
+        // Local identity is opened by this process after the optional app lock.
+        // Website session expiry or a cached account must never gate startup.
         let lastError: unknown = null
         for (let attempt = 0; attempt < 8; attempt += 1) {
           try {
@@ -2932,6 +2935,7 @@ export default function App() {
 
   useEffect(() => {
     languageRef.current = lang
+    window.phdAtlasDesktop?.setLanguage?.(lang)
     applyDocumentLanguage(lang)
   }, [lang])
 
@@ -3788,9 +3792,7 @@ export default function App() {
       return [
         application.school.name,
         application.program,
-        application.professor.english,
-        application.professor.chinese,
-        application.professor.email,
+        ...applicationProfessors(application).flatMap((professor) => [professor.english, professor.chinese, professor.email, ...(professor.correspondenceEmails ?? [])]),
         application.tags.join(' '),
         application.ownerId ? (ownerDirectory[application.ownerId] ?? '') : '',
         relation?.studentName ?? '',
@@ -4378,6 +4380,13 @@ export default function App() {
       if (!isActiveSessionRequestToken(requestToken)) return
       if (sessionExpiredRef.current) return
       sessionExpiredRef.current = true
+      if (isDesktopShell() || readDesktopRuntime().enabled) {
+        // Preserve resident edits while opening a fresh local session. This
+        // path never asks for a website account or clears the draft workspace.
+        setDesktopGate('checking')
+        setDesktopBootNonce((value) => value + 1)
+        return
+      }
       clearSessionState()
       notify(t(languageRef.current, 'toast.sessionExpired'), 'error')
     },
@@ -4478,7 +4487,7 @@ export default function App() {
     session,
   ])
 
-  const settingsSessionToken = screen === 'settings' ? session?.token : undefined
+  const settingsSessionToken = screen === 'settings' && !desktopRuntime.enabled ? session?.token : undefined
   useEffect(() => {
     if (!settingsSessionToken) return
     let cancelled = false
@@ -6055,6 +6064,8 @@ export default function App() {
     // authoring time so reconnecting is always enough to drain the queue.
     const pendingQueue = readOfflineQueue(activeSession.user.id)
     if (pendingQueue.length === 0) return 0
+    const replayedRevisionIds = new Set(pendingQueue.map((operation) => operation.id))
+    let followUpRequired = false
 
     const run = {
       id: ++offlineSyncSequenceRef.current,
@@ -6081,13 +6092,15 @@ export default function App() {
 
     try {
       let requestToken = getLatestSessionToken(activeSession.token)
-      let serverApplications = await phdApi.listApplications(requestToken)
+      const serverApplicationsById = new Map(
+        (await phdApi.listApplications(requestToken)).map((application) => [application.id, application]),
+      )
       if (!isCurrentRun()) return synced
       requestToken = getLatestSessionToken(requestToken)
 
       for (const operation of pendingQueue) {
         if (!isCurrentRun() || !isCurrentSessionToken(requestToken)) return synced
-        const current = serverApplications.find((application) => application.id === operation.applicationId)
+        const current = serverApplicationsById.get(operation.applicationId)
         const discard = () => {
           discardedIds.push(operation.id)
           discarded += 1
@@ -6125,9 +6138,8 @@ export default function App() {
           const saved = mutation.application
           if (!isCurrentRun()) return synced
           requestToken = getLatestSessionToken(requestToken)
-          serverApplications = serverApplications.map((application) =>
-            application.id === saved.id ? saved : application,
-          )
+          serverApplicationsById.set(saved.id, saved)
+          acknowledgeOfflineApplicationUpdate(activeSession.user.id, operation, saved)
           syncedIds.push(operation.id)
           synced += 1
         } catch (error) {
@@ -6140,7 +6152,8 @@ export default function App() {
       }
 
       if (!isCurrentRun()) return synced
-      removeOfflineQueueItems(activeSession.user.id, [...syncedIds, ...discardedIds])
+      const remainingQueue = removeOfflineQueueItems(activeSession.user.id, [...syncedIds, ...discardedIds])
+      followUpRequired = remainingQueue.some((operation) => !replayedRevisionIds.has(operation.id))
       refreshOfflineQueueCounts(run.userId)
 
       if (synced > 0) {
@@ -6181,6 +6194,17 @@ export default function App() {
           refreshOfflineQueueCounts(run.userId)
         }
       }
+    }
+    // A coalesced edit may keep the same queue count, so the count-driven
+    // connectivity effect cannot detect it. Drain only newly authored revisions;
+    // failed old entries keep their normal retry policy instead of a tight loop.
+    if (
+      followUpRequired
+      && !cancelledRef.current
+      && !connectivityUnavailable()
+      && isMountedSessionIdentity(activeSession.user.id, activeSession.token, requestEpoch)
+    ) {
+      void syncOfflineQueue(activeSession, { force: true })
     }
     return synced
   }
@@ -6825,8 +6849,8 @@ export default function App() {
     [inspectorResizeLabel, resizeInspectorWithKeyboard, startInspectorResize],
   )
 
-  if (!session) {
-    const showOfflineUnavailable = connectivity.mode === 'offline' && !connectivity.browserOnline
+  if (!session || (desktopShell && ['unlock', 'error'].includes(desktopGate))) {
+    const showOfflineUnavailable = !desktopShell && connectivity.mode === 'offline' && !connectivity.browserOnline
     const showDesktopUnlock = desktopShell && desktopGate === 'unlock'
     const showDesktopBootError = desktopShell && desktopGate === 'error'
     return (
@@ -7224,7 +7248,7 @@ export default function App() {
     requested = String(applications.length + 1),
     limit = String(applicationLimit),
   ) {
-    if (desktopRuntime.enabled && !desktopRemoteEnabled(desktopRuntime)) return
+    if (desktopRuntime.enabled) return
     const params = new URLSearchParams({ feature, requested, limit })
     window.open(`/upgrade-pro?${params.toString()}`, '_blank', 'noopener,noreferrer')
   }
@@ -7291,6 +7315,9 @@ export default function App() {
       return queueForSync()
     }
 
+    const queuedRevisionIds = readOfflineQueue(queuedSession.user.id)
+      .filter((operation) => operation.applicationId === applicationToSave.id)
+      .map((operation) => operation.id)
     const commitOnce = async (
       target: ApplicationRecord,
       base: ApplicationRecord | null,
@@ -7321,7 +7348,7 @@ export default function App() {
         }
       }
       const saved = mutation.application
-      removeOfflineApplicationUpdates(queuedSession.user.id, saved.id)
+      removeOfflineQueueItems(queuedSession.user.id, queuedRevisionIds)
       refreshOfflineQueueCounts(queuedSession.user.id)
       replaceApplication(saved, draftMutationVersion)
       if (options.feedback !== 'quiet') notify(message)
@@ -7390,7 +7417,7 @@ export default function App() {
         if (!rebased || !isCurrentSessionToken(queuedSession.token)) break
         if (!rebased.replayRequired) {
           // The server already holds everything this save carried.
-          removeOfflineApplicationUpdates(queuedSession.user.id, rebased.server.id)
+          removeOfflineQueueItems(queuedSession.user.id, queuedRevisionIds)
           refreshOfflineQueueCounts(queuedSession.user.id)
           replaceApplication(rebased.server, draftMutationVersion)
           if (options.feedback !== 'quiet') notify(message)
@@ -8726,7 +8753,7 @@ export default function App() {
     }
   }
 
-  function openNewApplicationDialog(ownerId: string | null) {
+  function openNewApplicationDialog(ownerId: string | null, source: ApplicationRecord | null = null) {
     if (isTeamMode && !canCreateInCurrentTeam) {
       notify(
         i18nValue.tx(
@@ -8755,7 +8782,20 @@ export default function App() {
       void Promise.all([preloadLanguage(lang, ['core', 'shared', 'dossier']), loadNewApplicationDialog()]).catch(
         () => undefined,
       )
+      setDuplicateSource(source)
       setDialogOpen(true)
+    })
+  }
+
+  function openDuplicateApplication(source: ApplicationRecord) {
+    runWithNavigationGuard(() => {
+      void run(async () => {
+        const full = await phdApi.getApplication(getLatestSessionToken(session?.token ?? ''), source.id)
+        openNewApplicationDialog(full.ownerId === session?.user.id ? null : full.ownerId ?? null, {
+          ...full, professor: { ...full.professor, id: createProfessorId() },
+          additionalProfessors: full.additionalProfessors?.map((professor) => ({ ...professor, id: createProfessorId() })),
+        })
+      })
     })
   }
 
@@ -9101,6 +9141,15 @@ export default function App() {
     let nextApp: ApplicationRecord = source
     if (section === 'professor' && key) {
       nextApp = { ...source, professor: { ...source.professor, [key]: value } }
+    } else if (section === 'additionalProfessors') {
+      const [, index, professorField] = field.split('.')
+      if (!['english', 'email', 'homepage'].includes(professorField)) return
+      nextApp = {
+        ...source,
+        additionalProfessors: source.additionalProfessors?.map((professor, position) => (
+          position === Number(index) ? { ...professor, [professorField]: value } : professor
+        )),
+      }
     } else if (section === 'school' && key) {
       nextApp = { ...source, school: { ...source.school, [key]: value } }
     } else if (field === 'program') {
@@ -9437,6 +9486,7 @@ export default function App() {
 
   const workspaceKanbanContent = canUseWorkspaceBoard ? (
     <KanbanBoard
+      onDuplicate={canCreateInCurrentTeam ? openDuplicateApplication : undefined}
       applications={visibleApplications}
       customApplicationStatuses={activeSession.user.settings.customApplicationStatuses}
       onNew={isTeamMode ? undefined : () => openNewApplicationDialog(null)}
@@ -10363,6 +10413,7 @@ export default function App() {
       >
         <div className="dossier-handoff-content" inert={dossierHandoffPending || undefined}>
           <DossierView
+            onDuplicate={canCreateInCurrentTeam ? () => openDuplicateApplication(displayedDossierApplication) : undefined}
             key={displayedDossierApplication.id}
             application={displayedDossierApplication}
             draft={displayedDossierDraft}
@@ -11375,6 +11426,7 @@ export default function App() {
                   void requestPwaUpdateInstall()
                 }}
                 onToggleOffline={toggleManualOffline}
+                allowManualOffline={!desktopRuntime.enabled}
                 tx={i18nValue.tx}
               />
               {activeSession.impersonation ? (
@@ -11632,6 +11684,7 @@ export default function App() {
                   }
                 >
                   <ApplicationPane
+                    onDuplicate={canCreateInCurrentTeam ? openDuplicateApplication : undefined}
                     applications={visibleApplications}
                     totalApplicationCount={applicationLimitUsageCount}
                     applicationLimit={isProUser ? applicationLimit : applicationCreateLimit}
@@ -11877,7 +11930,8 @@ export default function App() {
               {dialogOpen ? (
                 <LazyOverlayBoundary namespaces={['core', 'shared', 'dossier']}>
                   <NewApplicationDialog
-                    key={`new-application:${activeSession.user.id}:${isTeamMode ? activeTeamId || visibleTeamSummary?.team.id || 'team' : 'personal'}:${newApplicationTeamMode}`}
+                    key={`new-application:${activeSession.user.id}:${isTeamMode ? activeTeamId || visibleTeamSummary?.team.id || 'team' : 'personal'}:${newApplicationTeamMode}:${duplicateSource?.id ?? 'new'}`}
+                    initialApplication={duplicateSource}
                     open={dialogOpen}
                     busy={busy}
                     teamMode={newApplicationTeamMode}
@@ -11885,10 +11939,11 @@ export default function App() {
                     defaultStudentId={defaultNewApplicationStudentId}
                     draftIdentity={{
                       userId: activeSession.user.id,
-                      workspaceId: isTeamMode ? activeTeamId || visibleTeamSummary?.team.id || 'team' : 'personal',
+                      workspaceId: `${isTeamMode ? activeTeamId || visibleTeamSummary?.team.id || 'team' : 'personal'}:${duplicateSource?.id ?? 'new'}`,
                     }}
                     onClose={() => {
                       setDialogOpen(false)
+                      setDuplicateSource(null)
                       setNewApplicationOwnerHint(null)
                     }}
                     onCreate={async (input) => {
@@ -11896,6 +11951,9 @@ export default function App() {
                       try {
                         await runOrThrow(async () => {
                           const created = await phdApi.createApplication(activeSession.token, {
+                            duplicateFromId: duplicateSource?.id,
+                            professorProfile: input.professorProfile,
+                            additionalProfessors: input.additionalProfessors,
                             professor: input.professor,
                             professorChinese: input.professorChinese,
                             professorEmail: input.professorEmail,

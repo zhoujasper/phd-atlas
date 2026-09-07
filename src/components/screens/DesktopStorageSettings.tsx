@@ -1,6 +1,7 @@
 import { Cloud, Database, Download, HardDrive, Link2Off, Upload } from 'lucide-react'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { DesktopRuntime } from '../../desktopRuntime'
+import { normalizeErrorMessage } from '../../errorMessages'
 import { useI18n } from '../hooks/useI18n'
 import { PendingLabel } from '../shared/PendingLabel'
 
@@ -19,18 +20,31 @@ export function DesktopStorageSettings({
   onCompleteExport,
   onCompleteImport,
 }: DesktopStorageSettingsProps) {
-  const { tx } = useI18n()
+  const { tx, lang } = useI18n()
   const [origin, setOrigin] = useState(runtime.remoteOrigin ?? '')
   const [email, setEmail] = useState(runtime.remoteEmail ?? '')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState<'connect' | 'disconnect' | 'export' | 'import' | null>(null)
+  const busyRef = useRef(false)
+  const [connectOpen, setConnectOpen] = useState(false)
+  const [localError, setLocalError] = useState<string | null>(null)
 
   const linked = runtime.mode === 'remote'
   async function run(kind: typeof busy, work: () => Promise<void> | void) {
+    if (busyRef.current) return
+    busyRef.current = true
+    setLocalError(null)
     setBusy(kind)
     try {
       await work()
+      if (kind === 'connect') {
+        setPassword('')
+        setConnectOpen(false)
+      }
+    } catch (error) {
+      setLocalError(normalizeErrorMessage(error, lang))
     } finally {
+      busyRef.current = false
       setBusy(null)
     }
   }
@@ -75,6 +89,7 @@ export function DesktopStorageSettings({
         <div>
           <h5>{tx('settings.desktopLocalCapabilitiesTitle')}</h5>
           <p>{tx('settings.desktopLocalCapabilities')}</p>
+          <p>{tx('settings.desktopOnlineToolsHint')}</p>
         </div>
         <div>
           <h5>{tx('settings.desktopWebCapabilitiesTitle')}</h5>
@@ -96,8 +111,15 @@ export function DesktopStorageSettings({
               : tx('settings.desktopDisconnectAction')}
           </button>
         </div>
+      ) : !connectOpen ? (
+        <button type="button" className="quiet-action" aria-expanded={false}
+          aria-controls="desktop-optional-connection" onClick={() => setConnectOpen(true)}>
+          <Cloud size={14} aria-hidden="true" />
+          {tx('settings.desktopConnectOptionalAction')}
+        </button>
       ) : (
         <form
+          id="desktop-optional-connection"
           className="settings-desktop-connect"
           onSubmit={(event) => {
             event.preventDefault()
@@ -136,13 +158,21 @@ export function DesktopStorageSettings({
               onChange={(event) => setPassword(event.target.value)}
             />
           </label>
-          <button type="submit" className="primary-action" disabled={busy !== null}>
-            {busy === 'connect'
-              ? <PendingLabel label={tx('settings.desktopConnecting')} />
-              : tx('settings.desktopConnectAction')}
-          </button>
+          <div className="settings-desktop-actions">
+            <button type="submit" className="primary-action" disabled={busy !== null}>
+              {busy === 'connect'
+                ? <PendingLabel label={tx('settings.desktopConnecting')} />
+                : tx('settings.desktopConnectAction')}
+            </button>
+            <button type="button" className="quiet-action" disabled={busy !== null}
+              onClick={() => { setConnectOpen(false); setPassword(''); setLocalError(null) }}>
+              {tx('cancel')}
+            </button>
+          </div>
         </form>
       )}
+
+      {localError ? <p className="field-error" role="alert">{localError}</p> : null}
 
       <div className="settings-desktop-transfer">
         <button

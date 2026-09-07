@@ -1,3 +1,4 @@
+import { professorCollectionIssues } from '../../shared/applicationProfessors.js'
 import { z } from 'zod'
 import {
   mailCategories,
@@ -308,22 +309,28 @@ export const DossierCardSchema = z.object({
 
 export const VersionSchema = FileVersionSchema
 
-export const ApplicationSchema = z.object({
-  id: z.string().min(1),
-  ownerId: z.string().min(1).optional(),
-  professor: z.object({
-    english: z.string().min(1),
+export const ApplicationProfessorSchema = z.object({
+    id: z.string().min(1).max(128).optional(),
+    english: z.string().max(200),
     chinese: z.string(),
     email: z.union([z.email(), z.literal('')]),
     correspondenceEmails: z.array(z.email().max(254)).max(9).optional(),
     phone: z.string(),
     social: z.string(),
     homepage: OptionalUrlSchema,
-    research: z.string().min(1),
+    // Moving or copying a contact must preserve existing long dossier notes.
+    research: z.string(),
     lab: z.string(),
     labUrl: OptionalUrlSchema.optional(),
     projectUrl: OptionalUrlSchema.optional(),
-  }),
+})
+
+export const ApplicationSchema = z.object({
+  id: z.string().min(1),
+  ownerId: z.string().min(1).optional(),
+  // Preserve the stored-record boundary for existing long research notes.
+  professor: ApplicationProfessorSchema.extend({ research: z.string() }),
+  additionalProfessors: z.array(ApplicationProfessorSchema.extend({ id: z.string().min(1).max(128) })).max(29).optional(),
   school: z.object({
     name: z.string().min(1),
     country: z.string(),
@@ -370,6 +377,8 @@ export const ApplicationSchema = z.object({
     .default({ autoBackup: false, frequency: '15m', maxBackups: 5 }),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional(),
+}).superRefine((application, context) => {
+  for (const issue of professorCollectionIssues(application)) context.addIssue({ code: 'custom', ...issue })
 })
 
 export const UserSchema = z.object({

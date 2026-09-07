@@ -6,6 +6,7 @@ import {
   assertDesktopReleaseScriptContract,
   assertDesktopReleaseWorkflowContract,
   assertGitHookInstallationContract,
+  assertNativeWorkflowContract,
   assertPackageMetadata,
   assertPublicContainerWorkflowContract,
   assertReleaseWorkflowExecutionContract,
@@ -191,18 +192,10 @@ describe('release preflight contracts', () => {
     )).toThrow(/native architecture build timeout/)
   })
 
-  it('keeps MSSQL and Release publication on one runner and installs once', () => {
+  it('keeps native Release publication on one runner and verifies immutable artifacts', () => {
     const workflowPath = resolvePublicWorkflow('release.yml')
     const workflow = readWorkflowFixture(workflowPath)
     expect(() => assertReleaseWorkflowExecutionContract(workflow, workflowPath)).not.toThrow()
-    expect(() => assertReleaseWorkflowExecutionContract(
-      replaceRequired(
-        workflow,
-        'jobs:\n  release:',
-        'jobs:\n  mssql-release-gate:\n    runs-on: ubuntu-latest\n    steps: []\n\n  release:',
-      ),
-      workflowPath,
-    )).toThrow(/cannot wait for a second runner/)
     expect(() => assertReleaseWorkflowExecutionContract(
       replaceRequired(
         workflow,
@@ -220,13 +213,30 @@ describe('release preflight contracts', () => {
       workflowPath,
     )).toThrow(/historical beta\.8 updater/)
     expect(() => assertReleaseWorkflowExecutionContract(
-      replaceRequired(workflow, 'sha-${GITHUB_SHA:0:12}', 'candidate-${GITHUB_RUN_ID}'),
+      replaceRequired(workflow, 'cmp --silent "$first_package" "$package_path"', 'true'),
       workflowPath,
-    )).toThrow(/exact qualified main image/)
+    )).toThrow(/preserve native artifact verification/)
     expect(() => assertReleaseWorkflowExecutionContract(
-      `${workflow}\n# uses: docker/build-push-action@v6`,
+      replaceRequired(workflow, '      - name: Verify source', '      - uses: docker/setup-buildx-action@v3\n      - name: Verify source'),
       workflowPath,
-    )).toThrow(/must not rebuild a tagged image under QEMU/)
+    )).toThrow(/must not invoke container commands/)
+  })
+
+  it('prevents automatic native delivery from starting container work', () => {
+    for (const job of [
+      { container: 'node:24' },
+      { services: { db: { image: 'postgres' } } },
+      { steps: [{ run: 'docker build .' }] },
+      { steps: [{ run: 'gh workflow run publish-container.yml' }] },
+      { steps: [{ uses: 'docker://node:24' }] },
+    ]) {
+      expect(() => assertNativeWorkflowContract({ jobs: { verify: job } }, 'native.yml'))
+        .toThrow(/must not/)
+    }
+    const workflow = readWorkflowFixture(resolvePublicWorkflow('publish-container.yml'))
+    expect(() => assertPublicContainerWorkflowContract(
+      replaceRequired(workflow, 'on:\n  workflow_dispatch:', 'on:\n  push:\n  workflow_dispatch:'),
+    )).toThrow(/explicit manual dispatch/)
   })
 
   it('builds desktop packages on native runners from the released commit', () => {
@@ -255,7 +265,7 @@ describe('release preflight contracts', () => {
     expect(() => assertDesktopReleaseWorkflowContract(
       replaceRequired(
         workflow,
-        "ref: ${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}",
+        'ref: ${{ inputs.released_sha }}',
         'ref: main',
       ),
       workflowPath,
@@ -271,11 +281,11 @@ describe('release preflight contracts', () => {
     expect(() => assertDesktopReleaseWorkflowContract(
       replaceRequired(
         workflow,
-        "github.event.workflow_run.conclusion == 'success'",
-        "github.event.workflow_run.conclusion != 'cancelled'",
+        'on:\n  workflow_dispatch:',
+        'on:\n  push:\n  workflow_dispatch:',
       ),
       workflowPath,
-    )).toThrow(/successful canonical Release run/)
+    )).toThrow(/require explicit dispatch/)
   })
 
   it('keeps the installed pre-push gate executable on POSIX checkouts', () => {

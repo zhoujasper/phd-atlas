@@ -43,11 +43,13 @@ export function ConfirmDialog({
   const confirmBtnRef = useRef<HTMLButtonElement>(null)
   const cancelBtnRef = useRef<HTMLButtonElement>(null)
   const [pendingAction, setPendingAction] = useState<'confirm' | 'secondary' | null>(null)
+  const activeActionRef = useRef<object | null>(null)
   const pending = pendingAction !== null
   const { exiting, requestClose } = useAnimatedClose(open, onCancel)
 
   useEffect(() => {
     if (!open) setPendingAction(null)
+    return () => { activeActionRef.current = null }
   }, [open])
 
   const requestCancel = () => {
@@ -56,15 +58,21 @@ export function ConfirmDialog({
   }
 
   const submitAction = (action: 'confirm' | 'secondary', handler: () => void | Promise<void>) => {
-    if (pending) return
+    if (!open || pending || exiting || activeActionRef.current) return
+    const owner = {}
+    activeActionRef.current = owner
     setPendingAction(action)
     void Promise.resolve()
       .then(handler)
       .then(() => {
+        if (activeActionRef.current !== owner) return
+        activeActionRef.current = null
         setPendingAction(null)
         requestClose(onCancel)
       })
       .catch(() => {
+        if (activeActionRef.current !== owner) return
+        activeActionRef.current = null
         // The mutation owner is responsible for its localized error toast.
         // Keep this confirmation mounted so the user can retry after failure.
         setPendingAction(null)

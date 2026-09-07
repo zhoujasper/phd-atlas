@@ -325,10 +325,9 @@ export async function attachDesktopRuntime(request, storageRoot) {
   const state = await readDesktopRuntimeState(storageRoot)
   request.desktopRuntimeState = state
   if (request.user) {
-    request.user = {
-      ...request.user,
-      settings: applyDesktopAccountSettings({ ...request.user.settings }, state),
-    }
+    // Keep the user attached to the hydrated store. Replacing this object
+    // detached settings/profile writes from the row that lockedWriteStore saves.
+    request.user.settings = applyDesktopAccountSettings({ ...request.user.settings }, state)
   }
   return state
 }

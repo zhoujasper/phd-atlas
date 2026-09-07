@@ -1,3 +1,4 @@
+import { applicationProfessors, professorName } from './shared/applicationProfessors.js'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -499,7 +500,7 @@ export function toPdfBuffer(applications, {
       const metaY = Math.max(programY + programHeight + 18, y + 67)
       const meta = [
         [tr.t('dossier.deadline'), formatDate(application.deadline, tr.locale)],
-        [tr.t('dossier.professor'), application.professor?.english || application.professor?.chinese],
+        [tr.t('dossier.professor'), applicationProfessors(application).map((professor) => professorName(professor)).filter(Boolean).join(' · ')],
         [tr.t('dossier.country'), application.school?.country],
       ]
       const metaWidth = (contentWidth - 32) / 3
@@ -591,16 +592,20 @@ export function toPdfBuffer(applications, {
         [tr.copy.updatedAt, formatDate(application.updatedAt, tr.locale, true)],
       ])
       drawNarrativeRow(tr.copy.result, application.result)
-      drawDefinitionGrid(tr.t('dossier.professor'), [
-        [tr.t('dossier.englishName'), application.professor?.english],
-        [tr.t('dossier.chineseName'), application.professor?.chinese],
-        [tr.t('dossier.email'), application.professor?.email],
-        [tr.t('dossier.phone'), application.professor?.phone],
-        [tr.t('dossier.social'), application.professor?.social],
-        [tr.t('dossier.homepage'), application.professor?.homepage],
-        [tr.t('dossier.lab'), application.professor?.lab],
-      ])
-      drawNarrativeRow(tr.t('dossier.researchDirection'), application.professor?.research)
+      for (const professor of applicationProfessors(application)) {
+        drawDefinitionGrid(tr.t('dossier.professor'), [
+          [tr.t('dossier.englishName'), professor?.english],
+          [tr.t('dossier.chineseName'), professor?.chinese],
+          [tr.t('dossier.email'), [professor?.email, ...(professor?.correspondenceEmails ?? [])].filter(Boolean).join('; ')],
+          [tr.t('dossier.phone'), professor?.phone],
+          [tr.t('dossier.social'), professor?.social],
+          [tr.t('dossier.homepage'), professor?.homepage],
+          [tr.t('dossier.lab'), professor?.lab],
+          [tr.t('dossier.labLink'), professor?.labUrl],
+          [tr.t('dossier.projectLink'), professor?.projectUrl],
+        ])
+        drawNarrativeRow(tr.t('dossier.researchDirection'), professor?.research)
+      }
       drawDefinitionGrid(tr.copy.backup, [
         [tr.t('settings.autoBackup'), application.backupSettings?.autoBackup ? tr.copy.yes : tr.copy.no],
         [tr.t('settings.backupFrequency'), application.backupSettings?.frequency],

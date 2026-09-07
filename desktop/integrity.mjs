@@ -10,6 +10,9 @@ export const INTEGRITY_MANIFEST_NAME = 'integrity-manifest.json'
 
 export const INTEGRITY_PATHS = Object.freeze([
   'desktop/main.mjs',
+  'desktop/windowPolicy.mjs',
+  'desktop/localization.mjs',
+  ...['en', 'zh', 'ja', 'ko', 'es', 'fr', 'de', 'pt', 'it', 'ru', 'vi', 'th'].map((language) => `desktop/locales/${language}.json`),
   'desktop/preload.cjs',
   'desktop/launch-runtime.mjs',
   'desktop/portablePaths.mjs',

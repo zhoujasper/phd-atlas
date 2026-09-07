@@ -57,8 +57,10 @@ export function sharedPayloadToApplication(data: SharedApplicationPayload): Appl
   return {
     id: 'shared-application',
     ownerId: 'share-owner',
+    additionalProfessors: data.additionalProfessors,
     professor: {
-      english: data.professor.english,
+      id: data.professor.id,
+      correspondenceEmails: data.professor.correspondenceEmails,      english: data.professor.english,
       chinese: data.professor.chinese ?? '',
       email: data.professor.email,
       phone: data.professor.phone ?? '',

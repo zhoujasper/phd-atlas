@@ -271,7 +271,7 @@
       "connectedDevices": "Dispositivi collegati",
       "connectedCount": "{count} collegati",
       "columnName": "Nome",
-      "columnDevice": "Client / computer",
+      "columnDevice": "Applicazione / computer",
       "columnLastUsed": "Ultimo utilizzo",
       "columnActions": "Azioni",
       "unavailable": "Non disponibile",
@@ -544,7 +544,7 @@
       "usageCalls": "{count} chiama",
       "usageTokens": "Gettoni {count}",
       "usageBreakdown": "Ingresso {input} · uscita {output}",
-      "usageReset": "Reset",
+      "usageReset": "Reimposta",
       "usageResetTitle": "Reimpostare l'utilizzo dell'IA?",
       "usageResetConfirm": "Azzerare i contatori delle chiamate e dei token per {name}? Questa operazione non può essere annullata.",
       "usageResetDone": "I contatori di utilizzo dell'IA vengono ripristinati"
@@ -597,12 +597,14 @@
     "desktopImporting": "Importazione",
     "completeArchiveExt": "TUTTO",
     "desktopLocalCapabilitiesTitle": "Sempre disponibile in locale",
-    "desktopLocalCapabilities": "Candidature, elenco materiali, corrispondenza registrata, finanziamenti, cronologia, Discover, preparazione colloquio, profilo e backup locali.",
+    "desktopLocalCapabilities": "Candidature, documenti, corrispondenza salvata, finanziamenti, cronologia, risultati Discover salvati, registri dei colloqui, profilo e backup locali.",
     "desktopWebCapabilitiesTitle": "Dopo la connessione al sistema web",
     "desktopWebCapabilities": "Invio e ricezione email, promemoria email, link di condivisione, URL del calendario e push del browser.",
     "desktopConnectHint": "Facoltativo. L’uso locale non richiede un account web.",
     "desktopBootFailed": "Impossibile aprire lo spazio di lavoro desktop.",
-    "desktopBootRetry": "Riprova"
+    "desktopBootRetry": "Riprova",
+    "desktopConnectOptionalAction": "Collega sistema web (facoltativo)",
+    "desktopOnlineToolsHint": "La generazione IA e la ricerca online richiedono internet e il fornitore configurato, senza un account web PhD Atlas."
   },
   "calendar": {
     "title": "Alimentazione calendario",

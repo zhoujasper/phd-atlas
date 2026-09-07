@@ -33,7 +33,7 @@
       "saved": "Einstellungen für den Administratorzugang gespeichert.",
       "save": "Zugangseinstellungen speichern"
     },
-    "topbarTitle": "PhD Atlas Admin",
+    "topbarTitle": "PhD Atlas Verwaltung",
     "brand": "PhD Atlas",
     "badge": "Administrator",
     "backToSite": "Zurück zum PhD-Atlas",
@@ -229,10 +229,10 @@
     "nodeVersion": "Node.js-Version",
     "platform": "Plattform",
     "uptime": "Betriebszeit",
-    "uptimeSeconds": "{count}s",
-    "uptimeMinutes": "{count}m {sec}s",
-    "uptimeHours": "{count}h {min}m",
-    "uptimeDays": "{count}d {hr}h",
+    "uptimeSeconds": "{count} Sek.",
+    "uptimeMinutes": "{count} Min. {sec} Sek.",
+    "uptimeHours": "{count} Std. {min} Min.",
+    "uptimeDays": "{count} T. {hr} Std.",
     "memoryUsage": "Speichernutzung",
     "memoryTotal": "Gesamtspeicher",
     "memoryUsed": "Gebraucht",
@@ -312,7 +312,7 @@
     "storageBreakdown": "Speicherausfall",
     "storageEyebrow": "Scheibe",
     "databaseStorage": "Datenbank",
-    "uploadsStorage": "Uploads",
+    "uploadsStorage": "Hochgeladene Dateien",
     "backupsStorage": "Sicherungen",
     "storageFiles": "{count}-Dateien",
     "storagePercentOfTotal": "{percent} % der Gesamtmenge",
@@ -505,8 +505,8 @@
     },
     "externalDatabaseEncryptionDesc": "Eine externe Datenbank ist aktiv; daher gilt die SQLite-Dateiverschlüsselung nicht. Die Verschlüsselung im Ruhezustand schützt den vollständigen Arbeitsbereichszustand und vertrauliche Felder, bevor sie die externe Datenbank erreichen."
   },
-  "uptimeSeconds": "{count}s",
-  "uptimeMinutes": "{count}m {sec}s",
-  "uptimeHours": "{count}h {min}m",
-  "uptimeDays": "{count}d {hr}h"
+  "uptimeSeconds": "{count} Sek.",
+  "uptimeMinutes": "{count} Min. {sec} Sek.",
+  "uptimeHours": "{count} Std. {min} Min.",
+  "uptimeDays": "{count} T. {hr} Std."
 }

@@ -7,6 +7,7 @@ export type SafeReloadReason =
   | 'lazy-module'
   | 'application-update'
   | 'error-recovery'
+  | 'desktop-quit'
 
 export type SafeReloadBlockedCause =
   | 'prepare-failed'

@@ -597,12 +597,14 @@
       "teal": "Teal"
     },
     "desktopLocalCapabilitiesTitle": "Always available locally",
-    "desktopLocalCapabilities": "Applications, checklist, recorded correspondence, funding, timeline, Discover, Interview Prep, Profile, and local backups.",
+    "desktopLocalCapabilities": "Applications, materials, recorded correspondence, funding, timeline, saved Discover results, Interview Prep records, Profile, and local backups.",
     "desktopWebCapabilitiesTitle": "After connecting the web system",
     "desktopWebCapabilities": "Send and receive email, email reminders, share links, calendar subscription URLs, and browser push.",
     "desktopConnectHint": "Optional. Local use does not need a web account.",
     "desktopBootFailed": "The desktop workspace could not be opened.",
-    "desktopBootRetry": "Try again"
+    "desktopBootRetry": "Try again",
+    "desktopConnectOptionalAction": "Connect web system (optional)",
+    "desktopOnlineToolsHint": "AI generation and online discovery need internet access and the configured provider. They do not require a PhD Atlas web account."
   },
   "calendar": {
     "title": "Calendar Feed",

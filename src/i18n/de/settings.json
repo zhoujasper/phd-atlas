@@ -597,12 +597,14 @@
     "desktopImporting": "Importieren",
     "completeArchiveExt": "ALLE",
     "desktopLocalCapabilitiesTitle": "Immer lokal verfügbar",
-    "desktopLocalCapabilities": "Bewerbungen, Checkliste, aufgezeichnete Korrespondenz, Finanzierung, Zeitlinie, Discover, Interviewvorbereitung, Profil und lokale Sicherungen.",
+    "desktopLocalCapabilities": "Bewerbungen, Unterlagen, gespeicherte Korrespondenz, Finanzierung, Zeitplan, gespeicherte Discover-Ergebnisse, Interviewnotizen, Profil und lokale Sicherungen.",
     "desktopWebCapabilitiesTitle": "Nach Verbindung mit dem Websystem",
     "desktopWebCapabilities": "E-Mail senden und empfangen, E-Mail-Erinnerungen, Freigabelinks, Kalender-Abonnement-URLs und Browser-Push.",
     "desktopConnectHint": "Optional. Für die lokale Nutzung ist kein Webkonto nötig.",
     "desktopBootFailed": "Der Desktop-Arbeitsbereich konnte nicht geöffnet werden.",
-    "desktopBootRetry": "Erneut versuchen"
+    "desktopBootRetry": "Erneut versuchen",
+    "desktopConnectOptionalAction": "Websystem verbinden (optional)",
+    "desktopOnlineToolsHint": "KI-Generierung und Online-Suche benötigen Internet und den konfigurierten Anbieter, aber kein PhD Atlas-Webkonto."
   },
   "calendar": {
     "title": "Kalender-Feed",

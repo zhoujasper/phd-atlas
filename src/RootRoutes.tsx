@@ -38,10 +38,10 @@ export function RootRoutes() {
   const isAdminRoute = window.location.pathname.startsWith('/admin')
   const isShareRoute = window.location.pathname.startsWith('/share/')
   const isAssetUploadRoute = window.location.pathname.startsWith('/asset-upload/')
-  const isResetRoute = window.location.pathname.startsWith('/reset-password/')
+  const isResetRoute = !desktopRuntime.enabled && window.location.pathname.startsWith('/reset-password/')
   const isUpgradeRoute = ['/upgrade-pro', '/pro', '/membership'].includes(window.location.pathname)
-  const isTeamInviteRoute = !PUBLIC_EDITION && window.location.pathname.startsWith('/team/accept-invite/')
-  const isTeamJoinRoute = !PUBLIC_EDITION && window.location.pathname.startsWith('/team/join/')
+  const isTeamInviteRoute = !desktopRuntime.enabled && !PUBLIC_EDITION && window.location.pathname.startsWith('/team/accept-invite/')
+  const isTeamJoinRoute = !desktopRuntime.enabled && !PUBLIC_EDITION && window.location.pathname.startsWith('/team/join/')
   const allowAdminRoute = desktopAdminEnabled(desktopRuntime)
   const allowUpgradeRoute = !desktopRuntime.enabled || !desktopRuntime.unlimited
 

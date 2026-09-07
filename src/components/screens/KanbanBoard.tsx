@@ -63,6 +63,7 @@ interface KanbanBoardProps {
   onOpenMany?: (ids: string[]) => void
   onExportApplication?: (id: string) => void
   onExportMany?: (ids: string[]) => void
+  onDuplicate?: (application: ApplicationRecord) => void
   onCopy?: (value: string, label: string) => void
   onDeleteApplication?: (id: string) => void
   onDeleteMany?: (ids: string[]) => void

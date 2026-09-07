@@ -85,9 +85,23 @@ describe('connectivity state', () => {
   })
 
   afterEach(() => {
+    delete window.phdAtlasDesktop
     resetConnectivityForTests()
     vi.useRealTimers()
     vi.unstubAllGlobals()
+  })
+
+  it('keeps the desktop loopback API usable when the device has no internet', async () => {
+    window.phdAtlasDesktop = { enabled: true }
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: false })
+    resetConnectivityForTests()
+    expect(apiRequestBlockReason('POST')).toBeNull()
+    expect(apiRequestBlockReason('GET')).toBeNull()
+    await connectHealthSocket()
+    expect(connectivityUnavailable()).toBe(false)
+    expect(setManualOfflineMode(true).manualOffline).toBe(false)
+    reportApiUnavailable()
+    expect(apiRequestBlockReason('GET')).toBe('server-unreachable')
   })
 
   it('distinguishes a reachable browser network from an unavailable server', () => {

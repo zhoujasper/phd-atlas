@@ -1,3 +1,5 @@
+import { copyApplicationSetup } from './applicationDuplicate.js'
+import { applicationProfessors, professorAddresses, findApplicationProfessor, communicationMatchesProfessor, emptyProfessor } from './shared/applicationProfessors.js'
 import compression from 'compression'
 import cors from 'cors'
 import express from 'express'
@@ -363,6 +365,7 @@ import {
   CommunicationPatchSchema,
   CommunicationSendSchema,
   CreateApplicationSchema,
+  ApplicationProfessorSchema,
   DossierCardSchema,
   FeePatchSchema,
   ImpersonateUserSchema,
@@ -479,6 +482,7 @@ import {
 import {
   configuredAllowedHosts,
   trustedQaLoopbackRequestHost,
+  trustedDesktopRequestHost,
   trustedRequestHost,
 } from './hostPolicy.js'
 import {
@@ -504,6 +508,7 @@ import {
   fetchImapMessages,
   mailAccountKey,
   mailMessageKey,
+  normalizeMailAddress,
   verifyImapConnection,
 } from './mailFetch.js'
 import {
@@ -3894,7 +3899,10 @@ async function hydrateUser(request, response, next) {
       user,
       request.sessionScope,
       store.settings,
-      request.auth.act ? { act: request.auth.act } : {},
+      {
+        ...(request.auth.act ? { act: request.auth.act } : {}),
+        ...(request.auth.desktopRuntimeId ? { desktopRuntimeId: request.auth.desktopRuntimeId } : {}),
+      },
     )
     response.locals.sessionToken = nextSession.token
     response.locals.sessionExpiresAt = nextSession.expiresAt
@@ -5025,15 +5033,17 @@ function buildApplication(input, userId) {
     ownerId: userId,
     teamId: normalized.visibleToTeam ? (input.teamId ?? null) : null,
     professor: {
+      phone: '',
+      social: '',
+      research: normalized.notes || 'Research fit notes to be added.',
+      lab: 'Lab information to be added.',
+      ...normalized.professorProfile,
       english: normalized.professor,
       chinese: normalized.professorChinese,
       email: normalized.professorEmail,
-      phone: '',
-      social: '',
       homepage: normalized.professorHomepage,
-      research: normalized.notes || 'Research fit notes to be added.',
-      lab: 'Lab information to be added.',
     },
+    ...(normalized.additionalProfessors ? { additionalProfessors: normalized.additionalProfessors } : {}),
     school: {
       name: normalized.university,
       country: normalized.country,
@@ -6711,16 +6721,19 @@ function buildDetailedCsvRows(applications) {
     ]
     overview.forEach(([field, value]) => addCsvDetail(rows, application, 'Overview', appName, field, value))
 
-    Object.entries({
-      'English name': application.professor.english,
-      'Chinese name': application.professor.chinese,
-      Email: application.professor.email,
-      Phone: application.professor.phone,
-      Social: application.professor.social,
-      Homepage: application.professor.homepage,
-      Lab: application.professor.lab,
-      Research: application.professor.research,
-    }).forEach(([field, value]) => addCsvDetail(rows, application, 'Professor', application.professor.english, field, value))
+    for (const professor of applicationProfessors(application)) Object.entries({
+      'English name': professor.english,
+      'Chinese name': professor.chinese,
+      Email: professor.email,
+      Phone: professor.phone,
+      Social: professor.social,
+      Homepage: professor.homepage,
+      Lab: professor.lab,
+      Research: professor.research,
+      OtherEmails: professor.correspondenceEmails ?? [],
+      LabUrl: professor.labUrl,
+      ProjectUrl: professor.projectUrl,
+    }).forEach(([field, value]) => addCsvDetail(rows, application, 'Professor', professor.english, field, value))
 
     Object.entries({
       'Auto backup': yesNo(application.backupSettings?.autoBackup),
@@ -7017,17 +7030,20 @@ function buildExcelSheets(applications) {
     UpdatedAt: application.updatedAt,
   }))
 
-  const professorRows = applications.map((application) => ({
+  const professorRows = applications.flatMap((application) => applicationProfessors(application).map((professor) => ({
     ...rowApplicationFields(application),
-    EnglishName: application.professor.english,
-    ChineseName: application.professor.chinese,
-    Email: application.professor.email,
-    Phone: application.professor.phone,
-    Social: application.professor.social,
-    Homepage: application.professor.homepage,
-    Lab: application.professor.lab,
-    Research: application.professor.research,
-  }))
+    EnglishName: professor.english,
+    ChineseName: professor.chinese,
+    Email: professor.email,
+    Phone: professor.phone,
+    Social: professor.social,
+    Homepage: professor.homepage,
+    Lab: professor.lab,
+    Research: professor.research,
+    OtherEmails: professor.correspondenceEmails ?? [],
+    LabUrl: professor.labUrl,
+    ProjectUrl: professor.projectUrl,
+  })))
 
   const backupRows = applications.map((application) => ({
     ...rowApplicationFields(application),
@@ -8116,6 +8132,8 @@ export function sharedApplicationPayload(application, share) {
       website: includeOverview ? application.school.website : '',
     },
     professor: {
+      id: application.professor.id,
+      ...(includeOverview ? { correspondenceEmails: application.professor.correspondenceEmails } : {}),
       english: application.professor.english,
       chinese: includeOverview ? application.professor.chinese : '',
       email: includeOverview ? application.professor.email : '',
@@ -8127,6 +8145,7 @@ export function sharedApplicationPayload(application, share) {
       labUrl: includeOverview ? application.professor.labUrl || '' : '',
       projectUrl: includeOverview ? application.professor.projectUrl || '' : '',
     },
+    additionalProfessors: includeOverview ? application.additionalProfessors ?? [] : [],
     program: application.program,
     status: application.status,
     deadline: application.deadline,
@@ -8320,18 +8339,25 @@ function applySharedOverviewPatch(application, patch) {
   if (patch.professor && typeof patch.professor === 'object') {
     application.professor = {
       ...application.professor,
-      english: sharedRequiredString(patch.professor.english, application.professor.english, 160),
+      id: patch.professor.id ?? application.professor.id,
+      correspondenceEmails: patch.professor.correspondenceEmails ?? application.professor.correspondenceEmails,
+      english: sharedString(patch.professor.english, application.professor.english, 160),
       chinese: sharedString(patch.professor.chinese, application.professor.chinese, 160),
-      email: sharedRequiredString(patch.professor.email, application.professor.email, 240),
+      email: sharedString(patch.professor.email, application.professor.email, 240),
       phone: sharedString(patch.professor.phone, application.professor.phone, 80),
       social: sharedString(patch.professor.social, application.professor.social, 500),
       homepage: sharedString(patch.professor.homepage, application.professor.homepage, 500),
-      research: sharedRequiredString(patch.professor.research, application.professor.research, 5000),
+      research: sharedString(patch.professor.research, application.professor.research, 5000),
       lab: sharedString(patch.professor.lab, application.professor.lab, 240),
       labUrl: sharedString(patch.professor.labUrl, application.professor.labUrl || '', 500),
       projectUrl: sharedString(patch.professor.projectUrl, application.professor.projectUrl || '', 500),
     }
   }
+  application.professor = parseOrThrow(ApplicationProfessorSchema, application.professor)
+  if (patch.additionalProfessors !== undefined) {
+    application.additionalProfessors = parseOrThrow(ApplicationSchema.shape.additionalProfessors, patch.additionalProfessors)
+  }
+  parseOrThrow(ApplicationSchema, application)
   if (patch.program !== undefined) application.program = sharedRequiredString(patch.program, application.program, 180)
   if (patch.deadline !== undefined) application.deadline = sharedDate(patch.deadline, application.deadline)
   if (patch.status !== undefined) application.status = parseOrThrow(ApplicationStatusSchema, patch.status)
@@ -8666,15 +8692,26 @@ function isLoginNetworkAnomalyRoute(request) {
   return /^\/api\/auth\/(?:login|passkeys\/login\/(?:options|verify))\/?$/i.test(pathname)
 }
 
-function verifySessionBearerPayload(authorization, verificationSecret = jwtSecret) {
+function verifySessionBearerPayload(authorization, verificationSecret = jwtSecret, desktopRuntimeId = null) {
   const [, token] = String(authorization ?? '').match(/^Bearer\s+(\S{1,8192})$/i) ?? []
   if (!token) return null
   try {
-    const payload = jwt.verify(token, verificationSecret, {
+    const verificationOptions = {
       algorithms: [SESSION_JWT_ALGORITHM],
       issuer: SESSION_JWT_ISSUER,
       audience: SESSION_JWT_AUDIENCE,
-    })
+    }
+    let payload
+    try {
+      payload = jwt.verify(token, verificationSecret, verificationOptions)
+    } catch (error) {
+      if (!desktopRuntimeId || error?.name !== 'TokenExpiredError') throw error
+      payload = jwt.verify(token, verificationSecret, { ...verificationOptions, ignoreExpiration: true })
+      // A process-bound local session survives system sleep; ordinary account
+      // JWTs keep their expiry. Signature, audience, and revocation still apply.
+      if (payload.desktopRuntimeId !== desktopRuntimeId || payload.scope !== 'app' || payload.act) return null
+    }
+    if (payload?.desktopRuntimeId && payload.desktopRuntimeId !== desktopRuntimeId) return null
     const subject = typeof payload?.sub === 'string' ? payload.sub.trim() : ''
     if (
       !payload
@@ -8715,7 +8752,8 @@ function requestVerifiedSessionBearerPayload(request) {
   const authorization = String(request.get('authorization') ?? '')
   const cached = request[VERIFIED_SESSION_BEARER_CACHE]
   if (cached?.authorization === authorization) return cached.payload
-  const payload = verifySessionBearerPayload(authorization)
+  const payload = verifySessionBearerPayload(authorization, jwtSecret,
+    request.app?.locals?.desktopEnabled ? request.app.locals.desktopSessionId : null)
   request[VERIFIED_SESSION_BEARER_CACHE] = { authorization, payload }
   return payload
 }
@@ -9019,6 +9057,7 @@ const allowedHostnames = configuredAllowedHosts({
 })
 
 function trustedHost(request) {
+  if (request.app?.locals?.desktopEnabled) return trustedDesktopRequestHost(request.get('host'), request.socket)
   const configuredHost = trustedRequestHost(request.get('host'), {
     production: process.env.NODE_ENV === 'production',
     allowedHosts: allowedHostnames,
@@ -9032,7 +9071,7 @@ function trustedHost(request) {
 }
 
 function enforceTrustedHost(request, response, next) {
-  if (process.env.NODE_ENV !== 'production') return next()
+  if (process.env.NODE_ENV !== 'production' && !request.app?.locals?.desktopEnabled) return next()
   if (trustedHost(request)) return next()
   fail(response, 400, 'UNTRUSTED_HOST', 'Request host is not allowed.')
 }
@@ -9100,6 +9139,12 @@ function isAllowedCorsOrigin(origin) {
   } catch {
     return false
   }
+}
+
+function isAllowedDesktopOrigin(origin, request) {
+  if (!origin) return true
+  const host = trustedDesktopRequestHost(request.headers.host, request.socket)
+  return Boolean(host) && origin === `http://${host}`
 }
 
 function corsOriginError() {
@@ -9659,6 +9704,7 @@ export function createApp(options = {}) {
   const app = express()
   const testHooks = options.testHooks ?? {}
   app.locals.desktopEnabled = options.desktopEnabled ?? isDesktopProcess()
+  app.locals.desktopSessionId = app.locals.desktopEnabled ? randomBytes(24).toString('base64url') : null
   app.locals.desktopStorageRoot = options.desktopStorageRoot ?? storageRoot
   app.locals.desktopFetch = options.desktopFetch ?? testHooks.desktopFetch
   app.locals.desktopLock = createDesktopLockState()
@@ -11555,8 +11601,10 @@ export function createApp(options = {}) {
           styleSrc: ["'self'", "'unsafe-inline'"],
           imgSrc: ["'self'", 'data:', 'blob:'],
           connectSrc: ["'self'", ...(turnstile.configured ? ['https://challenges.cloudflare.com'] : [])],
-          fontSrc: ["'self'"],
-          frameSrc: turnstile.configured ? ['https://challenges.cloudflare.com'] : ["'none'"],
+          fontSrc: app.locals.desktopEnabled ? ["'self'", 'data:', 'blob:'] : ["'self'"],
+          frameSrc: app.locals.desktopEnabled ? ["'self'", 'blob:']
+            : turnstile.configured ? ['https://challenges.cloudflare.com'] : ["'none'"],
+          upgradeInsecureRequests: app.locals.desktopEnabled ? null : [],
           objectSrc: ["'none'"],
           formAction: ["'self'"],
           frameAncestors: ["'none'"],
@@ -11572,12 +11620,12 @@ export function createApp(options = {}) {
   app.use(enforceTrustedHost)
   app.use(function(req, res, next) {
     if (isHttpsRequest(req)) return next()
-    if (process.env.NODE_ENV === 'production') return res.redirect(301, 'https://' + trustedHost(req) + req.originalUrl)
+    if (process.env.NODE_ENV === 'production' && !app.locals.desktopEnabled) return res.redirect(301, 'https://' + trustedHost(req) + req.originalUrl)
     next()
   })
-  app.use(cors({
+  app.use(cors((request, configure) => configure(null, {
     origin: function(origin, callback) {
-      if (isAllowedCorsOrigin(origin)) return callback(null, true)
+      if (app.locals.desktopEnabled ? isAllowedDesktopOrigin(origin, request) : isAllowedCorsOrigin(origin)) return callback(null, true)
       callback(corsOriginError())
     },
     credentials: true,
@@ -11585,7 +11633,7 @@ export function createApp(options = {}) {
     // downstream responder preserves the usual 204 after those guards pass.
     preflightContinue: true,
     exposedHeaders: ['X-Request-Id', 'X-Session-Token', 'X-Session-Expires-At', 'X-Session-Duration-Minutes', 'X-Workspace-Revision', 'X-Workspace-Stream-Protocol', 'Retry-After', 'X-PhD-Retry-After-Ms', 'X-PhD-Memory-Pressure', 'X-PhD-Gateway-Error', 'ETag', 'Cache-Control', 'Server-Timing'],
-  }))
+  })))
   app.use((request, response, next) => {
     const site = String(request.get('sec-fetch-site') ?? '').toLowerCase()
     const method = request.method.toUpperCase()
@@ -11952,7 +12000,7 @@ export function createApp(options = {}) {
       settings: applyDesktopAccountSettings({ ...owner.settings }, state),
     }
     return {
-      token: signToken(sessionUser, 'app', systemSettings),
+      token: signToken(sessionUser, 'app', systemSettings, { desktopRuntimeId: app.locals.desktopSessionId }),
       user: publicUser(sessionUser),
       settings: systemSettings,
       usage: focusedAccountUsagePayload(sessionUser, counters),
@@ -14069,17 +14117,17 @@ export function createApp(options = {}) {
     next()
   }))
 
+  installDesktopUnlockGate(app, {
+    asyncHandler,
+    fail,
+    storageRoot: app.locals.desktopStorageRoot,
+  })
   app.use('/api', asyncHandler((request, response, next) => authRequired(
     request,
     response,
     next,
     { lookupCodexAuthorization },
   )))
-  installDesktopUnlockGate(app, {
-    asyncHandler,
-    fail,
-    storageRoot: app.locals.desktopStorageRoot,
-  })
   app.use('/api', authenticatedUserRateLimit)
   app.use('/api', (request, response, next) => {
     if (request.auth?.kind !== 'codex') {
@@ -16264,7 +16312,18 @@ export function createApp(options = {}) {
       },
       ownerUser.id,
     )
-    const discoverAutofill = applyVerifiedDiscoverAutofill(application, getUserDiscoverState(ownerUser))
+    if (input.duplicateFromId) {
+      const source = findScopedUserApplication(request, input.duplicateFromId)
+      if (!source || source.ownerId !== ownerUser.id) {
+        fail(response, 404, 'NOT_FOUND', 'Application not found.')
+        return
+      }
+      if (!requireApplicationEditAccess(request, response, source)) return
+      application = normalizeApplication(copyApplicationSetup(source, application, createId, today()), ownerUser.settings, request.store.settings, ownerUser)
+    }
+    const discoverAutofill = input.duplicateFromId || input.professorProfile
+      ? { application, applied: [] }
+      : applyVerifiedDiscoverAutofill(application, getUserDiscoverState(ownerUser))
     if (discoverAutofill.applied.length) {
       application = normalizeApplication({
         ...discoverAutofill.application,
@@ -18489,7 +18548,7 @@ export function createApp(options = {}) {
           errorCode: latestCommunication.deliveryLastErrorCode,
         },
         correspondenceEmails: latestResult?.correspondenceEmails
-          ?? applicationProfessorAddresses(application).slice(1),
+          ?? professorAddresses(application.professor).filter((email) => email !== normalizeMailAddress(application.professor.email)),
       })
       return
     }
@@ -18761,7 +18820,7 @@ export function createApp(options = {}) {
       communication: finalCommunication,
       delivery: finalDelivery,
       correspondenceEmails: deliveryResult?.correspondenceEmails
-        ?? applicationProfessorAddresses(persistedApplication).slice(1),
+        ?? professorAddresses(persistedApplication.professor).filter((email) => email !== normalizeMailAddress(persistedApplication.professor.email)),
     }, newlyQueued ? (finalDelivery.sent ? 201 : 202) : 200)
   }))
 
@@ -19766,7 +19825,12 @@ function reviewCommentCount(application) {
 
   function grantedAiContext({ application, ownerUser, input, profileAssets = [], referenceMetadata = [], unavailableReferences = [], attachmentCandidates = [] }) {
     const grants = input.grants
-    const aiEligibleCorrespondence = aiEligibleMailCommunications(application.communications)
+    const replyMessage = input.replyToId ? application.communications.find((item) => item.id === input.replyToId) : null
+    const recipientEmail = input.recipientEmail || (replyMessage?.direction === 'incoming' ? replyMessage.from : replyMessage?.to) || application.professor.email
+    const recipientProfessor = findApplicationProfessor(application, recipientEmail)
+    const aiEligibleCorrespondence = aiEligibleMailCommunications(application.communications).filter((item) =>
+      recipientProfessor ? communicationMatchesProfessor(application, item, recipientProfessor.id)
+        : normalizeMailAddress(item.direction === 'incoming' ? item.from : item.to) === normalizeMailAddress(recipientEmail))
     const context = {
       consent: Object.entries(grants).filter(([, allowed]) => allowed).map(([name]) => name),
       application: { id: application.id },
@@ -19785,7 +19849,8 @@ function reviewCommentCount(application) {
     if (grants.dossier) {
       context.dossier = {
         school: application.school,
-        professor: application.professor,
+        professor: recipientProfessor || { ...emptyProfessor(), email: recipientEmail },
+        recipientEmail,
         program: application.program,
         deadline: application.deadline,
         status: application.status,
@@ -27621,6 +27686,8 @@ function reviewCommentCount(application) {
     const server = listen(...args)
     server.headersTimeout = REQUEST_HEADERS_TIMEOUT_MS
     const healthSocket = ensureHealthWebSocket(server, {
+      isOriginAllowed: (origin, request) => app.locals.desktopEnabled
+        ? isAllowedDesktopOrigin(origin, request) : isAllowedCorsOrigin(origin),
       getStartupState: () => app.locals.startupState,
       isReady: (startupState) => {
         const externalState = externalDatabaseSyncDiagnostics()

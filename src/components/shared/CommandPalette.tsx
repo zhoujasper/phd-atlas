@@ -86,6 +86,7 @@ export default function CommandPalette({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
               if (event.key === 'ArrowDown') {
                 event.preventDefault()
                 setActiveIndex((current) => Math.min(current + 1, Math.max(0, filteredActions.length - 1)))

@@ -597,12 +597,14 @@
     "desktopImporting": "가져오는 중",
     "completeArchiveExt": "전체",
     "desktopLocalCapabilitiesTitle": "로컬에서 항상 사용",
-    "desktopLocalCapabilities": "지원서, 체크리스트, 기록된 서신, 자금, 타임라인, Discover, 면접 준비, 프로필, 로컬 백업.",
+    "desktopLocalCapabilities": "지원서, 자료, 저장된 연락 기록, 재정, 일정, 저장된 Discover 결과, 면접 기록, 프로필 및 로컬 백업.",
     "desktopWebCapabilitiesTitle": "웹 연결 후에만 표시",
     "desktopWebCapabilities": "메일 송수신, 메일 알림, 공유 링크, 캘린더 구독 URL, 브라우저 푸시.",
     "desktopConnectHint": "선택 사항입니다. 로컬 사용에는 웹 계정이 필요 없습니다.",
     "desktopBootFailed": "데스크톱 작업 공간을 열 수 없습니다.",
-    "desktopBootRetry": "다시 시도"
+    "desktopBootRetry": "다시 시도",
+    "desktopConnectOptionalAction": "웹 시스템 연결 (선택)",
+    "desktopOnlineToolsHint": "AI 생성과 온라인 검색에는 인터넷과 설정된 서비스가 필요합니다. PhD Atlas 웹 계정은 필요하지 않습니다."
   },
   "calendar": {
     "title": "캘린더 피드",

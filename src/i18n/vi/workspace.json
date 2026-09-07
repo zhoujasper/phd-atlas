@@ -33,7 +33,7 @@
     "noApps": "Chưa có hồ sơ tuyển sinh",
     "noMatch": "Không có hồ sơ đăng ký tuyển sinh phù hợp",
     "today": "Hôm nay",
-    "dayShort": "{count}d",
+    "dayShort": "{count} ngày",
     "daysPast": "{count}ngày qua",
     "sortDeadline": "Hạn chót",
     "sortName": "Trường học",

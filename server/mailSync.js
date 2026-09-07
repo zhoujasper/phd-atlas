@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { applicationProfessors, professorAddresses, findApplicationProfessor, professorName } from './shared/applicationProfessors.js'
 import {
   classifyTrackedMailMessage,
   mailMessageKey,
@@ -18,24 +19,22 @@ function sha256(value) {
 export const MAX_APPLICATION_CORRESPONDENCE_EMAILS = 10
 
 export function applicationProfessorAddresses(application) {
-  return normalizeMailAddressList([
-    application?.professor?.email,
-    ...(application?.professor?.correspondenceEmails ?? []),
-  ]).slice(0, MAX_APPLICATION_CORRESPONDENCE_EMAILS)
+  return normalizeMailAddressList(applicationProfessors(application).flatMap(professorAddresses))
 }
 
 export function trackedProfessorAddressUpdate(application, address) {
   const normalizedAddress = normalizeMailAddress(address)
   const primaryAddress = normalizeMailAddress(application?.professor?.email)
   const currentAddresses = applicationProfessorAddresses(application)
-  const correspondenceEmails = currentAddresses.filter((email) => email !== primaryAddress)
+  const primaryAddresses = professorAddresses(application?.professor)
+  const correspondenceEmails = primaryAddresses.filter((email) => email !== primaryAddress)
   if (!normalizedAddress) {
     return { status: 'invalid', address: '', correspondenceEmails }
   }
   if (currentAddresses.includes(normalizedAddress)) {
     return { status: 'already-tracked', address: normalizedAddress, correspondenceEmails }
   }
-  if (currentAddresses.length >= MAX_APPLICATION_CORRESPONDENCE_EMAILS) {
+  if (primaryAddresses.length >= MAX_APPLICATION_CORRESPONDENCE_EMAILS) {
     return { status: 'limit', address: normalizedAddress, correspondenceEmails }
   }
   return {
@@ -254,7 +253,8 @@ function professorIndex(applications, userId) {
 }
 
 function notificationForImportedMail(application, communication, message, messageKey) {
-  const professorName = application?.professor?.english || application?.professor?.email || 'professor'
+  const matchedProfessor = findApplicationProfessor(application, communication.direction === 'incoming' ? communication.from : communication.to)
+  const contactName = professorName(matchedProfessor) || communication.from || communication.to || 'professor'
   const schoolName = application?.school?.name || 'your'
   const incoming = communication.direction === 'incoming'
   const dangerous = incoming && communication.mailSecurity?.level === 'danger'
@@ -265,16 +265,16 @@ function notificationForImportedMail(application, communication, message, messag
     dedupeKey: `mail-import:${application.id}:${messageKey}`,
     triggerDate: communication.date,
     title: dangerous
-      ? `Suspicious email from ${professorName} quarantined`
-      : incoming ? `New email from ${professorName}` : `Sent email to ${professorName} imported`,
+      ? `Suspicious email from ${contactName} quarantined`
+      : incoming ? `New email from ${contactName}` : `Sent email to ${contactName} imported`,
     body: dangerous
       ? `"${communication.subject}" was imported as plain text with links disabled${quarantinedAttachmentCount > 0 ? ` and ${quarantinedAttachmentCount} attachment(s) quarantined` : ''}. Verify the sender through a trusted channel.`
       : incoming
       ? `"${communication.subject}" was imported into ${schoolName} correspondence.`
       : `"${communication.subject}" sent from your mailbox was imported into ${schoolName} correspondence.`,
     titleZh: dangerous
-      ? `已隔离来自 ${professorName} 的可疑邮件`
-      : incoming ? `收到 ${professorName} 的新邮件` : `已导入发送给 ${professorName} 的邮件`,
+      ? `已隔离来自 ${contactName} 的可疑邮件`
+      : incoming ? `收到 ${contactName} 的新邮件` : `已导入发送给 ${contactName} 的邮件`,
     bodyZh: dangerous
       ? `“${communication.subject}”已按纯文本导入并禁用链接${quarantinedAttachmentCount > 0 ? `，同时隔离 ${quarantinedAttachmentCount} 个附件` : ''}。请通过可信渠道核实发件人。`
       : incoming
@@ -290,7 +290,7 @@ function notificationForImportedMail(application, communication, message, messag
       sender: communication.from,
       senderEmail: normalizeMailAddressList(communication.from)[0] ?? '',
       recipient: communication.to,
-      recipientName: professorName,
+      recipientName: contactName,
       recipientEmail: normalizeMailAddressList(communication.to)[0] ?? '',
       subject: communication.subject,
       emailSubject: communication.subject,

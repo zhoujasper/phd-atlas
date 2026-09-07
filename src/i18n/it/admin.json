@@ -229,10 +229,10 @@
     "nodeVersion": "Versione di Node.js",
     "platform": "Piattaforma",
     "uptime": "Tempo di attività",
-    "uptimeSeconds": "{count}s",
-    "uptimeMinutes": "{count}m {sec}s",
-    "uptimeHours": "{count}h {min}m",
-    "uptimeDays": "{count}d {hr}h",
+    "uptimeSeconds": "{count} s",
+    "uptimeMinutes": "{count} min {sec} s",
+    "uptimeHours": "{count} h {min} min",
+    "uptimeDays": "{count} g {hr} h",
     "memoryUsage": "Utilizzo della memoria",
     "memoryTotal": "Memoria totale",
     "memoryUsed": "Usato",
@@ -266,7 +266,7 @@
     "updateSourceGithub": "GitHub ufficiale",
     "updateSourceManual": "Pacchetto manuale",
     "updateSourceTestingMirrors": "Verifica dei mirror",
-    "updateSourceMirror": "Mirror · {source}",
+    "updateSourceMirror": "Copia alternativa · {source}",
     "checkForUpdates": "Controlla aggiornamenti",
     "checkingForUpdates": "Controllo aggiornamenti…",
     "updateUpToDate": "PhD Atlas è aggiornato.",
@@ -505,8 +505,8 @@
     },
     "externalDatabaseEncryptionDesc": "È attivo un database esterno, quindi la crittografia dei file SQLite non si applica. La crittografia a riposo protegge l’intero stato dell’area di lavoro e i campi sensibili prima che raggiungano il database esterno."
   },
-  "uptimeSeconds": "{count}s",
-  "uptimeMinutes": "{count}m {sec}s",
-  "uptimeHours": "{count}h {min}m",
-  "uptimeDays": "{count}d {hr}h"
+  "uptimeSeconds": "{count} s",
+  "uptimeMinutes": "{count} min {sec} s",
+  "uptimeHours": "{count} h {min} min",
+  "uptimeDays": "{count} g {hr} h"
 }

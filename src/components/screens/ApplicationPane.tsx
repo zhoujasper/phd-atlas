@@ -1,3 +1,4 @@
+import { applicationProfessors, professorName } from '../../../shared/applicationProfessors.js'
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import {
   ArchiveRestore,
@@ -220,6 +221,7 @@ type ApplicationPaneProps = {
   onRestoreTrash?: (item: ApplicationTrashItem) => void
   onDeleteTrash?: (item: ApplicationTrashItem) => void
   onEmptyTrash?: () => void
+  onDuplicate?: (application: ApplicationRecord) => void
   onCopyApplication?: (value: string, label: string) => void
   onDeleteMany?: (ids: string[]) => void
   // applicationId -> owner display name, populated only when this pane is showing the
@@ -278,6 +280,7 @@ export function ApplicationPane({
   onDeleteTrash,
   onEmptyTrash,
   onCopyApplication,
+  onDuplicate,
   onDeleteMany,
   ownerNames,
   trashOwnerNames,
@@ -731,6 +734,13 @@ export function ApplicationPane({
           onSelect: () => onExportMany?.(targetIds),
         },
         {
+          id: 'duplicate',
+          label: tx('dossier.supervisors.duplicate'),
+          icon: <Copy size={14} aria-hidden="true" />,
+          disabled: targets.length !== 1 || !onDuplicate || Boolean(readOnlyIds?.has(targets[0]?.id)),
+          onSelect: () => onDuplicate?.(targets[0]),
+        },
+        {
           id: 'copy-school',
           label: tx('explorer.copySchool'),
           icon: <Copy size={14} aria-hidden="true" />,
@@ -778,7 +788,7 @@ export function ApplicationPane({
         },
       ],
     })
-  }, [deleteApplications, format, onCopyApplication, onDeleteMany, onExportMany, onOpenMany, onSelect, selectedApplications, selection, tx])
+  }, [deleteApplications, format, onDuplicate, readOnlyIds, onCopyApplication, onDeleteMany, onExportMany, onOpenMany, onSelect, selectedApplications, selection, tx])
 
   useEffect(() => {
     setVisibleApplicationCount((current) => Math.min(
@@ -1149,7 +1159,7 @@ export function ApplicationPane({
                       </span>
                     ) : null}
                     <em>
-                      {application.program} · {application.professor.english}
+                      {application.program} · {applicationProfessors(application).map((professor) => professorName(professor)).filter(Boolean).join(' · ')}
                       {!relation && ownerNames?.[application.id] ? ` · ${ownerNames[application.id]}` : ''}
                     </em>
                   </span>

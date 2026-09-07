@@ -1133,6 +1133,33 @@ describe('phdApi session token tracking', () => {
     expect(transportSignal?.aborted).toBe(true)
   })
 
+  it('renews the short freshness window after a successful 304 revalidation', async () => {
+    vi.useFakeTimers()
+    const body = { id: 'app_renewed', program: 'Still current' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(envelope(body, undefined, { ETag: '"same"' }))
+      .mockImplementation(() => Promise.resolve(new Response(null, { status: 304 })))
+    vi.stubGlobal('fetch', fetchMock)
+    await phdApi.getApplication('fresh-304', body.id)
+    await vi.advanceTimersByTimeAsync(3_001)
+    await expect(phdApi.getApplication('fresh-304', body.id)).resolves.toEqual(body)
+    await expect(phdApi.getApplication('fresh-304', body.id)).resolves.toEqual(body)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('clears must-revalidate only after a successful validator response', async () => {
+    const body = { id: 'app_invalidated_304', program: 'Verified' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(envelope(body, undefined, { ETag: '"same"' }))
+      .mockImplementation(() => Promise.resolve(new Response(null, { status: 304 })))
+    vi.stubGlobal('fetch', fetchMock)
+    await phdApi.getApplication('invalidated-304', body.id)
+    invalidateClientReadCacheForScopes('invalidated-304', new Set(['applications']))
+    await expect(phdApi.getApplication('invalidated-304', body.id)).resolves.toEqual(body)
+    await expect(phdApi.getApplication('invalidated-304', body.id)).resolves.toEqual(body)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('serves low-volatility reads from the short freshness cache even without an ETag', async () => {
     const assets = [{ id: 'asset_cached', name: 'Research statement' }]
     const fetchMock = vi.fn().mockResolvedValueOnce(envelope(assets))

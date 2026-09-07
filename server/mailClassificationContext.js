@@ -54,7 +54,9 @@ function explicitThreadKey(communication) {
 }
 
 function addressTokens(communication) {
-  const values = [communication?.from, communication?.to, communication?.cc]
+  const values = (communication?.direction === 'incoming' ? [communication?.from]
+    : communication?.direction === 'outgoing' ? [communication?.to]
+      : [communication?.from, communication?.to, communication?.cc])
     .flatMap((value) => (Array.isArray(value) ? value : [value]))
     .filter((value) => typeof value === 'string')
   const tokens = new Set()

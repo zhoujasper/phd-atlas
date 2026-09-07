@@ -1117,7 +1117,31 @@
     "aiProfileSelectedMaterials": "{count} seleccionados",
     "aiProfileSelectVisible": "Elegir algunos",
     "aiProfileUseAll": "Usar todo",
-    "aiProfileNoMatch": "Ningún material coincide con esa búsqueda."
+    "aiProfileNoMatch": "Ningún material coincide con esa búsqueda.",
+    "supervisors": {
+      "title": "Posibles directores",
+      "add": "Añadir director",
+      "hint": "Una solicitud puede incluir varios directores. Las personas que recomiendan se gestionan por separado.",
+      "unnamed": "Datos del director",
+      "emailOptional": "Puedes añadir el correo después",
+      "default": "Contacto predeterminado",
+      "contact": "Posible director",
+      "write": "Escribir correo",
+      "makeDefault": "Usar por defecto",
+      "remove": "Quitar director",
+      "confirmRemove": "Eliminar",
+      "scrollLeft": "Desplazar supervisores a la izquierda",
+      "scrollRight": "Desplazar supervisores a la derecha",
+      "removeHint": "¿Quitar este director? Los mensajes anteriores conservarán sus direcciones originales.",
+      "chineseName": "Nombre en chino",
+      "more": "Contacto, laboratorio y más datos",
+      "aliases": "Otras direcciones de correo",
+      "duplicateEmail": "Esta dirección ya pertenece a un director de esta solicitud.",
+      "filter": "Filtrar por director",
+      "all": "Todos los directores",
+      "duplicate": "Duplicar solicitud",
+      "copyHint": "Copia la universidad, programa, directores, personas que recomiendan y requisitos. El progreso se reinicia; no se copian mensajes, archivos subidos ni enlaces compartidos."
+    }
   },
   "fees": {
     "sectionTitle": "Matrícula/tarifas de solicitud",

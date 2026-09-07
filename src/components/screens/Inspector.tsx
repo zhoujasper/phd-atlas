@@ -13,6 +13,8 @@ import { DatePicker } from '../shared/DatePicker'
 import { CollapsiblePanel } from '../shared/CollapsiblePanel'
 import { InlinePresence } from '../shared/InlinePresence'
 import { AsyncActionButton } from '../shared/AsyncActionButton'
+import { Select } from '../shared/Select'
+import { applicationProfessors, professorName } from '../../../shared/applicationProfessors.js'
 import { formatDate, daysUntil, deadlineUrgency } from '../../appModel'
 import { localeForLanguage, localizeStaticText } from '../../i18n'
 import { safeExternalHttpUrl } from '../../safeLinks'
@@ -97,6 +99,7 @@ export function Inspector({
   const locale = localeForLanguage(lang)
   const [editingField, setEditingField] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
+  const [selectedProfessorId, setSelectedProfessorId] = useState('')
   const [visibleDeadlineCount, setVisibleDeadlineCount] = useState(INSPECTOR_DEADLINE_BATCH_SIZE)
   const [pastDeadlinesOpen, setPastDeadlinesOpen] = useState(Boolean(showPastDeadlines))
   const previousApplicationIdRef = useRef<string | null>(null)
@@ -114,6 +117,7 @@ export function Inspector({
     setVisibleDeadlineCount(INSPECTOR_DEADLINE_BATCH_SIZE)
     setEditingField(null)
     setEditValue('')
+    setSelectedProfessorId('')
   }, [application?.id])
 
   // Smooth expand/collapse for “show expired” — must stay above any early return.
@@ -284,6 +288,10 @@ export function Inspector({
   }
 
   const localize = (value: string) => localizeStaticText(value, lang)
+  const professors = applicationProfessors(application)
+  const professorIndex = Math.max(0, professors.findIndex((professor) => professor.id === selectedProfessorId))
+  const selectedProfessor = professors[professorIndex]
+  const professorFieldPrefix = professorIndex === 0 ? 'professor' : `additionalProfessors.${professorIndex - 1}`
   const applicationBackups = backups.filter((backup) => backup.applicationId === application.id)
   const canEditDeadlines = !readOnly
   const extraDeadlines: InspectorDeadline[] = [
@@ -529,23 +537,36 @@ export function Inspector({
       <div className="inspector-card">
         <h4>{tx('inspector.quickLinks')}</h4>
         <div className="inspector-section">
+          {professors.length > 1 ? (
+            <Select
+              value={selectedProfessor.id}
+              ariaLabel={tx('dossier.supervisors.title')}
+              size="small"
+              options={professors.map((professor) => ({
+                value: professor.id,
+                label: professorName(professor, lang) || tx('dossier.supervisors.unnamed'),
+                description: professor.email,
+              }))}
+              onChange={(id) => { setSelectedProfessorId(id); setEditingField(null) }}
+            />
+          ) : null}
           <div className="inspector-link-row">
             <User size={14} className="inspector-link-icon" aria-hidden="true" />
-            {renderEditableValue('professor.english', application.professor.english, tx('inspector.copyProfessor'))}
-            {renderLinkActions('professor.english', application.professor.english, tx('inspector.copyProfessor'))}
+            {renderEditableValue(`${professorFieldPrefix}.english`, selectedProfessor.english, tx('inspector.copyProfessor'))}
+            {renderLinkActions(`${professorFieldPrefix}.english`, selectedProfessor.english, tx('inspector.copyProfessor'))}
           </div>
 
           <div className="inspector-link-row">
             <Mail size={14} className="inspector-link-icon" aria-hidden="true" />
-            {renderEditableValue('professor.email', application.professor.email, tx('inspector.copyEmail'))}
-            {renderLinkActions('professor.email', application.professor.email, tx('inspector.copyEmail'))}
+            {renderEditableValue(`${professorFieldPrefix}.email`, selectedProfessor.email, tx('inspector.copyEmail'))}
+            {renderLinkActions(`${professorFieldPrefix}.email`, selectedProfessor.email, tx('inspector.copyEmail'))}
           </div>
 
-          {application.professor.homepage && (
+          {selectedProfessor.homepage && (
             <div className="inspector-link-row">
               <ExternalLink size={14} className="inspector-link-icon" aria-hidden="true" />
-              {renderEditableValue('professor.homepage', application.professor.homepage, tx('inspector.professorHomepage'), true)}
-              {renderLinkActions('professor.homepage', application.professor.homepage, tx('inspector.professorHomepage'))}
+              {renderEditableValue(`${professorFieldPrefix}.homepage`, selectedProfessor.homepage, tx('inspector.professorHomepage'), true)}
+              {renderLinkActions(`${professorFieldPrefix}.homepage`, selectedProfessor.homepage, tx('inspector.professorHomepage'))}
             </div>
           )}
 

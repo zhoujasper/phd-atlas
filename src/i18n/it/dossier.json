@@ -1117,7 +1117,31 @@
     "aiProfileSelectedMaterials": "{count} selezionati",
     "aiProfileSelectVisible": "Scegline alcuni",
     "aiProfileUseAll": "Usa tutto",
-    "aiProfileNoMatch": "Nessun materiale corrisponde a questa ricerca."
+    "aiProfileNoMatch": "Nessun materiale corrisponde a questa ricerca.",
+    "supervisors": {
+      "title": "Possibili supervisori",
+      "add": "Aggiungi supervisore",
+      "hint": "Una candidatura può includere più supervisori. I referenti per le raccomandazioni sono gestiti separatamente.",
+      "unnamed": "Dati del supervisore",
+      "emailOptional": "Puoi aggiungere l’email più tardi",
+      "default": "Contatto predefinito",
+      "contact": "Possibile supervisore",
+      "write": "Scrivi email",
+      "makeDefault": "Imposta come predefinito",
+      "remove": "Rimuovi supervisore",
+      "confirmRemove": "Elimina",
+      "scrollLeft": "Scorri i supervisori a sinistra",
+      "scrollRight": "Scorri i supervisori a destra",
+      "removeHint": "Rimuovere questo supervisore? I messaggi esistenti conserveranno gli indirizzi originali.",
+      "chineseName": "Nome in cinese",
+      "more": "Contatti, laboratorio e altri dettagli",
+      "aliases": "Altri indirizzi email",
+      "duplicateEmail": "Questo indirizzo è già assegnato a un supervisore di questa candidatura.",
+      "filter": "Filtra per supervisore",
+      "all": "Tutti i supervisori",
+      "duplicate": "Duplica candidatura",
+      "copyHint": "Copia università, programma, supervisori, referenti e requisiti. Il progresso riparte da zero; messaggi, file caricati e collegamenti di condivisione non vengono copiati."
+    }
   },
   "fees": {
     "sectionTitle": "Tasse di iscrizione/candidatura universitaria",

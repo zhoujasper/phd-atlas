@@ -597,12 +597,14 @@
     "desktopImporting": "Đang nhập",
     "completeArchiveExt": "CẢ",
     "desktopLocalCapabilitiesTitle": "Luôn dùng được trên máy",
-    "desktopLocalCapabilities": "Hồ sơ, danh sách tài liệu, thư đã ghi, tài trợ, dòng thời gian, Discover, chuẩn bị phỏng vấn, hồ sơ cá nhân và sao lưu local.",
+    "desktopLocalCapabilities": "Hồ sơ ứng tuyển, tài liệu, thư từ đã lưu, kinh phí, dòng thời gian, kết quả Discover đã lưu, ghi chép phỏng vấn, hồ sơ cá nhân và bản sao lưu cục bộ.",
     "desktopWebCapabilitiesTitle": "Sau khi kết nối hệ thống web",
     "desktopWebCapabilities": "Gửi nhận email, nhắc email, liên kết chia sẻ, URL lịch và thông báo trình duyệt.",
     "desktopConnectHint": "Tùy chọn. Dùng local không cần tài khoản web.",
     "desktopBootFailed": "Không mở được không gian làm việc trên máy.",
-    "desktopBootRetry": "Thử lại"
+    "desktopBootRetry": "Thử lại",
+    "desktopConnectOptionalAction": "Kết nối hệ thống web (tùy chọn)",
+    "desktopOnlineToolsHint": "Tạo nội dung AI và tìm kiếm trực tuyến cần internet và dịch vụ đã cấu hình, không cần tài khoản web PhD Atlas."
   },
   "calendar": {
     "title": "Nguồn cấp dữ liệu lịch",

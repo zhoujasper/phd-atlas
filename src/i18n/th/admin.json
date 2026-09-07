@@ -229,10 +229,10 @@
     "nodeVersion": "เวอร์ชัน Node.js",
     "platform": "แพลตฟอร์ม",
     "uptime": "สถานะการออนไลน์",
-    "uptimeSeconds": "{count}ส",
-    "uptimeMinutes": "{count}m {sec}ส",
-    "uptimeHours": "{count}h {min}ม",
-    "uptimeDays": "{count}d {hr}h",
+    "uptimeSeconds": "{count} วินาที",
+    "uptimeMinutes": "{count} นาที {sec} วินาที",
+    "uptimeHours": "{count} ชม. {min} นาที",
+    "uptimeDays": "{count} วัน {hr} ชม.",
     "memoryUsage": "การใช้หน่วยความจำ",
     "memoryTotal": "หน่วยความจำทั้งหมด",
     "memoryUsed": "ใช้แล้ว",
@@ -505,8 +505,8 @@
     },
     "externalDatabaseEncryptionDesc": "มีการใช้งานฐานข้อมูลภายนอกอยู่ จึงไม่ใช้การเข้ารหัสไฟล์ SQLite การเข้ารหัสขณะจัดเก็บจะปกป้องสถานะพื้นที่ทำงานทั้งหมดและฟิลด์ที่มีข้อมูลอ่อนไหวก่อนส่งถึงฐานข้อมูลภายนอก"
   },
-  "uptimeSeconds": "{count}ส",
-  "uptimeMinutes": "{count}m {sec}ส",
-  "uptimeHours": "{count}h {min}ม",
-  "uptimeDays": "{count}d {hr}h"
+  "uptimeSeconds": "{count} วินาที",
+  "uptimeMinutes": "{count} นาที {sec} วินาที",
+  "uptimeHours": "{count} ชม. {min} นาที",
+  "uptimeDays": "{count} วัน {hr} ชม."
 }

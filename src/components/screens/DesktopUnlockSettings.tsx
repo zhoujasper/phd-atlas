@@ -1,6 +1,7 @@
 import { AlertTriangle, Lock } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { DesktopRuntime } from '../../desktopRuntime'
+import { normalizeErrorMessage } from '../../errorMessages'
 import { useI18n } from '../hooks/useI18n'
 import { PendingLabel } from '../shared/PendingLabel'
 import { SwitchControl } from '../shared/SwitchControl'
@@ -16,7 +17,7 @@ type DesktopUnlockSettingsProps = {
 }
 
 export function DesktopUnlockSettings({ runtime, onSave }: DesktopUnlockSettingsProps) {
-  const { tx } = useI18n()
+  const { tx, lang } = useI18n()
   const enabled = runtime.unlockRequired === true
   const [draftEnabled, setDraftEnabled] = useState(enabled)
   useEffect(() => {
@@ -28,6 +29,7 @@ export function DesktopUnlockSettings({ runtime, onSave }: DesktopUnlockSettings
   const [currentPassword, setCurrentPassword] = useState('')
   const [changing, setChanging] = useState(false)
   const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)
   const [localError, setLocalError] = useState<string | null>(null)
 
   const showEnableForm = !enabled && draftEnabled
@@ -36,6 +38,7 @@ export function DesktopUnlockSettings({ runtime, onSave }: DesktopUnlockSettings
   const needsForm = showEnableForm || showDisableForm || showChangeForm
 
   async function submit(enabledNext: boolean, includeNewPassword: boolean) {
+    if (busyRef.current) return
     if (includeNewPassword && password.length < 4) {
       setLocalError(tx('settings.desktopUnlockTooShort'))
       return
@@ -45,6 +48,7 @@ export function DesktopUnlockSettings({ runtime, onSave }: DesktopUnlockSettings
       return
     }
     setLocalError(null)
+    busyRef.current = true
     setBusy(true)
     try {
       await onSave({
@@ -58,7 +62,10 @@ export function DesktopUnlockSettings({ runtime, onSave }: DesktopUnlockSettings
       setCurrentPassword('')
       setChanging(false)
       setDraftEnabled(enabledNext)
+    } catch (error) {
+      setLocalError(normalizeErrorMessage(error, lang))
     } finally {
+      busyRef.current = false
       setBusy(false)
     }
   }

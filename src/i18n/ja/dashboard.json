@@ -100,7 +100,7 @@
     "noPriorityHint": "優先度 80 以上のアプリケーションがここに表示されます。",
     "recentMaterials": "最近のチェックリスト",
     "priorityValue": "優先度 {value}",
-    "dayShort": "{count}d",
+    "dayShort": "{count}日",
     "noTimeline": "タイムライン イベントはまだありません。",
     "noMaterials": "チェックリスト項目はまだありません。",
     "guidanceTitle": "私の指導チーム",

@@ -188,7 +188,7 @@ export function attachHealthWebSocket(server, {
       rejectUpgrade(socket, 503, 'Service Unavailable', retryAfterMs())
       return
     }
-    if (!isOriginAllowed(request.headers.origin)) {
+    if (!isOriginAllowed(request.headers.origin, request)) {
       rejectUpgrade(socket, 403, 'Forbidden')
       return
     }

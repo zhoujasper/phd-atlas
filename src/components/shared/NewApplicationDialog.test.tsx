@@ -1,3 +1,4 @@
+import { preloadLanguage } from '../../i18n'
 import '@testing-library/jest-dom/vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -6,7 +7,8 @@ import { prepareForSafeReload } from '../../safeReload'
 import { NewApplicationDialog } from './NewApplicationDialog'
 
 describe('NewApplicationDialog', () => {
-  beforeAll(() => {
+  beforeAll(async () => {
+    await preloadLanguage('en', ['dossier'])
     Object.defineProperty(Element.prototype, 'scrollIntoView', {
       configurable: true,
       value: vi.fn(),
@@ -31,14 +33,14 @@ describe('NewApplicationDialog', () => {
       />,
     )
 
-    const professorInput = screen.getByLabelText(/^Professor \*$/)
+    const professorInput = screen.getByLabelText(/^Professor$/)
     await user.click(professorInput)
     await user.type(professorInput, 'Jasper')
 
     expect(professorInput).toHaveValue('Jasper')
     expect(professorInput).toHaveFocus()
 
-    const emailInput = screen.getByLabelText(/^Professor email \*$/)
+    const emailInput = screen.getByLabelText(/^Email$/)
     await user.click(emailInput)
     await user.type(emailInput, 'jasper@example.com')
 
@@ -62,7 +64,7 @@ describe('NewApplicationDialog', () => {
     )
 
     expect(screen.queryByRole('textbox', { name: 'Country' })).not.toBeInTheDocument()
-    expect(document.querySelectorAll('.new-dialog .field-required-mark')).toHaveLength(5)
+    expect(document.querySelectorAll('.new-dialog .field-required-mark')).toHaveLength(3)
 
     const countryTrigger = screen.getByRole('button', { name: 'Country' })
     expect(countryTrigger.querySelector('.country-select-value')).toHaveClass('placeholder')
@@ -89,8 +91,8 @@ describe('NewApplicationDialog', () => {
       />,
     )
 
-    await user.type(screen.getByLabelText(/^Professor \*$/), 'Professor Lee')
-    await user.type(screen.getByLabelText(/^Professor email \*$/), 'lee@example.edu')
+    await user.type(screen.getByLabelText(/^Professor$/), 'Professor Lee')
+    await user.type(screen.getByLabelText(/^Email$/), 'lee@example.edu')
     await user.type(screen.getByLabelText(/^University \*$/), 'Example University')
     await user.type(screen.getByLabelText(/^Program \*$/), 'Computer Science PhD')
     await user.click(screen.getByRole('button', { name: /create dossier/i }))
@@ -117,11 +119,11 @@ describe('NewApplicationDialog', () => {
       />,
     )
 
-    await user.type(screen.getByLabelText(/^Professor \*$/), 'Professor Lee')
-    await user.type(screen.getByLabelText(/^Professor email \*$/), 'lee@example.edu')
+    await user.type(screen.getByLabelText(/^Professor$/), 'Professor Lee')
+    await user.type(screen.getByLabelText(/^Email$/), 'lee@example.edu')
     await user.type(screen.getByLabelText(/^University \*$/), 'Example University')
     await user.type(screen.getByLabelText(/^Program \*$/), 'Computer Science PhD')
-    const homepage = screen.getByLabelText('Professor homepage')
+    const homepage = screen.getByLabelText('Homepage')
     await user.type(homepage, 'https://example.edu/professor')
     await user.click(screen.getByRole('button', { name: /create dossier/i }))
 
@@ -141,8 +143,8 @@ describe('NewApplicationDialog', () => {
       <NewApplicationDialog {...common} draftIdentity={{ userId: 'user-a', workspaceId: 'personal' }} />,
     )
 
-    await user.type(screen.getByLabelText(/^Professor \*$/), 'Resident Professor')
-    await user.type(screen.getByLabelText('Professor homepage'), 'https://example.edu/resident')
+    await user.type(screen.getByLabelText(/^Professor$/), 'Resident Professor')
+    await user.type(screen.getByLabelText('Homepage'), 'https://example.edu/resident')
     await waitFor(() => expect(Array.from({ length: sessionStorage.length }, (_, index) => (
       sessionStorage.getItem(sessionStorage.key(index) ?? '') ?? ''
     )).join('')).toContain('https://example.edu/resident'))
@@ -151,20 +153,20 @@ describe('NewApplicationDialog', () => {
     const otherWorkspace = render(
       <NewApplicationDialog {...common} draftIdentity={{ userId: 'user-a', workspaceId: 'team-b' }} />,
     )
-    expect(screen.getByLabelText(/^Professor \*$/)).toHaveValue('')
+    expect(screen.getByLabelText(/^Professor$/)).toHaveValue('')
     otherWorkspace.unmount()
 
     const otherUser = render(
       <NewApplicationDialog {...common} draftIdentity={{ userId: 'user-b', workspaceId: 'personal' }} />,
     )
-    expect(screen.getByLabelText(/^Professor \*$/)).toHaveValue('')
+    expect(screen.getByLabelText(/^Professor$/)).toHaveValue('')
     otherUser.unmount()
 
     render(
       <NewApplicationDialog {...common} draftIdentity={{ userId: 'user-a', workspaceId: 'personal' }} />,
     )
-    expect(screen.getByLabelText(/^Professor \*$/)).toHaveValue('Resident Professor')
-    expect(screen.getByLabelText('Professor homepage')).toHaveValue('https://example.edu/resident')
+    expect(screen.getByLabelText(/^Professor$/)).toHaveValue('Resident Professor')
+    expect(screen.getByLabelText('Homepage')).toHaveValue('https://example.edu/resident')
   })
 
   it('blocks automatic reload while dirty after verifying the recovery write', async () => {
@@ -179,7 +181,7 @@ describe('NewApplicationDialog', () => {
       />,
     )
 
-    await user.type(screen.getByLabelText(/^Professor \*$/), 'Unsaved Professor')
+    await user.type(screen.getByLabelText(/^Professor$/), 'Unsaved Professor')
     await waitFor(() => expect(sessionStorage.length).toBe(1))
     await expect(prepareForSafeReload({ reason: 'lazy-module' })).resolves.toBe(false)
   })
@@ -198,7 +200,7 @@ describe('NewApplicationDialog', () => {
     const view = render(
       <NewApplicationDialog {...common} studentOptions={[{ id: 'student-1', name: 'Student One' }]} />,
     )
-    await user.type(screen.getByLabelText(/^Professor \*$/), 'Local unsaved professor')
+    await user.type(screen.getByLabelText(/^Professor$/), 'Local unsaved professor')
 
     view.rerender(
       <NewApplicationDialog
@@ -210,7 +212,7 @@ describe('NewApplicationDialog', () => {
       />,
     )
 
-    expect(screen.getByLabelText(/^Professor \*$/)).toHaveValue('Local unsaved professor')
+    expect(screen.getByLabelText(/^Professor$/)).toHaveValue('Local unsaved professor')
   })
 
   it('keeps the complete draft retryable after a rejected durable create', async () => {
@@ -226,16 +228,16 @@ describe('NewApplicationDialog', () => {
       />,
     )
 
-    await user.type(screen.getByLabelText(/^Professor \*$/), 'Professor Retry')
-    await user.type(screen.getByLabelText(/^Professor email \*$/), 'retry@example.edu')
+    await user.type(screen.getByLabelText(/^Professor$/), 'Professor Retry')
+    await user.type(screen.getByLabelText(/^Email$/), 'retry@example.edu')
     await user.type(screen.getByLabelText(/^University \*$/), 'Retry University')
     await user.type(screen.getByLabelText(/^Program \*$/), 'Retry PhD')
-    await user.type(screen.getByLabelText('Professor homepage'), 'https://example.edu/retry')
+    await user.type(screen.getByLabelText('Homepage'), 'https://example.edu/retry')
     await user.click(screen.getByRole('button', { name: /create dossier/i }))
 
     await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1))
-    expect(screen.getByLabelText(/^Professor \*$/)).toHaveValue('Professor Retry')
-    expect(screen.getByLabelText('Professor homepage')).toHaveValue('https://example.edu/retry')
+    expect(screen.getByLabelText(/^Professor$/)).toHaveValue('Professor Retry')
+    expect(screen.getByLabelText('Homepage')).toHaveValue('https://example.edu/retry')
     await waitFor(() => expect(screen.getByRole('button', { name: /create dossier/i })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: /create dossier/i }))
     await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(2))
@@ -254,8 +256,8 @@ describe('NewApplicationDialog', () => {
       />,
     )
 
-    await user.type(screen.getByLabelText(/^Professor \*$/), 'Professor Saved')
-    await user.type(screen.getByLabelText(/^Professor email \*$/), 'saved@example.edu')
+    await user.type(screen.getByLabelText(/^Professor$/), 'Professor Saved')
+    await user.type(screen.getByLabelText(/^Email$/), 'saved@example.edu')
     await user.type(screen.getByLabelText(/^University \*$/), 'Saved University')
     await user.type(screen.getByLabelText(/^Program \*$/), 'Saved PhD')
     await waitFor(() => expect(sessionStorage.length).toBe(1))

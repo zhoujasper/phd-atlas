@@ -21,9 +21,3 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify:tree
-      - name: Validate Docker Compose
-        run: |
-          cp .env.example .env
-          docker compose config --quiet
-      - name: Build Docker image
-        run: docker build --tag phd-atlas-ci:${{ github.sha }} .

@@ -343,6 +343,7 @@ export function ShareViewer({ token }: { token: string }) {
         await runSection('overview', {
           school: draft.school,
           professor: draft.professor,
+          additionalProfessors: draft.additionalProfessors,
           program: draft.program,
           deadline: draft.deadline,
           status: draft.status,
@@ -406,6 +407,17 @@ export function ShareViewer({ token }: { token: string }) {
 
   const handleInspectorEditField = (field: string, value: string) => {
     if (!canEdit || !draft) return
+    const additionalProfessorField = /^additionalProfessors\.(\d+)\.(english|email|homepage)$/.exec(field)
+    if (additionalProfessorField) {
+      const [, index, key] = additionalProfessorField
+      updateDraft({
+        ...draft,
+        additionalProfessors: draft.additionalProfessors?.map((professor, position) => (
+          position === Number(index) ? { ...professor, [key]: value } : professor
+        )),
+      })
+      return
+    }
     if (field === 'deadline') {
       updateDraft({ ...draft, deadline: value })
       return

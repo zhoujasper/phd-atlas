@@ -1,3 +1,6 @@
+import type { ApplicationRecord } from '../../data/applications'
+import { emptyProfessor } from '../../../shared/applicationProfessors.js'
+import { ApplicationProfessorsPanel } from './ApplicationProfessorsPanel'
 import { X, Plus, Users } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { today } from '../../appModel'
@@ -47,6 +50,7 @@ export function NewApplicationDialog({
   studentOptions = [],
   defaultStudentId,
   draftIdentity,
+  initialApplication,
 }: {
   open: boolean
   busy: boolean
@@ -56,6 +60,8 @@ export function NewApplicationDialog({
     professorChinese: string
     professorEmail: string
     professorHomepage: string
+    professorProfile?: ApplicationRecord['professor']
+    additionalProfessors?: ApplicationRecord['additionalProfessors']
     university: string
     country: string
     website: string
@@ -69,6 +75,7 @@ export function NewApplicationDialog({
   studentOptions?: NewApplicationStudentOption[]
   defaultStudentId?: string | null
   draftIdentity?: NewApplicationDraftIdentity
+  initialApplication?: ApplicationRecord | null
 }) {
   const { tx } = useI18n()
   const professorInputRef = useRef<HTMLInputElement>(null)
@@ -91,6 +98,17 @@ export function NewApplicationDialog({
     notes: '',
     visibleToTeam: false,
     ownerId: defaultOwnerId,
+    ...(initialApplication ? {
+      professor: initialApplication.professor.english,
+      professorChinese: initialApplication.professor.chinese,
+      professorEmail: initialApplication.professor.email,
+      professorHomepage: initialApplication.professor.homepage,
+      professorProfile: initialApplication.professor,
+      additionalProfessors: initialApplication.additionalProfessors,
+      university: initialApplication.school.name, country: initialApplication.school.country,
+      website: initialApplication.school.website, program: initialApplication.program,
+      deadline: initialApplication.deadline,
+    } : {}),
   })
 
   const draftScope: NewApplicationDraftScope | null = draftIdentity
@@ -270,7 +288,7 @@ export function NewApplicationDialog({
         <div className="dialog-head">
           <div>
             <span className="eyebrow">{tx('dialog.newRecord')}</span>
-            <h2>{tx('dialog.title')}</h2>
+            <h2>{tx(initialApplication ? 'dossier.supervisors.duplicate' : 'dialog.title')}</h2>
           </div>
           <button type="button" className="icon-action" onClick={resetAndClose} disabled={isBusy} aria-label={tx('dialog.close')}>
             <X size={16} aria-hidden="true" />
@@ -304,42 +322,11 @@ export function NewApplicationDialog({
           }}
         >
            {teamAssignmentPanel}
-           <label {...fieldProps('professor')}>
-             <span>{tx('dialog.professor')} <span className="field-required-mark">*</span></span>
-             <input
-               ref={professorInputRef}
-               required
-               value={form.professor}
-               aria-invalid={fieldIsInvalid('professor') || undefined}
-               onChange={(e) => updateForm({ professor: e.target.value })}
-               placeholder={tx('dialog.professorPlaceholder')}
-             />
-           </label>
-           <label {...fieldProps('professorEmail')}>
-             <span>{tx('dialog.email')} <span className="field-required-mark">*</span></span>
-             <input
-               required
-               type="email"
-               value={form.professorEmail}
-               aria-invalid={fieldIsInvalid('professorEmail') || undefined}
-               onChange={(e) => updateForm({ professorEmail: e.target.value })}
-               placeholder={tx('dialog.emailPlaceholder')}
-             />
-           </label>
-           <label {...fieldProps('professorHomepage')}>
-             <span>{tx('dialog.homepage')}</span>
-             <input
-               type="url"
-               value={form.professorHomepage}
-               aria-invalid={fieldIsInvalid('professorHomepage') || undefined}
-               onChange={(e) => updateForm({ professorHomepage: e.target.value })}
-               placeholder={tx('dialog.urlPlaceholder')}
-             />
-           </label>
            <label {...fieldProps('university')}>
              <span>{tx('dialog.university')} <span className="field-required-mark">*</span></span>
              <input
                required
+               ref={professorInputRef}
                value={form.university}
                aria-invalid={fieldIsInvalid('university') || undefined}
                onChange={(e) => updateForm({ university: e.target.value })}
@@ -383,6 +370,17 @@ export function NewApplicationDialog({
                placeholder={tx('dialog.deadlinePlaceholder')}
              />
            </label>
+           <div className="wide new-application-professors">
+             {initialApplication ? <p className="professors-hint">{tx('dossier.supervisors.copyHint')}</p> : null}
+             <ApplicationProfessorsPanel value={{
+               professor: { ...emptyProfessor(), ...form.professorProfile,
+                 english: form.professor, chinese: form.professorChinese, email: form.professorEmail, homepage: form.professorHomepage },
+               additionalProfessors: form.additionalProfessors,
+             }} readOnly={isBusy} invalidField={invalidField} createMode onChange={({ professor, additionalProfessors }) => updateForm({
+               professor: professor.english, professorChinese: professor.chinese, professorEmail: professor.email,
+               professorHomepage: professor.homepage, professorProfile: professor, additionalProfessors,
+             })} />
+           </div>
            <div {...fieldProps('notes', 'wide')}>
              <span>{tx('dialog.notes')}</span>
              <MarkdownTextarea

@@ -1032,6 +1032,9 @@ export function enqueueApplicationUpdate(
     const existing = queue[existingIndex]
     queue[existingIndex] = {
       ...existing,
+      // Each authored revision owns its acknowledgement. A replay may still
+      // hold the old id; completing it must not remove or block this new edit.
+      id: createOfflineId(application.id),
       application: safeApplication,
       updatedAt: now,
       localEditedAt: now,
@@ -1154,38 +1157,67 @@ export function mergeOfflineApplicationUpdate(
   const autoResolved: Array<{ field: string; winner: 'local' | 'server' }> = []
   const winner = options.autoResolve ? autoResolveWinner(operation, serverApplication) : null
 
-  const diverged = (key: keyof ApplicationRecord, localValue: unknown) => {
+  const diverged = (field: string, localValue: unknown, serverValue: unknown) => {
     if (!winner) {
-      conflicts.push(String(key))
-      return
+      conflicts.push(field)
+      return serverValue
     }
-    autoResolved.push({ field: String(key), winner })
-    if (winner === 'local') (merged as unknown as Record<string, unknown>)[key] = localValue
+    autoResolved.push({ field, winner })
+    return winner === 'local' ? localValue : serverValue
+  }
+
+  const recordsById = (items: unknown[]) => {
+    const byId = new Map<string, Record<string, unknown>>()
+    for (const item of items) {
+      if (!isRecord(item) || typeof item.id !== 'string' || !item.id || byId.has(item.id)) return null
+      byId.set(item.id, item)
+    }
+    return byId
+  }
+  const mergeValue = (baselineValue: unknown, localValue: unknown, serverValue: unknown, path: string, depth: number): unknown => {
+    if (valuesEqual(localValue, serverValue)) return serverValue
+    if (!base) {
+      return serverUnchanged ? localValue : diverged(path, localValue, serverValue)
+    }
+    if (valuesEqual(localValue, baselineValue)) return serverValue
+
+    if (depth < 64 && isRecord(baselineValue) && isRecord(localValue) && isRecord(serverValue)) {
+      const result = { ...serverValue }
+      const fields = new Set([...Object.keys(baselineValue), ...Object.keys(localValue), ...Object.keys(serverValue)])
+      for (const field of fields) {
+        const value = mergeValue(baselineValue[field], localValue[field], serverValue[field], `${path}.${field}`, depth + 1)
+        if (value === undefined) delete result[field]
+        else Object.defineProperty(result, field, { value, enumerable: true, writable: true, configurable: true })
+      }
+      return result
+    }
+    if (depth < 64 && Array.isArray(baselineValue) && Array.isArray(localValue) && Array.isArray(serverValue)) {
+      const before = recordsById(baselineValue)
+      const local = recordsById(localValue)
+      const server = recordsById(serverValue)
+      if (before && local && server) {
+        const baseOrder = [...before.keys()]
+        const localOrder = [...local.keys()]
+        const reordered = !valuesEqual(baseOrder, localOrder)
+        const order = reordered
+          ? new Set([...local.keys(), ...server.keys()])
+          : new Set([...server.keys(), ...local.keys()])
+        const result: unknown[] = []
+        for (const id of order) {
+          const value = mergeValue(before.get(id), local.get(id), server.get(id), `${path}[${id}]`, depth + 1)
+          if (value !== undefined) result.push(value)
+        }
+        return result
+      }
+    }
+    if (serverUnchanged || valuesEqual(serverValue, baselineValue)) return localValue
+    return diverged(path, localValue, serverValue)
   }
 
   for (const key of keys) {
-    const localValue = operation.application[key]
-    const serverValue = serverApplication[key]
-    if (valuesEqual(localValue, serverValue)) continue
-
-    if (!base) {
-      if (serverUnchanged) {
-        ;(merged as unknown as Record<string, unknown>)[key] = localValue
-      } else {
-        diverged(key, localValue)
-      }
-      continue
-    }
-
-    const baselineValue = base[key]
-    const localChanged = !valuesEqual(localValue, baselineValue)
-    if (!localChanged) continue
-    const serverChanged = !serverUnchanged && !valuesEqual(serverValue, baselineValue)
-    if (!serverChanged) {
-      ;(merged as unknown as Record<string, unknown>)[key] = localValue
-    } else {
-      diverged(key, localValue)
-    }
+    const value = mergeValue(base?.[key], operation.application[key], serverApplication[key], key, 0)
+    if (value === undefined) delete merged[key]
+    else Object.defineProperty(merged, key, { value, enumerable: true, writable: true, configurable: true })
   }
 
   const replayRequired = Array.from(keys).some((key) => (
@@ -1205,6 +1237,45 @@ export function removeOfflineQueueItems(userId: string, operationIds: string[]) 
   const blocked = new Set(operationIds)
   const queue = readOfflineQueue(userId).filter((item) => !blocked.has(item.id))
   return writeOfflineQueue(userId, queue) ? queue : readOfflineQueue(userId)
+}
+
+/**
+ * Acknowledges one exact authored revision. If typing continued during its
+ * request, carry only those later edits onto the acknowledged server version.
+ * Its later commit timestamp must never defeat the user's later-authored edit.
+ */
+export function acknowledgeOfflineApplicationUpdate(
+  userId: string,
+  operation: OfflineApplicationUpdate,
+  saved: ApplicationRecord,
+) {
+  const queue = readOfflineQueue(userId)
+  const current = queue.find((item) => item.applicationId === operation.applicationId)
+  if (!current || saved.id !== operation.applicationId || operation.userId !== userId) return queue
+  if (current.id === operation.id) return removeOfflineQueueItems(userId, [operation.id])
+  // Another acknowledgement may already have advanced this queue's base.
+  if (current.baseUpdatedAt !== operation.baseUpdatedAt || !valuesEqual(current.baseApplication, operation.baseApplication)) return queue
+  const baseline = sanitizePersonalApplicationForOffline(saved, userId)
+  if (!baseline) return queue
+  const rebased = mergeOfflineApplicationUpdate({
+    ...current,
+    baseApplication: operation.application,
+    // The known acknowledgement is not an independent same-field edit. Compare
+    // authored changes with the sent revision, then use the saved version for CAS.
+    baseUpdatedAt: saved.updatedAt ?? null,
+  }, saved)
+  const application = rebased && sanitizePersonalApplicationForOffline(rebased.application, userId)
+  if (!application) return queue
+  const next = queue.map((item) => item.id === current.id ? {
+    ...item,
+    application,
+    baseApplication: baseline,
+    baseUpdatedAt: saved.updatedAt ?? null,
+  } : item)
+  if (!writeOfflineQueue(userId, next)) {
+    throw new Error('The offline acknowledgement could not be written to durable browser storage.')
+  }
+  return next
 }
 
 export function removeOfflineApplicationUpdates(userId: string, applicationId: string) {

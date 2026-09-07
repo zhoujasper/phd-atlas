@@ -229,10 +229,10 @@
     "nodeVersion": "Phiên bản Node.js",
     "platform": "Nền tảng",
     "uptime": "Thời gian hoạt động",
-    "uptimeSeconds": "{count}s",
-    "uptimeMinutes": "{count}m {sec}s",
-    "uptimeHours": "{count}h {min}m",
-    "uptimeDays": "{count}d {hr}h",
+    "uptimeSeconds": "{count} giây",
+    "uptimeMinutes": "{count} phút {sec} giây",
+    "uptimeHours": "{count} giờ {min} phút",
+    "uptimeDays": "{count} ngày {hr} giờ",
     "memoryUsage": "Mức sử dụng bộ nhớ",
     "memoryTotal": "Tổng bộ nhớ",
     "memoryUsed": "Đã qua sử dụng",
@@ -505,8 +505,8 @@
     },
     "externalDatabaseEncryptionDesc": "Cơ sở dữ liệu bên ngoài đang hoạt động nên mã hóa tệp SQLite không áp dụng. Mã hóa khi lưu trữ sẽ bảo vệ toàn bộ trạng thái không gian làm việc và các trường nhạy cảm trước khi chúng đến cơ sở dữ liệu bên ngoài."
   },
-  "uptimeSeconds": "{count}s",
-  "uptimeMinutes": "{count}m {sec}s",
-  "uptimeHours": "{count}h {min}m",
-  "uptimeDays": "{count}d {hr}h"
+  "uptimeSeconds": "{count} giây",
+  "uptimeMinutes": "{count} phút {sec} giây",
+  "uptimeHours": "{count} giờ {min} phút",
+  "uptimeDays": "{count} ngày {hr} giờ"
 }

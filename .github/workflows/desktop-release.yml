@@ -1,11 +1,6 @@
 name: Package Windows and macOS desktop apps
 
 on:
-  workflow_run:
-    workflows:
-      - Release update package and container
-    types:
-      - completed
   workflow_dispatch:
     inputs:
       released_sha:
@@ -17,24 +12,19 @@ permissions:
   contents: read
 
 concurrency:
-  group: phd-atlas-desktop-${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
+  group: phd-atlas-desktop-${{ inputs.released_sha }}
   cancel-in-progress: false
 
 jobs:
   build-windows:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 50
     steps:
       - name: Check out the released commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
+          ref: ${{ inputs.released_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -59,7 +49,7 @@ jobs:
       - name: Upload immutable Windows candidates
         uses: actions/upload-artifact@v4
         with:
-          name: phd-atlas-desktop-windows-${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
+          name: phd-atlas-desktop-windows-${{ inputs.released_sha }}
           if-no-files-found: error
           retention-days: 3
           path: |
@@ -69,19 +59,14 @@ jobs:
             dist-desktop/PhDAtlas-*-win-*-portable.exe.sha256
 
   build-macos:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 50
     steps:
       - name: Check out the released commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
+          ref: ${{ inputs.released_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -106,7 +91,7 @@ jobs:
       - name: Upload immutable macOS candidates
         uses: actions/upload-artifact@v4
         with:
-          name: phd-atlas-desktop-macos-${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
+          name: phd-atlas-desktop-macos-${{ inputs.released_sha }}
           if-no-files-found: error
           retention-days: 3
           path: |
@@ -116,12 +101,7 @@ jobs:
             dist-desktop/PhDAtlas-*-mac-*.zip.sha256
 
   attach-release-assets:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository)
+    if: github.event_name == 'workflow_dispatch'
     needs:
       - build-windows
       - build-macos
@@ -133,7 +113,7 @@ jobs:
       - name: Check out the released commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
+          ref: ${{ inputs.released_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -145,13 +125,13 @@ jobs:
       - name: Download native desktop candidates
         uses: actions/download-artifact@v4
         with:
-          pattern: phd-atlas-desktop-*-${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
+          pattern: phd-atlas-desktop-*-${{ inputs.released_sha }}
           path: release-assets
           merge-multiple: true
 
       - name: Verify tag ownership and local checksums
         env:
-          RELEASED_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.released_sha || github.event.workflow_run.head_sha }}
+          RELEASED_SHA: ${{ inputs.released_sha }}
         shell: bash
         run: |
           set -euo pipefail

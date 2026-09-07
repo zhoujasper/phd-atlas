@@ -597,12 +597,14 @@
       "teal": "青绿色"
     },
     "desktopLocalCapabilitiesTitle": "本地始终可用",
-    "desktopLocalCapabilities": "申请项目、材料清单、本地往来记录、经费、时间线、Discover、面试准备、个人画像和本地备份。",
+    "desktopLocalCapabilities": "申请项目、材料、本地往来记录、经费、时间线、已保存的 Discover 结果、面试记录、个人画像和本地备份。",
     "desktopWebCapabilitiesTitle": "连接网页系统后才会出现",
     "desktopWebCapabilities": "发送和接收邮件、邮件提醒、分享链接、日历订阅地址和浏览器推送。",
     "desktopConnectHint": "可选。只在本地使用时不需要网页账号。",
     "desktopBootFailed": "桌面工作区未能打开。",
-    "desktopBootRetry": "重试"
+    "desktopBootRetry": "重试",
+    "desktopConnectOptionalAction": "连接网页系统（可选）",
+    "desktopOnlineToolsHint": "AI 生成和在线发现需要联网并配置相应服务，不需要登录 PhD Atlas 网页账号。"
   },
   "calendar": {
     "title": "日历订阅",

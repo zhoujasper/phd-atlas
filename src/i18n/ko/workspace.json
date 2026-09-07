@@ -33,7 +33,7 @@
     "noApps": "아직 신청이 없습니다.",
     "noMatch": "일치하는 지원이 없습니다",
     "today": "오늘",
-    "dayShort": "{count}d",
+    "dayShort": "{count}일",
     "daysPast": "{count}일 지나",
     "sortDeadline": "마감일",
     "sortName": "학교",

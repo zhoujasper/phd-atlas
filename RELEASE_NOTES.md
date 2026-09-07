@@ -5,6 +5,57 @@ section per version using the exact heading `## v<package.json version>`.
 Automation extracts only the matching section, so older notes remain immutable
 history while the next version can be prepared in the same file.
 
+## v0.1.5
+
+**Beta.8 upgrade compatibility, multiple intended supervisors, and dependable offline desktop use.**
+
+Existing `0.1.0-beta.8` server installations can upgrade directly from Admin
+using the complete update package. Desktop users should download the package
+for their platform. Native installers remain unsigned; macOS bundles have an
+ad-hoc signature and are not notarized.
+This release provides native desktop and server update packages. Container
+images remain unchanged; no Docker tests or container publication run.
+
+- Update packaging now checks the actual archive with an isolated production
+  dependency installation and Node startup preflight before producing final
+  package/checksum outputs. All nine shared runtime modules stay inside the
+  legacy `server/` boundary. Beta.8 compatibility covers direct apply, boot
+  acknowledgement, active replay, failed-candidate rollback, and persistent data.
+- Applications support several complete intended-supervisor profiles for one
+  school and programme. Recipient selection, mail matching, drafting, filtering,
+  sharing, and exports retain each contact's identity. Copying an application
+  creates a separate recoverable form and resets its application progress.
+- Compact supervisor cards support horizontal scrolling and inline deletion
+  confirmation. Existing research notes remain intact when contacts are moved,
+  copied, or restored.
+- Desktop workspaces open without internet or website login, preserve local
+  data and language settings through restart, and finish durable writes when
+  quitting. Native menus, splash screens, context actions, and dialogs support
+  all 12 interface languages.
+- Offline edits retain their own operation identity and rebase correctly after
+  an earlier save is acknowledged. Dialog keyboard/focus handling, table resize
+  cleanup, cache revalidation, and bounded payload-worker queues were hardened.
+- Updated runtime and frontend dependencies, strengthened translation checks,
+  and kept desktop builders explicitly non-publishing. Every distributed native
+  package has an adjacent SHA-256 checksum.
+
+### 中文摘要
+
+现有 `0.1.0-beta.8` 服务端可在管理后台直接使用完整更新包升级。桌面用户请下载
+对应平台的安装包。原生安装包仍未签名；macOS 应用使用 ad-hoc 签名，尚未公证。
+本次发布原生桌面包与服务端更新包；容器镜像保持不变，不运行 Docker 测试或容器发布。
+
+- 普通打包会先对实际压缩包执行隔离的生产依赖安装、Node 启动预检和更新校验，
+  通过后才生成最终更新包与校验文件。9 个共享运行时模块均位于旧更新器支持的
+  `server/` 目录，覆盖 Beta.8 直接升级、启动确认、重启重放、失败回滚与数据保留。
+- 一个学校及项目可维护多位完整的意向导师；收件人选择、邮件归档、AI 起草、筛选、
+  分享及导出保留各导师独立身份。复制申请会打开独立、可恢复的创建表单并重置进度。
+- 导师卡片支持紧凑横向滚动和卡片内删除确认，切换、复制或恢复导师时保留已有研究笔记。
+- 桌面版支持无网络、无网页登录启动，本地数据和语言设置可在重启后恢复，退出前完成
+  持久化。原生菜单、启动页、右键操作及对话框覆盖全部 12 种界面语言。
+- 修复离线保存确认后的版本衔接，并改进对话框键盘与焦点处理、表格列宽拖动清理、
+  缓存重新验证和有界后台任务队列；同时更新依赖并加强翻译检查。
+
 ## v0.1.4
 
 **Desktop local-workspace parity and solo-user reliability.**

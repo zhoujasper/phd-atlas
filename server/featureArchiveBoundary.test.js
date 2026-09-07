@@ -19,7 +19,7 @@ describe('current personal-only feature archive boundary', () => {
 
   it('does not seed or mix retained collaboration data into current personal work', () => {
     const storage = source('server/storage.js')
-    expect(storage).toContain('if (!publicProductionSetup && !PUBLIC_EDITION)')
+    expect(storage).toContain('if (!publicProductionSetup && !PUBLIC_EDITION && !isDesktopProcess())')
     expect(storage).toContain('&& (!PUBLIC_EDITION || !application.teamId)')
     expect(storage).toContain('type NOT IN')
 
@@ -38,7 +38,7 @@ describe('current personal-only feature archive boundary', () => {
     expect(app).toContain('!PUBLIC_EDITION && teamWorkspaceChooserOpen')
     expect(app).toContain("if (PUBLIC_EDITION) return 'personal'")
 
-    expect(source('src/RootRoutes.tsx')).toContain('const isTeamInviteRoute = !PUBLIC_EDITION')
+    expect(source('src/RootRoutes.tsx')).toContain('const isTeamInviteRoute = !desktopRuntime.enabled && !PUBLIC_EDITION')
     expect(source('src/components/screens/AuthScreen.tsx')).toContain("...(!PUBLIC_EDITION ? ['team' as const] : [])")
     expect(source('src/components/screens/MarketingFeatureTour.tsx')).toContain("...(!PUBLIC_EDITION ? ['team' as const] : [])")
     expect(source('src/components/screens/UpgradeProScreen.tsx')).toContain("PUBLIC_EDITION && requestedFeature === 'team'")

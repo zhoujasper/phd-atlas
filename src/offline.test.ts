@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, type AuthSession } from './api/phdApi'
 import type { ApplicationRecord } from './data/applications'
 import {
+  acknowledgeOfflineApplicationUpdate,
   canQueueApplicationUpdate,
   enqueueApplicationUpdate,
   isNetworkLikeError,
@@ -12,6 +13,7 @@ import {
   mergeOfflineApplicationUpdate,
   offlineAccessForSession,
   readOfflineQueue,
+  removeOfflineQueueItems,
   saveOfflineSnapshot,
 } from './offline'
 
@@ -269,6 +271,101 @@ describe('offline queue safeguards', () => {
     expect(queue[0].application.progress).toBe(35)
   })
 
+  it('retains a newer edit when an earlier in-flight replay is acknowledged', () => {
+    const [inFlight] = enqueueApplicationUpdate(session, { ...application, progress: 20 }, application.updatedAt ?? null, application)
+    enqueueApplicationUpdate(session, { ...application, progress: 80 }, application.updatedAt ?? null, application)
+    removeOfflineQueueItems(session.user.id, [inFlight.id])
+    const remaining = readOfflineQueue(session.user.id)
+    expect(remaining).toHaveLength(1)
+    expect(remaining[0].application.progress).toBe(80)
+    expect(remaining[0].baseUpdatedAt).toBe(inFlight.baseUpdatedAt)
+    expect(remaining[0].baseApplication).toEqual(inFlight.baseApplication)
+    expect(remaining[0].createdAt).toBe(inFlight.createdAt)
+    removeOfflineQueueItems(session.user.id, [remaining[0].id])
+    expect(readOfflineQueue(session.user.id)).toEqual([])
+  })
+
+  it('does not apply an obsolete replay failure to a newly authored queue entry', () => {
+    const [inFlight] = enqueueApplicationUpdate(session, application, application.updatedAt ?? null)
+    enqueueApplicationUpdate(session, { ...application, progress: 80 }, application.updatedAt ?? null)
+    markOfflineQueueItemBlocked(session.user.id, inFlight.id, 'obsolete-failure')
+    expect(readOfflineQueue(session.user.id)[0]).toMatchObject({ status: 'pending', application: { progress: 80 } })
+  })
+
+  it('rebases later typing onto an earlier acknowledgement without mistaking commit time for authoring time', () => {
+    const first = { ...application, program: 'First edit' }
+    const [sent] = enqueueApplicationUpdate(session, first, application.updatedAt ?? null, application)
+    const [newer] = enqueueApplicationUpdate(session, { ...first, program: 'Later edit' }, application.updatedAt ?? null, application)
+    const saved = { ...first, priority: 77, updatedAt: new Date(Date.now() + 10_000).toISOString() }
+    acknowledgeOfflineApplicationUpdate(session.user.id, sent, saved)
+    const [pending] = readOfflineQueue(session.user.id)
+    expect(pending.id).toBe(newer.id)
+    expect(pending.localEditedAt).toBe(newer.localEditedAt)
+    expect(pending.application.program).toBe('Later edit')
+    expect(pending.application.priority).toBe(77)
+    expect(pending.baseUpdatedAt).toBe(saved.updatedAt)
+    const replay = mergeOfflineApplicationUpdate(pending, saved, { autoResolve: true })
+    expect(replay).toMatchObject({ replayRequired: true, autoResolved: [], application: { program: 'Later edit', priority: 77 } })
+  })
+
+  it('ignores a duplicate old acknowledgement once the queued base has advanced', () => {
+    const [sent] = enqueueApplicationUpdate(session, application, application.updatedAt ?? null, application)
+    enqueueApplicationUpdate(session, { ...application, progress: 80 }, application.updatedAt ?? null, application)
+    const saved = { ...application, updatedAt: '2026-07-09T00:00:00.000Z' }
+    const advanced = acknowledgeOfflineApplicationUpdate(session.user.id, sent, saved)
+    expect(acknowledgeOfflineApplicationUpdate(session.user.id, sent, { ...saved, progress: 30 })).toEqual(advanced)
+  })
+
+  it('merges independent edits within one professor instead of overwriting the whole profile', () => {
+    const local = { ...application, professor: { ...application.professor, english: 'New name' } }
+    const [operation] = enqueueApplicationUpdate(session, local, application.updatedAt ?? null, application)
+    const remote = { ...application, professor: { ...application.professor, research: 'New research' }, updatedAt: '2026-07-09T00:00:00.000Z' }
+    const merged = mergeOfflineApplicationUpdate(operation, remote, { autoResolve: true })
+    expect(merged?.conflicts).toEqual([])
+    expect(merged?.autoResolved).toEqual([])
+    expect(merged?.application.professor).toMatchObject({ english: 'New name', research: 'New research' })
+  })
+
+  it('merges separate checklist edits and additions by id while preserving explicit deletions', () => {
+    const base = { ...application, tasks: [
+      { id: 'one', title: 'First', done: false },
+      { id: 'two', title: 'Second', done: false },
+      { id: 'remove', title: 'Remove me', done: false },
+    ] } as ApplicationRecord
+    const local = { ...base, tasks: [{ ...base.tasks[0], done: true }, base.tasks[1]] }
+    const [operation] = enqueueApplicationUpdate(session, local, base.updatedAt ?? null, base)
+    const remote = { ...base, tasks: [base.tasks[0], { ...base.tasks[1], title: 'Remote title' }, base.tasks[2], { id: 'new', title: 'Remote addition', done: false }], updatedAt: '2026-07-09T00:00:00.000Z' } as ApplicationRecord
+    const merged = mergeOfflineApplicationUpdate(operation, remote, { autoResolve: true })
+    expect(merged?.autoResolved).toEqual([])
+    expect(merged?.application.tasks.map(({ id }) => id)).toEqual(['one', 'two', 'new'])
+    expect(merged?.application.tasks[0].done).toBe(true)
+    expect(merged?.application.tasks[1].title).toBe('Remote title')
+  })
+
+  it('retains canonical nested fields when rebasing later typing after an acknowledgement', () => {
+    const [sent] = enqueueApplicationUpdate(session, application, application.updatedAt ?? null, application)
+    enqueueApplicationUpdate(session, { ...application, professor: { ...application.professor, english: 'New name' } }, application.updatedAt ?? null, application)
+    const saved = { ...application, professor: { ...application.professor, research: 'Canonical research' }, updatedAt: new Date(Date.now() + 1_000).toISOString() }
+    const [pending] = acknowledgeOfflineApplicationUpdate(session.user.id, sent, saved)
+    expect(pending.application.professor).toMatchObject({ english: 'New name', research: 'Canonical research' })
+  })
+
+  it('preserves the requested insertion position and independent server additions', () => {
+    const base = { ...application, tasks: [{ id: 'a', title: 'A', done: false }, { id: 'b', title: 'B', done: false }] } as ApplicationRecord
+    const local = { ...base, tasks: [base.tasks[0], { id: 'local', title: 'Inserted', done: false }, base.tasks[1]] } as ApplicationRecord
+    const [operation] = enqueueApplicationUpdate(session, local, base.updatedAt ?? null, base)
+    const remote = { ...base, tasks: [...base.tasks, { id: 'remote', title: 'Remote', done: false }], updatedAt: '2026-07-09T00:00:00.000Z' } as ApplicationRecord
+    expect(mergeOfflineApplicationUpdate(operation, remote)?.application.tasks.map(({ id }) => id)).toEqual(['a', 'local', 'b', 'remote'])
+  })
+
+  it('does not resurrect an untouched checklist item deleted remotely', () => {
+    const base = { ...application, tasks: [{ id: 'a', title: 'A', done: false }, { id: 'b', title: 'B', done: false }] } as ApplicationRecord
+    const local = { ...base, tasks: [{ ...base.tasks[0], done: true }, base.tasks[1]] }
+    const [operation] = enqueueApplicationUpdate(session, local, base.updatedAt ?? null, base)
+    const remote = { ...base, tasks: [base.tasks[0]], updatedAt: '2026-07-09T00:00:00.000Z' }
+    expect(mergeOfflineApplicationUpdate(operation, remote)?.application.tasks).toEqual([{ ...base.tasks[0], done: true }])
+  })
+
   it('rejects an offline queue acknowledgement when durable storage throws', () => {
     const originalSetItem = Storage.prototype.setItem
     const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation((key, value) => {
@@ -365,10 +462,10 @@ describe('offline queue safeguards', () => {
     const queue = readOfflineQueue(session.user.id)
     expect(queue).toHaveLength(1)
     expect(queue[0]).toMatchObject({
-      id: blocked.id,
       status: 'pending',
       baseUpdatedAt: application.updatedAt,
     })
+    expect(queue[0].id).not.toBe(blocked.id)
     expect(queue[0]).not.toHaveProperty('blockedReason')
     expect(queue[0].application.progress).toBe(35)
   })

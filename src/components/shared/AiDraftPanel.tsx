@@ -124,7 +124,7 @@ export function AiDraftPanel({
   mode: 'compose' | 'reply'
   replyToId?: string | null
   currentDraft: { subject: string; body: string }
-  draftSessionKey: number
+  draftSessionKey: string | number
   onClose: () => void
   onDraft: (input: AiDraftInput, onEvent: (event: AiDraftEvent) => void, signal?: AbortSignal) => Promise<void>
   onDraftChange: (draft: Partial<{ subject: string; body: string }>) => void

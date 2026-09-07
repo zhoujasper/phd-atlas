@@ -1117,7 +1117,31 @@
     "aiProfileSelectedMaterials": "{count} ausgewählt",
     "aiProfileSelectVisible": "Einzelne auswählen",
     "aiProfileUseAll": "Alles verwenden",
-    "aiProfileNoMatch": "Kein Material passt zu dieser Suche."
+    "aiProfileNoMatch": "Kein Material passt zu dieser Suche.",
+    "supervisors": {
+      "title": "Gewünschte Betreuung",
+      "add": "Betreuung hinzufügen",
+      "hint": "Eine Bewerbung kann mehrere Betreuungspersonen umfassen. Referenzpersonen werden getrennt verwaltet.",
+      "unnamed": "Angaben zur Betreuung",
+      "emailOptional": "E-Mail später ergänzen",
+      "default": "Standardkontakt",
+      "contact": "Betreuungsperson",
+      "write": "E-Mail schreiben",
+      "makeDefault": "Als Standard festlegen",
+      "remove": "Betreuung entfernen",
+      "confirmRemove": "Löschen",
+      "scrollLeft": "Betreuer nach links scrollen",
+      "scrollRight": "Betreuer nach rechts scrollen",
+      "removeHint": "Diese Betreuungsperson entfernen? Bisherige Nachrichten behalten ihre ursprünglichen Adressen.",
+      "chineseName": "Chinesischer Name",
+      "more": "Kontakt, Labor und weitere Angaben",
+      "aliases": "Weitere E-Mail-Adressen",
+      "duplicateEmail": "Diese Adresse ist bereits einer Betreuungsperson dieser Bewerbung zugeordnet.",
+      "filter": "Nach Betreuung filtern",
+      "all": "Alle Betreuungspersonen",
+      "duplicate": "Bewerbung duplizieren",
+      "copyHint": "Hochschule, Studiengang, Betreuung, Referenzpersonen und Anforderungen werden kopiert. Der Fortschritt beginnt neu; Nachrichten, hochgeladene Dateien und Freigabelinks werden nicht kopiert."
+    }
   },
   "fees": {
     "sectionTitle": "Studien-/Bewerbungsgebühren",
