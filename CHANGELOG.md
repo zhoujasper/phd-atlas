@@ -8,6 +8,29 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-10-13
+
+### Changed
+
+- Redesigned Settings → MCP / Skill: the client setup guide is a single
+  collapsible surface (closed by default) with a sliding Codex / Claude Desktop
+  switch, numbered steps, a one-click install-prompt copy action, and a nested
+  verified-downloads list. Connected devices use a compact list with status,
+  last use, and icon actions.
+- The MCP connection approval dialog is fully laid out, with the device code,
+  client details, and permissions grouped into collapsible sections that show
+  per-group and high-risk counts.
+
+### Security
+
+- Updated dependencies for newly published advisories, including Nodemailer 10,
+  Undici, Multer, compression, morgan, proxy-addr, and shell-quote.
+
+### Fixed
+
+- An MCP approval link opened while signed out now survives sign-in and opens
+  the approval dialog afterwards instead of being lost.
+
 ## [0.1.5] - 2026-09-07
 
 ### Added

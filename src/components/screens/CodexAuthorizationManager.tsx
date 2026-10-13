@@ -3,8 +3,13 @@ import {
   Bot,
   Check,
   ChevronDown,
+  Clock,
+  Copy,
   Download,
   ExternalLink,
+  FileArchive,
+  FileCheck,
+  GitBranch,
   Laptop,
   LoaderCircle,
   PauseCircle,
@@ -22,6 +27,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
 } from 'react'
 import {
@@ -35,7 +41,7 @@ import { useI18n } from '../hooks/useI18n'
 import { useModalA11y } from '../hooks/useModalA11y'
 import { CollapsiblePanel } from '../shared/CollapsiblePanel'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
-import { CopyButton } from '../shared/CopyButton'
+import { copyToClipboard } from '../shared/clipboard'
 import { ModalPortal } from '../shared/ModalPortal'
 import { PendingLabel } from '../shared/PendingLabel'
 
@@ -47,6 +53,7 @@ const CLAUDE_MCPB_DOWNLOAD_PATH = '/downloads/phd-atlas-claude.mcpb'
 const CLAUDE_MCPB_CHECKSUM_PATH = '/downloads/phd-atlas-claude.mcpb.sha256'
 const CODEX_SKILL_GITHUB_URL = 'https://github.com/zhoujasper/phd-atlas/tree/main/integrations/codex/plugins/phd-atlas/skills/phd-atlas'
 const CODEX_SKILL_INSTALL_PROMPT = `Use skill-installer to install the PhD Atlas skill from ${CODEX_SKILL_GITHUB_URL}. Then use $phd-atlas to connect my account.`
+const GITHUB_LABEL = 'GitHub'
 const CODEX_IDLE_TIMEOUT_MS = 180 * 24 * 60 * 60 * 1000
 
 const HIGH_RISK_SCOPES = new Set([
@@ -192,6 +199,18 @@ function displayAuthorizationStatus(
   return 'active'
 }
 
+function statusLabelKey(status: DisplayAuthorizationStatus) {
+  switch (status) {
+    case 'active': return 'settings.codex.statusActive'
+    case 'disabled': return 'settings.codex.statusDisabled'
+    case 'expired': return 'settings.codex.statusExpired'
+    case 'revoked': return 'settings.codex.statusRevoked'
+    case 'invalidated': return 'settings.codex.statusInvalidated'
+    case 'idle_expired': return 'settings.codex.statusIdleExpired'
+    default: return 'settings.codex.statusUnknown'
+  }
+}
+
 function scopesByGroup(scopes: readonly string[]) {
   const remaining = new Set(scopes)
   const groups: Array<{
@@ -216,28 +235,58 @@ function scopesByGroup(scopes: readonly string[]) {
 }
 
 function ScopeSummary({ scopes }: { scopes: readonly string[] }) {
-  const { tx } = useI18n()
+  const { tx, format } = useI18n()
   const groups = useMemo(() => scopesByGroup(scopes), [scopes])
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set())
+  const toggle = (id: string) => setOpenGroups((current) => {
+    const next = new Set(current)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    return next
+  })
   return (
-    <div className="codex-scope-groups compact">
-      {groups.map((group) => (
-        <section key={group.id} className="codex-scope-group">
-          <h5>{tx(group.labelKey)}</h5>
-          <ul>
-            {group.items.map((scope) => {
-              const highRisk = HIGH_RISK_SCOPES.has(scope) || group.id === 'other'
-              return (
-                <li key={scope} className={highRisk ? 'is-high-risk' : ''}>
-                  <code>{scope}</code>
-                  {highRisk ? (
-                    <span><AlertTriangle size={11} aria-hidden="true" />{tx('settings.codex.highRisk')}</span>
-                  ) : null}
-                </li>
-              )
-            })}
-          </ul>
-        </section>
-      ))}
+    <div className="codex-scope-groups">
+      {groups.map((group) => {
+        const open = openGroups.has(group.id)
+        const riskCount = group.items.filter((scope) => HIGH_RISK_SCOPES.has(scope) || group.id === 'other').length
+        const panelId = `codex-scope-${group.id}`
+        return (
+          <section key={group.id} className={`codex-scope-group${open ? ' is-open' : ''}`}>
+            <button
+              type="button"
+              className="codex-scope-toggle"
+              aria-expanded={open}
+              aria-controls={panelId}
+              onClick={() => toggle(group.id)}
+            >
+              <span className="codex-scope-name">{tx(group.labelKey)}</span>
+              <span className="codex-scope-count">{group.items.length}</span>
+              {riskCount > 0 ? (
+                <span className="codex-scope-risk">
+                  <AlertTriangle size={11} aria-hidden="true" />
+                  {format(tx('settings.codex.highRiskCount'), { count: riskCount })}
+                </span>
+              ) : null}
+              <ChevronDown className="codex-disclosure-chevron" size={14} aria-hidden="true" />
+            </button>
+            <CollapsiblePanel id={panelId} open={open} keepMounted className="codex-scope-panel">
+              <ul>
+                {group.items.map((scope) => {
+                  const highRisk = HIGH_RISK_SCOPES.has(scope) || group.id === 'other'
+                  return (
+                    <li key={scope} className={highRisk ? 'is-high-risk' : ''}>
+                      <code>{scope}</code>
+                      {highRisk ? (
+                        <span><AlertTriangle size={10} aria-hidden="true" />{tx('settings.codex.highRisk')}</span>
+                      ) : null}
+                    </li>
+                  )
+                })}
+              </ul>
+            </CollapsiblePanel>
+          </section>
+        )
+      })}
     </div>
   )
 }
@@ -287,11 +336,12 @@ function DeviceAuthorizationDialog({
               <h3 id={titleId}>{tx('settings.codex.deviceTitle')}</h3>
               <p id={descriptionId}>{tx('settings.codex.deviceDescription')}</p>
             </div>
-            <button ref={closeRef} type="button" className="icon-action" disabled={busy} onClick={onClose} aria-label={tx('close')}>
+            <button ref={closeRef} type="button" className="codex-icon-button" disabled={busy} onClick={onClose} aria-label={tx('close')}>
               <X size={16} aria-hidden="true" />
             </button>
           </header>
 
+          <div className="codex-device-body">
           <div className="codex-device-code">
             <span>{tx('settings.codex.deviceCode')}</span>
             <code>{request.userCode}</code>
@@ -316,23 +366,29 @@ function DeviceAuthorizationDialog({
           ) : request.preview ? (
             <>
               <div className="codex-device-client">
-                <strong>{request.preview.clientName}</strong>
-                <span>{request.preview.deviceName || tx('settings.codex.unknownDevice')}</span>
-                <span>{request.preview.requestedExpiresInDays
-                  ? format(tx('settings.codex.deviceLifetimeDays'), { count: request.preview.requestedExpiresInDays })
-                  : tx('settings.codex.deviceActiveUntilRevoked')}</span>
-                {request.preview.expiresAt ? (
-                  <span>{format(tx('settings.codex.deviceRequestExpiresAt'), {
-                    date: formatTimestamp(request.preview.expiresAt, lang, tx('settings.codex.unknownDate')),
-                  })}</span>
-                ) : null}
+                <span className="codex-device-avatar" aria-hidden="true"><Laptop size={15} /></span>
+                <div className="codex-device-client-copy">
+                  <strong>{request.preview.clientName}</strong>
+                  <span>{request.preview.deviceName || tx('settings.codex.unknownDevice')}</span>
+                </div>
+                <ul className="codex-device-facts">
+                  <li><ShieldCheck size={12} aria-hidden="true" />{request.preview.requestedExpiresInDays
+                    ? format(tx('settings.codex.deviceLifetimeDays'), { count: request.preview.requestedExpiresInDays })
+                    : tx('settings.codex.deviceActiveUntilRevoked')}</li>
+                  {request.preview.expiresAt ? (
+                    <li><Clock size={12} aria-hidden="true" />{format(tx('settings.codex.deviceRequestExpiresAt'), {
+                      date: formatTimestamp(request.preview.expiresAt, lang, tx('settings.codex.unknownDate')),
+                    })}</li>
+                  ) : null}
+                </ul>
               </div>
               {request.preview.status === 'pending' ? (
                 <div className="codex-device-permissions">
-                  <div>
+                  <div className="codex-device-permissions-head">
                     <strong>{tx('settings.codex.requestedPermissions')}</strong>
-                    <span>{tx('settings.codex.devicePermissionWarning')}</span>
+                    <span className="codex-count-badge">{requestedScopes.length}</span>
                   </div>
+                  <p>{tx('settings.codex.devicePermissionWarning')}</p>
                   <ScopeSummary scopes={requestedScopes} />
                 </div>
               ) : null}
@@ -364,6 +420,7 @@ function DeviceAuthorizationDialog({
                 )}
             </>
           ) : null}
+          </div>
         </div>
       </div>
     </ModalPortal>
@@ -393,6 +450,9 @@ function CodexAuthorizationManagerSession({
   const [loadError, setLoadError] = useState<{ userId: string; message: string } | null>(null)
   const [installClient, setInstallClient] = useState<InstallClient>('codex')
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [setupOpen, setSetupOpen] = useState(false)
+  const [promptCopyState, setPromptCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const promptCopyTimerRef = useRef<number | null>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const [renameBusy, setRenameBusy] = useState(false)
@@ -455,6 +515,10 @@ function CodexAuthorizationManagerSession({
     void loadAuthorizations(controller.signal)
     return () => controller.abort()
   }, [loadAuthorizations])
+
+  useEffect(() => () => {
+    if (promptCopyTimerRef.current !== null) window.clearTimeout(promptCopyTimerRef.current)
+  }, [])
 
   useEffect(() => {
     const updateClock = () => setStatusNow(Date.now())
@@ -686,94 +750,159 @@ function CodexAuthorizationManagerSession({
     ? tx('settings.codex.clientCodex')
     : tx('settings.codex.clientClaude')
 
+  const copyInstallerPrompt = async () => {
+    const ok = await copyToClipboard(installerPrompt)
+    setPromptCopyState(ok ? 'copied' : 'failed')
+    if (!ok) onNotify?.(tx('copyFailed'), 'error')
+    if (promptCopyTimerRef.current !== null) window.clearTimeout(promptCopyTimerRef.current)
+    promptCopyTimerRef.current = window.setTimeout(() => {
+      promptCopyTimerRef.current = null
+      setPromptCopyState('idle')
+    }, 1800)
+  }
+
+  const verifiedDownloads = [
+    { href: CODEX_SKILL_DOWNLOAD_PATH, label: tx('settings.codex.skillBundle'), kind: tx('settings.codex.zipLabel'), icon: FileArchive },
+    { href: CODEX_SKILL_CHECKSUM_PATH, label: tx('settings.codex.skillBundle'), kind: tx('settings.codex.checksumLabel'), icon: FileCheck },
+    { href: CODEX_PLUGIN_CHECKSUM_PATH, label: tx('settings.codex.clientCodex'), kind: tx('settings.codex.checksumLabel'), icon: FileCheck },
+    { href: CLAUDE_MCPB_CHECKSUM_PATH, label: tx('settings.codex.clientClaude'), kind: tx('settings.codex.checksumLabel'), icon: FileCheck },
+  ]
+
   return (
     <div className="codex-authorization-manager">
-      <section className="codex-setup" aria-labelledby="codex-setup-title">
-        <div className="codex-setup-heading">
-          <span className="codex-setup-mark" aria-hidden="true"><Laptop size={17} /></span>
-          <div>
-            <h3 id="codex-setup-title">{tx('settings.codex.setupTitle')}</h3>
-            <p>{tx('settings.codex.setupDescription')}</p>
-          </div>
-        </div>
-
-        <div className="codex-client-switch" role="tablist" aria-label={tx('settings.codex.chooseClient')}>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={installClient === 'codex'}
-            className={installClient === 'codex' ? 'selected' : ''}
-            onClick={() => setInstallClient('codex')}
-          >
-            {tx('settings.codex.clientCodex')}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={installClient === 'claude'}
-            className={installClient === 'claude' ? 'selected' : ''}
-            onClick={() => setInstallClient('claude')}
-          >
-            {tx('settings.codex.clientClaude')}
-          </button>
-        </div>
-
-        <div className="codex-setup-steps">
-          <div className="codex-setup-step">
-            <span className="codex-step-number" aria-hidden="true">1</span>
-            <div>
-              <strong>{tx('settings.codex.installStepTitle')}</strong>
-              <p>{tx(installClient === 'codex'
-                ? 'settings.codex.codexInstallDescription'
-                : 'settings.codex.claudeInstallDescription')}</p>
-              <div className="codex-step-actions">
-                <a
-                  className="primary-action compact-action"
-                  href={installClient === 'codex' ? CODEX_PLUGIN_DOWNLOAD_PATH : CLAUDE_MCPB_DOWNLOAD_PATH}
-                  download
-                >
-                  <Download size={13} aria-hidden="true" />
-                  {tx(installClient === 'codex'
-                    ? 'settings.codex.downloadCodexPlugin'
-                    : 'settings.codex.downloadClaudeBundle')}
-                </a>
-                {installClient === 'codex' ? (
-                  <span className="codex-prompt-copy">
-                    <span>{tx('settings.codex.copyInstallPrompt')}</span>
-                    <CopyButton value={installerPrompt} label={tx('settings.codex.copyInstallPrompt')} onNotify={onNotify} />
-                  </span>
-                ) : null}
-              </div>
-            </div>
-          </div>
-          <div className="codex-setup-step">
-            <span className="codex-step-number" aria-hidden="true">2</span>
-            <div>
-              <strong>{tx('settings.codex.connectStepTitle')}</strong>
-              <p>{format(tx('settings.codex.connectDescription'), { client: clientLabel })}</p>
-            </div>
-          </div>
-        </div>
-
+      <section className={`codex-setup${setupOpen ? ' is-open' : ''}`} aria-labelledby="codex-setup-title">
         <button
           type="button"
-          className="codex-advanced-toggle"
-          aria-expanded={advancedOpen}
-          aria-controls="codex-advanced-install"
-          onClick={() => setAdvancedOpen((open) => !open)}
+          className="codex-setup-summary"
+          aria-expanded={setupOpen}
+          aria-controls="codex-setup-body"
+          onClick={() => setSetupOpen((open) => !open)}
         >
-          <ChevronDown size={13} aria-hidden="true" />
-          {tx('settings.codex.advancedInstall')}
+          <span className="codex-setup-mark" aria-hidden="true"><Laptop size={16} /></span>
+          <span className="codex-setup-copy">
+            <strong id="codex-setup-title">{tx('settings.codex.setupTitle')}</strong>
+            <span>{tx('settings.codex.setupDescription')}</span>
+          </span>
+          <span className="codex-setup-clients" aria-hidden="true">
+            <span>{tx('settings.codex.clientCodex')}</span>
+            <span>{tx('settings.codex.clientClaude')}</span>
+          </span>
+          <ChevronDown className="codex-disclosure-chevron" size={15} aria-hidden="true" />
         </button>
-        <CollapsiblePanel id="codex-advanced-install" open={advancedOpen} className="codex-advanced-install">
-          <div className="codex-verified-downloads">
-            <a href={CODEX_SKILL_DOWNLOAD_PATH} download>{tx('settings.codex.skillBundle')} <span>{tx('settings.codex.zipLabel')}</span></a>
-            <a href={CODEX_SKILL_CHECKSUM_PATH} download>{tx('settings.codex.skillBundle')} <span>{tx('settings.codex.checksumLabel')}</span></a>
-            <a href={CODEX_PLUGIN_CHECKSUM_PATH} download>{tx('settings.codex.clientCodex')} <span>{tx('settings.codex.checksumLabel')}</span></a>
-            <a href={CLAUDE_MCPB_CHECKSUM_PATH} download>{tx('settings.codex.clientClaude')} <span>{tx('settings.codex.checksumLabel')}</span></a>
-            <a href={CODEX_SKILL_GITHUB_URL} target="_blank" rel="noreferrer">
-              {tx('settings.codex.openGithub')} <ExternalLink size={11} aria-hidden="true" />
-            </a>
+
+        <CollapsiblePanel id="codex-setup-body" open={setupOpen} className="codex-setup-body">
+          <div className="codex-setup-inner">
+            <div
+              className="codex-client-switch"
+              role="tablist"
+              aria-label={tx('settings.codex.chooseClient')}
+              style={{ '--codex-client-index': installClient === 'codex' ? 0 : 1 } as CSSProperties}
+            >
+              <span className="codex-client-indicator" aria-hidden="true" />
+              <button
+                type="button"
+                role="tab"
+                aria-selected={installClient === 'codex'}
+                className={installClient === 'codex' ? 'selected' : ''}
+                onClick={() => setInstallClient('codex')}
+              >
+                {tx('settings.codex.clientCodex')}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={installClient === 'claude'}
+                className={installClient === 'claude' ? 'selected' : ''}
+                onClick={() => setInstallClient('claude')}
+              >
+                {tx('settings.codex.clientClaude')}
+              </button>
+            </div>
+
+            <ol className="codex-setup-steps" key={installClient}>
+              <li className="codex-setup-step">
+                <span className="codex-step-number" aria-hidden="true">1</span>
+                <div className="codex-step-body">
+                  <strong>{tx('settings.codex.installStepTitle')}</strong>
+                  <p>{tx(installClient === 'codex'
+                    ? 'settings.codex.codexInstallDescription'
+                    : 'settings.codex.claudeInstallDescription')}</p>
+                  <div className="codex-step-actions">
+                    <a
+                      className="codex-download-action"
+                      href={installClient === 'codex' ? CODEX_PLUGIN_DOWNLOAD_PATH : CLAUDE_MCPB_DOWNLOAD_PATH}
+                      download
+                    >
+                      <Download size={13} aria-hidden="true" />
+                      {tx(installClient === 'codex'
+                        ? 'settings.codex.downloadCodexPlugin'
+                        : 'settings.codex.downloadClaudeBundle')}
+                    </a>
+                    {installClient === 'codex' ? (
+                      <button
+                        type="button"
+                        className={`codex-copy-action${promptCopyState !== 'idle' ? ` is-${promptCopyState}` : ''}`}
+                        onClick={() => void copyInstallerPrompt()}
+                        aria-label={promptCopyState === 'copied' ? tx('copiedBang') : tx('settings.codex.copyInstallPrompt')}
+                      >
+                        <span className="codex-copy-icon" aria-hidden="true">
+                          <Copy className={promptCopyState === 'idle' ? 'is-active' : ''} size={13} />
+                          <Check className={promptCopyState === 'copied' ? 'is-active' : ''} size={13} />
+                          <AlertTriangle className={promptCopyState === 'failed' ? 'is-active' : ''} size={13} />
+                        </span>
+                        {promptCopyState === 'copied' ? tx('copiedBang') : tx('settings.codex.copyInstallPrompt')}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </li>
+              <li className="codex-setup-step">
+                <span className="codex-step-number" aria-hidden="true">2</span>
+                <div className="codex-step-body">
+                  <strong>{tx('settings.codex.connectStepTitle')}</strong>
+                  <p>{format(tx('settings.codex.connectDescription'), { client: clientLabel })}</p>
+                </div>
+              </li>
+            </ol>
+
+            <div className={`codex-advanced${advancedOpen ? ' is-open' : ''}`}>
+              <button
+                type="button"
+                className="codex-advanced-toggle"
+                aria-expanded={advancedOpen}
+                aria-controls="codex-advanced-install"
+                onClick={() => setAdvancedOpen((open) => !open)}
+              >
+                <ShieldCheck size={13} aria-hidden="true" />
+                <span>{tx('settings.codex.advancedInstall')}</span>
+                <ChevronDown className="codex-disclosure-chevron" size={13} aria-hidden="true" />
+              </button>
+              <CollapsiblePanel id="codex-advanced-install" open={advancedOpen} className="codex-advanced-install">
+                <ul className="codex-verified-downloads">
+                  {verifiedDownloads.map((item) => {
+                    const Icon = item.icon
+                    return (
+                      <li key={item.href}>
+                        <a href={item.href} download>
+                          <Icon size={14} aria-hidden="true" />
+                          <span className="codex-file-name">{item.label}</span>
+                          <span className="codex-file-kind">{item.kind}</span>
+                          <Download className="codex-file-action" size={13} aria-hidden="true" />
+                        </a>
+                      </li>
+                    )
+                  })}
+                  <li>
+                    <a href={CODEX_SKILL_GITHUB_URL} target="_blank" rel="noreferrer">
+                      <GitBranch size={14} aria-hidden="true" />
+                      <span className="codex-file-name">{tx('settings.codex.openGithub')}</span>
+                      <span className="codex-file-kind">{GITHUB_LABEL}</span>
+                      <ExternalLink className="codex-file-action" size={13} aria-hidden="true" />
+                    </a>
+                  </li>
+                </ul>
+              </CollapsiblePanel>
+            </div>
           </div>
         </CollapsiblePanel>
       </section>
@@ -782,13 +911,13 @@ function CodexAuthorizationManagerSession({
         <div className="codex-connected-heading">
           <div>
             <h3 id="codex-connected-title">{tx('settings.codex.connectedDevices')}</h3>
-            {authorizations ? <span>{format(tx('settings.codex.connectedCount'), { count: authorizations.length })}</span> : null}
+            {authorizations ? <span className="codex-count-badge">{authorizations.length}</span> : null}
           </div>
-          <button type="button" className="icon-action" onClick={() => {
+          <button type="button" className="codex-icon-button" onClick={() => {
             setLoaded(null)
             void loadAuthorizations()
-          }} aria-label={tx('settings.codex.retry')}>
-            <RefreshCw size={14} aria-hidden="true" />
+          }} aria-label={tx('settings.codex.retry')} title={tx('settings.codex.retry')}>
+            <RefreshCw size={13} aria-hidden="true" />
           </button>
         </div>
 
@@ -796,11 +925,11 @@ function CodexAuthorizationManagerSession({
 
         {authorizations === null ? (
           <div className="codex-list-state" role="status">
-            <LoaderCircle className="spin-icon" size={17} aria-hidden="true" />
+            <LoaderCircle className="spin-icon" size={16} aria-hidden="true" />
             <span>{tx('settings.codex.loading')}</span>
           </div>
         ) : loadError?.userId === userId ? (
-          <div className="codex-list-state error" role="alert">
+          <div className="codex-list-state is-error" role="alert">
             <AlertTriangle size={16} aria-hidden="true" />
             <span>{loadError.message}</span>
             <button type="button" className="quiet-action compact-action" onClick={() => {
@@ -812,105 +941,112 @@ function CodexAuthorizationManagerSession({
             </button>
           </div>
         ) : authorizations.length === 0 ? (
-          <div className="codex-list-state empty">
-            <Bot size={18} aria-hidden="true" />
+          <div className="codex-list-state is-empty">
+            <span className="codex-empty-icon" aria-hidden="true"><Bot size={18} /></span>
             <strong>{tx('settings.codex.emptyTitle')}</strong>
             <span>{tx('settings.codex.emptyHint')}</span>
+            {!setupOpen ? (
+              <button type="button" className="quiet-action compact-action" onClick={() => setSetupOpen(true)}>
+                {tx('settings.codex.installGuide')}
+              </button>
+            ) : null}
           </div>
         ) : (
-          <div className="codex-device-table">
-            <div className="codex-device-table-head" aria-hidden="true">
-              <span>{tx('settings.codex.columnName')}</span>
-              <span>{tx('settings.codex.columnDevice')}</span>
-              <span>{tx('settings.codex.columnLastUsed')}</span>
-              <span>{tx('settings.codex.columnActions')}</span>
-            </div>
-            <ul className="codex-authorization-list" aria-label={tx('settings.codex.savedAuthorizations')}>
-              {authorizations.map((authorization) => {
-                const status = displayAuthorizationStatus(authorization, statusNow)
-                const active = status === 'active'
-                const paused = status === 'disabled'
-                const manageable = active || paused
-                const pauseBusy = pausingId === authorization.id
-                return (
-                  <li key={authorization.id} className={paused ? 'is-paused' : !active ? 'is-inactive' : undefined}>
-                    <div className="codex-device-name" data-label={tx('settings.codex.columnName')}>
-                      {renamingId === authorization.id ? (
-                        <form className="codex-rename-form" onSubmit={(event) => void submitRename(event, authorization)}>
-                          <input
-                            autoFocus
-                            value={renameDraft}
-                            onChange={(event) => setRenameDraft(event.target.value)}
-                            maxLength={80}
-                            required
-                            disabled={renameBusy}
-                            aria-label={tx('settings.codex.name')}
-                          />
-                          <button type="submit" className="icon-action" disabled={renameBusy || !renameDraft.trim()} aria-label={tx('settings.codex.renameSave')}>
-                            {renameBusy ? <LoaderCircle className="spin-icon" size={12} aria-hidden="true" /> : <Check size={12} aria-hidden="true" />}
-                          </button>
-                          <button type="button" className="icon-action" disabled={renameBusy} onClick={() => {
-                            setRenamingId(null)
-                            setRenameError(null)
-                          }} aria-label={tx('settings.codex.renameCancel')}>
-                            <X size={12} aria-hidden="true" />
-                          </button>
-                        </form>
-                      ) : (
-                        <div className="codex-authorization-title">
-                          <strong>{authorization.name}</strong>
-                          <button type="button" className="icon-action" disabled={renameBusy} onClick={() => beginRename(authorization)} aria-label={format(tx('settings.codex.renameNamed'), { name: authorization.name })}>
-                            <Pencil size={12} aria-hidden="true" />
-                          </button>
-                        </div>
-                      )}
-                      {renameError && renamingId === authorization.id ? <span className="codex-row-error" role="alert">{renameError}</span> : null}
-                    </div>
-                    <div className="codex-device-client-summary" data-label={tx('settings.codex.columnDevice')}>
-                      <strong>{authorization.clientName || tx('settings.codex.unknownDevice')}</strong>
+          <ul className="codex-authorization-list" aria-label={tx('settings.codex.savedAuthorizations')}>
+            {authorizations.map((authorization) => {
+              const status = displayAuthorizationStatus(authorization, statusNow)
+              const active = status === 'active'
+              const paused = status === 'disabled'
+              const manageable = active || paused
+              const pauseBusy = pausingId === authorization.id
+              const isClaude = /claude/i.test(authorization.clientName)
+              return (
+                <li key={authorization.id} className={`codex-device-row${paused ? ' is-paused' : !active ? ' is-inactive' : ''}`}>
+                  <span className={`codex-device-avatar${isClaude ? ' is-claude' : ''}`} aria-hidden="true">
+                    {isClaude ? <Bot size={15} /> : <Laptop size={15} />}
+                    <span className={`codex-status-dot is-${status}`} />
+                  </span>
+                  <div className="codex-device-main">
+                    {renamingId === authorization.id ? (
+                      <form className="codex-rename-form" onSubmit={(event) => void submitRename(event, authorization)}>
+                        <input
+                          autoFocus
+                          value={renameDraft}
+                          onChange={(event) => setRenameDraft(event.target.value)}
+                          maxLength={80}
+                          required
+                          disabled={renameBusy}
+                          aria-label={tx('settings.codex.name')}
+                        />
+                        <button type="submit" className="codex-icon-button" disabled={renameBusy || !renameDraft.trim()} aria-label={tx('settings.codex.renameSave')}>
+                          {renameBusy ? <LoaderCircle className="spin-icon" size={12} aria-hidden="true" /> : <Check size={12} aria-hidden="true" />}
+                        </button>
+                        <button type="button" className="codex-icon-button" disabled={renameBusy} onClick={() => {
+                          setRenamingId(null)
+                          setRenameError(null)
+                        }} aria-label={tx('settings.codex.renameCancel')}>
+                          <X size={12} aria-hidden="true" />
+                        </button>
+                      </form>
+                    ) : (
+                      <div className="codex-authorization-title">
+                        <strong>{authorization.name}</strong>
+                        {!active ? (
+                          <span className={`codex-status-pill is-${status}`}>{tx(statusLabelKey(status))}</span>
+                        ) : null}
+                        <button type="button" className="codex-icon-button codex-rename-trigger" disabled={renameBusy} onClick={() => beginRename(authorization)} aria-label={format(tx('settings.codex.renameNamed'), { name: authorization.name })}>
+                          <Pencil size={11} aria-hidden="true" />
+                        </button>
+                      </div>
+                    )}
+                    {renameError && renamingId === authorization.id ? <span className="codex-row-error" role="alert">{renameError}</span> : null}
+                    <div className="codex-device-meta">
+                      <span>{authorization.clientName || tx('settings.codex.unknownDevice')}</span>
                       {authorization.deviceName ? <span>{authorization.deviceName}</span> : null}
                     </div>
-                    <time className="codex-device-last-used" data-label={tx('settings.codex.columnLastUsed')} dateTime={authorization.lastUsedAt || undefined}>
+                  </div>
+                  <div className="codex-device-last-used">
+                    <span>{tx('settings.codex.columnLastUsed')}</span>
+                    <time dateTime={authorization.lastUsedAt || undefined}>
                       {formatTimestamp(authorization.lastUsedAt, lang, tx('settings.codex.neverUsed'))}
                     </time>
-                    <div className="codex-authorization-actions" data-label={tx('settings.codex.columnActions')} aria-label={tx('settings.codex.manageActions')}>
-                      {manageable ? (
-                        <button
-                          type="button"
-                          className="quiet-action compact-action"
-                          disabled={pauseBusy}
-                          onClick={() => void togglePaused(authorization, !paused)}
-                        >
-                          {pauseBusy ? (
-                            <PendingLabel label={tx(paused ? 'settings.codex.resuming' : 'settings.codex.pausing')} />
-                          ) : paused ? (
-                            <><PlayCircle size={12} aria-hidden="true" />{tx('settings.codex.resume')}</>
-                          ) : (
-                            <><PauseCircle size={12} aria-hidden="true" />{tx('settings.codex.pause')}</>
-                          )}
-                        </button>
-                      ) : (
-                        <button type="button" className="quiet-action compact-action" disabled>
-                          {tx('settings.codex.unavailable')}
-                        </button>
-                      )}
+                  </div>
+                  <div className="codex-authorization-actions" role="group" aria-label={tx('settings.codex.manageActions')}>
+                    {manageable ? (
                       <button
                         type="button"
-                        className="danger-action compact-action"
-                        onClick={() => {
-                          setOperationError(null)
-                          setDeleteTarget(authorization)
-                        }}
+                        className="codex-icon-button"
+                        disabled={pauseBusy}
+                        onClick={() => void togglePaused(authorization, !paused)}
+                        aria-label={tx(pauseBusy
+                          ? (paused ? 'settings.codex.resuming' : 'settings.codex.pausing')
+                          : (paused ? 'settings.codex.resume' : 'settings.codex.pause'))}
+                        title={tx(paused ? 'settings.codex.resume' : 'settings.codex.pause')}
                       >
-                        <Trash2 size={12} aria-hidden="true" />
-                        {tx('settings.codex.deleteAuthorization')}
+                        {pauseBusy
+                          ? <LoaderCircle className="spin-icon" size={14} aria-hidden="true" />
+                          : paused
+                            ? <PlayCircle size={14} aria-hidden="true" />
+                            : <PauseCircle size={14} aria-hidden="true" />}
                       </button>
-                    </div>
-                  </li>
-                )
-              })}
-            </ul>
-          </div>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="codex-icon-button is-danger"
+                      onClick={() => {
+                        setOperationError(null)
+                        setDeleteTarget(authorization)
+                      }}
+                      aria-label={tx('settings.codex.deleteAuthorization')}
+                      title={tx('settings.codex.deleteAuthorization')}
+                    >
+                      <Trash2 size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
         )}
       </section>
 

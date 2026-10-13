@@ -256,6 +256,7 @@ import {
 } from './offline'
 import { withSmartRetry, AGGRESSIVE_RETRY_CONFIG } from './utils/errorHandling'
 import { mergeApplicationListPreservingIdentity } from './applicationListSync'
+import { capturePendingMcpCode, restorePendingMcpCode } from './pendingMcpAuthorization'
 
 type AnimatedScreenTransitionScope = 'screen' | 'workspace-view' | 'dossier-tab' | 'dossier-record'
 type ScreenReadinessGate = {
@@ -381,6 +382,8 @@ function createPreloadedScreen<TComponent extends ComponentType<any>>(
 
   return { Component, preload, isResolved: () => resolved !== null }
 }
+
+capturePendingMcpCode()
 
 const loadAuthScreen = createRecoverableModuleLoader(() => import('./components/screens/AuthScreen').then((module) => ({ default: module.AuthScreen })))
 const loadDesktopUnlockScreen = createRecoverableModuleLoader(() => import('./components/screens/DesktopUnlockScreen').then((module) => ({ default: module.DesktopUnlockScreen })))
@@ -5323,6 +5326,14 @@ export default function App() {
       window.history.pushState(null, '', nextPath)
     }
   }, [screen, selectedId, tab, teamSection, interfaceMode, session])
+
+  // An MCP approval link opened while signed out must survive the sign-in
+  // handoff: restore the parked device code once a session exists.
+  const mcpRestoreUserId = session?.user.id ?? null
+  useEffect(() => {
+    if (!mcpRestoreUserId) return
+    restorePendingMcpCode()
+  }, [mcpRestoreUserId])
 
   useEffect(() => {
     function handlePopState() {

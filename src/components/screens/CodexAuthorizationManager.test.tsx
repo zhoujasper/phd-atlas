@@ -68,15 +68,18 @@ describe('CodexAuthorizationManager', () => {
 
     await renderManager('user-1', vi.fn(), false)
     expect(screen.getByText('Loading Codex authorizations…')).toBeInTheDocument()
-    expect(screen.queryByText('No Codex authorizations yet')).not.toBeInTheDocument()
+    expect(screen.queryByText('No connected devices yet')).not.toBeInTheDocument()
 
     resolveList?.([])
-    expect(await screen.findByText('No Codex authorizations yet')).toBeInTheDocument()
+    expect(await screen.findByText('No connected devices yet')).toBeInTheDocument()
   })
 
   it('offers direct Codex and Claude installs without a manual authorization surface', async () => {
     const { container, user } = await renderManager()
 
+    const setupToggle = screen.getByRole('button', { name: /Connect an AI client/ })
+    expect(setupToggle).toHaveAttribute('aria-expanded', 'false')
+    await user.click(setupToggle)
     expect(container.querySelector('a[href="/downloads/phd-atlas-codex-plugin.zip"]')).toHaveAttribute('download')
     expect(screen.queryByRole('button', { name: 'New authorization' })).not.toBeInTheDocument()
     expect(screen.queryByText(/Let Codex work with/)).not.toBeInTheDocument()
@@ -95,7 +98,7 @@ describe('CodexAuthorizationManager', () => {
     await renderManager()
 
     expect(await screen.findByText('Research laptop')).toBeInTheDocument()
-    expect(screen.getAllByText('Codex')).toHaveLength(2)
+    expect(screen.getAllByText('Codex').length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText('Lab Surface')).toBeInTheDocument()
     expect(screen.getByText('Last used')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument()

@@ -5,6 +5,42 @@ section per version using the exact heading `## v<package.json version>`.
 Automation extracts only the matching section, so older notes remain immutable
 history while the next version can be prepared in the same file.
 
+## v0.1.6
+
+**A redesigned MCP / Skill settings page and a reliable sign-in handoff for client approvals.**
+
+This is a web/server release. Existing installations can update from Admin
+using the complete update package. Native Windows and macOS packages are not
+included in this release; v0.1.5 desktop packages remain the current ones.
+
+- Settings → MCP / Skill now presents client setup as one collapsible guide,
+  closed by default, with a sliding Codex / Claude Desktop switch, numbered
+  steps, a one-click install-prompt copy action, and a nested list of verified
+  downloads and checksums.
+- Connected devices appear in a compact list with client, computer, status,
+  last use, rename, pause/resume, and delete actions, plus a clear empty state.
+- The MCP connection approval dialog is fully laid out: device code, client
+  details, request expiry, and permissions grouped into collapsible sections
+  with per-group and high-risk counts.
+- Opening an MCP approval link while signed out no longer loses the request;
+  after sign-in PhD Atlas returns to Settings and opens the approval dialog.
+- Security: updated dependencies for newly published advisories, including
+  Nodemailer 10, Undici, Multer, Express middleware (compression, morgan,
+  proxy-addr), and shell-quote.
+
+### 中文摘要
+
+本次为网页 / 服务端版本，现有部署可在管理后台使用完整更新包升级。本次不包含 Windows
+与 macOS 原生安装包，桌面端仍以 v0.1.5 为当前版本。
+
+- “设置 → MCP / Skill”的客户端安装指南改为默认折叠的面板，包含滑动切换的
+  Codex / Claude Desktop、编号步骤、一键复制安装提示词，以及可校验下载与校验文件列表。
+- 已连接设备以紧凑列表展示客户端、电脑、状态与上次使用时间，支持重命名、停用 / 启用和删除。
+- MCP 连接审批对话框完成排版：设备代码、客户端信息、请求到期时间，权限按分组折叠并显示数量与高风险数量。
+- 未登录时打开 MCP 授权链接，登录后会自动回到设置页并弹出审批对话框，不再丢失请求。
+- 安全：针对新公布的安全公告更新依赖，包括 Nodemailer 10、Undici、Multer、Express 中间件
+  （compression、morgan、proxy-addr）及 shell-quote。
+
 ## v0.1.5
 
 **Beta.8 upgrade compatibility, multiple intended supervisors, and dependable offline desktop use.**
